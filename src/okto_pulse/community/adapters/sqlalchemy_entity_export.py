@@ -27,7 +27,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Ideation,
     Refinement,
     Spec,
-    Sprint,
     Story,
 )
 from okto_pulse.community.services.entity_export_rich_media import (
@@ -97,7 +96,6 @@ _MODELS: dict[EntityExportType, type[Any]] = {
     EntityExportType.IDEATION: Ideation,
     EntityExportType.REFINEMENT: Refinement,
     EntityExportType.SPEC: Spec,
-    EntityExportType.SPRINT: Sprint,
     EntityExportType.CARD: Card,
 }
 
@@ -106,7 +104,6 @@ _ROOT_PERMISSIONS: dict[EntityExportType, str] = {
     EntityExportType.IDEATION: "ideation.entity.read",
     EntityExportType.REFINEMENT: "refinement.entity.read",
     EntityExportType.SPEC: "spec.entity.read",
-    EntityExportType.SPRINT: "sprint.entity.read",
     EntityExportType.CARD: "card.entity.read",
 }
 
@@ -153,7 +150,6 @@ _QA_TABLES = frozenset(
         "ideation_qa_items",
         "refinement_qa_items",
         "spec_qa_items",
-        "sprint_qa_items",
         "qa_items",
     }
 )
@@ -161,43 +157,6 @@ _QA_TABLES = frozenset(
 _CHECKLIST_ITEM_BY_ID = {item.item_id: item for item in SPECIFY_CHECKLIST_ITEMS_V1}
 
 _HUMAN_POLICY_FIELDS: dict[str, tuple[str, ...]] = {
-    "policy_compliance_receipts": (
-        "outcome",
-        "state",
-        "recorded_currentness",
-        "reason_codes",
-        "evaluated_at",
-    ),
-    "policy_compliance_findings": (
-        "outcome",
-        "enforcement",
-        "severity_rank",
-        "message",
-        "created_at",
-    ),
-    "semantic_guideline_assessment_receipts": (
-        "minimum_confidence",
-        "confidence",
-        "state",
-        "recorded_currentness",
-        "assessed_at",
-    ),
-    "semantic_guideline_metric_results": (
-        "metric_code",
-        "direction",
-        "effective_threshold",
-        "score",
-        "outcome",
-        "rationale",
-        "pinpoints",
-        "created_at",
-    ),
-    "semantic_guideline_findings": (
-        "metric_code",
-        "rationale",
-        "pinpoints",
-        "created_at",
-    ),
     "semantic_guideline_skips": (
         "status",
         "reason",
@@ -251,11 +210,6 @@ _EMBEDDED_FIELD_SECTIONS: dict[EntityExportType, dict[str, str]] = {
         "project_structure_digest": "project_structure",
         "project_structure": "project_structure",
     },
-    EntityExportType.SPRINT: {
-        "evaluations": "evaluations",
-        "test_scenario_ids": "test_scenarios",
-        "business_rule_ids": "business_rules",
-    },
     EntityExportType.CARD: {
         "screen_mockups": "mockups",
         "knowledge_bases": "knowledge",
@@ -293,14 +247,7 @@ def _policy_sections() -> tuple[_SectionDefinition, ...]:
             "policy_compliance",
             "guidelines.assessments.read",
             queries=(
-                _q("policy_compliance_receipts", "subject"),
-                _q(
-                    "policy_compliance_findings",
-                    "context",
-                    "receipt_id",
-                    context_key="receipt_ids",
-                ),
-                _q("semantic_guideline_assessment_receipts", "subject"),
+                _q("semantic_guideline_assessments_v2", "subject"),
                 _q(
                     "guideline_revisions",
                     "context",
@@ -309,21 +256,8 @@ def _policy_sections() -> tuple[_SectionDefinition, ...]:
                     projected_columns=("revision_id", "title"),
                     emit=False,
                 ),
-                _q("semantic_guideline_assessments_v2", "subject"),
-                _q(
-                    "semantic_guideline_metric_results",
-                    "context",
-                    "receipt_id",
-                    context_key="receipt_ids",
-                ),
                 _q(
                     "semantic_guideline_metric_results_v2",
-                    "context",
-                    "receipt_id",
-                    context_key="receipt_ids",
-                ),
-                _q(
-                    "semantic_guideline_findings",
                     "context",
                     "receipt_id",
                     context_key="receipt_ids",
@@ -341,13 +275,6 @@ def _policy_sections() -> tuple[_SectionDefinition, ...]:
             "policy_waivers",
             "guidelines.waiver.read",
             queries=(
-                _q("policy_waivers", "subject"),
-                _q(
-                    "policy_waiver_events",
-                    "context",
-                    "waiver_id",
-                    context_key="waiver_ids",
-                ),
                 _q("semantic_guideline_waivers", "subject"),
                 _q(
                     "semantic_guideline_waiver_events",
@@ -694,18 +621,6 @@ def _definitions(entity_type: EntityExportType) -> tuple[_SectionDefinition, ...
                 ),
             ),
             _SectionDefinition(
-                "sprints",
-                "sprint.entity.read",
-                queries=(
-                    _q(
-                        "sprints",
-                        "entity_fk",
-                        "spec_id",
-                        projected_columns=_IDENTITY_COLUMNS + ("lane_type",),
-                    ),
-                ),
-            ),
-            _SectionDefinition(
                 "research_decision_derivations",
                 "refinement.research_decisions.read",
                 queries=(_q("research_decision_derivations", "entity_fk", "spec_id"),),
@@ -798,49 +713,6 @@ def _definitions(entity_type: EntityExportType) -> tuple[_SectionDefinition, ...
             ),
             *policy,
             *_code_sections(entity_type),
-            *resources,
-        )
-    if entity_type is EntityExportType.SPRINT:
-        return (
-            _SectionDefinition(
-                "cards",
-                "card.entity.read",
-                queries=(
-                    _q(
-                        "cards",
-                        "entity_fk",
-                        "sprint_id",
-                        projected_columns=_CARD_HUMAN_COLUMNS,
-                    ),
-                ),
-            ),
-            _SectionDefinition(
-                "qa",
-                "sprint.qa.read",
-                queries=(_q("sprint_qa_items", "entity_fk", "sprint_id"),),
-            ),
-            _SectionDefinition(
-                "evaluations",
-                "sprint.evaluations.read",
-                embedded_fields=("evaluations",),
-            ),
-            _SectionDefinition(
-                "test_scenarios",
-                "spec.tests.read",
-                embedded_fields=("test_scenario_ids",),
-            ),
-            _SectionDefinition(
-                "business_rules",
-                "spec.rules.read",
-                embedded_fields=("business_rule_ids",),
-            ),
-            _SectionDefinition(
-                "history",
-                "sprint.history_read",
-                queries=(_q("sprint_history", "entity_fk", "sprint_id"),),
-                history_only=True,
-            ),
-            *policy,
             *resources,
         )
     if entity_type is EntityExportType.CARD:
@@ -964,33 +836,17 @@ def _sealed_mockups(value: Any) -> Any:
     return seal_screen_mockups(_json_value(value))
 
 
-def _seal_spec_validation_pinpoints(value: Any) -> Any:
+def _validate_spec_validation_history(value: Any) -> Any:
+    from okto_pulse.core.models.schemas import SpecValidationResponse
+
     normalized = _json_value(value)
+    if normalized is None:
+        return None
     if not isinstance(normalized, list):
-        return normalized
-    sealed: list[Any] = []
+        raise ValueError("spec_validation_history_invalid")
     for validation in normalized:
-        if not isinstance(validation, dict):
-            sealed.append(validation)
-            continue
-        copy = dict(validation)
-        pinpoints = copy.get("pinpoints")
-        if isinstance(pinpoints, list):
-            normalized_pinpoints: list[Any] = []
-            for pinpoint in pinpoints:
-                if not isinstance(pinpoint, dict):
-                    normalized_pinpoints.append(pinpoint)
-                    continue
-                pinpoint_copy = dict(pinpoint)
-                if not isinstance(pinpoint_copy.get("anchor_snapshot"), dict):
-                    pinpoint_copy["anchor_snapshot"] = {
-                        "contract_version": "spec-validation-pinpoint-snapshot/v1",
-                        "availability_at_seal": "legacy_unavailable",
-                    }
-                normalized_pinpoints.append(pinpoint_copy)
-            copy["pinpoints"] = normalized_pinpoints
-        sealed.append(copy)
-    return sealed
+        SpecValidationResponse.model_validate(validation)
+    return normalized
 
 
 def _row_payload(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -1227,32 +1083,27 @@ def _human_card_payload(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _human_task_validation(row: Mapping[str, Any]) -> dict[str, Any]:
-    """Collapse dual aliases and omit the idempotency receipt plumbing."""
+    """Render canonical validation fields and omit internal ledger fields."""
 
     result: dict[str, Any] = {}
     for field_name in ("id", "created_at"):
         if row.get(field_name) not in (None, ""):
             result[field_name] = row[field_name]
-    # A reader needs to know who performed the assessment, not the opaque
-    # identity key used to authorize it.  New task-validation records persist
-    # ``reviewer_name``; ``evaluator_name`` remains a tolerated cross-surface
-    # alias.  Legacy rows that only carry an ID deliberately omit the reviewer
-    # rather than promoting an implementation identifier into report content.
-    reviewer_name = _first_present(row, "reviewer_name", "evaluator_name")
+    reviewer_name = row.get("reviewer_name")
     if reviewer_name is not None:
         result["reviewer"] = reviewer_name
-    for metric, legacy_metric in (
+    for metric, source_field in (
         ("confidence", "confidence"),
         ("completeness", "estimated_completeness"),
         ("drift", "estimated_drift"),
     ):
-        score = _first_present(row, metric, legacy_metric)
+        score = row.get(source_field)
         if score is not None:
             result[metric] = score
         justification = row.get(f"{metric}_justification")
         if justification not in (None, ""):
             result[f"{metric}_justification"] = justification
-    summary = _first_present(row, "summary", "general_justification")
+    summary = row.get("general_justification")
     if summary is not None:
         result["summary"] = summary
     for field_name in (
@@ -1266,7 +1117,7 @@ def _human_task_validation(row: Mapping[str, Any]) -> dict[str, Any]:
     if failures := _human_reason_codes(row.get("threshold_violations")):
         result["threshold_failures"] = failures
     if "validation_outcome" not in result:
-        outcome = _first_present(row, "outcome", "verdict")
+        outcome = row.get("outcome")
         if outcome is not None:
             result["validation_outcome"] = outcome
     failures = row.get("completion_gate_failures")
@@ -1340,7 +1191,7 @@ def _model_payload(row: Any, entity_type: EntityExportType) -> dict[str, Any]:
         name = str(column.name)
         if name in _SENSITIVE_COLUMNS:
             continue
-        if entity_type is EntityExportType.CARD and name in _CURRENT_REJECTION_COLUMNS:
+        if entity_type is EntityExportType.CARD and name in _CURRENT_REJECTION_COLUMNS | {"sprint_id"}:
             continue
         if name in separated:
             payload[name] = {
@@ -1533,11 +1384,8 @@ def _record_context(
     primary_context = {
         "quality_assessment_receipts": ("id", "receipt_ids"),
         "checklist_receipts": ("id", "receipt_ids"),
-        "policy_compliance_receipts": ("receipt_id", "receipt_ids"),
-        "semantic_guideline_assessment_receipts": ("receipt_id", "receipt_ids"),
         "semantic_guideline_assessments_v2": ("receipt_id", "receipt_ids"),
         "code_investigation_receipts": ("id", "receipt_ids"),
-        "policy_waivers": ("waiver_id", "waiver_ids"),
         "semantic_guideline_waivers": ("waiver_id", "waiver_ids"),
         "implementation_targets": ("id", "target_ids"),
         "implementation_target_spec_links": ("target_id", "target_ids"),
@@ -1547,7 +1395,7 @@ def _record_context(
     if item is not None and row.get(item[0]) is not None:
         context.setdefault(item[1], set()).add(str(row[item[0]]))
     if (
-        table_name == "semantic_guideline_assessment_receipts"
+        table_name == "semantic_guideline_assessments_v2"
         and row.get("revision_id") is not None
     ):
         context.setdefault("guideline_revision_ids", set()).add(str(row["revision_id"]))
@@ -1607,7 +1455,8 @@ class CommunitySqlAlchemyEntityExportReader:
         base_attributes = [
             getattr(model, column.name)
             for column in model.__table__.columns
-            if column.name not in separated or column.name in allowed_embedded
+            if (column.name not in separated or column.name in allowed_embedded)
+            and not (request.entity_type is EntityExportType.CARD and column.name == "sprint_id")
         ]
         if (
             request.entity_type is EntityExportType.CARD
@@ -1815,7 +1664,7 @@ class CommunitySqlAlchemyEntityExportReader:
         if definition.key == "project_structure":
             nodes = _json_value(getattr(base_row, "project_structure", None))
             revision = int(
-                getattr(base_row, "project_structure_revision", None) or 0
+                base_row.project_structure_revision
             )
             exported = project_structure_export_payload(
                 nodes,
@@ -1896,7 +1745,7 @@ class CommunitySqlAlchemyEntityExportReader:
             if field_name == "screen_mockups":
                 value = _sealed_mockups(value)
             elif definition.key == "spec_validation" and field_name == "validations":
-                value = _seal_spec_validation_pinpoints(value)
+                value = _validate_spec_validation_history(value)
             elif definition.key == "card_validation" and field_name == "validations":
                 value = [
                     _human_task_validation(item)
@@ -2016,7 +1865,7 @@ class CommunitySqlAlchemyEntityExportReader:
                         and item.get("title") not in (None, "")
                     }
                 )
-                assessments = records.get("semantic_guideline_assessment_receipts", [])
+                assessments = records.get("semantic_guideline_assessments_v2", [])
                 for assessment, revision_id in zip(
                     assessments,
                     guideline_assessment_revision_ids,
@@ -2032,7 +1881,7 @@ class CommunitySqlAlchemyEntityExportReader:
                     if (projected := _human_row_payload(query.table_name, item))
                     not in (None, "", [], {})
                 ]
-            if query.table_name == "semantic_guideline_assessment_receipts":
+            if query.table_name == "semantic_guideline_assessments_v2":
                 guideline_assessment_revision_ids = [
                     str(item["revision_id"])
                     if item.get("revision_id") not in (None, "")

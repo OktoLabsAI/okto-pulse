@@ -7,7 +7,6 @@ import type {
   KGNode,
   KGEdge,
   KGStats,
-  KGSettings,
   AuditEntry,
   GraphLayerMode,
 } from '@/types/knowledge-graph';
@@ -58,7 +57,7 @@ export interface KGNodeSource {
   source_artifact_ref: string | null;
   target: {
     board_id: string;
-    entity_type: 'spec' | 'refinement' | 'ideation' | 'sprint' | 'story' | 'card';
+    entity_type: 'spec' | 'refinement' | 'ideation' | 'story' | 'card';
     entity_kind: string;
     entity_id: string;
     title: string;
@@ -129,13 +128,6 @@ export async function listAudit(boardId: string, limit = 50) {
   return kgFetch<{ entries: AuditEntry[]; next_cursor: string | null }>(
     `/boards/${boardId}/audit?limit=${limit}`
   );
-}
-
-export async function undoSession(boardId: string, sessionId: string, force = false) {
-  return kgFetch<Record<string, unknown>>(`/boards/${boardId}/audit/${sessionId}/undo`, {
-    method: 'POST',
-    body: JSON.stringify({ force }),
-  });
 }
 
 // Similar nodes
@@ -209,154 +201,14 @@ export async function globalSearch(
   );
 }
 
-// Settings
-export async function getKGSettings(boardId: string) {
-  return kgFetch<KGSettings>(`/boards/${boardId}/settings`);
-}
-
-export async function updateKGSettings(boardId: string, settings: Partial<KGSettings>) {
-  return kgFetch<{ success: boolean }>(`/boards/${boardId}/settings`, {
-    method: 'PUT',
-    body: JSON.stringify(settings),
-  });
-}
-
-// Historical consolidation
-export interface HistoricalProgress {
-  enabled: boolean;
-  status: string;
-  total: number;
-  progress: number;
-  pending?: number;
-  claimed?: number;
-  paused?: number;
-  failed?: number;
-}
-
-export function isHistoricalProgressActive(progress: HistoricalProgress | null | undefined) {
-  if (!progress) return false;
-  return (
-    progress.status === 'in_progress' ||
-    (progress.pending ?? 0) > 0 ||
-    (progress.claimed ?? 0) > 0 ||
-    (progress.paused ?? 0) > 0
-  );
-}
-
-export function isHistoricalProgressTerminal(progress: HistoricalProgress | null | undefined) {
-  if (!progress || !progress.enabled || progress.total <= 0) return false;
-  if (progress.status === 'cancelled' || isHistoricalProgressActive(progress)) return false;
-  if (progress.status === 'completed' || progress.status === 'completed_with_errors') return true;
-  return progress.status === 'inactive' && progress.progress >= progress.total;
-}
-
-export async function startHistorical(boardId: string) {
-  return kgFetch<{ status: string; total_artifacts?: number; board_id?: string }>(`/boards/${boardId}/historical-consolidation/start`, {
-    method: 'POST',
-  });
-}
-
-export async function cancelHistorical(boardId: string) {
-  return kgFetch<{ status: string; board_id?: string; removed?: number }>(`/boards/${boardId}/historical-consolidation/cancel`, {
-    method: 'POST',
-  });
-}
-
-export async function getHistoricalProgress(boardId: string) {
-  return kgFetch<HistoricalProgress>(
-    `/boards/${boardId}/historical-consolidation/progress`
-  );
-}
-
-// Pending queue
-export async function listPending(boardId: string) {
-  return kgFetch<{
-    entries: Array<{
-      id: string;
-      board_id: string;
-      artifact_id: string;
-      artifact_type: string;
-      priority: string;
-      source: string;
-      status: string;
-      triggered_at: string | null;
-      claimed_by_session_id: string | null;
-    }>;
-    count: number;
-  }>(`/boards/${boardId}/pending`);
-}
-
-// Pending queue — hierarchical tree (spec f33eb9ca)
-export interface PendingTreeNode {
-  id: string;
-  type: 'ideation' | 'refinement' | 'spec' | 'sprint' | 'card';
-  title: string;
-  status: string;
-  queue_entry_id?: string | null;
-  retry_count?: number;
-  age_seconds?: number;
-  layer?: string;
-  last_error?: string | null;
-  children: PendingTreeNode[];
-}
-
-export interface PendingTreeLevels {
-  ideations: { pending: number; in_progress: number; done: number; failed: number };
-  refinements: PendingTreeLevels['ideations'];
-  specs: PendingTreeLevels['ideations'];
-  sprints: PendingTreeLevels['ideations'];
-  cards: PendingTreeLevels['ideations'];
-}
-
-export async function getPendingTree(boardId: string, depth = 5) {
-  return kgFetch<{
-    board_id: string;
-    depth: number;
-    total_pending: number;
-    levels: PendingTreeLevels;
-    tree: PendingTreeNode[];
-  }>(`/boards/${boardId}/pending/tree?depth=${depth}`);
-}
-
-export async function retryPending(boardId: string, queueEntryId: string, recursive = false) {
-  return kgFetch<{
-    board_id: string;
-    queue_entry_id: string;
-    recursive: boolean;
-    reopened_count: number;
-    reopened_ids: string[];
-  }>(
-    `/boards/${boardId}/pending/${queueEntryId}/retry?recursive=${recursive}`,
-    { method: 'POST' },
-  );
-}
-
 // Delete KG (right-to-erasure)
 export async function deleteKG(boardId: string) {
   return kgFetch<void>(`/boards/${boardId}/kg`, { method: 'DELETE' });
 }
 
-// v0.3.0 R3 — manual relevance boost (+0.3, clamped at 1.5)
-export interface BoostNodeResponse {
-  node_id: string;
-  node_type: string;
-  score_before: number;
-  score_after: number;
-  boosted_at: string;
-  boosted_by: string;
-}
-
-export async function boostNode(boardId: string, nodeId: string) {
-  return kgFetch<BoostNodeResponse>(
-    `/boards/${boardId}/nodes/${nodeId}/boost`,
-    { method: 'POST' }
-  );
-}
-
 // Schema
-export async function getSchemaInfo(boardId?: string, includeInternal = false) {
+export async function getSchemaInfo(boardId?: string) {
   const qs = new URLSearchParams();
   if (boardId) qs.set('board_id', boardId);
-  if (includeInternal) qs.set('include_internal', 'true');
   return kgFetch<Record<string, unknown>>(`/schema?${qs}`);
 }

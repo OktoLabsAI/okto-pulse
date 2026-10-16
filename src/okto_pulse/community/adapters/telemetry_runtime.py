@@ -9,7 +9,6 @@ from typing import Any, Literal
 from okto_pulse.core.telemetry.settings import (
     EffectiveTelemetryMode,
     ResolvedTelemetryConfig,
-    TelemetryMode,
     resolve_telemetry_config as resolve_core_telemetry_config,
 )
 
@@ -18,8 +17,6 @@ from okto_pulse.core.telemetry.settings import (
 class CommunityTelemetryConfig:
     mode: EffectiveTelemetryMode
     ui_mode: Literal["off", "on"]
-    normalized_from: TelemetryMode | None
-    migration_notice: dict[str, Any] | None
     metrics_dir: Path
     retention_days: int
     beacon_url: str
@@ -44,8 +41,6 @@ def _community_projection(config: ResolvedTelemetryConfig) -> CommunityTelemetry
     return CommunityTelemetryConfig(
         mode=config.mode,
         ui_mode=config.ui_mode,
-        normalized_from=config.normalized_from,
-        migration_notice=config.migration_notice,
         metrics_dir=Path(config.state_ref).expanduser().resolve(),
         retention_days=config.retention_days,
         beacon_url=config.delivery_target.rstrip("/"),

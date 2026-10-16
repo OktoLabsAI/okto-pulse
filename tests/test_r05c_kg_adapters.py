@@ -162,6 +162,8 @@ def test_ts_f7b7374d_base_registry_supplies_community_graph_slots():
         "ranked_graph_search",
         "graph_history",
         "graph_analytics",
+        "graph_health_observation",
+        "graph_query_execution",
     }
     # Each satisfies its #06 port (subclass IS-A the embedded which IS-A port).
     assert isinstance(providers["graph_store"], SemanticGraphStore)
@@ -264,10 +266,10 @@ def test_ts_fde3a548_kg_replay_through_community_adapters(_isolated_kg):
 
 
 # ===========================================================================
-# ts_9ee86cb6 — CLI init/seed consume the composition.
+# ts_9ee86cb6 — runtime entrypoints consume the composition.
 # ===========================================================================
 def test_ts_9ee86cb6_call_sites_consume_composition_with_graph():
-    for mod in (_main_mod, _cli_mod, _seed_mod):
+    for mod in (_main_mod, _cli_mod):
         src = Path(mod.__file__).read_text(encoding="utf-8")
         assert "configure_community_kg_registry" in src, mod.__name__
     # the composition wires the six graph adapters (include_graph default True).
@@ -280,14 +282,16 @@ def test_ts_9ee86cb6_call_sites_consume_composition_with_graph():
     assert sig.parameters["include_graph"].default is True
 
 
-def test_ts_9ee86cb6_cli_seed_bootstrap_migrated_to_port():
-    """R05-C (B PARTIAL): the CLI init + demo-seed bootstrap surfaces consume the
-    #06 GraphSchemaManager port (ensure_bootstrapped) — NOT the direct
-    kg.schema.bootstrap_board_graph symbol (which is gone from these files)."""
+def test_ts_9ee86cb6_cli_bootstraps_through_port_and_empty_seed_does_not():
+    """CLI init owns graph bootstrap; the default relational seed has no demo KG."""
     for mod in (_cli_mod, _seed_mod):
         src = Path(mod.__file__).read_text(encoding="utf-8")
-        # consumes the port...
-        assert "graph_schema_manager.ensure_bootstrapped" in src, mod.__name__
+        if mod is _cli_mod:
+            assert "graph_schema_manager.ensure_bootstrapped" in src
+            assert "seed_community_defaults" in src
+        else:
+            assert "graph_schema_manager.ensure_bootstrapped" not in src
+            assert "configure_community_kg_registry" not in src
         # ...and no longer imports the direct bootstrap symbol from kg.schema.
         tree = ast.parse(src)
         imported = {

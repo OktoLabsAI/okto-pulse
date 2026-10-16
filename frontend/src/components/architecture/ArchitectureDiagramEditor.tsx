@@ -63,7 +63,6 @@ interface ExcalidrawElement {
   displayType?: string | null;
   iconName?: string | null;
   linkedEntityId?: string | null;
-  linkedInterfaceId?: string | null;
   linkedInterfaceIds?: string[] | null;
   linkedMockupId?: string | null;
   sourceElementId?: string | null;
@@ -201,7 +200,6 @@ function itemRefs(item: { id?: string | null; name?: string; title?: string }, i
 
 function linkedInterfaceRefs(element: ExcalidrawElement): string[] {
   return uniqueRefs([
-    element.linkedInterfaceId || undefined,
     ...(Array.isArray(element.linkedInterfaceIds) ? element.linkedInterfaceIds : []),
   ]);
 }
@@ -210,7 +208,6 @@ function withLinkedInterfaceRefs(element: ExcalidrawElement, refs: string[]): Ex
   const unique = uniqueRefs(refs);
   return {
     ...element,
-    linkedInterfaceId: unique[0] || null,
     linkedInterfaceIds: unique,
   };
 }
@@ -969,7 +966,7 @@ export function ArchitectureDiagramEditor({
                 <DetailRow label="Linked entity">{entityDetail?.label || detailElement.linkedEntityId}</DetailRow>
                 <DetailRow label="Entity type">{entity?.entity_type}</DetailRow>
                 <DetailRow label="Responsibility">{entity?.responsibility}</DetailRow>
-                <DetailRow label="Boundary">{entity?.boundaries}</DetailRow>
+                <DetailRow label="Boundaries">{entity?.boundaries?.length ? <ul className="list-disc pl-4">{entity.boundaries.map((item, index) => <li key={index}>{item}</li>)}</ul> : null}</DetailRow>
                 <DetailRow label="Technologies">{detailText(entity?.technologies)}</DetailRow>
                 <DetailRow label="Relationships">{detailText(entity?.relationships)}</DetailRow>
                 <DetailRow label="Linked screen">{mockupLabel}</DetailRow>

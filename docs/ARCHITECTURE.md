@@ -87,10 +87,10 @@ consume public core facades such as `okto_pulse.core.services.application_kg`,
 `core.kg.tier_power`, `core.kg.scoring`, `core.kg.session_manager` and
 `core.kg.global_discovery.schema`; direct reach-ins to ORM, database lifecycle,
 KG workers/registry, `services.main`, private MCP server symbols, private core
-helper symbols or core-owned concrete DDL constants must be removed or ledgered
-with owner, reason, target public surface, removal path and withdrawal
-criterion. Stale ledger entries fail the same gate, so deleting the last
-reach-in for a dependency requires deleting its exception too.
+helper symbols or core-owned concrete DDL constants must be removed. The
+current exception budget is zero; historical ledgers record the completed
+removal and cannot authorize a new exception. Stale ledger entries fail the
+same gate.
 Community database lifecycle and session composition must use
 `okto_pulse.core.ports.relational_runtime`, not `core.infra.database`.
 
@@ -103,11 +103,11 @@ release oracle is:
 | Historical private reach-in baseline | `32` |
 | Current private reach-in budget | `0` |
 | Current governed private reach-ins | `0` |
-| Current full Community->Core import inventory | `1222` |
-| Inventory classification | `public_contract=1222`, `governed_temporary_reach_in=0` |
+| Current full Community->Core import inventory | `1154` |
+| Inventory classification | `public_contract=1154`, `governed_temporary_reach_in=0` |
 | Boundary violations | `0` violations, `0` stale ledger entries, `0` incomplete ledger entries, `0` baseline-growth violations |
 | Burn-down progression | `32 -> 21 -> 10 -> 0` after AF42 inventory, lifecycle/auth/MCP, then complete Community ORM ownership |
-| Community release command | `python -m pytest tests/test_af21_core_import_boundary.py tests/test_af25_docs_truthfulness.py tests/test_af33_capstone_community_readiness.py tests/test_af35_s1_community_adapters.py tests/test_af35_s2_community_kg_operational_adapters.py tests/test_af41_runtime_dependency_ownership.py tests/test_af41_serving_boundary.py tests/test_r06_mcp_auth_context_community.py tests/test_r08a_mcp_auth_adapter.py tests/test_cli_init.py tests/test_cli_kg_backfill.py tests/test_hnd2_credential_surface_gate.py tests/test_r01c_imp4_schema_lifecycle_orchestrator.py tests/test_r16b_relational_schema_migrator.py tests/test_r16c_data_bootstrapper.py -q` -> `105 passed` |
+| Community release command | `python -m pytest tests/test_af21_core_import_boundary.py tests/test_af25_docs_truthfulness.py tests/test_af33_capstone_community_readiness.py tests/test_af35_s1_community_adapters.py tests/test_af35_s2_community_kg_operational_adapters.py tests/test_af41_runtime_dependency_ownership.py tests/test_af41_serving_boundary.py tests/test_r06_mcp_auth_context_community.py tests/test_r08a_mcp_auth_adapter.py tests/test_cli_init.py tests/test_retired_public_rebuild.py tests/test_hnd2_credential_surface_gate.py tests/test_r01c_imp4_schema_lifecycle_orchestrator.py tests/test_r16b_relational_schema_migrator.py tests/test_r16c_data_bootstrapper.py -q` |
 | Core release command | `python -m pytest tests/test_boundary_audit_12.py tests/test_conformance_suite_15.py -q` -> `67 passed` |
 <!-- AF42-BOUNDARY-ORACLE:END -->
 
@@ -118,17 +118,23 @@ listed above. Prohibited imports remain private implementation details:
 `core.models.db`, `core.infra.database`, `core.services.main`,
 `core.mcp.server`, `core.kg.workers.*`, `core.kg.governance`,
 `core.kg.interfaces.registry` and concrete core-owned DDL constants. A
-prohibited import may exist only as a governed temporary reach-in in
-`COMMUNITY_CORE_REACH_IN_LEDGER`, with owner, reason, target public surface,
-removal path and withdrawal criterion.
+prohibited import is a release-blocking failure: the terminal reach-in and
+bridge budgets are zero. If an adapter needs a missing Core capability, add a
+public port and keep the policy in Core; do not add an exception or duplicate
+the policy in Community.
 
-Bootstrap, schema migrations, CLI and seed paths must stay off
+Fresh-install admission, CLI and seed paths must stay off
 `core.models.db`; they use Community-owned row/SQL adapters or public facades.
 The F13 provenance registry additionally proves that representative relational
 and graph adapters are locally defined Community symbols implementing public
 Core ports. Its bridge ledger and terminal bridge budget are both zero; adding a
 private import, alias, reexport, dynamic import or constructor target is a
 release-blocking failure.
+
+Delivery follows this boundary through `core.ports.delivery_inventory`:
+`DeliveryInventoryPolicy` exposes the canonical inventory/hash policy, whose
+single implementation is pure Core domain code. The SQLAlchemy ledger consumes
+that port; no SQLAlchemy model, concrete router or graph dialect enters Core.
 
 ### Adapters
 
@@ -148,8 +154,9 @@ Registration flow:
 - `register_and_freeze_community_resource_catalog()` and
   `CommunityCapabilityDescriptorSource` extend the core MCP/resource metadata
   without importing Community from core.
-- `CommunityRelationalSchemaMigrator` and `CommunityDataBootstrapper` are the
-  initialization adapters consumed by `okto-pulse init` and startup.
+- `CommunityRelationalSchemaLifecycleOrchestrator` admits the current format
+  before initialization. New stores receive the final schema and current seeds;
+  incompatible stores are refused before writes, without conversion or deletion.
 
 Adapter source map:
 
@@ -159,12 +166,10 @@ Adapter source map:
 - Scheduler and workers: `community/adapters/scheduler.py` and
   `community/adapters/workers.py`.
 - Auth/storage/init: `community/auth.py`, `community/adapters/storage.py`,
-  `community/adapters/relational_schema_migrator.py` and
-  `community/adapters/data_bootstrapper.py`;
-  `community/adapters/data_bootstrap_steps.py` owns the local bootstrap step
-  implementations.
-- Relational schema lifecycle: `community/adapters/relational_schema_lifecycle.py`
-  and `community/adapters/relational_schema_steps.py`.
+  `community/adapters/current_relational_schema.py`,
+  `community/adapters/current_schema_guards.py` and
+  `community/adapters/current_data_seeds.py`.
+- Relational schema lifecycle: `community/adapters/relational_schema_lifecycle.py`.
 - Relational runtime: `community/adapters/sqlalchemy_database.py`,
   `community/adapters/sqlalchemy_unit_of_work.py`,
   `community/adapters/sqlalchemy_repositories.py`,
@@ -172,18 +177,15 @@ Adapter source map:
   `community/adapters/sqlalchemy_runtime_settings_service.py`,
   `community/adapters/sqlalchemy_traceability_read_model.py`,
   `community/adapters/coordination.py` and
-  `community/adapters/relational_effects.py`; read-only sprint-lineage health is
-  owned by `community/adapters/sprint_origin_integrity.py`; the SQLite PRAGMA owner is
+  `community/adapters/relational_effects.py`; the SQLite PRAGMA owner is
   `install_community_sqlite_pragmas` in
   `community/adapters/sqlalchemy_database.py`.
 - Relational mappings and persistence implementations:
   `community/adapters/sqlalchemy_*`.
 - KG source/rebuild ingestion: `community/adapters/board_source_reader.py` and
-  `community/adapters/board_rebuild_ingestion.py`; the closed legacy recovery
-  intent and source-revision fence live in
-  `community/adapters/legacy_rebuild_reconciliation.py`; content ingestion
+  `community/adapters/board_rebuild_ingestion.py`; native checkpoint and effect
+  receipt persistence live in `community/adapters/rebuild_effects.py`; content ingestion
   helpers live in `community/adapters/content_ingestion.py`.
-- Knowledge propagation rollout: `community/adapters/knowledge_propagation_backfill.py`.
 - KG local schema/durability adapters: `community/adapters/global_discovery_*` and
   `community/adapters/rebuild_audit_storage.py`.
 - Materialization-health adapters: `community/adapters/materialization_health.py`
@@ -198,9 +200,19 @@ Adapter source map:
   repositories.
 - KG data and graph runtime: `community/adapters/data.py`,
   `community/adapters/memory.py`, `community/adapters/grafx_*`,
-  `community/adapters/routed_*`, `community/adapters/graph_operation_guards.py`,
-  `community/adapters/global_privacy_projection.py` and
-  `community/adapters/graph_runtime_budget.py`.
+  `community/adapters/routed_*`, `community/adapters/graph_*` (backend binding,
+  route resolution, DDL, memory pressure, restore-serve
+  fence, operation guards and the runtime budget),
+  `community/adapters/global_privacy_projection.py`,
+  `community/adapters/global_operation_gate.py`,
+  `community/adapters/cypher_statement_policy.py`,
+  `community/adapters/kg_shutdown.py`,
+  `community/adapters/kg_chaos_executor.py` and
+  `community/adapters/sqlite_writer_diagnostics.py`.
+- Logical graph transfer (export/import of a board or global generation):
+  `community/adapters/logical_graph_file.py`,
+  `community/adapters/logical_graph_transfer.py` and
+  `community/adapters/logical_transfer_*`.
 - ML search helpers: `community/adapters/embedding.py` and
   `community/adapters/rerank.py`; orchestration lives in
   `community/adapters/hybrid_search.py` and
@@ -244,11 +256,36 @@ Adapter source map:
   `community/adapters/telemetry_effect_config.py`.
 - Permission adapters: `community/adapters/permission_*`.
 - Filesystem privacy erasure: `community/adapters/filesystem_erasure.py`.
+- Bounded Health observation: `community/adapters/filesystem_observation.py`,
+  `community/adapters/source_observation_budget.py` and
+  `community/adapters/health_route_observation.py`.
+- Current Delivery progress/resume reads: `community/adapters/delivery_*`;
+  schema admission lives in `community/adapters/sqlite_delivery_contract.py`.
+- Native signed-evidence recovery: `community/adapters/evidence_recovery.py`;
+  active-runtime recovery fencing: `community/adapters/recovery_runtime_fence.py`.
+- Joint relational/storage/native recovery snapshots and exact graph inventory:
+  `community/adapters/joint_recovery_snapshot.py`,
+  `community/adapters/relational_recovery_snapshot.py`,
+  `community/adapters/storage_recovery_snapshot.py`,
+  `community/adapters/native_graph_recovery_snapshot.py`,
+  `community/adapters/recovery_graph_inventory.py`,
+  `community/adapters/recovery_storage_references.py`,
+  `community/adapters/kg_artifact_recovery.py` and
+  `community/adapters/relational_schema_transaction.py`.
+  Joint snapshots and KG custody use their single `/0.4.0` wire formats.
+  Explicit capture selections retain their current guarantees: upload capture
+  requires reference reconciliation and KG custody; signed evidence requires
+  native capture. Older formats and retired runtime payloads are refused without
+  conversion or deletion. Native history, signatures and erasure fences remain
+  enforced during capture and restore.
+- Paired-package and embedded-frontend identity:
+  `community/adapters/distribution_compatibility.py`,
+  `community/adapters/frontend_distribution.py` and
+  `community/adapters/package_version.py`.
 - Ownership and local lifecycle support:
   `community/adapters/adapter_provenance.py`,
   `community/adapters/local_storage_ref.py`,
-  `community/adapters/quarantine_restore.py`,
-  `community/adapters/realm_migration.py`,
+  `community/adapters/grafx_quarantine_restore.py`,
   `community/adapters/rebuild_effects.py`,
   `community/adapters/sqlite_only_boundary.py` and
   `community/adapters/worker_runners.py`.
@@ -262,8 +299,7 @@ core `adapter_readiness_inventory` when a port is added or retired.
 
 The source map above answers *"where does this file live?"*. This matrix answers the complementary
 question: **which core port does each adapter implement?** Core declares the `Protocol`; Community
-provides the only production implementation. **156 adapter modules** currently fill core's
-~100 port protocols and 30 KG interfaces.
+provides its production implementations through the adapter modules below.
 
 Anything core needs that is not in this table is either supplied by another edition or an unfilled
 slot — and unfilled slots **fail closed** (`R-P2-03A-D`), never silently default.
@@ -279,7 +315,7 @@ slot — and unfilled slots **fail closed** (`R-P2-03A-D`), never silently defau
 | `RelationalSchemaMigrator` · `RelationalSchemaLifecycleOrchestrator` | `CommunityRelationalSchemaMigrator` · `CommunityRelationalSchemaLifecycleOrchestrator` |
 | `ResourceGateRelationalAdapter` | `CommunitySqlAlchemyResourceGateAdapter` |
 | `CardRepositoryPort` and the board/ideation/spec repositories | `CommunityBoardRepository` · `CommunityIdeationRepository` · `CommunitySpecRepository` |
-| `StructuredSpecStore` · `SpecMaterializationStore` · `SpecResourcePropagationStore` | `CommunitySqlAlchemyStructuredSpecStore` · `…SpecMaterializationStore` · `…SpecResourcePropagationStore` |
+| `StructuredSpecStore` · `SpecResourcePropagationStore` | `CommunitySqlAlchemyStructuredSpecStore` · `…SpecResourcePropagationStore` |
 | `ArchitecturePersistencePort` · `ArchitectureLegacySnapshotReadPort` | `CommunitySqlAlchemyArchitecturePersistence` · `…ArchitectureLegacySnapshotReader` |
 | `AmendmentRevisionStore` | `CommunitySqlAlchemyAmendmentRevisionStore` (+ `CommunityAmendmentRevisionApiBackend`) |
 | `DefaultBoardConfigurationStore` · `DesignSystemStore` | `CommunitySqlAlchemyDefaultBoardConfigurationStore` · `…DesignSystemStore` |
@@ -322,7 +358,7 @@ data preservation and removed legacy entry points.
 | `ConsolidationPersistencePort` | `CommunitySqlAlchemyConsolidationPersistence` |
 | `KGOperationalReadModelPort` · `KGWorkerQueuePort` · `KGWorkerAuditPort` | `CommunitySqlAlchemyKGOperationalReadModel` · `…KGWorkerQueue` · `…KGWorkerAudit` (`CommunityKGOperationalPorts`) |
 | `CognitiveSourceStore` (MKG-A) | `CommunitySqlAlchemyCognitiveSourceStore` |
-| `EquivalenceLedger` (MKG-C) · `CurationProposalStore` | `CommunitySqlAlchemyEquivalenceLedger` · `…CurationProposalStore` |
+| `EquivalenceLedger` (MKG-C) | `CommunitySqlAlchemyEquivalenceLedger` (historical recall) |
 | `NodeSubtypeRegistry` (MKG-E) | `CommunitySqlAlchemyNodeSubtypeRegistry` |
 | `CanonicalDebtStore` | `CommunitySqlAlchemyCanonicalDebtStore` |
 | `KGHealthReadPort` · `KGEventsReaderPort` | `CommunitySqlAlchemyKGHealthReader` · `CommunityKGEventsReader` |

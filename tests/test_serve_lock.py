@@ -327,7 +327,7 @@ def test_live_pid_with_stale_heartbeat_is_refused(tmp_path: Path, monkeypatch) -
     Contrato ANTIGO (este teste assertava o fail-open): heartbeat stale era
     suficiente para takeover mesmo com o PID vivo — cobria PID reciclado
     (chrome.exe herdou o número após reboot) ao custo de permitir takeover
-    sobre um servidor travado-mas-vivo que ainda segura handles do Ladybug
+    sobre um servidor travado-mas-vivo que ainda segura handles do banco de grafo
     (duplo-escritor => "escritor stale" que zera páginas do WAL — KB1/H3).
 
     Contrato NOVO: PID vivo = recusa, mesmo com heartbeat stale. Takeover

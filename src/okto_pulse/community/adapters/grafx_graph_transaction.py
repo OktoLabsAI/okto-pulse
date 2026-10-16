@@ -24,8 +24,11 @@ from okto_pulse.core.kg.interfaces.graph_errors import (
 from okto_pulse.core.kg.interfaces.graph_transaction import (
     SOURCE_PROJECTION_REMOVED_REASON,
     GraphNodePropertyBeforeImage,
+    LearningBugAssociationReceipt,
+    LearningAssociationInvalidationReceipt,
     GraphStatementResult,
     ProjectionActiveSetIntent,
+    ProjectionRemovalOnlyIntent,
     ProjectionActiveSetReceipt,
     ProjectionActiveSetReconciliationError,
     ProjectionEdgeBeforeImage,
@@ -40,6 +43,7 @@ from okto_pulse.core.kg.relational_projection import (
     parse_relational_projection_ref,
     relational_projection_rule_node_type,
 )
+from okto_pulse.core.ports.spec_projection import owns_spec_dependency_endpoints, is_spec_dependency_writer
 from okto_pulse.core.kg.schema_contract import (
     EDGE_METADATA_COLUMNS,
     MULTI_REL_TYPES,
@@ -51,6 +55,12 @@ from okto_pulse.community.adapters.cypher_statement_policy import (
     strip_comments_and_literals,
 )
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
+from okto_pulse.core.ports.spec_projection import SPEC_RELATIONSHIP_NAMESPACES, is_spec_relationship_writer
+from okto_pulse.core.ports.code_evidence_projection import TRACEABILITY_RELATIONSHIP_NAMESPACES, traceability_relationship_family
+from okto_pulse.core.ports.card_projection import (
+    is_card_scenario_writer, is_card_parent_writer, is_card_projection_writer, CARD_EDGE_NAMESPACES,
+    CARD_DEPENDENCY_NAMESPACE,
+)
 from okto_pulse.community.adapters.grafx_query_values import normalize_query_value as _normalize_value
 from okto_pulse.community.adapters.grafx_relationship_layout import (
     resolve_relationship_table,
@@ -866,6 +876,28 @@ class _GrafxTransactionScope:
             for index, name in enumerate(names)
         }
 
+    def find_active_node_ids_by_source_refs(
+        self, node_type: str, source_refs: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        if (type(source_refs) is not tuple or not 1 <= len(source_refs) <= 3
+                or any(type(ref) is not str or not ref or len(ref) > 1024
+                       for ref in source_refs)
+                or len(set(source_refs)) != len(source_refs)):
+            raise ValueError('graph_source_references_invalid')
+        definition = self._node_definition(node_type)
+        params = {f'ref_{index}': ref for index, ref in enumerate(source_refs)}
+        predicate = ' OR '.join(f'n.source_artifact_ref = ${key}' for key in params)
+        result = self._query(
+            f'MATCH (n:{definition.name}) WHERE ({predicate}) '
+            "AND (n.superseded_by IS NULL OR n.superseded_by = '') "
+            'RETURN DISTINCT n.id ORDER BY n.id LIMIT 2',
+            params, operation='find_active_source_identities',
+        )
+        rows = result.rows
+        if any(len(row) != 1 or type(row[0]) is not str or not row[0] for row in rows):
+            raise ValueError('graph_source_identity_invalid')
+        return tuple(row[0] for row in rows)
+
     def _incident_edge_snapshot(
         self,
         node_type: str,
@@ -1282,6 +1314,9 @@ class _GrafxTransactionScope:
         from_id: str,
         to_id: str,
         rule_id: str | None = None,
+        *,
+        layer: str | None = None,
+        created_by: str | None = None,
     ) -> bool:
         physical, definition = self._relationship_definition(
             edge_type,
@@ -1300,6 +1335,12 @@ class _GrafxTransactionScope:
                 )
             predicate += " AND r.rule_id = $rule_id"
             params["rule_id"] = rule_id
+        for field, value in (('layer', layer), ('created_by', created_by)):
+            if value is not None:
+                if field not in self._column_map(definition):
+                    raise GraphCapabilityUnavailable(f'Grafx relationship table {physical!r} has no {field} property.')
+                predicate += f' AND r.{field} = ${field}'
+                params[field] = value
         result = self._query(
             f"MATCH (a:{from_type})-[r:{physical}]->(b:{to_type}) "
             f"WHERE {predicate} RETURN a.id LIMIT 1",
@@ -2036,15 +2077,38 @@ class _GrafxTransactionScope:
     def _projection_dependency_rule_id(
         edge: ProjectionEdgeBeforeImage,
     ) -> str | None:
-        """The rule that identifies a Spec dependency edge, or None for anything else.
+        """The rule that qualifies an owned projection relationship, or None otherwise.
 
         One prerequisite may precede one owner under more than one rule, so for these edges
-        the endpoints alone do not name a single relationship.  Every other relationship is
-        identified by its endpoints, and asking for a ``rule_id`` it may not even declare
-        would fail for the wrong reason.
+        the endpoints alone do not name a single relationship. The closed Spec
+        families also preserve parallel writers using rule/layer/created_by.
+        Other relationships keep their existing endpoint identity.
         """
 
         rule_id = str(edge.attrs.get("rule_id") or "")
+        if (edge.edge_type == 'belongs_to' and edge.from_type in {'Entity', 'Bug'} and edge.to_type == 'Entity'
+                and is_card_parent_writer(rule_id=rule_id, layer=edge.attrs.get('layer'),
+                    created_by=edge.attrs.get('created_by'))):
+            return rule_id
+        if (
+            edge.edge_type == "supports"
+            and edge.from_type in {"Entity", "Bug"}
+            and edge.to_type == "TestScenario"
+            and is_card_scenario_writer(
+                rule_id=rule_id,
+                layer=edge.attrs.get("layer"),
+                created_by=edge.attrs.get("created_by"),
+            )
+        ):
+            return rule_id
+        if is_card_projection_writer(edge_type=edge.edge_type, source_type=edge.from_type,
+                target_type=edge.to_type, rule_id=rule_id, layer=edge.attrs.get('layer'),
+                created_by=edge.attrs.get('created_by')):
+            return rule_id
+        if is_spec_relationship_writer(edge_type=edge.edge_type, source_type=edge.from_type,
+                target_type=edge.to_type, rule_id=rule_id, layer=edge.attrs.get('layer'),
+                created_by=edge.attrs.get('created_by')):
+            return rule_id
         if (
             edge.edge_type == _SPEC_DEPENDENCY_EDGE_TYPE
             and edge.from_type == _PROJECTION_OWNER_NODE_TYPE
@@ -2130,6 +2194,124 @@ class _GrafxTransactionScope:
             incident_edges=self._projection_incident_edges(node_type, node_id),
         )
 
+    def _learning_association_edges(self, learning_id: str, bug_id: str) -> tuple[ProjectionEdgeBeforeImage, ...]:
+        physical, definition = self._relationship_definition('validates', 'Learning', 'Bug')
+        properties = self._projection_edge_properties(definition)
+        columns = ', '.join(f'r.{name}' for name in properties) or 'a.id'
+        result = self._query(
+            f'MATCH (a:Learning)-[r:{physical}]->(b:Bug) '
+            f'WHERE a.id = $learning_id AND b.id = $bug_id RETURN {columns}',
+            {'learning_id': learning_id, 'bug_id': bug_id}, operation='learning_association_snapshot')
+        return tuple(ProjectionEdgeBeforeImage('validates', 'Learning', 'Bug', learning_id, bug_id,
+            {name: _normalize_value(row[index]) for index, name in enumerate(properties)}) for row in result.rows)
+
+    def _require_learning_invalidation_receipt(self, receipt: LearningAssociationInvalidationReceipt) -> None:
+        if not isinstance(receipt, LearningAssociationInvalidationReceipt) or receipt.board_id != self._board_id:
+            raise ValueError('learning_invalidation_receipt_invalid')
+        receipt.__post_init__()
+        _, definition = self._relationship_definition('validates', 'Learning', 'Bug')
+        properties = self._projection_edge_properties(definition)
+        if any(set(edge.attrs) != set(properties) or _contains_non_finite_number(edge.attrs)
+                for edge in receipt.removed_edges):
+            raise ValueError('learning_invalidation_before_image_invalid')
+
+    def snapshot_learning_invalidation(self, learning_id: str,
+        bug_id: str) -> LearningAssociationInvalidationReceipt:
+        self._fence('snapshot_learning_invalidation')
+        LearningAssociationInvalidationReceipt(self._board_id, learning_id, bug_id)
+        return LearningAssociationInvalidationReceipt(self._board_id, learning_id, bug_id,
+            self._learning_association_edges(learning_id, bug_id))
+
+    def invalidate_learning_association(self, receipt: LearningAssociationInvalidationReceipt) -> None:
+        self._fence('invalidate_learning_association')
+        self._require_learning_invalidation_receipt(receipt)
+        before = self._learning_association_edges(receipt.learning_id, receipt.bug_id)
+        signature = self._projection_edge_signature
+        if Counter(map(signature, before)) != Counter(map(signature, receipt.removed_edges)):
+            raise GraphError('learning_invalidation_snapshot_changed')
+        if not before:
+            return
+        physical, _ = self._relationship_definition('validates', 'Learning', 'Bug')
+        try:
+            self._mutation(f'MATCH (a:Learning)-[r:{physical}]->(b:Bug) '
+                'WHERE a.id = $learning_id AND b.id = $bug_id DELETE r',
+                {'learning_id': receipt.learning_id, 'bug_id': receipt.bug_id},
+                operation='invalidate_learning_association')
+            if self._learning_association_edges(receipt.learning_id, receipt.bug_id):
+                raise GraphError('learning_invalidation_removal_unconfirmed')
+        except BaseException as primary:
+            cleanup = self._abort_after_staged_failure(operation='invalidate_learning_association')
+            if cleanup is not None:
+                raise primary from cleanup
+            raise
+
+    def restore_learning_invalidation(self, receipt: LearningAssociationInvalidationReceipt) -> None:
+        self._fence('restore_learning_invalidation')
+        self._require_learning_invalidation_receipt(receipt)
+        try:
+            self._projection_restore_edges(receipt.removed_edges)
+        except BaseException as primary:
+            cleanup = self._abort_after_staged_failure(operation='restore_learning_invalidation')
+            if cleanup is not None:
+                raise primary from cleanup
+            raise
+
+    def _require_learning_association_receipt(self, receipt: LearningBugAssociationReceipt) -> None:
+        if not isinstance(receipt, LearningBugAssociationReceipt) or receipt.board_id != self._board_id:
+            raise ValueError('learning_association_receipt_invalid')
+        receipt.__post_init__()
+        _, definition = self._relationship_definition('validates', 'Learning', 'Bug')
+        properties = self._projection_edge_properties(definition)
+        if any(set(edge.attrs) != set(properties) or _contains_non_finite_number(edge.attrs)
+                for edge in receipt.removed_edges):
+            raise ValueError('learning_association_before_image_invalid')
+
+    def snapshot_learning_bug_association(self, previous_learning_id: str,
+        replacement_learning_id: str, bug_id: str) -> LearningBugAssociationReceipt:
+        self._fence('snapshot_learning_bug_association')
+        receipt = LearningBugAssociationReceipt(self._board_id, previous_learning_id, replacement_learning_id, bug_id)
+        if not self._learning_association_edges(replacement_learning_id, bug_id):
+            raise GraphError('learning_association_replacement_missing')
+        return LearningBugAssociationReceipt(receipt.board_id, previous_learning_id, replacement_learning_id,
+            bug_id, self._learning_association_edges(previous_learning_id, bug_id))
+
+    def remove_learning_bug_association(self, receipt: LearningBugAssociationReceipt) -> None:
+        self._fence('remove_learning_bug_association')
+        self._require_learning_association_receipt(receipt)
+        before = self._learning_association_edges(receipt.previous_learning_id, receipt.bug_id)
+        signature = self._projection_edge_signature
+        if (Counter(map(signature, before)) != Counter(map(signature, receipt.removed_edges))
+                or not self._learning_association_edges(receipt.replacement_learning_id, receipt.bug_id)):
+            raise GraphError('learning_association_snapshot_changed')
+        if not before:
+            return
+        physical, _ = self._relationship_definition('validates', 'Learning', 'Bug')
+        try:
+            self._mutation(f'MATCH (a:Learning)-[r:{physical}]->(b:Bug) '
+                'WHERE a.id = $learning_id AND b.id = $bug_id DELETE r',
+                {'learning_id': receipt.previous_learning_id, 'bug_id': receipt.bug_id},
+                operation='remove_learning_bug_association')
+            if self._learning_association_edges(receipt.previous_learning_id, receipt.bug_id):
+                raise GraphError('learning_association_removal_unconfirmed')
+        except BaseException as primary:
+            cleanup = self._abort_after_staged_failure(operation='remove_learning_bug_association')
+            if cleanup is not None:
+                raise primary from cleanup
+            raise
+
+    def restore_learning_bug_association(self, receipt: LearningBugAssociationReceipt) -> None:
+        self._fence('restore_learning_bug_association')
+        self._require_learning_association_receipt(receipt)
+        try:
+            # These helpers restore complete edge multisets; no relational owner
+            # namespace, active-set reconciliation or node mutation is involved.
+            self._projection_restore_edges(receipt.removed_edges)
+        except BaseException as primary:
+            cleanup = self._abort_after_staged_failure(operation='restore_learning_bug_association')
+            if cleanup is not None:
+                raise primary from cleanup
+            raise
+
     def _projection_matching_edges(
         self,
         edge: ProjectionEdgeBeforeImage,
@@ -2153,6 +2335,12 @@ class _GrafxTransactionScope:
         if rule_id is not None:
             predicate += " AND r.rule_id = $rule_id"
             params["rule_id"] = rule_id
+            if edge.edge_type != _SPEC_DEPENDENCY_EDGE_TYPE or all(
+                isinstance(edge.attrs.get(name), str) and edge.attrs[name]
+                for name in ('layer', 'created_by')
+            ):
+                predicate += " AND r.layer = $layer AND r.created_by = $writer"
+                params.update(layer=edge.attrs.get("layer"), writer=edge.attrs.get("created_by"))
         projection = ", ".join(f"r.{name}" for name in properties) or "a.id"
         result = self._query(
             f"MATCH (a:{edge.from_type})-[r:{physical}]->(b:{edge.to_type}) "
@@ -2201,6 +2389,13 @@ class _GrafxTransactionScope:
                 edge.from_id,
                 edge.to_id,
                 self._projection_dependency_rule_id(edge),
+                # Modern dependency before-images distinguish writers too.
+                # A retained human edge with the same pair/rule must not be
+                # mistaken for a conflicting deterministic before-image.
+                (edge.attrs['layer'], edge.attrs['created_by'])
+                if self._projection_dependency_rule_id(edge) is not None and all(
+                    isinstance(edge.attrs.get(name), str) and edge.attrs[name]
+                    for name in ('layer', 'created_by')) else None,
             )
             signature = self._projection_edge_signature(edge)
             wanted.setdefault(key, Counter())[signature] += 1
@@ -2354,6 +2549,26 @@ class _GrafxTransactionScope:
                 "The Spec dependency projection owns edges and requires its root.",
             )
         desired: set[tuple[str, str, str, str, str, str]] = set()
+        removal_only = isinstance(intent, ProjectionRemovalOnlyIntent)
+        logical_desired = set()
+        if removal_only:
+            if intent.active_edges:
+                raise ProjectionActiveSetReconciliationError('projection_active_set_member_invalid',
+                    'Removal-only projection cannot declare a physical active set.')
+            owner = self._node_snapshot('Entity', intent.owner_node_id)
+            if owner is None or owner.get('source_artifact_ref') != f'spec:{intent.owner_id}':
+                raise ProjectionActiveSetReconciliationError('projection_active_set_member_invalid',
+                    'Dependency removal owner is absent or mismatched.')
+            for edge in intent.expected_edges:
+                identity = (edge.source_ref, edge.rule_id)
+                if (edge.edge_type != 'precedes' or identity in logical_desired
+                        or not is_spec_dependency_writer(rule_id=edge.rule_id, layer='deterministic', created_by='worker_layer1')
+                        or not owns_spec_dependency_endpoints(owner_id=intent.owner_id,
+                            source_type=edge.from_type, target_type=edge.to_type,
+                            source_ref=edge.source_ref, target_ref=edge.target_ref)):
+                    raise ProjectionActiveSetReconciliationError('projection_active_set_member_invalid',
+                        'Dependency removal logical endpoint is invalid.')
+                logical_desired.add(identity)
         desired_endpoints: set[tuple[str, str, str, str, str]] = set()
         for edge in intent.active_edges:
             endpoint_identity = (
@@ -2392,6 +2607,14 @@ class _GrafxTransactionScope:
             properties,
         )
         owned_identities = [identity for identity, _edge in owned]
+        if removal_only:
+            for identity, edge in owned:
+                source = self._node_snapshot('Entity', edge.from_id)
+                if source is None:
+                    raise ProjectionActiveSetReconciliationError('projection_active_set_member_invalid',
+                        'Dependency before-image endpoint is absent.')
+                if (source.get('source_artifact_ref'), edge.attrs.get('rule_id')) in logical_desired:
+                    desired.add(identity)
         if len(owned_identities) != len(set(owned_identities)):
             raise ProjectionActiveSetReconciliationError(
                 "projection_active_set_source_ref_ambiguous",
@@ -2414,11 +2637,14 @@ class _GrafxTransactionScope:
                     f"MATCH (a:{_PROJECTION_OWNER_NODE_TYPE})-[r:{physical}]->"
                     f"(b:{_PROJECTION_OWNER_NODE_TYPE}) "
                     "WHERE a.id = $from_id AND b.id = $to_id "
-                    "AND r.rule_id = $rule_id DELETE r",
+                    "AND r.rule_id = $rule_id "
+                    + ("AND r.layer = $layer AND r.created_by = $writer " if removal_only else "")
+                    + "DELETE r",
                     {
                         "from_id": edge.from_id,
                         "to_id": edge.to_id,
                         "rule_id": str(edge.attrs.get("rule_id") or ""),
+                        **({'layer': edge.attrs['layer'], 'writer': edge.attrs['created_by']} if removal_only else {}),
                     },
                     operation="delete_projection_dependency_edge",
                 )
@@ -2498,6 +2724,17 @@ class _GrafxTransactionScope:
             rule_id = str(attrs.get("rule_id") or "")
             if not rule_id.startswith(_SPEC_DEPENDENCY_RULE_PREFIX):
                 continue
+            if isinstance(intent, ProjectionRemovalOnlyIntent):
+                if not is_spec_dependency_writer(rule_id=rule_id, layer=attrs.get('layer'), created_by=attrs.get('created_by')):
+                    continue
+                source = self._node_snapshot('Entity', str(row[0]))
+                if source is None:
+                    raise ProjectionActiveSetReconciliationError('projection_active_set_member_invalid',
+                        'Dependency before-image endpoint is absent.')
+                if not owns_spec_dependency_endpoints(owner_id=intent.owner_id,
+                        source_type='Entity', target_type='Entity',
+                        source_ref=source.get('source_artifact_ref'), target_ref=f'spec:{intent.owner_id}'):
+                    continue
             owned.append(
                 (
                     (
@@ -2700,6 +2937,23 @@ class _GrafxTransactionScope:
         # The whole intent is validated, and every before-image captured, before the first
         # mutation: a refusal must not be able to leave half an active set staged.
         self._fence("reconcile_projection_active_set")
+        if isinstance(intent, ProjectionRemovalOnlyIntent) and not (
+            intent.owner_type == 'card' and intent.namespace in ({'card_scenarios', 'card_parent', CARD_DEPENDENCY_NAMESPACE} | CARD_EDGE_NAMESPACES)
+            or intent.owner_type == 'spec' and intent.namespace == 'dependencies'
+        ):
+            raise ProjectionActiveSetReconciliationError(
+                'projection_active_set_scope_invalid', 'Removal-only namespace is unsupported.')
+        if intent.owner_type == 'card' and intent.namespace == CARD_DEPENDENCY_NAMESPACE:
+            from .grafx_card_dependency_projection import reconcile_card_dependencies
+            return reconcile_card_dependencies(self, intent)
+        if intent.owner_type == 'card' and intent.namespace in ({'card_scenarios', 'card_parent'} | CARD_EDGE_NAMESPACES):
+            from okto_pulse.community.adapters.grafx_card_scenario_projection import reconcile_card_scenarios
+            return reconcile_card_scenarios(self, intent)
+        if ((intent.owner_type == "spec" and intent.namespace in SPEC_RELATIONSHIP_NAMESPACES)
+                or (intent.namespace in TRACEABILITY_RELATIONSHIP_NAMESPACES
+                    and intent.owner_type == traceability_relationship_family(intent.namespace).owner_type)):
+            from okto_pulse.community.adapters.grafx_scenario_projection import reconcile_spec_relationships
+            return reconcile_spec_relationships(self, intent)
         if intent.owner_type == "spec" and intent.namespace == "dependencies":
             return self._reconcile_spec_dependency_edges(intent)
         if intent.owner_type != "refinement" or intent.namespace != "rdl":

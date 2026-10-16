@@ -136,6 +136,39 @@ def test_global_bootstrap_rejects_divergence_before_writing() -> None:
         assert database.catalog.catalog.spaces() == ()
 
 
+@pytest.mark.parametrize("shape", ["space_only", "partial_table_with_data", "missing_relationship"])
+def test_nonempty_incomplete_global_catalog_is_refused_without_writes(tmp_path, shape):
+    root = tmp_path / "incomplete"
+    with connect(root) as database:
+        with database.begin("write") as transaction:
+            spaces = PULSE_GRAFX_GLOBAL_SCHEMA.spaces
+            for space in (spaces[:1] if shape == "space_only" else spaces):
+                transaction.execute(space.ddl())
+            if shape != "space_only":
+                tables = (PULSE_GRAFX_GLOBAL_SCHEMA.nodes[:1]
+                          if shape == "partial_table_with_data"
+                          else PULSE_GRAFX_GLOBAL_SCHEMA.tables[:-1])
+                for table in tables:
+                    transaction.execute(table.ddl())
+                transaction.execute("CREATE (:Board {board_id: 'preserved', name: 'Native data'})")
+    with connect(root) as database:
+        catalog_before = (
+            tuple(database.catalog.catalog.tables()),
+            tuple(database.catalog.catalog.spaces()),
+        )
+        before_lsn = database.transactions.published_lsn()
+        with pytest.raises(GraphCapabilityUnavailable) as refusal:
+            ensure_current_grafx_global_schema(database)
+        assert refusal.value.details["reason"] == "incomplete_existing_schema"
+        assert database.transactions.published_lsn() == before_lsn
+        assert (tuple(database.catalog.catalog.tables()),
+                tuple(database.catalog.catalog.spaces())) == catalog_before
+        if shape != "space_only":
+            assert database.execute("MATCH (b:Board) RETURN b.board_id, b.name").rows == (
+                ("preserved", "Native data"),
+            )
+
+
 def test_global_exact_search_enforces_acl_lifecycle_layer_and_total_order() -> None:
     with connect(":memory:", vector_exact_scan_threshold=4096) as database:
         ensure_current_grafx_global_schema(database)
@@ -439,3 +472,18 @@ def test_global_ann_is_stable_cold_warm_after_reopen_and_never_leaks(
         "ineligible-board",
         "ineligible-null",
     }.intersection(hit["digest_id"] for hit in (*cold, *warm, *cold_reopen))
+
+
+@pytest.mark.parametrize("layer", ["legacy_unknown", None, "", "all", "unknown"])
+def test_digest_rejects_noncurrent_layer_without_mutation(layer):
+    with connect(":memory:") as database:
+        ensure_current_grafx_global_schema(database)
+        _upsert_board(database, "board")
+        before = database.transactions.published_lsn()
+        with pytest.raises(GraphCapabilityUnavailable) as failure:
+            _upsert_digest(database, board_id="board", digest_id="refused", graph_layer=layer)
+        assert failure.value.details["reason"] == "invalid_argument"
+        assert failure.value.details["field"] == "graph_layer"
+        assert database.transactions.published_lsn() == before
+        assert database.transactions.open_transactions == 0
+        assert database.execute("MATCH (d:DecisionDigest) RETURN count(d)").rows == ((0,),)

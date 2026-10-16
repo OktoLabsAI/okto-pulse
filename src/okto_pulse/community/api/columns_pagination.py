@@ -1,10 +1,4 @@
-"""Typed query parsing and projection helpers for paginated Kanban columns.
-
-The legacy branch is selected only when ``per_column_limit`` is absent and no
-new columns parameter is present.  Everything else is parsed from the raw
-query string so malformed scalars receive the C6 400 envelope instead of a
-FastAPI-generated 422.
-"""
+"""Typed query parsing and projection for bounded native Kanban columns."""
 
 from __future__ import annotations
 
@@ -31,15 +25,6 @@ KANBAN_CARD_TYPES: frozenset[str] = frozenset(item.value for item in CardType)
 # derived from the authored lifecycle so adding Rejected cannot silently turn a
 # healthy request into a false budget violation.
 BATCH_COLUMNS_STATEMENT_BUDGET = 3 * len(KANBAN_STATUSES) + 2
-_NEW_QUERY_KEYS: tuple[str, ...] = (
-    "spec_ids",
-    "card_types",
-    "search",
-    "assignee_id",
-    "column",
-    "offset",
-)
-
 CARD_SUMMARY_FIELDS: tuple[str, ...] = (
     "id",
     "board_id",
@@ -78,7 +63,7 @@ def _error(code: str, **details: Any) -> None:
 
 
 def parse_include_archived(request: Request) -> bool:
-    """Parse the existing toggle strictly for both legacy and opt-in calls."""
+    """Parse the native query toggle as true or false."""
 
     raw = request.query_params.get("include_archived", "false")
     if raw not in {"true", "false"}:
@@ -99,17 +84,11 @@ class ColumnsParameters:
     card_types_by_status: dict[str, tuple[str, ...]]
 
 
-def parse_columns_parameters(request: Request) -> ColumnsParameters | None:
-    """Return ``None`` for the literal legacy branch, else typed C6 params."""
+def parse_columns_parameters(request: Request) -> ColumnsParameters:
+    """Resolve the native window and filters, including omitted-window calls."""
 
     query = request.query_params
-    limit_raw = query.get("per_column_limit")
-    if limit_raw is None:
-        present = [name for name in _NEW_QUERY_KEYS if name in query]
-        if present:
-            _error("params_require_per_column_limit", params=present)
-        return None
-
+    limit_raw = query.get("per_column_limit", "25")
     include_archived = parse_include_archived(request)
     if not limit_raw.isdigit():
         _error("per_column_limit_invalid")

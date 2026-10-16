@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { readableSealedExcerpt } from './sealedExcerpt';
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
   Clipboard,
   ExternalLink,
   History,
@@ -38,7 +40,6 @@ const STATE_LABELS: Record<SemanticPolicyUiState, string> = {
   non_blocking_warning: 'Non-blocking warning',
   waived_fail_finding: 'Waiver active',
   stale: 'Stale evidence',
-  legacy: 'Legacy read-only',
   removed: 'Removed location',
   inaccessible: 'Restricted location',
   loading: 'Loading',
@@ -111,7 +112,7 @@ export function ActionablePinpoint({
   );
   const locationText = useMemo(() => {
     const label = pinpoint.locationLabel.trim();
-    const excerpt = pinpoint.excerpt?.trim();
+    const excerpt = pinpoint.excerpt ? readableSealedExcerpt(pinpoint.excerpt).trim() : '';
     if (!excerpt || label === excerpt || label.includes(excerpt)) return label;
     if (!label || excerpt.includes(label)) return excerpt;
     return `${label}: ${excerpt}`;
@@ -139,7 +140,11 @@ export function ActionablePinpoint({
       data-contract-version={pinpoint.contractVersion}
       data-state={pinpoint.state}
     >
-      <div
+      <details className="group/pinpoint">
+      <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-600 [&::-webkit-details-marker]:hidden">
+        <ChevronDown size={14} className="shrink-0 transition-transform group-open/pinpoint:rotate-180" aria-hidden="true" />
+        <span className="min-w-0 flex-1 text-sm font-semibold text-surface-800 dark:text-surface-100" data-testid="actionable-pinpoint-title">{pinpoint.title}</span>
+      <span
         className="flex flex-wrap items-center gap-1.5"
         data-testid="actionable-pinpoint-badges"
       >
@@ -163,7 +168,9 @@ export function ActionablePinpoint({
           <StateIcon state={policyState} />
           {STATE_LABELS[policyState]}
         </span>
-      </div>
+      </span>
+      </summary>
+      <div className="mt-3 border-t border-surface-200 pt-1 dark:border-surface-700">
 
       <section className="mt-3" aria-label="Assessment location">
         <p
@@ -191,16 +198,8 @@ export function ActionablePinpoint({
         )}
       </section>
 
-      {pinpoint.kind !== 'legacy' && (
-        <h4
-          className="mt-3 text-sm font-semibold text-surface-800 dark:text-surface-100"
-          data-testid="actionable-pinpoint-title"
-        >
-          {pinpoint.title}
-        </h4>
-      )}
       <p
-        className={`${pinpoint.kind === 'legacy' ? 'mt-3' : 'mt-1'} whitespace-pre-wrap text-xs leading-5 text-surface-700 dark:text-surface-300`}
+        className={'mt-1 whitespace-pre-wrap text-xs leading-5 text-surface-700 dark:text-surface-300'}
         data-testid="actionable-pinpoint-detail"
       >
         {pinpoint.detail}
@@ -254,6 +253,8 @@ export function ActionablePinpoint({
           </div>
         </details>
       )}
+      </div>
+      </details>
     </article>
   );
 }

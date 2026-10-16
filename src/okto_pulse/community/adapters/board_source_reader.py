@@ -6,20 +6,20 @@ import hashlib
 import json
 import logging
 import sqlite3
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+from okto_pulse.core.application.rebuild_ports import SourceObservationBudget
 
 from okto_pulse.core.kg.board_source_store import (
     AMENDMENT_CONTENT_COLUMNS,
     CARD_CONTENT_COLUMNS,
     IDEATION_CONTENT_COLUMNS,
     REFINEMENT_CONTENT_COLUMNS,
-    SPEC_CONTENT_COLUMNS_V1,
-    SPEC_CONTENT_COLUMNS_V2,
+    SPEC_CONTENT_COLUMNS,
     SPEC_SOURCE_MANIFEST_VERSION,
-    SPRINT_CONTENT_COLUMNS,
     STORY_CONTENT_COLUMNS,
     bug_has_minimal_evidence,
     canonical_content_hash,
@@ -38,11 +38,10 @@ from okto_pulse.core.kg.interfaces.board_source_reader import (
     SourceUnavailableError,
 )
 from okto_pulse.core.domain.quality_assessment import AssessmentDigestSet
-from okto_pulse.core.domain.quality_canonicalization import (
-    SEMANTIC_FIELD_MANIFEST_V1,
-)
 from okto_pulse.core.ports.kg_cognitive_source import (
     canonical_cognitive_source_fingerprint,
+    CognitiveSourceConflict,
+    latest_cognitive_source_records,
 )
 from okto_pulse.core.services.quality_projection_currentness import (
     evaluate_quality_projection_currentness,
@@ -55,36 +54,13 @@ _QUALITY_SUBJECT_TABLES = {
     "refinement": "refinements",
     "spec": "specs",
 }
-_QUALITY_QA_TABLES = {
-    "ideation": ("ideation_qa_items", "ideation_id"),
-    "refinement": ("refinement_qa_items", "refinement_id"),
-    "spec": ("spec_qa_items", "spec_id"),
-}
-_QUALITY_JSON_FIELDS = frozenset(
-    {
-        "acceptance_criteria",
-        "api_contracts",
-        "business_rules",
-        "decisions",
-        "functional_requirements",
-        "in_scope",
-        "integration_requirements",
-        "observability_requirements",
-        "out_of_scope",
-        "technical_requirements",
-        "test_scenarios",
-    }
-)
-
-
 # SQL table ownership lives in the edition adapter. Core retains only the DTO
 # and hash rules consumed above.
 ARTIFACT_QUERIES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     ("story", "stories", "status", STORY_CONTENT_COLUMNS),
     ("ideation", "ideations", "status", IDEATION_CONTENT_COLUMNS),
-    ("spec", "specs", "status", SPEC_CONTENT_COLUMNS_V2),
+    ("spec", "specs", "status", SPEC_CONTENT_COLUMNS),
     ("refinement", "refinements", "status", REFINEMENT_CONTENT_COLUMNS),
-    ("sprint", "sprints", "status", SPRINT_CONTENT_COLUMNS),
 )
 
 CODE_TRACEABILITY_SOURCE_MANIFEST_VERSION = "code-traceability-source/v1"
@@ -102,7 +78,7 @@ CODE_TRACEABILITY_SOURCE_MANIFESTS: dict[str, tuple[str, ...]] = {
         "id", "request_id", "board_id", "subject_type", "subject_id",
         "subject_version", "attestor_actor_id", "generation",
         "predecessor_receipt_id", "trust_level", "acceptance_status",
-        "outcome", "delivery_context", "contextual_outcome",
+        "delivery_context", "contextual_outcome",
         "context_contract_version", "capabilities", "source_ref",
         "source_identity_digest",
         "canonicalization_profile", "limits_profile", "selector_scope_digest",
@@ -414,156 +390,31 @@ def _quality_json_value(
         ) from exc
 
 
-def _quality_board_settings(value: object) -> dict[str, object]:
-    if value is None:
-        return {}
-    resolved = (
-        _quality_json_value(value, field_name="boards.settings")
-        if isinstance(value, str)
-        else value
-    )
-    if not isinstance(resolved, dict):
-        raise sqlite3.DatabaseError(
-            "quality projection board settings are invalid"
-        )
-    return dict(resolved)
-
-
-def _quality_projection_contexts(
+def _quality_projection_subjects(
     conn: sqlite3.Connection,
     *,
     board_id: str | None,
     realm_id: str | None,
-) -> tuple[
-    dict[tuple[str, str, str], dict[str, object]],
-    dict[tuple[str, str, str], tuple[dict[str, object], ...]],
-    dict[str, dict[str, object]],
-]:
+) -> dict[tuple[str, str, str], dict[str, object]]:
     if (board_id is None) == (realm_id is None):
         raise ValueError("exactly one projection scope is required")
-    if board_id is not None:
-        board_rows = conn.execute(
-            "SELECT id, settings FROM boards WHERE id = ?",
-            (board_id,),
-        ).fetchall()
-    else:
-        board_rows = conn.execute(
-            "SELECT id, settings FROM boards WHERE realm_id = ? "
-            "ORDER BY id COLLATE BINARY",
-            (str(realm_id),),
-        ).fetchall()
-    board_settings = {
-        str(row["id"]): _quality_board_settings(row["settings"])
-        for row in board_rows
-    }
-
     subjects: dict[tuple[str, str, str], dict[str, object]] = {}
-    qa_items: dict[tuple[str, str, str], list[dict[str, object]]] = {}
     for subject_type, table_name in _QUALITY_SUBJECT_TABLES.items():
-        if board_id is not None:
-            subject_rows = conn.execute(
-                f'SELECT subject.* FROM "{table_name}" AS subject '
-                "WHERE subject.board_id = ? "
-                "ORDER BY subject.id COLLATE BINARY",
-                (board_id,),
-            ).fetchall()
-        else:
-            subject_rows = conn.execute(
-                f'SELECT subject.* FROM "{table_name}" AS subject '
-                "INNER JOIN boards AS board "
-                "ON board.id = subject.board_id "
-                "WHERE board.realm_id = ? "
-                "ORDER BY subject.board_id COLLATE BINARY, "
-                "subject.id COLLATE BINARY",
-                (str(realm_id),),
-            ).fetchall()
-        for row in subject_rows:
-            subject_board_id = str(row["board_id"])
-            subject_id = str(row["id"])
-            payload: dict[str, object] = {
-                "id": subject_id,
-                "version": int(row["version"]),
-                "edition": int(row["edition"]),
+        predicate = "board.id = ?" if board_id is not None else "board.realm_id = ?"
+        rows = conn.execute(
+            f'SELECT subject.id, subject.board_id, subject.version, subject.edition '
+            f'FROM "{table_name}" AS subject '
+            "INNER JOIN boards AS board ON board.id = subject.board_id "
+            f"WHERE {predicate} "
+            "ORDER BY subject.board_id COLLATE BINARY, subject.id COLLATE BINARY",
+            (board_id if board_id is not None else realm_id,),
+        ).fetchall()
+        for row in rows:
+            key = (str(row["board_id"]), subject_type, str(row["id"]))
+            subjects[key] = {
+                "id": row["id"], "version": row["version"], "edition": row["edition"],
             }
-            for field_name in SEMANTIC_FIELD_MANIFEST_V1[subject_type]:
-                raw_value = row[field_name]
-                payload[field_name] = (
-                    _quality_json_value(
-                        raw_value,
-                        field_name=f"{table_name}.{field_name}",
-                    )
-                    if field_name in _QUALITY_JSON_FIELDS
-                    else raw_value
-                )
-            key = (subject_board_id, subject_type, subject_id)
-            subjects[key] = payload
-            qa_items[key] = []
-
-        qa_table, subject_fk = _QUALITY_QA_TABLES[subject_type]
-        if board_id is not None:
-            qa_rows = conn.execute(
-                f'SELECT qa.*, subject.board_id AS subject_board_id '
-                f'FROM "{qa_table}" AS qa '
-                f'INNER JOIN "{table_name}" AS subject '
-                f"ON subject.id = qa.{subject_fk} "
-                "WHERE subject.board_id = ? "
-                "ORDER BY qa.id COLLATE BINARY",
-                (board_id,),
-            ).fetchall()
-        else:
-            qa_rows = conn.execute(
-                f'SELECT qa.*, subject.board_id AS subject_board_id '
-                f'FROM "{qa_table}" AS qa '
-                f'INNER JOIN "{table_name}" AS subject '
-                f"ON subject.id = qa.{subject_fk} "
-                "INNER JOIN boards AS board "
-                "ON board.id = subject.board_id "
-                "WHERE board.realm_id = ? "
-                "ORDER BY subject.board_id COLLATE BINARY, "
-                "qa.id COLLATE BINARY",
-                (str(realm_id),),
-            ).fetchall()
-        for row in qa_rows:
-            key = (
-                str(row["subject_board_id"]),
-                subject_type,
-                str(row[subject_fk]),
-            )
-            if key not in qa_items:
-                raise sqlite3.DatabaseError(
-                    "quality projection Q&A has no current subject"
-                )
-            qa_items[key].append(
-                {
-                    "id": str(row["id"]),
-                    "revision": int(row["revision"]),
-                    "question": row["question"],
-                    "question_type": row["question_type"],
-                    "choices": _quality_json_value(
-                        row["choices"],
-                        field_name=f"{qa_table}.choices",
-                    )
-                    or [],
-                    "allow_free_text": bool(row["allow_free_text"]),
-                    "answer": row["answer"],
-                    "selected": _quality_json_value(
-                        row["selected"],
-                        field_name=f"{qa_table}.selected",
-                    )
-                    or [],
-                    "answered_at": row["answered_at"],
-                    "lifecycle": row["lifecycle"],
-                    "tombstoned": bool(row["tombstoned"]),
-                }
-            )
-    return (
-        subjects,
-        {
-            key: tuple(items)
-            for key, items in qa_items.items()
-        },
-        board_settings,
-    )
+    return subjects
 
 
 def _current_quality_head_fingerprints(
@@ -613,7 +464,7 @@ def _current_quality_head_fingerprints(
     ).fetchall()
     if not rows:
         return {}
-    subjects, qa_items, settings_by_board = _quality_projection_contexts(
+    subjects = _quality_projection_subjects(
         conn,
         board_id=board_id,
         realm_id=realm_id,
@@ -634,8 +485,7 @@ def _current_quality_head_fingerprints(
             str(row["subject_id"]),
         )
         subject = subjects.get(key)
-        settings = settings_by_board.get(key[0])
-        if subject is None or settings is None:
+        if subject is None:
             raise sqlite3.DatabaseError(
                 "quality assessment head has no current subject context"
             )
@@ -656,18 +506,12 @@ def _current_quality_head_fingerprints(
                 subject_type=key[1],
                 subject_id=key[2],
                 assessed_subject_version=int(row["subject_version"]),
-                assessed_subject_edition=(
-                    int(row["subject_edition"])
-                    if row["subject_edition"] is not None
-                    else None
-                ),
+                assessed_subject_edition=row["subject_edition"],
                 assessed_digests=assessed_digests,
                 assessment_kind=str(row["assessment_kind"]),
                 origin=str(row["origin"]),
                 source=str(row["source"]),
                 current_subject=subject,
-                qa_items=qa_items.get(key, ()),
-                board_settings=settings,
             )
         except ValueError as exc:
             raise sqlite3.DatabaseError(
@@ -823,7 +667,7 @@ def _current_research_decision_head_fingerprints(
     }
 
 
-def _root_source_hashes(
+def _root_source_hash(
     row: sqlite3.Row,
     *,
     board_id: str,
@@ -831,26 +675,13 @@ def _root_source_hashes(
     content_columns: tuple[str, ...],
     quality_fingerprints: dict[tuple[str, str, str], tuple[str, ...]],
     research_fingerprints: dict[tuple[str, str, str], tuple[str, ...]],
-) -> tuple[str, str, str]:
+) -> str:
     row_id = str(row["id"])
-    content_hash_v2 = canonical_content_hash(row, content_columns)
-    content_hash_v1 = (
-        canonical_content_hash(row, SPEC_CONTENT_COLUMNS_V1)
-        if artifact_type == "spec"
-        else content_hash_v2
+    return projected_root_content_hash(
+        canonical_content_hash(row, content_columns),
+        quality_head_fingerprints=quality_fingerprints.get((board_id, artifact_type, row_id), ()),
+        research_decision_head_fingerprints=research_fingerprints.get((board_id, artifact_type, row_id), ()),
     )
-    content_hash_v3 = projected_root_content_hash(
-        content_hash_v2,
-        quality_head_fingerprints=quality_fingerprints.get(
-            (board_id, artifact_type, row_id),
-            (),
-        ),
-        research_decision_head_fingerprints=research_fingerprints.get(
-            (board_id, artifact_type, row_id),
-            (),
-        ),
-    )
-    return content_hash_v1, content_hash_v2, content_hash_v3
 
 
 def resolve_pulse_db_path() -> Path:
@@ -1107,7 +938,7 @@ def _code_traceability_source_rows(
             "declared_revision": receipt["declared_revision"],
             "workspace_state_id": receipt["workspace_state_id"],
             "trust_level": str(receipt["trust_level"]),
-            "outcome": str(receipt["outcome"]),
+            "contextual_outcome": str(receipt["contextual_outcome"]),
             "is_current": is_current,
         }
         if working_ttl_days is not None:
@@ -1410,10 +1241,9 @@ def read_realm_source_snapshot(
             version_raw = row["version"] if "version" in row.keys() else 1
             source_version = str(version_raw if version_raw is not None else 1)
             content_hash = canonical_content_hash(row, content_cols)
-            compatibility_hashes: tuple[str, str] | None = None
             if artifact_type in {"ideation", "refinement", "spec"}:
-                content_hash_v1, content_hash_v2, content_hash = (
-                    _root_source_hashes(
+                content_hash = (
+                    _root_source_hash(
                         row,
                         board_id=board_id,
                         artifact_type=artifact_type,
@@ -1422,7 +1252,6 @@ def read_realm_source_snapshot(
                         research_fingerprints=research_fingerprints,
                     )
                 )
-                compatibility_hashes = (content_hash_v1, content_hash_v2)
             source_row: dict[str, Any] = {
                 "artifact_type": artifact_type,
                 "id": row_id,
@@ -1435,9 +1264,6 @@ def read_realm_source_snapshot(
                 "source_artifact_status": row_status(row, status_col),
                 "has_minimal_evidence": True,
             }
-            if compatibility_hashes is not None:
-                source_row["content_hash_v1"] = compatibility_hashes[0]
-                source_row["content_hash_v2"] = compatibility_hashes[1]
             if artifact_type == "spec":
                 source_row["source_manifest_version"] = SPEC_SOURCE_MANIFEST_VERSION
             working_ttl_days = ttl_by_board[board_id]
@@ -1523,58 +1349,34 @@ def read_realm_cognitive_source_snapshot(
     captured: dict[str, list[dict[str, Any]]] = {
         board_id: [] for board_id in board_ids
     }
-    revision_table_exists = connection.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' "
-        "AND name = 'kg_cognitive_source_revisions'"
-    ).fetchone()
-    if revision_table_exists is None:
-        # Legacy databases remain readable before the additive create-all
-        # boundary.  Their immutable parent row is revision zero.
-        query = (
-            "SELECT source.board_id, source.node_id, source.node_type, "
-            "source.generation, source.payload, source.evidence_refs, "
-            "source.source_session_id, source.committed_at, "
-            "0 AS source_revision, NULL AS record_fingerprint "
-            "FROM kg_cognitive_sources AS source "
-            "INNER JOIN boards AS board ON board.id = source.board_id "
-            "WHERE board.realm_id = ? "
-            "ORDER BY source.board_id COLLATE BINARY, "
-            "source.committed_at ASC, source.node_id COLLATE BINARY, "
-            "source.generation ASC"
-        )
-    else:
-        # Resolve one latest full snapshot per immutable parent.  The
-        # correlated MAX is backed by the child (source, revision) index and
-        # keeps the reader compatible with SQLite versions lacking windows.
-        query = (
-            "SELECT source.board_id, source.node_id, source.node_type, "
-            "source.generation, "
-            "CASE WHEN revision.id IS NULL THEN source.payload "
-            "ELSE revision.payload END AS payload, "
-            "CASE WHEN revision.id IS NULL THEN source.evidence_refs "
-            "ELSE revision.evidence_refs END AS evidence_refs, "
-            "CASE WHEN revision.id IS NULL THEN source.source_session_id "
-            "ELSE revision.source_session_id END AS source_session_id, "
-            "CASE WHEN revision.id IS NULL THEN source.committed_at "
-            "ELSE revision.committed_at END AS committed_at, "
-            "COALESCE(revision.source_revision, 0) AS source_revision, "
-            "revision.record_fingerprint AS record_fingerprint "
-            "FROM kg_cognitive_sources AS source "
-            "INNER JOIN boards AS board ON board.id = source.board_id "
-            "LEFT JOIN kg_cognitive_source_revisions AS revision "
-            "ON revision.cognitive_source_id = source.id "
-            "AND revision.source_revision = ("
-            "SELECT MAX(candidate.source_revision) "
-            "FROM kg_cognitive_source_revisions AS candidate "
-            "WHERE candidate.cognitive_source_id = source.id"
-            ") "
-            "WHERE board.realm_id = ? "
-            "ORDER BY source.board_id COLLATE BINARY, "
-            "COALESCE(revision.committed_at, source.committed_at) ASC, "
-            "source.node_id COLLATE BINARY, source.generation ASC"
-        )
-    rows = connection.execute(query, (normalized_realm_id,)).fetchall()
-    for row in rows:
+    # Read the complete native ledger; missing revisions never imply revision zero.
+    query = (
+        "SELECT source.board_id, source.node_id, source.node_type, "
+        "source.generation, source.payload, source.evidence_refs, "
+        "source.source_session_id, source.committed_at, "
+        "0 AS source_revision, NULL AS record_fingerprint "
+        "FROM kg_cognitive_sources AS source "
+        "INNER JOIN boards AS board ON board.id = source.board_id "
+        "WHERE board.realm_id = ? "
+        "UNION ALL "
+        "SELECT source.board_id, source.node_id, source.node_type, source.generation, "
+        "revision.payload, revision.evidence_refs, revision.source_session_id, "
+        "revision.committed_at, revision.source_revision, revision.record_fingerprint "
+        "FROM kg_cognitive_source_revisions AS revision "
+        "INNER JOIN kg_cognitive_sources AS source ON source.id = revision.cognitive_source_id "
+        "INNER JOIN boards AS board ON board.id = source.board_id "
+        "WHERE board.realm_id = ? "
+        "ORDER BY board_id COLLATE BINARY, committed_at ASC, node_id COLLATE BINARY, generation ASC, source_revision ASC"
+    )
+    parameters = (normalized_realm_id, normalized_realm_id)
+    total_bytes = 0
+    for ordinal, row in enumerate(connection.execute(query, parameters), start=1):
+        total_bytes += len(json.dumps(dict(row), ensure_ascii=False).encode('utf-8'))
+        if ordinal > 100_000 or total_bytes > 64 * 1024 * 1024:
+            raise ValueError('cognitive source snapshot limit exceeded')
+        if (type(row['generation']) is not int or row['generation'] < 0
+                or type(row['source_revision']) is not int or row['source_revision'] < 0):
+            raise ValueError('cognitive source generation or revision invalid')
         raw_payload = row["payload"]
         payload = json.loads(raw_payload) if isinstance(raw_payload, str) else raw_payload
         if not isinstance(payload, dict):
@@ -1585,7 +1387,7 @@ def read_realm_cognitive_source_snapshot(
             if isinstance(raw_evidence_refs, str)
             else raw_evidence_refs
         )
-        if not isinstance(evidence_refs, (list, tuple)):
+        if not isinstance(evidence_refs, (list, tuple)) or any(type(ref) is not str for ref in evidence_refs):
             raise ValueError("cognitive source evidence_refs must be a JSON array")
         canonical_fingerprint = canonical_cognitive_source_fingerprint(
             board_id=str(row["board_id"]),
@@ -1597,12 +1399,13 @@ def read_realm_cognitive_source_snapshot(
         )
         stored_fingerprint = row["record_fingerprint"]
         if (
-            stored_fingerprint is not None
-            and str(stored_fingerprint) != canonical_fingerprint
+            (row["source_revision"] > 0 and stored_fingerprint is None)
+            or (stored_fingerprint is not None
+                and str(stored_fingerprint) != canonical_fingerprint)
         ):
             raise ValueError(
                 "cognitive source record_fingerprint does not match its "
-                "latest immutable revision"
+                "immutable revision"
             )
         record_fingerprint = canonical_fingerprint
         captured[str(row["board_id"])].append(
@@ -1619,9 +1422,10 @@ def read_realm_cognitive_source_snapshot(
                 "record_fingerprint": str(record_fingerprint),
             }
         )
-    return {
-        board_id: tuple(records) for board_id, records in captured.items()
-    }
+    try:
+        return {board_id: latest_cognitive_source_records(records) for board_id, records in captured.items()}
+    except CognitiveSourceConflict as exc:
+        raise ValueError('cognitive source immutable revision conflict: ' + exc.failure_reason) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -1638,7 +1442,13 @@ class CommunityBoardSourceReader:
             return Path(self.db_path_provider())
         return resolve_pulse_db_path()
 
-    def fetch(self, board_id: str) -> BoardSourceSnapshot:
+    def fetch(
+        self, board_id: str, *, observation_budget: SourceObservationBudget | None = None
+    ) -> BoardSourceSnapshot:
+        if observation_budget is not None and type(observation_budget) is not SourceObservationBudget:
+            raise TypeError("source_observation_budget_required")
+        deadline_at = (None if observation_budget is None else
+                       time.monotonic() + observation_budget.timeout_seconds)
         db_path = self._path()
         if not db_path.exists():
             logger.warning(
@@ -1647,11 +1457,14 @@ class CommunityBoardSourceReader:
             )
             return BoardSourceSnapshot(rows=(), complete=False, cause="db_missing")
 
+        remaining = 5.0 if deadline_at is None else deadline_at - time.monotonic()
+        if remaining <= 0:
+            raise SourceReadFailure("source observation deadline exceeded", cause_type="observation_timeout")
         try:
             conn = sqlite3.connect(
                 f"file:{db_path}?mode=ro&immutable=0",
                 uri=True,
-                timeout=5.0,
+                timeout=remaining,
             )
         except sqlite3.Error as exc:
             raise SourceUnavailableError(
@@ -1664,8 +1477,18 @@ class CommunityBoardSourceReader:
             # sqlite3 does not open a transaction for a SELECT by default.  An
             # explicit read transaction keeps schema preflight and row
             # collection pinned to one coherent database snapshot.
-            conn.execute("BEGIN")
-            return self._fetch_conn(conn, board_id)
+            reader = conn
+            if observation_budget is not None:
+                from okto_pulse.community.adapters.source_observation_budget import BoundedSourceConnection
+
+                reader = BoundedSourceConnection(conn, observation_budget, deadline_at=deadline_at)
+            reader.execute("BEGIN")
+            snapshot = self._fetch_conn(reader, board_id)
+            if observation_budget is not None:
+                reader.check()
+                if len(snapshot.rows) > observation_budget.max_rows:
+                    raise SourceReadFailure("source observation volume exceeded", cause_type="observation_volume_exceeded")
+            return snapshot
         except sqlite3.Error as exc:
             raise SourceReadFailure(
                 "board source rows could not be read",
@@ -1748,10 +1571,9 @@ class CommunityBoardSourceReader:
                 version_raw = row["version"] if "version" in row.keys() else 1
                 source_version = str(version_raw if version_raw is not None else 1)
                 content_hash = canonical_content_hash(row, content_cols)
-                compatibility_hashes: tuple[str, str] | None = None
                 if artifact_type in {"ideation", "refinement", "spec"}:
-                    content_hash_v1, content_hash_v2, content_hash = (
-                        _root_source_hashes(
+                    content_hash = (
+                        _root_source_hash(
                             row,
                             board_id=board_id,
                             artifact_type=artifact_type,
@@ -1760,7 +1582,6 @@ class CommunityBoardSourceReader:
                             research_fingerprints=research_fingerprints,
                         )
                     )
-                    compatibility_hashes = (content_hash_v1, content_hash_v2)
                 source_row = {
                     "artifact_type": artifact_type,
                     "id": row_id,
@@ -1773,9 +1594,6 @@ class CommunityBoardSourceReader:
                     "source_artifact_status": row_status(row, status_col),
                     "has_minimal_evidence": True,
                 }
-                if compatibility_hashes is not None:
-                    source_row["content_hash_v1"] = compatibility_hashes[0]
-                    source_row["content_hash_v2"] = compatibility_hashes[1]
                 if artifact_type == "spec":
                     source_row["source_manifest_version"] = SPEC_SOURCE_MANIFEST_VERSION
                 if working_ttl_days is not None:

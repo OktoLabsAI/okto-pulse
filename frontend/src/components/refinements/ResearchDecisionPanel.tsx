@@ -25,7 +25,7 @@ import {
 } from '@/services/research-decisions-api';
 import {
   RESEARCH_DECISION_PAGE_SIZES,
-  type LegacyRefinementDecision,
+  type RefinementDecisionNote,
   type ResearchDecisionAnchorType,
   type ResearchDecisionContent,
   type ResearchDecisionEntry,
@@ -88,10 +88,10 @@ export interface ResearchDecisionPanelProps {
   refinementStatus: string;
   refinementArchived?: boolean;
   /**
-   * Historical `Refinement.decisions: string[]`. These values are rendered in
+   * Current `Refinement.decisions: string[]`. These values are rendered in
    * a separate read-only block and never enter an RDL request.
    */
-  legacyDecisions?: readonly LegacyRefinementDecision[] | null;
+  decisionNotes?: readonly RefinementDecisionNote[] | null;
   className?: string;
   /** Allows the host modal to refresh its displayed Refinement version. */
   onRefinementVersionChanged?: (version: number) => void;
@@ -250,10 +250,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function LegacyDecisions({
+function DecisionNotes({
   decisions,
 }: {
-  decisions: readonly LegacyRefinementDecision[];
+  decisions: readonly RefinementDecisionNote[];
 }) {
   const visible = decisions.filter(
     (decision) => typeof decision === 'string' && decision.trim(),
@@ -263,13 +263,13 @@ function LegacyDecisions({
   return (
     <details
       className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-3 dark:border-gray-600 dark:bg-gray-900/30"
-      data-testid="legacy-refinement-decisions"
+      data-testid="refinement-decision-notes"
     >
       <summary className="cursor-pointer text-xs font-semibold text-gray-700 dark:text-gray-200">
-        Legacy refinement decisions ({visible.length})
+        Refinement decision notes ({visible.length})
       </summary>
       <p className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">
-        Historical read-only strings. They are separate from the immutable
+        Text notes authored on the Refinement. They are separate from the immutable
         Research Decision Ledger and cannot be superseded here.
       </p>
       <ol className="mt-2 list-decimal space-y-1 pl-5 text-xs text-gray-600 dark:text-gray-300">
@@ -515,7 +515,7 @@ function Editor({
  *   refinementId={refinement.id}
  *   refinementStatus={refinement.status}
  *   refinementArchived={refinement.archived}
- *   legacyDecisions={refinement.decisions}
+ *   decisionNotes={refinement.decisions}
  *   onRefinementVersionChanged={(version) => updateHostVersion(version)}
  * />
  *
@@ -527,7 +527,7 @@ export function ResearchDecisionPanel({
   refinementId,
   refinementStatus,
   refinementArchived = false,
-  legacyDecisions = [],
+  decisionNotes = [],
   className = '',
   onRefinementVersionChanged,
 }: ResearchDecisionPanelProps) {
@@ -757,7 +757,7 @@ export function ResearchDecisionPanel({
     }
   };
 
-  const legacyBlock = <LegacyDecisions decisions={legacyDecisions ?? []} />;
+  const decisionNotesBlock = <DecisionNotes decisions={decisionNotes ?? []} />;
 
   if (permissions.isLoading) {
     return (
@@ -766,7 +766,7 @@ export function ResearchDecisionPanel({
           <Loader2 size={13} className="animate-spin" />
           Loading Research Decision Ledger permissions…
         </section>
-        {legacyBlock}
+        {decisionNotesBlock}
       </div>
     );
   }
@@ -789,7 +789,7 @@ export function ResearchDecisionPanel({
             </p>
           )}
         </section>
-        {legacyBlock}
+        {decisionNotesBlock}
       </div>
     );
   }
@@ -1104,7 +1104,7 @@ export function ResearchDecisionPanel({
         )}
       </section>
 
-      {legacyBlock}
+      {decisionNotesBlock}
     </div>
   );
 }

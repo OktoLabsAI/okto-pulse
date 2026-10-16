@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from okto_pulse.core.domain.code_traceability import (
     CodeEvidenceSpecRelationType,
@@ -40,11 +40,6 @@ from okto_pulse.core.ports.flow_health import (
     FlowLifecycleState,
     FlowSubjectType,
     FlowThresholdProvenance,
-)
-from okto_pulse.core.ports.delivery_forecast import (
-    DeliveryForecastResultState,
-    ForecastBacktestState,
-    ForecastReadinessState,
 )
 from okto_pulse.core.ports.board_kg_analytics import (
     BoardKgAnalyticsResultState,
@@ -103,92 +98,6 @@ class AnalyticsProjectionProvenanceDTO(_CanonicalDTO):
     sources: list[AnalyticsSourceAuthorityDTO]
 
 
-class ForecastDependencyVersionsDTO(_CanonicalDTO):
-    analytics_foundation: str
-    delivery_phase_1: str
-
-
-class ForecastReadinessBaseDTO(_CanonicalDTO):
-    actual_observations: int = Field(ge=0)
-    required_observations: int = Field(ge=1)
-    rule_version: str
-
-
-class ForecastReadyReadinessDTO(ForecastReadinessBaseDTO):
-    ready: Literal[True]
-    state: Literal[ForecastReadinessState.READY]
-    reason: None
-    remediation: None
-
-
-class ForecastNonReadyReadinessDTO(ForecastReadinessBaseDTO):
-    ready: Literal[False]
-    state: Literal[
-        ForecastReadinessState.INSUFFICIENT_HISTORY,
-        ForecastReadinessState.UNAVAILABLE,
-        ForecastReadinessState.RESTRICTED,
-        ForecastReadinessState.EMPTY,
-    ]
-    reason: str = Field(min_length=1)
-    remediation: str = Field(min_length=1)
-
-
-class ForecastSourcePeriodDTO(_CanonicalDTO):
-    from_: str = Field(alias="from")
-    to: str
-
-
-class ForecastEstimateDTO(_CanonicalDTO):
-    point: float
-    lower_bound: float
-    upper_bound: float
-    confidence_level: float = Field(gt=0, lt=1)
-    horizon: str
-    assumptions: list[str] = Field(min_length=1)
-    sample_size: int = Field(ge=1)
-    source_period: ForecastSourcePeriodDTO
-    method_version: str
-
-
-class ForecastBacktestDTO(_CanonicalDTO):
-    state: ForecastBacktestState
-    error: float | None
-    calibration: float | None
-    method_version: str
-    sample_size: int = Field(ge=0)
-    evaluation_window: ForecastSourcePeriodDTO | None
-    reason: str | None
-
-
-class DeliveryForecastResponseBaseDTO(_CanonicalDTO):
-    contract_version: str
-    dependency_versions: ForecastDependencyVersionsDTO
-    query_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
-    filters: list[AnalyticsFilterDTO]
-    as_of: str
-    board_id: str
-    result_state: DeliveryForecastResultState
-    provenance: AnalyticsProjectionProvenanceDTO
-    backtest: ForecastBacktestDTO
-    population_scope: AnalyticsPopulationScopeDTO
-    exclusions: AnalyticsExclusionsDTO
-
-
-class DeliveryForecastReadyResponseDTO(DeliveryForecastResponseBaseDTO):
-    readiness: ForecastReadyReadinessDTO
-    forecast: ForecastEstimateDTO
-
-
-class DeliveryForecastNonReadyResponseDTO(DeliveryForecastResponseBaseDTO):
-    readiness: ForecastNonReadyReadinessDTO
-
-
-class CanonicalDeliveryForecastResponseDTO(
-    RootModel[DeliveryForecastReadyResponseDTO | DeliveryForecastNonReadyResponseDTO]
-):
-    """Closed ready/non-ready union; non-ready responses cannot contain forecast."""
-
-
 class DeliveryMetricDTO(_CanonicalDTO):
     state: str
     value: int | float | None
@@ -197,33 +106,6 @@ class DeliveryMetricDTO(_CanonicalDTO):
     sample_size: int = Field(ge=0)
     reason: str | None
     unit: str | None
-
-
-class DeliveryThroughputSummaryDTO(_CanonicalDTO):
-    state: str
-    total: int = Field(ge=0)
-    normal: int = Field(ge=0)
-    hotfix: int = Field(ge=0)
-    sample_size: int = Field(ge=0)
-    reason: str | None
-
-
-class DeliveryScopeSummaryDTO(_CanonicalDTO):
-    state: str
-    committed_at_activation: int | None = Field(default=None, ge=0)
-    completed_from_commitment: int | None = Field(default=None, ge=0)
-    added_after_activation: int | None = Field(default=None, ge=0)
-    removed_after_activation: int | None = Field(default=None, ge=0)
-    sample_size: int = Field(ge=0)
-    reason: str | None
-
-
-class DeliverySummaryDTO(_CanonicalDTO):
-    commitment_reliability: DeliveryMetricDTO
-    throughput: DeliveryThroughputSummaryDTO
-    carryover: DeliveryMetricDTO
-    hotfix_share: DeliveryMetricDTO
-    scope: DeliveryScopeSummaryDTO
 
 
 class DeliveryContributionDTO(_CanonicalDTO):
@@ -242,7 +124,7 @@ class DeliveryContributionDTO(_CanonicalDTO):
 
 
 class DeliveryIntelligenceResponseDTO(_CanonicalDTO):
-    contract_version: Literal["1"]
+    contract_version: Literal["2"]
     foundation_version: str
     query_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     filters: list[AnalyticsFilterDTO]
@@ -255,8 +137,6 @@ class DeliveryIntelligenceResponseDTO(_CanonicalDTO):
     population_scope: AnalyticsPopulationScopeDTO
     exclusions: AnalyticsExclusionsDTO
     minimum_sample_size: int = Field(ge=2)
-    summary: DeliverySummaryDTO
-    sprints: list[dict[str, object]]
     contributions: list[DeliveryContributionDTO]
     next_cursor: str | None
 
@@ -621,7 +501,6 @@ class FlowHealthSettingsResponseDTO(_CanonicalDTO):
 __all__ = [
     "CanonicalBoardKgAnalyticsResponseDTO",
     "CanonicalCoverageResponseDTO",
-    "CanonicalDeliveryForecastResponseDTO",
     "DeliveryIntelligenceResponseDTO",
     "CanonicalFlowHealthResponseDTO",
     "FlowHealthSettingsResponseDTO",

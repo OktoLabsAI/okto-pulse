@@ -16,17 +16,18 @@ import logging
 from time import perf_counter
 from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from okto_pulse.core.kg import cypher_templates as tpl
 from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphCapabilityUnavailable,
     GraphCorruption,
     GraphError,
+    GraphQueryResourceLimit,
     GraphInvalidQuery,
     GraphUnavailable,
     graph_memory_pressure_retry_after_seconds,
@@ -42,10 +43,9 @@ from okto_pulse.core.kg.tier_power import (
     get_schema_info,
 )
 from okto_pulse.community.api.deps import get_unit_of_work
-from okto_pulse.core.application.errors import BoostPersistError
 from okto_pulse.core.application.kg_runtime_access import (
     resolve_cypher_executor,
-    resolve_graph_schema_manager,
+    resolve_graph_query_execution,
     resolve_graph_transaction,
     snapshot_kg_runtime,
 )
@@ -72,28 +72,7 @@ from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.community.adapters.kg_events import poll_community_kg_events
-from okto_pulse.core.application.use_cases.kg_routes_crud import (
-    BoostNodeCommand,
-    BoostNodeUseCase,
-    CancelHistoricalCommand,
-    CancelHistoricalUseCase,
-    DeleteBoardKgCommand,
-    DeleteBoardKgUseCase,
-    GetHistoricalProgressCommand,
-    GetHistoricalProgressUseCase,
-    GlobalSearchCommand,
-    GlobalSearchUseCase,
-    ListAuditCommand,
-    ListAuditUseCase,
-    ListPendingCommand,
-    ListPendingTreeCommand,
-    ListPendingTreeUseCase,
-    ListPendingUseCase,
-    RetryPendingEntryCommand,
-    RetryPendingEntryUseCase,
-    StartHistoricalCommand,
-    StartHistoricalUseCase,
-)
+from okto_pulse.core.application.use_cases.kg_routes_crud import DeleteBoardKgCommand, DeleteBoardKgUseCase, GlobalSearchCommand, GlobalSearchUseCase, ListAuditCommand, ListAuditUseCase
 
 router = APIRouter(prefix="/kg", tags=["knowledge-graph"])
 
@@ -197,7 +176,6 @@ async def _require_kg_operation(
     actor: ActorContext,
     *,
     operation: str,
-    legacy_operation: str | None,
     uow: PulseUnitOfWork | None = None,
     board_id: str | None = None,
     require_board_read: bool = False,
@@ -207,7 +185,6 @@ async def _require_kg_operation(
             await AuthorizeOperationUseCase().execute(
                 AuthorizeOperationCommand(
                     "board.read",
-                    legacy_operation="board:read",
                     board_id=board_id,
                 ),
                 actor=actor,
@@ -216,7 +193,6 @@ async def _require_kg_operation(
         await AuthorizeOperationUseCase().execute(
             AuthorizeOperationCommand(
                 operation,
-                legacy_operation=legacy_operation,
                 board_id=board_id,
             ),
             actor=actor,
@@ -365,6 +341,11 @@ def _handle_kg_error(e: KGToolError) -> JSONResponse:
 
 def _graph_problem(exc: GraphError) -> JSONResponse:
     """Translate only failures already mapped through neutral provider contracts."""
+    if isinstance(exc, GraphQueryResourceLimit):
+        return JSONResponse(status_code=413, media_type='application/problem+json', content={
+            'type': '/errors/' + exc.code, 'title': exc.code, 'status': 413,
+            'detail': str(exc), 'resource_limit': exc.details,
+        })
     status = 500
     if isinstance(exc, GraphInvalidQuery):
         status = 400
@@ -572,7 +553,6 @@ async def get_subgraph(
         await _require_kg_operation(
             actor,
             operation="kg.query.related_context",
-            legacy_operation="board:read",
             uow=uow,
             board_id=board_id,
             require_board_read=True,
@@ -749,7 +729,7 @@ def _fetch_edges_for_nodes(
         ])
 
         edges = []
-        seen: set[tuple[str, str, str]] = set()  # (rel, src, tgt) dedup
+        seen: set[tuple[str, ...]] = set()
         pending: list[tuple[str, str, str, str, dict[str, Any] | None]] = []
         for rel_name, from_type, to_type in rel_pairs:
             diagnostics["edge_tables_considered"] += 1
@@ -792,10 +772,12 @@ def _fetch_edges_for_nodes(
                         f" AND {tpl.code_traceability_visibility_clause('b')}"
                     )
                     params = {"include_code_traceability": False}
+                provenance_columns = (', r.rule_id, r.layer, r.created_by, r.fallback_reason'
+                    if rel_name == 'violates' else '')
                 query = (
                     f"MATCH (a:{from_type})-[r:{physical_rel}]->(b:{to_type})"
                     f"{visibility} "
-                    "RETURN a.id, b.id, r.confidence LIMIT 5000"
+                    f"RETURN a.id, b.id, r.confidence{provenance_columns} LIMIT 5000"
                 )
                 pending.append((rel_name, from_type, to_type, query, params))
             except Exception as exc:
@@ -815,7 +797,18 @@ def _fetch_edges_for_nodes(
         ) -> None:
             for row in result.get("rows", []):
                 src, tgt = row[0], row[1]
-                key = (relation, src, tgt)
+                metadata = {}
+                if relation == 'violates' and len(row) >= 7:
+                    from okto_pulse.core.ports.card_projection import bug_origin_proxy_read_metadata
+                    metadata = bug_origin_proxy_read_metadata(rule_id=row[3], layer=row[4],
+                        created_by=row[5], fallback_reason=row[6])
+                # A proxy and an independently authored edge are different
+                # observations even when they share endpoints and confidence.
+                suffix = ''
+                if metadata:
+                    import hashlib
+                    suffix = '-proxy-' + hashlib.sha256(metadata['rule_id'].encode()).hexdigest()
+                key = (relation, src, tgt, suffix)
                 if key in seen:
                     continue
                 # Pelo menos UMA ponta na página (era AND): com a projeção
@@ -826,11 +819,12 @@ def _fetch_edges_for_nodes(
                     seen.add(key)
                     edges.append(
                         {
-                            "id": f"{src}-{relation}-{tgt}",
+                            "id": f"{src}-{relation}-{tgt}{suffix}",
                             "source": src,
                             "target": tgt,
                             "edge_type": relation,
                             "confidence": row[2] if len(row) > 2 else 0.7,
+                            **metadata,
                         }
                     )
 
@@ -1124,7 +1118,6 @@ async def find_similar(
     await _require_kg_operation(
         actor,
         operation="kg.query.similar_decisions",
-        legacy_operation="board:read",
         uow=uow,
         board_id=board_id,
         require_board_read=True,
@@ -1160,7 +1153,6 @@ async def get_supersedence(
     await _require_kg_operation(
         actor,
         operation="kg.query.supersedence_chain",
-        legacy_operation="board:read",
         uow=uow,
         board_id=board_id,
         require_board_read=True,
@@ -1189,7 +1181,6 @@ async def find_contradictions(
     await _require_kg_operation(
         actor,
         operation="kg.query.contradictions",
-        legacy_operation="board:read",
         uow=uow,
         board_id=board_id,
         require_board_read=True,
@@ -1479,15 +1470,6 @@ async def list_audit(
     return {"entries": result.entries, "next_cursor": None}
 
 
-@router.post("/boards/{board_id}/audit/{session_id}/undo")
-async def undo_session(
-    board_id: str,
-    session_id: str,
-    force: bool = False,
-    _actor: ActorContext = Depends(require_kg_board_writer_actor),
-):
-    """Undo a consolidation session."""
-    return _problem(501, "Not Implemented", "Undo will be available in governance sprint")
 
 
 @router.get("/boards/{board_id}/audit/export")
@@ -1575,58 +1557,10 @@ async def global_search(
         raise RESTAdapterContract.http_error(exc, not_found_detail="Board not found")
 
 
-@router.post("/boards/{board_id}/historical-consolidation/start")
-async def start_historical(
-    board_id: str,
-    actor: ActorContext = Depends(require_kg_board_writer_actor),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Start historical backfill."""
-    try:
-        result = await StartHistoricalUseCase().execute(
-            StartHistoricalCommand(board_id),
-            actor=actor,
-            uow=uow,
-        )
-    except (PermissionDeniedError, EntityNotFoundError) as exc:
-        raise RESTAdapterContract.http_error(exc, not_found_detail="Board not found")
-    return result.payload
 
 
-@router.post("/boards/{board_id}/historical-consolidation/cancel")
-async def cancel_historical_endpoint(
-    board_id: str,
-    actor: ActorContext = Depends(require_kg_board_writer_actor),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Cancel historical backfill."""
-    try:
-        result = await CancelHistoricalUseCase().execute(
-            CancelHistoricalCommand(board_id),
-            actor=actor,
-            uow=uow,
-        )
-    except (PermissionDeniedError, EntityNotFoundError) as exc:
-        raise RESTAdapterContract.http_error(exc, not_found_detail="Board not found")
-    return result.payload
 
 
-@router.get("/boards/{board_id}/historical-consolidation/progress")
-async def historical_progress_endpoint(
-    board_id: str,
-    actor: ActorContext = Depends(require_kg_board_actor),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Historical consolidation progress."""
-    try:
-        result = await GetHistoricalProgressUseCase().execute(
-            GetHistoricalProgressCommand(board_id),
-            actor=actor,
-            uow=uow,
-        )
-    except (PermissionDeniedError, EntityNotFoundError) as exc:
-        raise RESTAdapterContract.http_error(exc, not_found_detail="Board not found")
-    return result.progress
 
 
 @router.delete("/boards/{board_id}/kg")
@@ -1647,100 +1581,12 @@ async def delete_board_kg(
     return Response(status_code=204)
 
 
-def _describe_embedding_provider(provider: Any) -> dict[str, Any]:
-    """Introspect the registered embedding provider WITHOUT triggering a load.
-
-    Delegates to the metadata-driven describer in the embedding port (R13-A):
-    this common API surface no longer imports or ``isinstance``-checks
-    concrete provider classes — provider description is driven by capability
-    metadata. Reads ``_model`` directly (never calls
-    ``_get_model()``) so /kg/settings can report the live state for a health
-    banner without paying the model-load cost. See TR-4 of spec
-    `sentence-transformers como dep obrigatoria` and R13-A fr_r13a_provider_metadata.
-    """
-    from okto_pulse.core.kg.interfaces.embedding import describe_embedding_provider
-
-    return describe_embedding_provider(provider)
 
 
-@router.get("/settings")
-async def get_global_kg_settings(
-    _actor: ActorContext = Depends(require_kg_actor),
-):
-    """Return process-global KG settings (no board context required).
-
-    Exposes the embedding-provider state so the Dashboard Settings banner and
-    smoke-test tooling can tell stub-mode apart from a healthy load without
-    needing to pick a board. MUST NOT trigger a model load (TR-4).
-    """
-    await _require_kg_operation(
-        _actor,
-        operation="kg.operations.settings.read",
-        legacy_operation="kg.admin.settings_read",
-    )
-    snapshot = snapshot_kg_runtime()
-    payload = {
-        "graph_store": snapshot.graph_store_name,
-        "session_ttl_seconds": snapshot.session_ttl_seconds,
-        "kg_base_dir": snapshot.kg_base_dir,
-    }
-    payload.update(_describe_embedding_provider(snapshot.embedding_provider))
-    return payload
 
 
-@router.get("/boards/{board_id}/settings")
-async def get_settings(
-    board_id: str,
-    actor: ActorContext = Depends(require_kg_board_actor),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Get KG settings for a board."""
-    await _require_kg_operation(
-        actor,
-        operation="kg.operations.settings.read",
-        legacy_operation="kg.admin.settings_read",
-        uow=uow,
-        board_id=board_id,
-    )
-    snapshot = snapshot_kg_runtime(board_id=board_id)
-
-    # Check historical consolidation status (the only relational read in this
-    # handler; the registry/embedding introspection below is not DB-bound).
-    try:
-        progress = await uow.services.kg.get_historical_progress(board_id)
-    except (PermissionDeniedError, EntityNotFoundError) as exc:
-        raise RESTAdapterContract.http_error(exc, not_found_detail="Board not found")
-
-    payload = {
-        "consolidation_enabled": True,
-        "enable_historical_consolidation": progress.get("enabled", False),
-        "kg_initialized": snapshot.graph_initialized,
-        # Preserved for backwards compatibility with older clients.
-        "embedding_provider": type(snapshot.embedding_provider).__name__,
-        "graph_store": snapshot.graph_store_name,
-        "session_ttl_seconds": snapshot.session_ttl_seconds,
-        "kg_base_dir": snapshot.kg_base_dir,
-    }
-    payload.update(_describe_embedding_provider(snapshot.embedding_provider))
-    return payload
 
 
-@router.put("/boards/{board_id}/settings")
-async def update_settings(
-    board_id: str,
-    request: Request,
-    actor: ActorContext = Depends(require_kg_board_writer_actor),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Update KG settings for a board."""
-    await _require_kg_operation(
-        actor,
-        operation="kg.operations.settings.write",
-        legacy_operation="kg.admin.settings_write",
-        uow=uow,
-        board_id=board_id,
-    )
-    return {"success": True}
 
 
 @router.post("/boards/{board_id}/cypher")
@@ -1748,8 +1594,8 @@ async def cypher_query(
     board_id: str,
     cypher: str = "",
     params: dict | None = None,
-    max_rows: int = 1000,
-    timeout_ms: int = 5000,
+    max_rows: int = 200,
+    timeout_ms: int | None = None,
     include_working: bool = False,
     actor: ActorContext = Depends(require_kg_board_actor),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
@@ -1758,7 +1604,6 @@ async def cypher_query(
     await _require_kg_operation(
         actor,
         operation="kg.power.cypher",
-        legacy_operation="board:read",
         uow=uow,
         board_id=board_id,
         require_board_read=True,
@@ -1774,18 +1619,28 @@ async def cypher_query(
         except PermissionDeniedError as exc:
             raise RESTAdapterContract.http_error(exc) from exc
     try:
+        from okto_pulse.core.application.use_cases.kg_query_policy import ReadKGQueryPolicyUseCase
+        from okto_pulse.core.ports.kg_query_policy import query_row_limit
+
+        policy = await ReadKGQueryPolicyUseCase().execute(board_id, actor=actor, uow=uow)
+        timeout_ms = policy.effective_timeout(timeout_ms)
+        max_rows = query_row_limit(max_rows)
+        execution = resolve_graph_query_execution()
+
+        def query():
+            with execution.scope(board_id, timeout_ms=timeout_ms):
+                return execute_cypher_read_only(
+                    board_id, cypher, params, max_rows=max_rows,
+                    timeout_ms=timeout_ms, include_working=include_working,
+                )
+
         result = await run_blocking_graph_io(
-            lambda: execute_cypher_read_only(
-                board_id,
-                cypher,
-                params,
-                max_rows=max_rows,
-                timeout_ms=timeout_ms,
-                include_working=include_working,
-            ),
+            query,
             task_name=f"community.kg.cypher.read:{board_id}",
         )
         return result
+    except ValueError as exc:
+        return _problem(400, "invalid_param", str(exc), "invalid_param")
     except TierPowerError as e:
         return _problem(
             400 if e.code in ("unsafe_cypher", "invalid_cypher") else 503,
@@ -1803,7 +1658,7 @@ async def cypher_query(
 @router.get("/schema")
 async def schema_info(
     board_id: str = "",
-    include_internal: bool = False,
+    include_internal: Annotated[str | None, Query(include_in_schema=False)] = None,
     actor: ActorContext = Depends(require_kg_actor),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
@@ -1811,90 +1666,32 @@ async def schema_info(
     await _require_kg_operation(
         actor,
         operation="kg.power.schema_info",
-        legacy_operation="board:read",
         uow=uow,
         board_id=board_id or None,
         require_board_read=True,
     )
-    if include_internal:
-        await _require_kg_operation(
-            actor,
-            operation="kg.admin.settings_read",
-            legacy_operation=None,
-            uow=uow,
-            board_id=board_id or None,
+    if include_internal is not None:
+        # Compatibility tombstone only: an old grant cannot restore maintenance.
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "kg_internal_schema_view_retired"},
         )
     if board_id:
         await _ensure_board_access(board_id=board_id, actor=actor, uow=uow)
     try:
         return await run_blocking_graph_io(
             lambda: get_schema_info(
-                board_id or "default", include_internal=include_internal,
+                board_id, include_internal=False,
             ),
-            task_name=f"community.kg.schema.read:{board_id or 'default'}",
+            task_name=f"community.kg.schema.read:{board_id or 'global'}",
         )
     except GraphError as exc:
         # No fallback to another board, synthetic schema or recovery on refusal.
         return _graph_problem(exc)
 
 
-@router.get("/boards/{board_id}/pending")
-async def list_pending(
-    board_id: str,
-    actor: ActorContext = Depends(require_kg_board_actor),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """List pending consolidation queue entries."""
-    try:
-        result = await ListPendingUseCase().execute(
-            ListPendingCommand(board_id),
-            actor=actor,
-            uow=uow,
-        )
-        return {"entries": result.entries, "count": len(result.entries)}
-    except (PermissionDeniedError, EntityNotFoundError) as exc:
-        raise RESTAdapterContract.http_error(exc, not_found_detail="Board not found")
-    except Exception:
-        return {"entries": [], "count": 0}
 
 
-@router.get("/boards/{board_id}/pending/tree")
-async def list_pending_tree(
-    board_id: str,
-    depth: int = Query(5, ge=1, le=5),
-    actor: ActorContext = Depends(require_kg_board_actor),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Hierarchical pending-queue view (spec f33eb9ca — Layer 4 Pending Queue UI).
-
-    Returns a 5-level tree: Ideations → Refinements → Specs → Sprints →
-    Cards, each level annotated with aggregate status counters drawn from
-    `consolidation_queue`. The UI renders this via
-    `frontend/src/components/knowledge/PendingQueueTree.tsx` with lazy
-    expansion by level (BR `Tree Lazy Fetch por Nível`).
-
-    Payload shape (stable — consumed by React component):
-        {
-          "board_id": str,
-          "total_pending": int,
-          "levels": {ideations: {pending,in_progress,done,failed},
-                     refinements: ..., specs: ..., sprints: ..., cards: ...},
-          "tree": [ideation-nodes with nested children]
-        }
-
-    The queue-state fetch + in-Python hierarchy join lives in
-    ``kg/dashboard_readers.build_pending_tree`` (a service reader) so this
-    endpoint holds no relational symbol; the use case returns the payload verbatim.
-    """
-    try:
-        result = await ListPendingTreeUseCase().execute(
-            ListPendingTreeCommand(board_id, depth=depth),
-            actor=actor,
-            uow=uow,
-        )
-    except (PermissionDeniedError, EntityNotFoundError) as exc:
-        raise RESTAdapterContract.http_error(exc, not_found_detail="Board not found")
-    return result.payload
 
 
 # ---------------------------------------------------------------------------
@@ -2196,160 +1993,11 @@ async def stream_kg_events(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/boards/{board_id}/pending/{queue_entry_id}/retry")
-async def retry_pending_entry(
-    board_id: str,
-    queue_entry_id: str,
-    recursive: bool = Query(False, description="Also re-enqueue descendant entries"),
-    actor: ActorContext = Depends(require_kg_board_writer_actor),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Re-queue a failed/done ConsolidationQueue entry so the worker
-    reprocesses it. `recursive=true` also re-enqueues descendants below
-    the artifact in the Ideation→Refinement→Spec→Sprint→Card hierarchy.
-
-    Idempotency: content_hash BR still owns "nothing actually changed"
-    no-op behaviour downstream, so retrying an unchanged artifact is a
-    cheap round-trip that touches the outbox once.
-
-    The mutation + recursive sweep + commit + worker signal live in
-    ``kg/governance.retry_pending_entry`` (a service write); a missing entry comes
-    back as ``EntityNotFoundError`` which this adapter maps to the legacy 404
-    ("queue entry not found").
-    """
-    try:
-        result = await RetryPendingEntryUseCase().execute(
-            RetryPendingEntryCommand(board_id, queue_entry_id, recursive=recursive),
-            actor=actor,
-            uow=uow,
-        )
-    except EntityNotFoundError as exc:
-        raise RESTAdapterContract.http_error(
-            exc, not_found_detail="queue entry not found"
-        )
-    except PermissionDeniedError as exc:
-        raise RESTAdapterContract.http_error(exc)
-    return result.payload
 
 
-@router.post("/boards/{board_id}/nodes/{node_id}/boost")
-async def boost_node(
-    board_id: str,
-    node_id: str,
-    actor: ActorContext = Depends(require_kg_board_writer_actor),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Increment a node's ``relevance_score`` by a fixed +0.3 with clamp [0, 1.5].
-
-    Persists a ``ConsolidationAudit`` row for the boost with all required NOT-NULL
-    columns populated (``artifact_type="boost"``, ``started_at``, …) — bug 547a2aa8
-    fix; the legacy row omitted ``artifact_type``/``started_at`` so its commit always
-    raised IntegrityError and was silently swallowed (200 with no audit row). Each
-    boost's audit row has a unique PK (uuid-suffixed ``session_id``) so repeated
-    boosts of the same node persist distinct rows. Idempotency is NOT enforced —
-    each call stacks another +0.3 until the clamp is reached, by design (repeat
-    clicks should reflect repeat intent).
-
-    Responses:
-        200 — `{node_id, node_type, score_before, score_after, boosted_at, boosted_by}`
-        404 — node not found in any table of the per-board graph
-
-    The graph read/SET + ``ConsolidationAudit`` staging live in
-    ``kg.governance.boost_node``; the ``BoostNodeUseCase`` commits the staged audit
-    via the UnitOfWork (best-effort — a commit failure on the already-boosted graph
-    rolls back the audit-only row and the boost still returns 200, preserving the
-    legacy contract). A missing node comes back as ``EntityNotFoundError`` (mapped to
-    the legacy 404 problem) and a failed SET as ``BoostPersistError`` (mapped to the
-    legacy 500 ``kuzu_error`` problem).
-    """
-    try:
-        result = await BoostNodeUseCase().execute(
-            BoostNodeCommand(board_id, node_id),
-            actor=actor,
-            uow=uow,
-        )
-    except EntityNotFoundError:
-        return _problem(
-            status=404,
-            title="Node not found",
-            detail=f"Node {node_id} not present in board {board_id}",
-            error_type="not_found",
-        )
-    except BoostPersistError as exc:
-        return _problem(
-            status=500,
-            title="Boost persist failed",
-            detail=str(exc),
-            error_type="kuzu_error",
-        )
-    except PermissionDeniedError as exc:
-        raise RESTAdapterContract.http_error(exc)
-    return result.payload
 
 
 @router.get("/openapi.json")
 async def openapi_spec():
     """Auto-generated OpenAPI 3.1 spec."""
     return {"info": {"title": "Okto Pulse KG API", "version": "0.1.0"}}
-
-
-# ---------------------------------------------------------------------------
-# Schema migration self-heal (spec 818748f2 — FR5)
-# ---------------------------------------------------------------------------
-
-
-class MigrateSchemaResponse(BaseModel):
-    board_id: str
-    migrated: bool = Field(
-        ..., description="True if the migration completed without errors."
-    )
-    columns_added: dict[str, list[str]] = Field(
-        default_factory=dict,
-        description="Per-node-type list of columns ALTER ADDed this run.",
-    )
-    errors: list[str] = Field(
-        default_factory=list,
-        description="Non-fatal warnings collected during migration.",
-    )
-    duration_ms: int
-
-
-@router.post(
-    "/{board_id}/migrate-schema",
-    response_model=MigrateSchemaResponse,
-)
-async def post_migrate_schema(
-    board_id: str,
-    actor: ActorContext = Depends(require_kg_board_writer_actor),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-):
-    """Force-apply schema migrations for a board (idempotent).
-
-    Use when consolidation fails with `Binder exception: Cannot find
-    property X for n` — usually means an ALTER ADD migration was missed
-    for a board bootstrapped before that schema column was introduced.
-
-    Re-runs all v0.3.x ALTER TABLE ADD on every node type. Idempotent:
-    calling on a board already migrated returns ``migrated=true`` with
-    ``columns_added`` empty (no-op).
-
-    Spec 818748f2.
-    """
-    await _require_kg_operation(
-        actor,
-        operation="kg.operations.schema.migrate",
-        legacy_operation="kg.admin.settings_write",
-        uow=uow,
-        board_id=board_id,
-    )
-    summary = await resolve_graph_schema_manager().migrate(board_id)
-    if not summary["migrated"] and any(
-        "board_not_found" in e for e in summary["errors"]
-    ):
-        return _problem(
-            status=404,
-            title="Board not found",
-            detail=summary["errors"][0],
-            error_type="not_found",
-        )
-    return MigrateSchemaResponse(**summary)

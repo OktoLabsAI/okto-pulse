@@ -12,7 +12,6 @@ export type PolicyEntityType =
   | 'ideation'
   | 'refinement'
   | 'spec'
-  | 'sprint'
   | 'card'
   | 'test_scenario';
 
@@ -157,16 +156,14 @@ export type SemanticAssessmentOutcome =
 export type SemanticMetricOutcome = 'pass' | 'fail';
 export type SemanticThresholdSource = 'default' | 'override';
 export type SemanticAssessmentCurrentnessReason =
+  | 'subject_edition_changed'
   | 'current_snapshot_missing'
   | 'subject_version_changed'
   | 'subject_content_changed'
   | 'guideline_revision_changed'
   | 'guideline_revision_digest_changed'
   | 'binding_revision_changed'
-  | 'binding_configuration_changed'
-  | 'policy_set_changed'
-  | 'binding_head_changed'
-  | 'input_digest_changed';
+  | 'binding_configuration_changed';
 
 export interface SemanticEvidenceRef {
   source_type: string;
@@ -200,7 +197,7 @@ export interface SemanticMetricResultDetail {
   outcome: SemanticMetricOutcome;
   rationale: string;
   evidence_refs: SemanticEvidenceRef[];
-  pinpoints: SemanticPinpoint[];
+  pinpoints: SemanticPinpointV2[];
 }
 
 export interface SemanticMetricResultFull
@@ -214,19 +211,17 @@ interface SemanticAssessmentBase {
   entity_type: PolicyEntityType;
   subject_id: string;
   subject_version: number;
-  /** Spec validation edition; null is legacy history-only evidence. */
+  /** Human validation edition; null identifies an uneditioned native subject. */
   validation_edition: number | null;
   /** Human lifecycle placement, separate from technical currentness drift. */
-  lifecycle_state: 'current' | 'previous' | 'history_only';
+  lifecycle_state: 'current' | 'previous';
   binding_id: string;
   guideline_id: string;
   guideline_revision_id: string;
-  enforcement: GuidelineEnforcement;
   state: SemanticAssessmentOutcome;
   currentness: PolicyCurrentness;
   currentness_reasons: SemanticAssessmentCurrentnessReason[];
   confidence: number;
-  minimum_confidence: number;
   metric_count: number;
   failed_metric_count: number;
   recorded_at: string;
@@ -242,9 +237,6 @@ export interface SemanticAssessmentDetail
   projection: 'detail';
   binding_revision: number;
   assessor_agent_id: string;
-  assessor_model_id: string | null;
-  assessor_independent: boolean;
-  confidence_admissible: boolean;
   metric_results: SemanticMetricResultDetail[];
 }
 
@@ -253,12 +245,8 @@ export interface SemanticAssessmentFull
   projection: 'full';
   metric_results: SemanticMetricResultFull[];
   subject_content_digest: string;
-  last_semantic_editor_id: string;
   guideline_revision_digest: string;
   binding_configuration_digest: string;
-  policy_set_digest: string;
-  binding_head_digest: string;
-  input_digest: string;
   request_digest: string;
   idempotency_key: string;
   receipt_digest: string;
@@ -277,7 +265,7 @@ interface SemanticFindingBase {
   subject_id: string;
   subject_version: number;
   validation_edition: number | null;
-  lifecycle_state: 'current' | 'previous' | 'history_only';
+  lifecycle_state: 'current' | 'previous';
   guideline_id: string;
   guideline_revision_id: string;
   binding_id: string;
@@ -298,7 +286,7 @@ export interface SemanticFindingDetail extends SemanticFindingBase {
   binding_revision: number;
   rationale: string;
   evidence_refs: SemanticEvidenceRef[];
-  pinpoints: SemanticPinpoint[];
+  pinpoints: SemanticPinpointV2[];
 }
 
 export interface SemanticFindingFull
@@ -345,7 +333,7 @@ interface SemanticWaiverBase {
   subject_id: string;
   subject_version: number;
   validation_edition: number | null;
-  lifecycle_state: 'current' | 'previous' | 'history_only';
+  lifecycle_state: 'current' | 'previous';
   finding_id: string;
   receipt_id: string;
   guideline_id: string;
@@ -479,7 +467,7 @@ export interface SemanticAssessmentResponse {
   assessment: SemanticAssessmentListItem;
 }
 
-export type SemanticAssessmentContractVersion = 'v1' | 'v2';
+export type SemanticAssessmentContractVersion = 'v2';
 export type SemanticPinpointKind = 'evidence' | 'issue';
 export type SemanticPinpointSeverity = 'low' | 'medium' | 'high' | 'critical';
 export type SemanticAnchorAvailability =
@@ -547,12 +535,7 @@ export interface SemanticAssessmentCurrentV2 {
   metrics: SemanticMetricResultV2[];
 }
 
-export type SemanticCurrentAssessmentResponse =
-  | {
-      contract_version: 'v1';
-      assessment: SemanticAssessmentDetail;
-    }
-  | {
+export type SemanticCurrentAssessmentResponse = {
       contract_version: 'v2';
       assessment: SemanticAssessmentCurrentV2;
     };
@@ -696,23 +679,23 @@ export interface GuidelineRevisionAuthorityResponse {
   >;
 }
 
-export interface GuidelineRevisionContentInput {
-  title: string;
-  body: string;
-}
-
 export interface CreateGuidelineRevisionRequest {
-  expected_head_revision: number;
-  version_bump: GuidelineVersionBump;
-  content: GuidelineRevisionContentInput;
-  metrics: GuidelineMetricInput[];
+  idempotency_key: string;
+  declared_semantic_version?: string;
+  patch: {
+    title?: string;
+    content?: string;
+    tags?: string[];
+    metrics?: GuidelineMetricInput[];
+  };
 }
 
 export interface CreateGuidelineRevisionResponse {
-  revision_id: string;
-  revision: string;
-  revision_digest: string;
-  metrics: GuidelineMetric[];
+  status: 'applied' | 'noop';
+  revision: GuidelineRevision | null;
+  head: GuidelineHead | null;
+  minimum_bump: GuidelineVersionBump | null;
+  rejection_code?: string | null;
 }
 
 interface RetireGuidelineRequestBase {
@@ -844,7 +827,7 @@ export interface GuidelineAdoptionResponse {
   receipt: GuidelineImpactReceipt;
 }
 
-export type GuidelineHistoryStatus = 'complete' | 'baseline_only';
+export type GuidelineHistoryStatus = 'complete';
 export type GuidelineImportTransactionStatus =
   | 'planned'
   | 'dry_run'
@@ -886,9 +869,7 @@ export interface GuidelineExportRevisionV3 {
   tags: string[];
   published_head_revision: number;
   published_head_updated_at: string;
-  legacy_version: string | null;
-  legacy_version_unresolvable: boolean;
-  legacy_tags: string[] | null;
+
 }
 
 export type GuidelineExportRetirementV3 = GuidelineRetirement;
@@ -900,14 +881,12 @@ export interface GuidelineExportLogicalBindingV3
 
 export interface GuidelineExportBindingV3 {
   binding: GuidelineExportLogicalBindingV3;
-  physical_source_kind: string;
+  physical_source_kind: 'native';
   binding_origin: string;
   materialization: GuidelineBindingMaterialization;
-  legacy_source_id: string | null;
-  legacy_guideline_version: string | null;
-  legacy_template_id: string | null;
-  legacy_template_version: string | null;
-  legacy_version_unresolvable: boolean;
+  materialized_revision_number: number | null;
+  materialized_template_id: string | null;
+  materialized_template_version: number | null;
   evidence_refs: Array<[name: string, value: string]>;
   binding_digest: string;
 }
@@ -919,7 +898,7 @@ export interface GuidelineExportAggregateV3 {
   retirement: GuidelineExportRetirementV3 | null;
   bindings: GuidelineExportBindingV3[];
   history_status: GuidelineHistoryStatus;
-  migration_notes: string[];
+  import_notes: string[];
 }
 
 export interface GuidelineExportEnvelopeV3 {

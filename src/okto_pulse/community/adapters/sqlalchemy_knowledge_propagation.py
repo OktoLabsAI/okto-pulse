@@ -20,7 +20,7 @@ import re
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
@@ -44,7 +44,7 @@ from okto_pulse.core.domain.knowledge_fingerprint import (
 from okto_pulse.core.domain.knowledge_selection import (
     KnowledgeAssignment,
     KnowledgeAssignmentState,
-    KnowledgeOriginClass,
+    KnowledgeSelectionState,
     KnowledgePropagationMode,
     KnowledgeRelevanceLink,
     KnowledgeTargetType,
@@ -52,7 +52,6 @@ from okto_pulse.core.domain.knowledge_selection import (
 from okto_pulse.core.domain.resource_revision import ResourceRevisionStamp
 from okto_pulse.core.ports.knowledge_propagation import (
     KnowledgeIdempotencyLookup,
-    KnowledgeLegacyAttachment,
     KnowledgeLocalAttachment,
     KnowledgeMutationAttempt,
     KnowledgeMutationKind,
@@ -76,8 +75,6 @@ from okto_pulse.core.ports.knowledge_propagation import (
     TemporalKnowledgeAssignment,
 )
 from okto_pulse.core.services.knowledge_propagation import (
-    KnowledgeGrandfatherAttachment,
-    KnowledgeGrandfatherEvidence,
     KnowledgePropagationService,
 )
 
@@ -454,11 +451,9 @@ def _canonical_kb_payload(
 
 def _kb_identity(item: object) -> str:
     explicit = _kb_value(item, "id")
-    if explicit not in (None, ""):
-        return str(explicit)
-    payload = _canonical_kb_payload(item)
-    digest = hashlib.sha256(knowledge_content_bytes(payload)).hexdigest()
-    return f"legacy_kb_{digest}"
+    if not isinstance(explicit, str) or not explicit.strip():
+        raise ValueError("knowledge_propagation_source_identity_required")
+    return explicit
 
 
 def _kb_content(item: object) -> tuple[bytes, str]:
@@ -469,8 +464,8 @@ def _kb_content(item: object) -> tuple[bytes, str]:
     return content_bytes, content_sha256
 
 
-def _legacy_kb_stamp(item: object) -> ResourceRevisionStamp:
-    """Preserve nullable historical revision/hash evidence exactly as stored."""
+def _knowledge_source_stamp(item: object) -> ResourceRevisionStamp:
+    """Read the current source identity and its explicitly stored lineage."""
 
     identity = _kb_identity(item)
     source_revision = _first_kb_value(
@@ -514,157 +509,21 @@ def _selectable_kb_stamp(
 ) -> ResourceRevisionStamp:
     """Return complete revision evidence for a new v2 assignment.
 
-    History remains nullable through ``_legacy_kb_stamp``. A live source
-    without an explicit revision uses its canonical digest as a deterministic
+    A live source without an explicit revision uses its canonical digest as a deterministic
     revision identity.
     """
 
-    legacy = _legacy_kb_stamp(item)
+    source = _knowledge_source_stamp(item)
     return ResourceRevisionStamp(
-        root_id=legacy.root_id,
-        immediate_parent_id=legacy.immediate_parent_id,
-        source_revision=legacy.source_revision or content_sha256,
+        root_id=source.root_id,
+        immediate_parent_id=source.immediate_parent_id,
+        source_revision=source.source_revision or content_sha256,
         source_content_sha256=content_sha256,
     )
 
 
-def _legacy_origin(item: object, *, actual_sha256: str) -> KnowledgeOriginClass:
-    raw_origin = _kb_value(item, "origin_class")
-    if raw_origin not in (None, ""):
-        try:
-            origin = KnowledgeOriginClass(str(raw_origin))
-        except ValueError:
-            return KnowledgeOriginClass.LEGACY_UNRESOLVED
-        # An historical payload may explicitly carry unresolved evidence, but
-        # selected_legacy is accepted only from the canonical grandfather
-        # ledger parsed below.  Arbitrary legacy JSON is not selection proof.
-        if origin is KnowledgeOriginClass.LEGACY_UNRESOLVED:
-            return origin
-
-    lineage_status = str(
-        _kb_value(item, "lineage_status") or _kb_value(item, "origin_resolution") or ""
-    ).strip()
-    if lineage_status in {"missing", "cycle", "divergent"}:
-        return KnowledgeOriginClass.LEGACY_UNRESOLVED
-    identity = _kb_identity(item)
-    parent = _first_kb_value(
-        item,
-        "immediate_parent_kb_id",
-        "source_kb_id",
-    )
-    if parent not in (None, "") and str(parent) == identity:
-        return KnowledgeOriginClass.LEGACY_UNRESOLVED
-    persisted_hash = _first_kb_value(
-        item,
-        "source_content_sha256",
-        "content_hash",
-    )
-    if persisted_hash not in (None, "") and str(persisted_hash) != actual_sha256:
-        return KnowledgeOriginClass.LEGACY_UNRESOLVED
-    # selected_legacy is accepted only when an existing durable envelope says
-    # so.  Absence of such evidence must preserve the conservative legacy-all
-    # compatibility behavior.
-    return KnowledgeOriginClass.LEGACY_ALL
 
 
-def _legacy_attachment(
-    item: object,
-    grandfathered: Mapping[str, object] | None = None,
-) -> KnowledgeLegacyAttachment:
-    stamp = _legacy_kb_stamp(item)
-    _content_bytes, physical_hash = _kb_content(item)
-    origin = _legacy_origin(
-        item,
-        actual_sha256=physical_hash,
-    )
-    physical_unresolved = origin is KnowledgeOriginClass.LEGACY_UNRESOLVED
-    raw_effective = _kb_value(item, "effective")
-    effective = raw_effective if isinstance(raw_effective, bool) else True
-    if grandfathered is not None:
-        try:
-            durable_origin = KnowledgeOriginClass(str(grandfathered["origin_class"]))
-        except (KeyError, ValueError) as exc:
-            raise ValueError(
-                "knowledge_propagation_grandfather_origin_invalid"
-            ) from exc
-        if durable_origin is KnowledgeOriginClass.V2:
-            raise ValueError("knowledge_propagation_grandfather_origin_invalid")
-        source_knowledge_id = str(grandfathered["source_knowledge_id"])
-        if source_knowledge_id != _kb_identity(item):
-            raise ValueError("knowledge_propagation_grandfather_identity_mismatch")
-        durable_hash = grandfathered.get("source_content_sha256")
-        evidence = grandfathered.get("evidence")
-        if not isinstance(evidence, Mapping):
-            raise ValueError("knowledge_propagation_grandfather_evidence_invalid")
-        evidence_fields = (
-            "durable_selection_evidence",
-            "origin_missing",
-            "origin_cycle",
-            "content_divergent",
-        )
-        if set(evidence) != set(evidence_fields) or any(
-            not isinstance(evidence.get(field_name), bool)
-            for field_name in evidence_fields
-        ):
-            raise ValueError("knowledge_propagation_grandfather_evidence_invalid")
-        declared_unresolved = any(
-            evidence.get(field_name) is True
-            for field_name in (
-                "origin_missing",
-                "origin_cycle",
-                "content_divergent",
-            )
-        )
-        selected = evidence.get("durable_selection_evidence") is True
-        expected_origin = (
-            KnowledgeOriginClass.LEGACY_UNRESOLVED
-            if declared_unresolved
-            else (
-                KnowledgeOriginClass.SELECTED_LEGACY
-                if selected
-                else KnowledgeOriginClass.LEGACY_ALL
-            )
-        )
-        if durable_origin is not expected_origin:
-            raise ValueError("knowledge_propagation_grandfather_origin_invalid")
-        stamp = ResourceRevisionStamp(
-            root_id=str(grandfathered["root_id"]),
-            immediate_parent_id=(
-                None
-                if grandfathered.get("immediate_parent_id") in (None, "")
-                else str(grandfathered["immediate_parent_id"])
-            ),
-            source_revision=(
-                None
-                if grandfathered.get("source_revision") in (None, "")
-                else str(grandfathered["source_revision"])
-            ),
-            source_content_sha256=(
-                None if durable_hash in (None, "") else str(durable_hash)
-            ),
-        )
-        origin = durable_origin
-        durable_effective = grandfathered.get("effective")
-        if not isinstance(durable_effective, bool):
-            raise ValueError("knowledge_propagation_grandfather_effective_invalid")
-        if durable_effective is not (
-            durable_origin is not KnowledgeOriginClass.LEGACY_UNRESOLVED
-        ):
-            raise ValueError("knowledge_propagation_grandfather_effective_invalid")
-        runtime_unresolved = declared_unresolved or physical_unresolved
-        if durable_hash not in (None, "") and str(durable_hash) != physical_hash:
-            durable_origin = KnowledgeOriginClass.LEGACY_UNRESOLVED
-            runtime_unresolved = True
-        elif runtime_unresolved:
-            durable_origin = KnowledgeOriginClass.LEGACY_UNRESOLVED
-        origin = durable_origin
-        effective = durable_effective and not runtime_unresolved
-    return KnowledgeLegacyAttachment(
-        source_knowledge_id=_kb_identity(item),
-        revision_stamp=stamp,
-        origin_class=origin,
-        effective=effective,
-    )
 
 
 def _local_attachment(
@@ -720,176 +579,8 @@ def _is_direct_target_local_attachment(item: object) -> bool:
     return not description.startswith("[propagated from parent]")
 
 
-def _grandfathered_classifications(
-    details: object,
-) -> dict[str, Mapping[str, object]]:
-    if not isinstance(details, Mapping):
-        raise ValueError("knowledge_propagation_grandfather_details_invalid")
-    required_keys = {
-        "contract_version",
-        "legacy_content_preserved",
-        "grandfathered_attachments",
-    }
-    if not required_keys.issubset(details) or not set(details).issubset(
-        required_keys | {"result_v2"}
-    ):
-        raise ValueError("knowledge_propagation_grandfather_details_invalid")
-    if "result_v2" in details and not isinstance(details["result_v2"], Mapping):
-        raise ValueError("knowledge_propagation_grandfather_details_invalid")
-    if (
-        details.get("contract_version") != 2
-        or details.get("legacy_content_preserved") is not True
-    ):
-        raise ValueError("knowledge_propagation_grandfather_details_invalid")
-    raw_items = details.get("grandfathered_attachments")
-    if not isinstance(raw_items, list) or not raw_items:
-        raise ValueError("knowledge_propagation_grandfather_details_invalid")
-    classifications: dict[str, Mapping[str, object]] = {}
-    physical_identities: set[tuple[str, str, str, str]] = set()
-    prior_sort_key: tuple[str, str, str, str, str] | None = None
-    for raw in raw_items:
-        if not isinstance(raw, Mapping):
-            raise ValueError("knowledge_propagation_grandfather_details_invalid")
-        if set(raw) != {
-            "source_knowledge_id",
-            "root_id",
-            "immediate_parent_id",
-            "source_revision",
-            "source_content_sha256",
-            "origin_class",
-            "effective",
-            "evidence",
-            "physical_locator",
-        }:
-            raise ValueError("knowledge_propagation_grandfather_details_invalid")
-        source_id = raw.get("source_knowledge_id")
-        root_id = raw.get("root_id")
-        immediate_parent_id = raw.get("immediate_parent_id")
-        source_revision = raw.get("source_revision")
-        source_hash = raw.get("source_content_sha256")
-        raw_origin = raw.get("origin_class")
-        raw_effective = raw.get("effective")
-        evidence = raw.get("evidence")
-        locator = raw.get("physical_locator")
-        if not isinstance(source_id, str) or not source_id:
-            raise ValueError("knowledge_propagation_grandfather_details_invalid")
-        if not isinstance(root_id, str) or not root_id.strip():
-            raise ValueError("knowledge_propagation_grandfather_details_invalid")
-        for optional_text in (
-            immediate_parent_id,
-            source_revision,
-            source_hash,
-        ):
-            if optional_text is not None and (
-                not isinstance(optional_text, str) or not optional_text.strip()
-            ):
-                raise ValueError("knowledge_propagation_grandfather_details_invalid")
-        if source_hash is not None and _SHA256_HEX.fullmatch(source_hash) is None:
-            raise ValueError("knowledge_propagation_grandfather_details_invalid")
-        if not isinstance(evidence, Mapping) or set(evidence) != {
-            "durable_selection_evidence",
-            "origin_missing",
-            "origin_cycle",
-            "content_divergent",
-        }:
-            raise ValueError("knowledge_propagation_grandfather_details_invalid")
-        if any(type(value) is not bool for value in evidence.values()):
-            raise ValueError("knowledge_propagation_grandfather_details_invalid")
-        unresolved = any(
-            evidence[field_name]
-            for field_name in (
-                "origin_missing",
-                "origin_cycle",
-                "content_divergent",
-            )
-        )
-        expected_origin = (
-            KnowledgeOriginClass.LEGACY_UNRESOLVED.value
-            if unresolved
-            else (
-                KnowledgeOriginClass.SELECTED_LEGACY.value
-                if evidence["durable_selection_evidence"]
-                else KnowledgeOriginClass.LEGACY_ALL.value
-            )
-        )
-        if raw_origin != expected_origin:
-            raise ValueError("knowledge_propagation_grandfather_details_invalid")
-        expected_effective = raw_origin != KnowledgeOriginClass.LEGACY_UNRESOLVED.value
-        if type(raw_effective) is not bool or raw_effective is not expected_effective:
-            raise ValueError("knowledge_propagation_grandfather_details_invalid")
-        if not isinstance(locator, Mapping):
-            raise ValueError("knowledge_propagation_grandfather_details_invalid")
-        if set(locator) != {
-            "storage_kind",
-            "table",
-            "owner_id",
-            "attachment_id",
-        }:
-            raise ValueError("knowledge_propagation_grandfather_details_invalid")
-        locator_values = tuple(
-            locator.get(field_name)
-            for field_name in (
-                "storage_kind",
-                "table",
-                "owner_id",
-                "attachment_id",
-            )
-        )
-        if any(not isinstance(value, str) or not value for value in locator_values):
-            raise ValueError("knowledge_propagation_grandfather_details_invalid")
-        storage_kind, table, owner_id, attachment_id = cast(
-            tuple[str, str, str, str],
-            locator_values,
-        )
-        if storage_kind not in {"entity_row", "card_json"}:
-            raise ValueError("knowledge_propagation_grandfather_details_invalid")
-        physical_identity = (
-            storage_kind,
-            table,
-            owner_id,
-            attachment_id,
-        )
-        if physical_identity in physical_identities:
-            raise ValueError("knowledge_propagation_grandfather_identity_ambiguous")
-        physical_identities.add(physical_identity)
-        sort_key = (
-            source_id,
-            storage_kind,
-            table,
-            owner_id,
-            attachment_id,
-        )
-        if prior_sort_key is not None and sort_key <= prior_sort_key:
-            raise ValueError("knowledge_propagation_grandfather_order_invalid")
-        prior_sort_key = sort_key
-        if source_id in classifications:
-            raise ValueError("knowledge_propagation_grandfather_identity_ambiguous")
-        classifications[source_id] = raw
-    return classifications
 
 
-def _physical_grandfather_record(
-    classifications: Mapping[str, Mapping[str, object]],
-    item: object,
-    *,
-    storage_kind: str,
-    table: str,
-    owner_id: str,
-) -> Mapping[str, object] | None:
-    source_id = _kb_identity(item)
-    record = classifications.get(source_id)
-    if record is None:
-        return None
-    locator = cast(Mapping[str, object], record["physical_locator"])
-    expected = {
-        "storage_kind": storage_kind,
-        "table": table,
-        "owner_id": owner_id,
-        "attachment_id": source_id,
-    }
-    if dict(locator) != expected:
-        raise ValueError("knowledge_propagation_grandfather_locator_mismatch")
-    return record
 
 
 def _selectable_source(
@@ -1041,7 +732,7 @@ def _current_physical_source(
         )
         parent_by_id[identity] = None if parent in (None, "") else str(parent)
 
-        if _legacy_kb_stamp(item).root_id != root_id:
+        if _knowledge_source_stamp(item).root_id != root_id:
             malformed_reasons[identity] = "root_mismatch"
 
     candidate_ids = set(by_id)
@@ -1257,10 +948,7 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
         )
         if not source_ids:
             return
-        if await self._spec_parent_uses_v2_authority(
-            context,
-            evidence.parent,
-        ):
+        if evidence.parent.parent_type is KnowledgeParentType.SPEC:
             # _fence_parent_evidence already write-locks the Spec target. Every
             # Spec propagation mutation locks that same row before its scope
             # CAS, so a fresh effective read below is the authoritative fence.
@@ -1364,7 +1052,7 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
                     },
                 )
             return
-        if not await self._spec_parent_uses_v2_authority(context, parent):
+        if parent.parent_type is not KnowledgeParentType.SPEC:
             await self._lock_source_ids(
                 context,
                 parent=parent,
@@ -1518,26 +1206,6 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
             )
         )
 
-    @staticmethod
-    async def _spec_parent_uses_v2_authority(
-        context: Any,
-        parent: KnowledgeParentKey,
-    ) -> bool:
-        if parent.parent_type is not KnowledgeParentType.SPEC:
-            return False
-        matched = (
-            await context.execute(
-                select(KnowledgePropagationScopeRecord.id).where(
-                    KnowledgePropagationScopeRecord.board_id == parent.board_id,
-                    KnowledgePropagationScopeRecord.target_type
-                    == KnowledgeTargetType.SPEC.value,
-                    KnowledgePropagationScopeRecord.target_id == parent.parent_id,
-                    KnowledgePropagationScopeRecord.v2_active.is_(True),
-                )
-            )
-        ).scalar_one_or_none()
-        return matched is not None
-
     async def _effective_spec_parent_sources(
         self,
         context: Any,
@@ -1550,14 +1218,12 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
         ]
         | None = None,
     ) -> tuple[KnowledgeSelectableSource, ...] | None:
-        """Resolve Card sources from the Spec's effective v2 authority.
+        """Resolve Spec sources through native assignments and local attachments.
 
-        ``None`` means the parent has no active v2 boundary and the caller may
-        use the legacy physical projection.  An empty tuple is authoritative:
-        the Spec is v2-active but has no effective Knowledge to expose.
+        Other parent types use their own physical source collections.
         """
 
-        if not await self._spec_parent_uses_v2_authority(context, parent):
+        if parent.parent_type is not KnowledgeParentType.SPEC:
             return None
         if not requested_ids:
             return ()
@@ -1570,13 +1236,6 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
                 target_id=parent.parent_id,
             ),
         )
-        if not read.v2_active:
-            raise KnowledgePropagationPortError(
-                "knowledge_propagation_parent_authority_changed",
-                "the parent Spec v2 authority changed during source resolution",
-                details=parent.to_dict(),
-            )
-
         # One logical representative per root. Target-local Spec attachments
         # shadow an inherited assignment of the same root, matching Resource
         # Lineage's direct-over-inherited rule.
@@ -1907,8 +1566,6 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
     ) -> None:
         """Fence the CAS with fresh physical parent/board facts."""
 
-        if plan.operation_kind is KnowledgeMutationKind.GRANDFATHER:
-            return
         physical_parent = self._target_parent_key(plan.target, target_row)
         if plan.parent is not None and physical_parent != plan.parent:
             raise KnowledgePropagationPortError(
@@ -1953,184 +1610,26 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
         ).scalar_one_or_none()
 
     async def _physical_attachments(
-        self,
-        context: Any,
-        *,
-        target: KnowledgeTargetKey,
+        self, context: Any, *, target: KnowledgeTargetKey,
         target_row: Spec | Card,
-        v2_activated_at: datetime | None,
-    ) -> tuple[
-        tuple[KnowledgeLegacyAttachment, ...],
-        tuple[KnowledgeLocalAttachment, ...],
-    ]:
-        grandfathered = await self._latest_grandfather_classifications(
-            context,
-            target,
-        )
-        if target.target_type is KnowledgeTargetType.SPEC:
-            rows = (
-                (
-                    await context.execute(
-                        select(SpecKnowledgeBase)
-                        .where(SpecKnowledgeBase.spec_id == target.target_id)
-                        .order_by(
-                            SpecKnowledgeBase.created_at.asc(),
-                            SpecKnowledgeBase.id.asc(),
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            legacy: list[KnowledgeLegacyAttachment] = []
-            local: list[KnowledgeLocalAttachment] = []
-            activation = None if v2_activated_at is None else _as_utc(v2_activated_at)
-            for row in rows:
-                durable_classification = _physical_grandfather_record(
-                    grandfathered,
-                    row,
-                    storage_kind="entity_row",
-                    table="spec_knowledge_bases",
-                    owner_id=target.target_id,
-                )
-                created_at = getattr(row, "created_at", None)
-                if (
-                    durable_classification is None
-                    and activation is not None
-                    and isinstance(created_at, datetime)
-                    and _as_utc(created_at) > activation
-                    and _is_direct_target_local_attachment(row)
-                ):
-                    local.append(
-                        _local_attachment(
-                            row,
-                            attached_at=created_at,
-                        )
-                    )
-                else:
-                    legacy.append(
-                        _legacy_attachment(
-                            row,
-                            durable_classification,
-                        )
-                    )
-            return tuple(legacy), tuple(local)
-
-        values = target_row.knowledge_bases
-        if values is None:
-            values = []
-        if not isinstance(values, list) or any(
-            not isinstance(item, Mapping) for item in values
-        ):
-            raise KnowledgePropagationPortError(
-                "knowledge_propagation_legacy_payload_corrupt",
-                "card knowledge_bases must contain only JSON objects",
-                details=target.to_dict(),
-            )
-        return (
-            tuple(
-                sorted(
-                    (
-                        _legacy_attachment(
-                            item,
-                            _physical_grandfather_record(
-                                grandfathered,
-                                item,
-                                storage_kind="card_json",
-                                table="cards",
-                                owner_id=target.target_id,
-                            ),
-                        )
-                        for item in values
-                    ),
-                    key=lambda item: item.source_knowledge_id,
-                )
-            ),
-            (),
-        )
-
-    async def _latest_grandfather_classifications(
-        self,
-        context: Any,
-        target: KnowledgeTargetKey,
-    ) -> dict[str, Mapping[str, object]]:
-        """Select the highest-revision canonical grandfather classification.
-
-        Resumable backfills may legitimately append multiple grandfather
-        ledgers. ``recorded_at`` is not an authority boundary: the scope
-        revision is. Duplicate rows at that revision are tolerated only when
-        their canonical attachment classifications are identical.
-        """
-
-        predicates = (
-            *_target_predicates(KnowledgeMutationLedgerRecord, target),
-            KnowledgeMutationLedgerRecord.operation_kind
-            == KnowledgeMutationKind.GRANDFATHER.value,
-            KnowledgeMutationLedgerRecord.outcome
-            == KnowledgeMutationOutcome.GRANDFATHERED.value,
-        )
-        latest_revision = await context.scalar(
-            select(func.max(KnowledgeMutationLedgerRecord.revision)).where(*predicates)
-        )
-        if latest_revision is None:
-            return {}
-        rows = (
-            (
-                await context.execute(
-                    select(KnowledgeMutationLedgerRecord)
-                    .where(
-                        *predicates,
-                        KnowledgeMutationLedgerRecord.revision == int(latest_revision),
-                    )
-                    .order_by(
-                        KnowledgeMutationLedgerRecord.operation_id.asc(),
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        parsed: list[
-            tuple[
-                KnowledgeMutationLedgerRecord,
-                dict[str, Mapping[str, object]],
-            ]
-        ] = []
+    ) -> tuple[KnowledgeLocalAttachment, ...]:
+        if target.target_type is KnowledgeTargetType.CARD:
+            return ()
+        rows = (await context.execute(
+            select(SpecKnowledgeBase)
+            .where(SpecKnowledgeBase.spec_id == target.target_id)
+            .order_by(SpecKnowledgeBase.created_at.asc(), SpecKnowledgeBase.id.asc())
+        )).scalars().all()
+        local = []
         for row in rows:
-            try:
-                classifications = _grandfathered_classifications(row.details)
-            except (TypeError, ValueError) as exc:
+            if not _is_direct_target_local_attachment(row):
                 raise KnowledgePropagationPortError(
-                    "knowledge_propagation_grandfather_ledger_corrupt",
-                    "the canonical grandfather ledger cannot be reconstructed",
-                    details={
-                        **target.to_dict(),
-                        "revision": int(latest_revision),
-                        "operation_id": str(row.operation_id),
-                    },
-                ) from exc
-            parsed.append((row, classifications))
-        if not parsed:
-            raise KnowledgePropagationPortError(
-                "knowledge_propagation_grandfather_ledger_corrupt",
-                "the canonical grandfather revision has no ledger row",
-                details={
-                    **target.to_dict(),
-                    "revision": int(latest_revision),
-                },
-            )
-        canonical = parsed[0][1]
-        if any(classifications != canonical for _, classifications in parsed[1:]):
-            raise KnowledgePropagationPortError(
-                "knowledge_propagation_grandfather_ledger_conflict",
-                "canonical grandfather ledgers conflict at the same scope revision",
-                details={
-                    **target.to_dict(),
-                    "revision": int(latest_revision),
-                    "operation_ids": [str(row.operation_id) for row, _ in parsed],
-                },
-            )
-        return canonical
+                    "knowledge_propagation_physical_spec_attachment_invalid",
+                    "Inherited Knowledge must use native assignments",
+                    details=target.to_dict(),
+                )
+            local.append(_local_attachment(row, attached_at=row.created_at))
+        return tuple(local)
 
     async def _selectable_sources(
         self,
@@ -2348,158 +1847,6 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
                 resolved.append(_deleted_selectable_source(requested_id, bound))
         return tuple(resolved)
 
-    async def load_grandfather_inventory(
-        self,
-        context: Any,
-        target: KnowledgeTargetKey,
-    ) -> tuple[KnowledgeGrandfatherAttachment, ...]:
-        """Build the complete conservative inventory for resumable backfill.
-
-        This read never mutates the historical entity row/card JSON. Revision
-        and hash evidence remain nullable exactly as stored. Canonical bytes
-        are computed only to classify divergence.
-        """
-
-        if not isinstance(target, KnowledgeTargetKey):
-            raise TypeError("knowledge_propagation_grandfather_target_invalid")
-        try:
-            target_row = await self._load_target(context, target)
-            if target.target_type is KnowledgeTargetType.SPEC:
-                physical_items: tuple[object, ...] = tuple(
-                    (
-                        await context.execute(
-                            select(SpecKnowledgeBase)
-                            .where(SpecKnowledgeBase.spec_id == target.target_id)
-                            .order_by(
-                                SpecKnowledgeBase.created_at.asc(),
-                                SpecKnowledgeBase.id.asc(),
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                storage_kind = "entity_row"
-                table = "spec_knowledge_bases"
-            else:
-                raw_items = target_row.knowledge_bases
-                if raw_items is None:
-                    raw_items = []
-                if not isinstance(raw_items, list) or any(
-                    not isinstance(item, Mapping) for item in raw_items
-                ):
-                    raise KnowledgePropagationPortError(
-                        "knowledge_propagation_legacy_payload_corrupt",
-                        "card knowledge_bases must contain only JSON objects",
-                        details=target.to_dict(),
-                    )
-                physical_items = tuple(raw_items)
-                storage_kind = "card_json"
-                table = "cards"
-
-            parent_ids = tuple(
-                sorted(
-                    {
-                        str(parent_id)
-                        for item in physical_items
-                        if (
-                            parent_id := _first_kb_value(
-                                item,
-                                "immediate_parent_kb_id",
-                                "source_kb_id",
-                            )
-                        )
-                        not in (None, "")
-                    }
-                )
-            )
-            resolved_parents = await self._selectable_sources(
-                context,
-                target=target,
-                target_row=target_row,
-                requested_ids=parent_ids,
-            )
-            available_parent_ids = {
-                item.requested_knowledge_id for item in resolved_parents
-            }
-
-            inventory: list[KnowledgeGrandfatherAttachment] = []
-            for item in physical_items:
-                source_id = _kb_identity(item)
-                parent_id = _first_kb_value(
-                    item,
-                    "immediate_parent_kb_id",
-                    "source_kb_id",
-                )
-                parent_text = None if parent_id in (None, "") else str(parent_id)
-                _content_bytes, physical_hash = _kb_content(item)
-                persisted_hash = _first_kb_value(
-                    item,
-                    "source_content_sha256",
-                    "content_hash",
-                )
-                lineage_status = str(
-                    _kb_value(item, "lineage_status")
-                    or _kb_value(item, "origin_resolution")
-                    or ""
-                ).strip()
-                inventory.append(
-                    KnowledgeGrandfatherAttachment(
-                        source_knowledge_id=source_id,
-                        revision_stamp=_legacy_kb_stamp(item),
-                        evidence=KnowledgeGrandfatherEvidence(
-                            # No pre-v2 typed selection store exists. Generic
-                            # JSON/source lineage is not sufficient proof.
-                            durable_selection_evidence=False,
-                            origin_missing=(
-                                lineage_status == "missing"
-                                or (
-                                    parent_text is not None
-                                    and parent_text not in available_parent_ids
-                                )
-                            ),
-                            origin_cycle=(
-                                lineage_status == "cycle"
-                                or (
-                                    parent_text is not None and parent_text == source_id
-                                )
-                            ),
-                            content_divergent=(
-                                lineage_status == "divergent"
-                                or (
-                                    persisted_hash not in (None, "")
-                                    and str(persisted_hash) != physical_hash
-                                )
-                            ),
-                        ),
-                        physical_locator={
-                            "storage_kind": storage_kind,
-                            "table": table,
-                            "owner_id": target.target_id,
-                            "attachment_id": source_id,
-                        },
-                    )
-                )
-            return tuple(
-                sorted(
-                    inventory,
-                    key=lambda item: (
-                        item.source_knowledge_id,
-                        item.physical_locator["storage_kind"],
-                        item.physical_locator["table"],
-                        item.physical_locator["owner_id"],
-                        item.physical_locator["attachment_id"],
-                    ),
-                )
-            )
-        except KnowledgePropagationPortError:
-            raise
-        except (SQLAlchemyError, TypeError, ValueError) as exc:
-            raise KnowledgePropagationPortError(
-                "knowledge_propagation_grandfather_inventory_failed",
-                "legacy knowledge inventory could not be classified safely",
-                details=target.to_dict(),
-            ) from exc
 
     async def get_idempotency_entry(
         self,
@@ -2546,16 +1893,6 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
         try:
             target_row = await self._load_target(context, request.target)
             scope = await self._scope_row(context, request.target)
-            if (
-                scope is not None
-                and bool(scope.v2_active)
-                and scope.v2_activated_at is None
-            ):
-                raise KnowledgePropagationPortError(
-                    "knowledge_propagation_v2_activation_missing",
-                    "an active scope has no durable v2 activation boundary",
-                    details=request.target.to_dict(),
-                )
             assignments: tuple[TemporalKnowledgeAssignment, ...] = ()
             tombstones: tuple[KnowledgePropagationTombstone, ...] = ()
             snapshots: tuple[KnowledgePropagationSnapshot, ...] = ()
@@ -2622,16 +1959,10 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
                 )
                 snapshots = tuple(_snapshot_from_row(row) for row in snapshot_rows)
 
-            v2_activated_at = (
-                None
-                if scope is None or scope.v2_activated_at is None
-                else _as_utc(scope.v2_activated_at)
-            )
-            legacy, local = await self._physical_attachments(
+            local = await self._physical_attachments(
                 context,
                 target=request.target,
                 target_row=target_row,
-                v2_activated_at=v2_activated_at,
             )
             sources = await self._selectable_sources(
                 context,
@@ -2643,15 +1974,12 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
             return KnowledgePropagationScope(
                 target=request.target,
                 scope_revision=0 if scope is None else int(scope.scope_revision),
-                v2_active=False if scope is None else bool(scope.v2_active),
-                selection_state=None if scope is None else scope.selection_state,
+                selection_state=KnowledgeSelectionState.OMITTED if scope is None else scope.selection_state,
                 assignments=assignments,
                 tombstones=tombstones,
                 snapshots=snapshots,
-                legacy_attachments=legacy,
                 sources=sources,
                 local_attachments=local,
-                v2_activated_at=v2_activated_at,
             )
         except KnowledgePropagationPortError:
             raise
@@ -2704,11 +2032,7 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
                     target_type=_enum_value(plan.target.target_type),
                     target_id=plan.target.target_id,
                     scope_revision=plan.next_revision,
-                    v2_active=plan.next_scope_v2_active,
                     selection_state=next_selection_state,
-                    v2_activated_at=(
-                        plan.occurred_at if plan.next_scope_v2_active else None
-                    ),
                     created_at=plan.occurred_at,
                     updated_at=plan.occurred_at,
                 )
@@ -2716,15 +2040,6 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
             await context.flush()
             return scope_id
 
-        v2_activated_at = scope.v2_activated_at
-        if v2_activated_at is None and plan.next_scope_v2_active:
-            if bool(scope.v2_active):
-                raise KnowledgePropagationPortError(
-                    "knowledge_propagation_v2_activation_missing",
-                    "an active scope has no durable v2 activation boundary",
-                    details=plan.target.to_dict(),
-                )
-            v2_activated_at = plan.occurred_at
         statement = (
             update(KnowledgePropagationScopeRecord)
             .where(
@@ -2734,9 +2049,7 @@ class CommunitySqlAlchemyKnowledgePropagationStore:
             )
             .values(
                 scope_revision=plan.next_revision,
-                v2_active=plan.next_scope_v2_active,
                 selection_state=next_selection_state,
-                v2_activated_at=v2_activated_at,
                 updated_at=plan.occurred_at,
             )
             .execution_options(synchronize_session=False)

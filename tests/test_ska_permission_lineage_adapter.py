@@ -16,6 +16,7 @@ from okto_pulse.core.domain.permissions import (
     SKA_PERMISSION_INTRODUCTION_V1,
     _get_nested,
 )
+from okto_pulse.core.ports.permission_policy import registered_permission_flags
 from okto_pulse.community.adapters.permission_preset_reconciliation import (
     reconcile_community_permission_presets,
 )
@@ -29,18 +30,17 @@ from okto_pulse.community.adapters.sqlalchemy_application_persistence import (
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Agent,
     AgentBoard,
-    Base,
     Board,
     PermissionPreset,
 )
 from okto_pulse.community.api.presets import PresetCreate, PresetUpdate
+from okto_pulse.community.adapters.current_relational_schema import current_schema_contract, initialize_current_schema
 
 
 async def _factory():
     engine = create_async_engine("sqlite+aiosqlite://", future=True)
     factory = async_sessionmaker(engine, expire_on_commit=False)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await initialize_current_schema(engine, current_schema_contract())
     return engine, factory
 
 
@@ -82,7 +82,7 @@ def test_custom_lineage_inherits_base_preserves_false_and_honors_ceiling() -> No
                     base_preset_id=spec.id,
                     flags={"ideation": {"quality": {"read": False}}},
                 )
-                board = Board(id="board-1", name="Board", owner_id="owner-1")
+                board = Board(realm_id="local", id="board-1", name="Board", owner_id="owner-1")
                 agent = Agent(
                     id="agent-1",
                     name="Agent",
@@ -255,7 +255,7 @@ def test_cycle_dangling_and_unknown_direct_preset_fail_closed() -> None:
                     for preset in await gateway.list_presets(user_id="owner-1")
                 }
 
-                board = Board(id="board-1", name="Board", owner_id="unknown-owner")
+                board = Board(realm_id="local", id="board-1", name="Board", owner_id="unknown-owner")
                 agent = Agent(
                     id="agent-unknown",
                     name="Unknown",
@@ -389,12 +389,18 @@ def test_partial_root_is_compatible_but_non_object_flags_require_review() -> Non
         )
 
 
-def test_unrecognized_direct_agent_requires_owner_review_across_adapters() -> None:
+@pytest.mark.parametrize("document_kind", ["partial", "missing_generation"])
+def test_unrecognized_direct_agent_requires_owner_review_across_adapters(document_kind) -> None:
+    flags = {"board": {"read": True}}
+    if document_kind == "missing_generation":
+        flags = registered_permission_flags()
+        del flags["guidelines"]["assessments"]
+
     async def drive():
         engine, factory = await _factory()
         try:
             async with factory() as session:
-                board = Board(
+                board = Board(realm_id="local",
                     id="direct-review-board",
                     name="Direct review",
                     owner_id="direct-review-owner",
@@ -405,7 +411,7 @@ def test_unrecognized_direct_agent_requires_owner_review_across_adapters() -> No
                     api_key="direct-review-key",
                     api_key_hash="direct-review-hash",
                     created_by="direct-review-owner",
-                    permission_flags={"board": {"read": True}},
+                    permission_flags=flags,
                     preset_id=None,
                 )
                 grant = AgentBoard(
@@ -435,6 +441,8 @@ def test_unrecognized_direct_agent_requires_owner_review_across_adapters() -> No
                         board_id=board.id,
                     )
                 )
+                await session.refresh(agent)
+                assert agent.permission_flags == flags
                 return effective, authentication, application
         finally:
             await engine.dispose()
@@ -525,7 +533,7 @@ def test_malformed_board_ceiling_fails_closed_across_community_adapters(
         engine, factory = await _factory()
         try:
             async with factory() as session:
-                board = Board(
+                board = Board(realm_id="local",
                     id="malformed-ceiling-board",
                     name="Malformed ceiling",
                     owner_id="malformed-ceiling-owner",

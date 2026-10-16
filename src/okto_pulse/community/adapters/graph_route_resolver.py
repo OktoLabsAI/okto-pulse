@@ -52,6 +52,9 @@ from okto_pulse.community.adapters.graph_backend_binding import (
     admit_grafx_database,
 )
 from okto_pulse.community.config import validate_grafx_page_size
+from okto_pulse.community.adapters.filesystem_observation import (
+    FilesystemObservationBudget, FilesystemObservationLimit,
+)
 
 _INITIAL_GENERATION = "generation-1"
 _ROUTE_LOCK_FILENAME = ".graph_route_initialization.lock"
@@ -192,6 +195,7 @@ class CommunityGraphRouteResolver:
         self._global_backend = global_backend
         self._grafx_page_size = validate_grafx_page_size(grafx_page_size)
         self._open_grafx_database = open_grafx_database
+        self._observation_timeout: Callable[[], float | None] | None = None
         if (
             isinstance(lock_timeout_seconds, bool)
             or not isinstance(lock_timeout_seconds, (int, float))
@@ -201,6 +205,10 @@ class CommunityGraphRouteResolver:
         self._lock_timeout_seconds = float(lock_timeout_seconds)
 
     # -- read-only routing -------------------------------------------------
+
+    def bind_observation_timeout(self, callback: Callable[[], float | None]) -> None:
+        """Composition supplies the thread-local Health deadline; None is foreground."""
+        self._observation_timeout = callback
 
     def inspect_board_route(self, board_id: str) -> CommunityGraphRouteSnapshot:
         binding = self._store.inspect_board_binding(board_id)
@@ -912,18 +920,11 @@ class CommunityGraphRouteResolver:
         scope_id: str,
         backend: GraphBackend,
     ) -> CommunityGraphRouteCandidate:
-        if scope == "board":
-            path = (
-                self._store.board_ladybug_path(scope_id)
-                if backend == "ladybug"
-                else self._store.board_grafx_path(scope_id, _INITIAL_GENERATION)
-            )
-        else:
-            path = (
-                self._store.global_ladybug_path()
-                if backend == "ladybug"
-                else self._store.global_grafx_path(_INITIAL_GENERATION)
-            )
+        path = (
+            self._store.board_grafx_path(scope_id, _INITIAL_GENERATION)
+            if scope == "board"
+            else self._store.global_grafx_path(_INITIAL_GENERATION)
+        )
         return CommunityGraphRouteCandidate(
             scope=scope,
             scope_id=scope_id,
@@ -931,7 +932,7 @@ class CommunityGraphRouteResolver:
             generation=_INITIAL_GENERATION,
             binding_path=path,
             anchor_path=path,
-            page_size=self._grafx_page_size if backend == "grafx" else None,
+            page_size=self._grafx_page_size,
         )
 
     # -- route authentication --------------------------------------------
@@ -949,7 +950,7 @@ class CommunityGraphRouteResolver:
                 scope=binding.scope,
                 scope_id=binding.scope_id,
             )
-        expected = "directory" if binding.backend == "grafx" else "file"
+        expected = "directory"
         if binding.scope == "board":
             self._require_expected_path(
                 binding.physical_path,
@@ -960,11 +961,7 @@ class CommunityGraphRouteResolver:
             )
             return self._board_snapshot_from_authenticated_binding(binding)
 
-        anchor = (
-            binding.physical_path
-            if binding.backend == "grafx"
-            else self._store.global_ladybug_path()
-        )
+        anchor = binding.physical_path
         active = self._authenticated_active(
             anchor,
             expected=expected,
@@ -975,14 +972,6 @@ class CommunityGraphRouteResolver:
         active_path = active.graph_path if active is not None else anchor
         active_generation = active.generation_id if active is not None else None
         manifest_sha256 = active.manifest_sha256 if active is not None else None
-        if binding.backend == "ladybug" and not _same_path(
-            binding.physical_path, anchor
-        ):
-            raise _corruption(
-                "global_route_binding_anchor_invalid",
-                scope=binding.scope,
-                scope_id=binding.scope_id,
-            )
         self._require_expected_path(
             active_path,
             expected=expected,
@@ -1105,7 +1094,15 @@ class CommunityGraphRouteResolver:
         # too late: the reparse target would already have been opened.
         self._require_no_alias(generation_root, scope=scope, scope_id=scope_id)
         try:
-            active = read_active_generation(anchor)
+            observation = None
+            if self._observation_timeout is not None and self._observation_timeout() is not None:
+                observation = FilesystemObservationBudget(self._observation_timeout)
+            active = read_active_generation(anchor, observation=observation)
+        except FilesystemObservationLimit as failure:
+            raise _capability(
+                failure.reason, operation="observe_global_route",
+                scope=scope, scope_id=scope_id,
+            ) from failure
         except GlobalDiscoveryLayoutError as failure:
             raise _corruption(
                 "global_route_pointer_or_manifest_invalid",

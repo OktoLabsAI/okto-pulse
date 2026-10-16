@@ -40,6 +40,8 @@ from okto_pulse.community.adapters.grafx_board_vector_search import (
     CommunityGrafxBoardVectorSearch,
 )
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
+from okto_pulse.community.adapters.grafx_decision_read_filter import normative_decision_filter_clause
+from okto_pulse.community.adapters.grafx_query_execution import GrafxDeadlineReader
 from okto_pulse.community.adapters.grafx_composed_reads import read_branches, read_frontier
 from okto_pulse.community.adapters.grafx_relationship_layout import (
     PULSE_RELATIONSHIP_LAYOUT,
@@ -223,6 +225,7 @@ class CommunityGrafxGraphStore:
         *,
         read_database_resolver: DatabaseResolver | None = None,
         read_database_scope: Callable[[str], AbstractContextManager[Database]] | None = None,
+        query_timeout: Callable[[str], float | None] | None = None,
     ) -> None:
         if not callable(database_resolver):
             raise ValueError("database_resolver must be callable")
@@ -233,10 +236,12 @@ class CommunityGrafxGraphStore:
         self._database_resolver = database_resolver
         self._read_database_resolver = read_database_resolver or database_resolver
         self._read_database_scope = read_database_scope
+        self._query_timeout = query_timeout
         self._revalidate_fence = revalidate_fence
         self._vector_provider = CommunityGrafxBoardVectorSearch(
             self._read_database_resolver,
             read_database_scope=read_database_scope,
+            query_timeout=query_timeout,
         )
 
     def _resolve(self, board_id: str, *, operation: str) -> Database:
@@ -278,7 +283,11 @@ class CommunityGrafxGraphStore:
             )
             try:
                 with scope as database, database.begin("read") as reader:
-                    return callback(reader)
+                    bounded = GrafxDeadlineReader(reader, board_id, self._query_timeout)
+                    bounded.check()
+                    result = callback(bounded)
+                    bounded.check()
+                    return result
             except GrafxLeaseTimeout as exc:
                 if attempt == 0:
                     continue
@@ -817,6 +826,7 @@ class CommunityGrafxGraphStore:
             "AND n.source_confidence >= $min_confidence "
             "AND n.relevance_score >= $min_relevance "
             f"AND {tpl.superseded_filter_clause('n')} "
+            f"AND {normative_decision_filter_clause(wanted_type)} "
             f"AND {tpl.active_read_filter_clause('n')} "
             "RETURN n.id, n.title, n.content, n.created_at, n.source_confidence, "
             "n.relevance_score, n.superseded_by, n.query_hits, n.last_queried_at, "
@@ -1257,7 +1267,8 @@ class CommunityGrafxGraphStore:
                     "WHERE c.id = $constraint_id "
                     f"AND {tpl.active_read_filter_clause('c')} "
                     f"AND {tpl.active_read_filter_clause('bug')} "
-                    "RETURN bug.id, bug.title",
+                    "RETURN bug.id, bug.title, r.confidence, r.rule_id, "
+                    "r.layer, r.created_by, r.fallback_reason",
                     {"constraint_id": constraint_id},
                 )
             )
@@ -1330,6 +1341,16 @@ class CommunityGrafxGraphStore:
                 )
             ),
         )
+
+    def read_bug_cluster_graph(self, board_id, bugs, *, group_by):
+        from okto_pulse.community.adapters.grafx_bug_clusters import read_bug_cluster_graph
+        return self._read(board_id, operation="read_bug_cluster_graph",
+            callback=lambda reader: read_bug_cluster_graph(reader, bugs, group_by=group_by))
+
+    def read_spec_coverage_graph(self, board_id, scope):
+        from okto_pulse.community.adapters.grafx_spec_coverage import read_spec_coverage_graph
+        return self._read(board_id, operation="read_spec_coverage_graph",
+            callback=lambda reader: read_spec_coverage_graph(reader, scope))
 
     # ------------------------------------------------------------------
     # Schema and capabilities

@@ -343,7 +343,7 @@ def _create_decision_schema(database) -> None:
             "id STRING, title STRING, source_artifact_ref STRING, "
             "content STRING, context STRING, justification STRING, "
             "kind_of STRING, embedding VECTOR(decision_embedding_idx), "
-            "superseded_by STRING, graph_layer STRING, revocation_reason STRING, "
+            "superseded_by STRING, graph_layer STRING, revocation_reason STRING, source_status STRING, "
             "PRIMARY KEY(id))"
         )
 
@@ -356,6 +356,7 @@ def _insert_decision(
     graph_layer: str | None = "canonical",
     superseded_by: str | None = None,
     revocation_reason: str | None = None,
+    source_status: str | None = None,
 ) -> None:
     with database.begin("write") as transaction:
         transaction.execute(
@@ -364,7 +365,7 @@ def _insert_decision(
             "content: $content, context: $context, justification: $justification, "
             "kind_of: $kind_of, embedding: $embedding, "
             "superseded_by: $superseded_by, graph_layer: $graph_layer, "
-            "revocation_reason: $revocation_reason})",
+            "revocation_reason: $revocation_reason, source_status: $source_status})",
             {
                 "id": node_id,
                 "title": f"title {node_id}",
@@ -377,8 +378,24 @@ def _insert_decision(
                 "superseded_by": superseded_by,
                 "graph_layer": graph_layer,
                 "revocation_reason": revocation_reason,
+                "source_status": source_status,
             },
         )
+
+
+@pytest.mark.parametrize('exact_threshold', [0, 1000])
+def test_normative_decision_status_filters_before_limit_and_preserves_history(exact_threshold):
+    with okto_grafx.connect(':memory:', vector_exact_scan_threshold=exact_threshold) as database:
+        _create_decision_schema(database)
+        _insert_decision(database, 'current', _vector(0.8, 0.6), source_status='active')
+        _insert_decision(database, 'previous', _vector(1.0), source_status='superseded')
+        _insert_decision(database, 'revoked', _vector(1.0), source_status='revoked')
+        adapter = CommunityGrafxBoardVectorSearch(lambda _board: database)
+        hits = adapter.vector_search('board', 'Decision', _vector(1.0), 1, 0.0)
+        assert [hit['node_id'] for hit in hits] == ['current']
+        historical = adapter.vector_search('board', 'Decision', _vector(1.0), 3, 0.0,
+                                           include_superseded=True)
+        assert {hit['node_id'] for hit in historical} == {'current', 'previous', 'revoked'}
 
 
 def test_real_grafx_filters_before_ranking_and_normalizes_exact_scores() -> None:

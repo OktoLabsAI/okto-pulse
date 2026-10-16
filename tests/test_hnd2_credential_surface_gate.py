@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 REPO_SRC = Path(__file__).parent.parent / "src"
 CORE_SRC = Path(__file__).parent.parent.parent / "okto-pulse-core" / "src"
 
@@ -27,12 +29,11 @@ def test_hnd2_credential_surface_gate_real_tree_allows_only_governed_surfaces():
         "return_secret",
         "api_key",
     ) in allowed
-    assert (
-        "okto_pulse/community/cli.py",
-        "_exportable_credential_from_legacy_agent",
-        "persisted_agent_api_key_read",
-        "api_key",
-    ) in allowed
+    assert not any(
+        finding.kind == "persisted_agent_api_key_read"
+        for finding in report.findings
+        if finding.file == "okto_pulse/community/cli.py"
+    )
     assert all(f.allowlisted for f in report.findings)
 
 
@@ -91,8 +92,9 @@ class _FakeSession:
         return False
 
 
-def test_hnd2_init_reveals_returned_key_but_not_persisted_marker(
-    tmp_path, monkeypatch, capsys
+@pytest.mark.parametrize("deliver_primary", [True, False])
+def test_hnd2_init_requires_primary_delivery_without_recovering_returned_key(
+    tmp_path, monkeypatch, capsys, deliver_primary
 ):
     import okto_pulse.core as core
     import okto_pulse.community.cli as cli
@@ -127,7 +129,7 @@ def test_hnd2_init_reveals_returned_key_but_not_persisted_marker(
         board = SimpleNamespace(id="board-1", name="Board")
         agent = SimpleNamespace(name="Agent", api_key=persisted_marker)
         seeded = (board, agent, revealed_key)
-        if on_primary_committed is not None:
+        if deliver_primary and on_primary_committed is not None:
             on_primary_committed(*seeded)
         return seeded
 
@@ -190,9 +192,13 @@ def test_hnd2_init_reveals_returned_key_but_not_persisted_marker(
 
     monkeypatch.setattr(cli, "_bootstrap_board_graph", fake_bootstrap_board_graph)
 
-    cmd_init(SimpleNamespace(mcp_port=8101, agents=None))
+    if deliver_primary:
+        cmd_init(SimpleNamespace(mcp_port=8101, agents=None))
+    else:
+        with pytest.raises(RuntimeError, match="seed_primary_credential_not_delivered"):
+            cmd_init(SimpleNamespace(mcp_port=8101, agents=None))
 
     captured = capsys.readouterr()
-    assert revealed_key in captured.out
+    assert (revealed_key in captured.out) is deliver_primary
     assert persisted_marker not in captured.out
     assert persisted_marker not in captured.err

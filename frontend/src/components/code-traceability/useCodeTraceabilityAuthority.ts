@@ -11,8 +11,7 @@ export const CODE_TRACEABILITY_RECEIPT_REVOKE_LEAF =
   'code_traceability.investigation.revoke' as const;
 export const CODE_TRACEABILITY_EVIDENCE_REVOKE_LEAF =
   'code_traceability.evidence.revoke' as const;
-export const CODE_TRACEABILITY_EVIDENCE_CLASSIFY_LEGACY_LEAF =
-  'code_traceability.evidence.classify_legacy' as const;
+
 export const CODE_TRACEABILITY_TARGET_CREATE_LEAF =
   'code_traceability.target.create' as const;
 export const CODE_TRACEABILITY_OVERLAP_ACKNOWLEDGE_LEAF =
@@ -44,9 +43,7 @@ export function useCodeTraceabilityAuthority(
     canRevokeEvidence: authorityReady && permissions.has(
       CODE_TRACEABILITY_EVIDENCE_REVOKE_LEAF,
     ),
-    canClassifyLegacyEvidence: authorityReady && permissions.has(
-      CODE_TRACEABILITY_EVIDENCE_CLASSIFY_LEGACY_LEAF,
-    ),
+
     canCreateTarget: authorityReady && permissions.has(
       CODE_TRACEABILITY_TARGET_CREATE_LEAF,
     ),

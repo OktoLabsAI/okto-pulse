@@ -32,8 +32,6 @@ FORBIDDEN_SERVER_RUNTIME_ACTIVATION_TOKENS: tuple[str, ...] = (
 # make a server database selectable by the Community runtime.
 GOVERNED_PORTABLE_RELATIONAL_FILES: frozenset[str] = frozenset(
     {
-        "src/okto_pulse/community/adapters/relational_schema_steps.py",
-        "src/okto_pulse/community/adapters/relational_schema_migrator.py",
         "src/okto_pulse/community/adapters/semantic_assessment_v2_capabilities.py",
         "src/okto_pulse/community/adapters/sqlalchemy_code_traceability.py",
         "src/okto_pulse/community/adapters/sqlalchemy_guideline_policy.py",

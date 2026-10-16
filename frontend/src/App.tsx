@@ -1,5 +1,5 @@
 import { type ReactNode, useEffect, useState } from 'react';
-import { Quote, Lightbulb, Microscope, FileCheck2, CalendarRange, Rocket } from 'lucide-react';
+import { Quote, Lightbulb, Microscope, FileCheck2, Rocket } from 'lucide-react';
 import { authAdapter, portalAdapter } from '@/adapters';
 import toast from 'react-hot-toast';
 import { useDashboardApi } from '@/services/api';
@@ -140,15 +140,6 @@ const STAGE_TABS: StageTab[] = [
     pillActiveRing: 'ring-1 ring-violet-200 dark:ring-violet-500/30',
   },
   {
-    id: 'sprints',
-    label: 'Sprints',
-    Icon: CalendarRange,
-    iconActive: 'text-blue-600 dark:text-blue-400',
-    iconInactive: 'text-blue-500/70 dark:text-blue-400/60',
-    labelActive: 'text-blue-700 dark:text-blue-300',
-    pillActiveRing: 'ring-1 ring-blue-200 dark:ring-blue-500/30',
-  },
-  {
     id: 'tasks',
     label: 'Tasks',
     Icon: Rocket,
@@ -164,6 +155,7 @@ function App() {
   const { isLoaded, isSignedIn } = authAdapter.useAuth();
   const terms = useTermsAcceptance();
   const currentBoard = useDashboardStore((s) => s.currentBoard);
+  const boardError = useDashboardStore((s) => s.error);
   const permissions = usePermissions(currentBoard?.id);
   const policyAuthorityReady = (
     !permissions.isLoading
@@ -306,7 +298,7 @@ function App() {
 
   // NC-9 Wave 2 frontend (spec 5cb09dbc): poll board settings to drive the
   // EvidenceGateSkipBanner. Re-runs when the active board changes or when
-  // the operator toggles via the Board tab in RuntimeSettingsPanel (custom
+  // the operator toggles via the Board settings panel (custom
   // event refreshes the flag without a reload).
   //
   // Bug fix (board d0f6bab2): always reset to false on (re-)mount and on
@@ -399,6 +391,7 @@ function App() {
 
   const loadBoards = async () => {
     setLoading(true);
+    setError(null);
     try {
       const [myBoards, shared] = await Promise.all([
         api.listBoards(0, 100, 'my'),
@@ -546,8 +539,10 @@ function App() {
             <>
               {/* Tab switcher */}
               <div
-                className="flex items-center gap-1 mb-4 bg-surface-200/60 dark:bg-surface-800/60 backdrop-blur-sm rounded-xl p-0.5 w-fit border border-surface-200/40 dark:border-surface-700/30"
+                className="flex max-w-full shrink-0 items-center gap-1 mb-4 overflow-x-auto bg-surface-200/60 dark:bg-surface-800/60 backdrop-blur-sm rounded-xl p-0.5 w-fit border border-surface-200/40 dark:border-surface-700/30"
                 data-tour-id="board.tabs"
+                role="group"
+                aria-label="Board views"
               >
                 {STAGE_TABS.map((tab) => {
                   const isActive = activeTab === tab.id;
@@ -557,7 +552,8 @@ function App() {
                       key={tab.id}
                       onClick={() => setActiveTab(tab.id)}
                       title={tab.label}
-                      className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 ${
+                      aria-pressed={isActive}
+                      className={`flex shrink-0 items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 ${
                         isActive
                           ? `bg-white dark:bg-surface-700 shadow-sm ${tab.pillActiveRing} ${tab.labelActive}`
                           : 'text-surface-500 dark:text-surface-400 hover:text-surface-900 dark:hover:text-white'
@@ -585,7 +581,14 @@ function App() {
           ) : (
             <div className="h-full flex items-center justify-center">
               <div className="text-center text-gray-500 dark:text-gray-400">
-                <p className="mb-4">Select or create a board to get started</p>
+                <p className="mb-4" role={boardError ? 'alert' : undefined}>
+                  {boardError ?? 'Select or create a board to get started'}
+                </p>
+                {boardError ? (
+                  <button onClick={() => void loadBoards()} className="btn btn-secondary">
+                    Reload boards
+                  </button>
+                ) : (
                 <button
                   onClick={() => { if (canCreateBoard) setCreateBoardOpen(true); }}
                   disabled={!canCreateBoard}
@@ -593,6 +596,7 @@ function App() {
                 >
                   Create Board
                 </button>
+                )}
               </div>
             </div>
           )}

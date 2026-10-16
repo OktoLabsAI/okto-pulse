@@ -1,8 +1,6 @@
 """Unit tests for the `okto-pulse init` CLI command.
 
-Tests argparse wiring via subprocess (matching the pattern in
-test_cli_kg_backfill.py).  Full cmd_init flow requires a real DB
-so we only test the subparser shape here.
+Tests argparse wiring via subprocess and initialization with isolated storage.
 """
 
 from __future__ import annotations
@@ -81,7 +79,7 @@ def test_init_subparser_no_args_shows_help(tmp_path):
     """Running `okto-pulse init` with no subcommand prints help and exits 1."""
     env = dict(os.environ)
     env["DATA_DIR"] = str(tmp_path / "data")
-    env["OKTO_PULSE_HOME"] = str(tmp_path / "home")
+    env["PYTHONIOENCODING"] = "utf-8"
     result = subprocess.run(
         [
             sys.executable,
@@ -93,14 +91,16 @@ def test_init_subparser_no_args_shows_help(tmp_path):
         text=True,
         timeout=30,
         env=env,
+        encoding="utf-8",
     )
     assert result.returncode == 1
+    assert result.stdout or result.stderr
 
 
-def test_init_registers_community_kg_before_demo_skip_and_fails_closed(
+def test_init_registers_community_kg_before_seed_and_fails_closed(
     tmp_path, monkeypatch, capsys
 ):
-    """A skipped demo cannot be the hidden owner of KG composition wiring."""
+    """KG composition is registered before seeding."""
     import okto_pulse.core as core
     import okto_pulse.community.adapters.composition as composition
     import okto_pulse.community.adapters.kg_shutdown as kg_shutdown
@@ -141,9 +141,8 @@ def test_init_registers_community_kg_before_demo_skip_and_fails_closed(
         events.append("configure_community_kg")
 
     async def fake_seed(_db, *, on_primary_committed=None):
-        assert os.environ[community_seed.DEMO_SKIP_ENV] == "1"
         assert events[-1] == "configure_community_kg"
-        events.append("seed_demo_skipped")
+        events.append("seed_primary")
         seeded = (
             SimpleNamespace(id="board-1", name="My Board"),
             SimpleNamespace(name="Local Agent"),
@@ -163,7 +162,6 @@ def test_init_registers_community_kg_before_demo_skip_and_fails_closed(
         assert board_id == "board-1"
         events.append("initialize_board_route")
 
-    monkeypatch.setenv(community_seed.DEMO_SKIP_ENV, "1")
     monkeypatch.setattr(cli, "_fail_fast_if_server_running", lambda _op: None)
     monkeypatch.setattr(community_config, "CommunitySettings", Settings)
     monkeypatch.setattr(community_main, "_ensure_data_dir", lambda _settings: None)
@@ -216,7 +214,7 @@ def test_init_registers_community_kg_before_demo_skip_and_fails_closed(
     assert events == [
         "init_db",
         "configure_community_kg",
-        "seed_demo_skipped",
+        "seed_primary",
         "initialize_board_route",
         "bootstrap",
         "kg_shutdown",
@@ -235,7 +233,7 @@ def test_init_registers_community_kg_before_demo_skip_and_fails_closed(
 
 
 def test_init_real_engine_closes_wals_and_reopens_every_graph_strictly_offline(
-    tmp_path,
+    tmp_path, monkeypatch,
 ):
     """First boot is durable without WAL replay recovery or an HF download."""
 
@@ -249,6 +247,17 @@ def test_init_real_engine_closes_wals_and_reopens_every_graph_strictly_offline(
 
     pulse_home = tmp_path / "pulse-home"
     hf_home = tmp_path / "empty-hf-cache"
+    # A parent test campaign may configure all runtime paths independently.
+    # The init subprocess must never seed into those inherited destinations.
+    parent_home = tmp_path / "parent-runtime"
+    parent_home.mkdir()
+    monkeypatch.setenv(
+        "DATABASE_URL", f"sqlite+aiosqlite:///{(parent_home / 'pulse.db').as_posix()}",
+    )
+    for key, directory in (
+        ("KG_BASE_DIR", "kg"), ("UPLOAD_DIR", "uploads"), ("METRICS_DIR", "metrics"),
+    ):
+        monkeypatch.setenv(key, str(parent_home / directory))
     env = dict(os.environ)
     source_paths = [REPO_SRC, CORE_SRC]
     existing_pythonpath = env.get("PYTHONPATH")
@@ -261,13 +270,14 @@ def test_init_real_engine_closes_wals_and_reopens_every_graph_strictly_offline(
     env.update(
         {
             "DATA_DIR": str(pulse_home),
-            "OKTO_PULSE_HOME": str(pulse_home),
+            "DATABASE_URL": f"sqlite+aiosqlite:///{(pulse_home / 'data' / 'pulse.db').as_posix()}",
+            "KG_BASE_DIR": str(pulse_home),
+            "UPLOAD_DIR": str(pulse_home / "uploads"),
+            "METRICS_DIR": str(pulse_home / "metrics"),
             "OKTO_PULSE_SKIP_DEMO_SEED": "0",
             "OKTO_PULSE_NO_BANNER": "1",
             "PYTHONUTF8": "1",
-            # Keep the normal runtime semantic. The demo must override this in
-            # its isolated provider scope and therefore succeed with a brand-new,
-            # offline cache containing no model weights.
+            # Empty initialization must work offline without downloading model weights.
             "KG_EMBEDDING_MODE": "sentence-transformers",
             "HF_HOME": str(hf_home),
             "SENTENCE_TRANSFORMERS_HOME": str(hf_home),
@@ -297,7 +307,7 @@ def test_init_real_engine_closes_wals_and_reopens_every_graph_strictly_offline(
     output = result.stdout + result.stderr
     assert "community.seed.demo_failed" not in output
     assert "Knowledge Graph:" in output
-    # A real Ladybug first boot reports the board by its shared storage
+    # A real legacy graph-runtime first boot reports the board by its shared storage
     # reference. The line must not carry a filesystem path or a backend name,
     # because on a board stored by the other engine that text described a file
     # that does not exist while init still claimed success.
@@ -325,15 +335,10 @@ def test_init_real_engine_closes_wals_and_reopens_every_graph_strictly_offline(
     finally:
         conn.close()
 
-    assert [name for _board_id, name in boards] == ["Demo", "My Board"]
-    assert cards == [
-        ("Demo", "Demo Normal Card", "not_started", "normal"),
-        ("Demo", "Demo Bug Card", "not_started", "bug"),
-        ("Demo", "Demo Test Card", "not_started", "test"),
-    ]
+    assert [name for _board_id, name in boards] == ["My Board"]
+    assert cards == []
 
     expected_counts = {
-        "Demo": (5, 3),  # BoardMeta + 4 cognitive nodes, all connected.
         "My Board": (1, 0),  # Schema bootstrap materializes BoardMeta only.
     }
     store = CommunityGraphBackendBindingStore(pulse_home)
@@ -364,10 +369,11 @@ def test_init_real_engine_closes_wals_and_reopens_every_graph_strictly_offline(
             t.name for t in database.catalog.catalog.tables()
         }
     assert not list(pulse_home.rglob("*.lbug"))
+    assert not list(parent_home.iterdir())
 
 
 # ---------------------------------------------------------------------------
-# AF14 TS6 - deferred Community migration contract
+# Native reveal-once credential export contract
 # ---------------------------------------------------------------------------
 
 
@@ -393,6 +399,7 @@ class _FakeSession:
         return False
 
     async def execute(self, _query):
+        assert "api_key" not in str(_query).lower()
         return _FakeScalarResult(self._rows)
 
 
@@ -428,7 +435,7 @@ def _patch_mcp_export_runtime(monkeypatch, rows):
     )
 
 
-def test_af14_ts6_mcp_export_skips_deferred_markers_but_exports_revealed_and_legacy(
+def test_mcp_export_uses_only_freshly_revealed_credentials(
     tmp_path, monkeypatch, capsys
 ):
     from okto_pulse.community.cli import _generate_mcp_json
@@ -450,9 +457,11 @@ def test_af14_ts6_mcp_export_skips_deferred_markers_but_exports_revealed_and_leg
     config = json.loads((tmp_path / ".mcp.json").read_text(encoding="utf-8"))
     urls = {name: server["url"] for name, server in config["mcpServers"].items()}
 
-    assert "reveal-once only: Deferred Agent" in output
+    assert "reveal-once only: Deferred Agent, Legacy Agent" in output
     assert "deferred-agent" not in urls
-    assert urls["legacy-agent"].endswith("?api_key=dash_legacy_plaintext")
+    assert "legacy-agent" not in urls
+    assert "dash_legacy_plaintext" not in json.dumps(config)
+    assert "sha256:deadbeef" not in json.dumps(config)
     assert urls["new-agent"].endswith("?api_key=dash_revealed_once")
 
 
@@ -505,10 +514,10 @@ def test_af14_ts6_api_key_cli_never_recovers_reveal_once_marker(
     captured = capsys.readouterr()
     assert exc_info.value.code == 1
     assert captured.out == ""
-    assert "reveal-once and is not recoverable" in captured.err
+    assert "--handoff-file is required" in captured.err
 
 
-def test_af14_ts6_api_key_cli_preserves_governed_legacy_plaintext(
+def test_api_key_cli_refuses_database_plaintext_without_handoff(
     tmp_path, monkeypatch, capsys
 ):
     import okto_pulse.community.config as community_config
@@ -531,11 +540,21 @@ def test_af14_ts6_api_key_cli_preserves_governed_legacy_plaintext(
     Settings = type("Settings", (), {"data_dir": str(data_dir)})
     monkeypatch.setattr(community_config, "CommunitySettings", Settings)
 
-    cmd_api_key(SimpleNamespace(handoff_file=None))
+    before = (db_dir / "pulse.db").read_bytes()
+
+    def forbidden_connect(*args, **kwargs):
+        raise AssertionError("api-key must not read persisted credentials")
+
+    monkeypatch.setattr(sqlite3, "connect", forbidden_connect)
+    with pytest.raises(SystemExit) as exc_info:
+        cmd_api_key(SimpleNamespace(handoff_file=None))
+    assert exc_info.value.code == 1
+    assert (db_dir / "pulse.db").read_bytes() == before
 
     captured = capsys.readouterr()
-    assert captured.out == "dash_governed_legacy\n"
-    assert captured.err == ""
+    assert captured.out == ""
+    assert "--handoff-file is required" in captured.err
+    assert "dash_governed_legacy" not in captured.err
 
 
 # ---------------------------------------------------------------------------
@@ -612,9 +631,9 @@ def _expected_init_message(observation, code: str) -> str:
     if code == "global_discovery_init_refused_marker_present":
         return (
             "global_discovery_init_refused: incomplete-bootstrap"
-            " marker with a present/partial primary requires the"
-            " recovery ceremony before re-running init (zero"
-            " mutation)"
+            " marker with a present/partial primary requires an"
+            " authorized external support/release recovery procedure"
+            " before re-running init (zero mutation)"
         )
     if code == "global_discovery_init_release_failed":
         return (
@@ -632,8 +651,8 @@ def _expected_init_message(observation, code: str) -> str:
         return (
             "global_discovery_init_refused: refusing to bootstrap over"
             f" unreadable/residual state={obs_state.value if obs_state else 'unknown'}"
-            f"{reason}; resolve interrupted recovery through the recovery"
-            " ceremony before re-running init (zero mutation)"
+            f"{reason}; use an authorized external support/release"
+            " recovery procedure before re-running init (zero mutation)"
         )
     raise AssertionError(f"no literal template for code {code!r}")
 

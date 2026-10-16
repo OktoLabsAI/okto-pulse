@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+
 # Registers every ORM model on Base.metadata so init_db builds the full schema.
 import okto_pulse.community.app as _core_app  # noqa: F401
 import okto_pulse.core.infra.database as _db_mod
@@ -20,8 +22,7 @@ from okto_pulse.core.ports.relational_services import (
 from okto_pulse.core.services.resource_gate import ResourceGateService
 from okto_pulse.community.adapters.sqlalchemy_runtime_settings_service import (
     AppSetting as CommunityAppSetting,
-    get_runtime_settings as community_get_runtime_settings,
-    put_runtime_settings as community_put_runtime_settings,
+    _load_persisted_rows as load_startup_settings,
 )
 from okto_pulse.community.adapters.sqlalchemy_traceability_read_model import (
     build_traceability_report as community_build_traceability_report,
@@ -74,14 +75,23 @@ def test_af35_s1_community_adapters_round_trip_real_sqlalchemy(
 ):
     register_resource_gate_adapter_factory(CommunitySqlAlchemyResourceGateAdapter)
     sf = _temp_session_factory
+    from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import (
+        CommunitySqlAlchemyKnowledgePropagationStore,
+    )
+    from okto_pulse.core.ports.knowledge_propagation import register_knowledge_propagation_port
+    register_knowledge_propagation_port(CommunitySqlAlchemyKnowledgePropagationStore(sf))
     board_id = "af35-s1-board"
     spec_id = "af35-s1-spec"
 
     async def drive():
         async with sf() as db:
-            db.add(Board(id=board_id, name="AF35", owner_id="agent", settings={}))
+            db.add(Board(id=board_id, name="AF35", owner_id="agent", realm_id="local", settings={}))
             db.add(
                 Spec(
+                    architecture_adoption=ArchitectureAdoptionScope(
+                        board_id=board_id, spec_id=spec_id, adopted_in_edition=1,
+                        actor_id="agent", inherited_resource_ids=(),
+                    ).model_dump(mode="json"),
                     id=spec_id,
                     board_id=board_id,
                     title="AF35 Spec",
@@ -104,40 +114,16 @@ def test_af35_s1_community_adapters_round_trip_real_sqlalchemy(
                 spec_id=spec_id,
                 include_artifacts=False,
             )
-            before = await community_get_runtime_settings(db)
-            after = await community_put_runtime_settings(
-                db,
-                {
-                    "kg_queue_alert_threshold": 1234,
-                    "kg_grafx_page_size": 16384,
-                    "kg_grafx_descriptor_revalidation": "strict",
-                },
-            )
-            row = await db.get(CommunityAppSetting, "kg_queue_alert_threshold")
-            page_row = await db.get(CommunityAppSetting, "kg_grafx_page_size")
-            descriptor_row = await db.get(
-                CommunityAppSetting,
-                "kg_grafx_descriptor_revalidation",
-            )
-            return (
-                resource_summary,
-                traceability,
-                before,
-                after,
-                row,
-                page_row,
-                descriptor_row,
-            )
+            db.add_all([
+                CommunityAppSetting(key="kg_queue_alert_threshold", value="1234"),
+                CommunityAppSetting(key="kg_grafx_page_size", value="16384"),
+                CommunityAppSetting(key="kg_grafx_descriptor_revalidation", value="strict"),
+            ])
+            await db.commit()
+            persisted = await load_startup_settings(db)
+            return resource_summary, traceability, persisted
 
-    (
-        resource_summary,
-        traceability,
-        before,
-        after,
-        row,
-        page_row,
-        descriptor_row,
-    ) = asyncio.run(drive())
+    resource_summary, traceability, persisted = asyncio.run(drive())
 
     assert resource_summary["entity_id"] == spec_id
     assert {item["resource_type"] for item in resource_summary["resources"]} == {
@@ -147,6 +133,7 @@ def test_af35_s1_community_adapters_round_trip_real_sqlalchemy(
     }
     assert traceability["summary"]["specs"] == 1
     assert traceability["orphan_specs"][0]["id"] == spec_id
+    assert traceability["orphan_specs"][0]["artifact_summary"]["artifact_drilldown"]["include_artifacts"] is True
     assert traceability["code_traceability"] == {
         "evidence_total": 0,
         "evidence_linked": 0,
@@ -155,13 +142,11 @@ def test_af35_s1_community_adapters_round_trip_real_sqlalchemy(
         "targets_outdated": 0,
         "high_overlaps": 0,
     }
-    assert before["kg_queue_alert_threshold"] != 1234
-    assert row is not None and row.value == "1234"
-    assert page_row is not None and page_row.value == "16384"
-    assert descriptor_row is not None and descriptor_row.value == "strict"
-    assert after["desired_values"]["kg_grafx_page_size"] == 16384
-    assert after["desired_values"]["kg_grafx_descriptor_revalidation"] == "strict"
-    assert after["restart_required"] is True
+    assert persisted == {
+        "kg_queue_alert_threshold": 1234,
+        "kg_grafx_page_size": 16384,
+        "kg_grafx_descriptor_revalidation": "strict",
+    }
 
 
 def test_af35_s1_community_adapter_imports_stay_boundary_clean() -> None:

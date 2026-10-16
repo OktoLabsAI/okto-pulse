@@ -165,41 +165,41 @@ describe('EvidenceBadge — re-executable evidence contract (spec 9e0bf979)', ()
     expect(screen.queryByTestId('evidence-badge-class')).not.toBeInTheDocument();
   });
 
-  test('legacy MCP manifest is visibly unverified instead of green/replayable', () => {
+  test('current manifest without attestation stays unverified', () => {
     render(
       <EvidenceBadge
         scenario={makeScenario({
           status: 'passed',
           evidence: {
             evidence_class: 'mcp_replay_manifest',
-            mcp_replay_manifest: 'manifests/replay_x.json',
+            manifest_ref: 'manifests/replay_x.json',
             expected_output_snapshot: 'node materialized',
             non_replayable_justification: 'n/a',
           },
         })}
       />,
     );
-    const badge = screen.getByTestId('evidence-badge-legacy-unverified');
+    const badge = screen.getByTestId('evidence-badge-manifest-unverified');
     expect(badge).toHaveAttribute('data-replayable', 'false');
-    expect(badge).toHaveTextContent('legacy unverified');
+    expect(badge).toHaveTextContent('manifest unverified');
     const tooltip = badge.getAttribute('title') ?? '';
     expect(tooltip).toContain('class: mcp_replay_manifest');
-    expect(tooltip).toContain('legacy manifest: unverified');
+    expect(tooltip).toContain('manifest: manifests/replay_x.json');
     expect(tooltip).toContain('node materialized');
     expect(tooltip).toContain('justification: n/a');
   });
 
-  test('legacy MCP manifest without evidence_class is still unverified', () => {
+  test('current manifest claim without reference stays unverified', () => {
     render(
       <EvidenceBadge
         scenario={makeScenario({
           status: 'passed',
-          evidence: { mcp_replay_manifest: { product_runtime_exercised: false } },
+          evidence: { evidence_class: 'mcp_replay_manifest' },
         })}
       />,
     );
-    expect(screen.getByTestId('evidence-badge-legacy-unverified')).toHaveTextContent(
-      'legacy unverified',
+    expect(screen.getByTestId('evidence-badge-manifest-unverified')).toHaveTextContent(
+      'manifest unverified',
     );
   });
 
@@ -217,6 +217,7 @@ describe('EvidenceBadge — re-executable evidence contract (spec 9e0bf979)', ()
               run_id: 'run-v2',
               executed_at: '2026-07-14T15:00:00Z',
               scenario_id: 'ts-v2',
+              scenario_sha256: `sha256:${'c'.repeat(64)}`,
               outcome: 'passed',
               product_runtime_exercised: true,
               manifest_sha256: `sha256:${'a'.repeat(64)}`,
@@ -244,6 +245,25 @@ describe('EvidenceBadge — re-executable evidence contract (spec 9e0bf979)', ()
     expect(tooltip).toContain('installation receipt: attached');
   });
 
+  test('external run exposes runner, exact revision and tests', () => {
+    render(<EvidenceBadge scenario={makeScenario({ status: 'passed', evidence: {
+      evidence_class: 'mcp_replay_manifest', manifest_ref: 'external.json', execution_receipt: 'receipt',
+      execution_attestation: {
+        schema_version: 2, run_id: 'run', executed_at: '2026-10-10T00:00:00Z', scenario_id: 'ts',
+        scenario_sha256: 'sha256:abc', outcome: 'passed', product_runtime_exercised: true,
+        manifest_sha256: 'sha256:abc', assertions: [], attestation_sha256: 'sha256:abc',
+        provenance: { producer: 'community', producer_version: '0.4.0', adapter: 'runner', environment: 'local' },
+        execution_basis: { runner_ref: 'capacity', source_ref: 'source', revision: 'a'.repeat(40),
+          test_ids: ['tests/test_domain.py::Cases.test_capacity'] },
+      },
+    } })} />);
+    const badge = screen.getByTestId('evidence-badge-class');
+    expect(badge).toHaveTextContent('External test run');
+    expect(badge.title).toContain(`revision: ${'a'.repeat(40)}`);
+    expect(badge.title).toContain('runner: capacity');
+    expect(badge.title).toContain('Cases.test_capacity');
+  });
+
   test('caller-authored V2 fields without installation receipt stay unverified', () => {
     render(
       <EvidenceBadge
@@ -257,6 +277,7 @@ describe('EvidenceBadge — re-executable evidence contract (spec 9e0bf979)', ()
               run_id: 'caller-run',
               executed_at: '2026-07-14T15:00:00Z',
               scenario_id: 'ts-v2',
+              scenario_sha256: `sha256:${'c'.repeat(64)}`,
               outcome: 'passed',
               product_runtime_exercised: true,
               manifest_sha256: `sha256:${'a'.repeat(64)}`,
@@ -275,7 +296,7 @@ describe('EvidenceBadge — re-executable evidence contract (spec 9e0bf979)', ()
         })}
       />,
     );
-    expect(screen.getByTestId('evidence-badge-legacy-unverified')).toHaveTextContent(
+    expect(screen.getByTestId('evidence-badge-manifest-unverified')).toHaveTextContent(
       'manifest unverified',
     );
   });

@@ -799,7 +799,6 @@ Additional status: \`cancelled\`
 | **Knowledge Base** | Attach reference documents, technical notes, research, or file content |
 | **Q&A** | Text questions, choice boards (single/multi-select), free-text responses |
 | **Cards** | View all derived task cards, link/unlink cards |
-| **Sprints** | Create and manage sprints, assign cards, use sprint suggestion algorithm |
 | **History** | Full change log with field-level diffs |
 
 ### Negative scenario outcomes
@@ -1346,8 +1345,6 @@ Marking a test scenario as \`automated\`, \`passed\`, or \`failed\` requires **p
 
 When evidence is present, an inline **EvidenceBadge** (✓ green) appears next to the status. Without evidence the badge is **? gray** and the gate blocks the transition unless \`skip_test_evidence_global\` is ON. When the skip flag is active, an app-wide amber banner reminds operators that the gate is bypassed.
 
-The same evidence is required by the **sprint close** gate as defense-in-depth — a sprint cannot move to \`closed\` if any of its scoped scenarios lack evidence (and the skip flag is off).
-
 ### Cognitive Closeout Gate
 
 Specs and refinements cannot transition to \`done\` while they (or their decisions) have **active cognitive consolidation items** (\`pending\` / \`in_progress\` / \`failed\`) in the current KG generation — the knowledge debt must be worked or explicitly skipped first. The "Pending cognitive consolidation" badge on list cards shows exactly which entities hold the debt.
@@ -1374,13 +1371,12 @@ In the dual-agent workflow the spec is validated **twice**: a content **preview*
 
 ### Open Q&A badge
 
-Ideations, refinements, specs, sprints and cards show an **"N open Q&A"** badge while they have unanswered questions (\`answered_at\` not set). Answered Q&A inherited from a parent entity carries its answer timestamp, so it never counts as open.
+Ideations, refinements, specs and cards show an **"N open Q&A"** badge while they have unanswered questions (\`answered_at\` not set). Answered Q&A inherited from a parent entity carries its answer timestamp, so it never counts as open.
 
 ### Overrides
 
 All coverage checks can be bypassed:
 - **Per spec** — Toggle \`skip_test_coverage\`, \`skip_rules_coverage\`, \`skip_trs_coverage\`, or \`skip_contract_coverage\` on the spec
-- **Per sprint** — Override validation thresholds per sprint
 - **Per board** — Toggle global overrides in **Board Settings** (menu)
 
 ### Dependencies
@@ -1390,89 +1386,26 @@ All coverage checks can be bypassed:
 `,
     },
     {
-      id: 'sprints',
-      title: 'Sprints',
-      icon: <GitBranch size={16} />,
-      content: `
-## Sprints — Incremental delivery
-
-Sprints break a spec into incremental deliverables. Each sprint groups a subset of tasks with a clear objective, expected outcome, and timeline.
-
-### Creating sprints
-
-Sprints are created within a spec. Go to the **Sprints** tab in the spec modal:
-- Click **"+ New Sprint"** to create manually
-- Or use **"Suggest Sprints"** to let the AI suggest an optimal breakdown based on task dependencies and complexity
-
-### Sprint lifecycle
-
-\`draft\` → \`active\` → \`review\` → \`closed\`
-
-- **Draft** — Define objective, assign tasks, set timeline
-- **Active** — Work in progress; tasks are being executed
-- **Review** — Sprint work complete; evaluating outcomes
-- **Closed** — Sprint done; evaluation captured
-
-Additional status: \`cancelled\`
-
-### Sprint properties
-
-| Property | Description |
-|----------|-------------|
-| **Objective** | What this sprint aims to achieve |
-| **Expected Outcome** | Concrete deliverables |
-| **Start / End Date** | Timeline boundaries |
-| **Scoped Test Scenarios** | Which test scenarios apply to this sprint |
-| **Scoped Business Rules** | Which business rules apply |
-
-### Assigning tasks to sprints
-
-Tasks are assigned to sprints from the sprint detail view or from the spec's Sprints tab. A task can only belong to one sprint at a time.
-
-### Sprint evaluations
-
-When a sprint moves to **review** or **closed**, an evaluation can be submitted:
-- Qualitative assessment of the sprint's outcome
-- Scores for delivery quality
-- Notes on what went well and what needs improvement
-- Multiple evaluations can be submitted (by different agents or team members)
-
-### Sprint suggestion algorithm
-
-The **"Suggest Sprints"** feature analyzes the spec's tasks, dependencies, and complexity to propose an optimal sprint breakdown. It considers:
-- Task dependencies (dependent tasks go in later sprints)
-- Task complexity (balance load across sprints)
-- Test coverage (each sprint should be independently testable)
-
-### Skip flags per sprint
-
-Each sprint can override validation settings:
-- \`skip_test_coverage\` — Skip test scenario coverage checks
-- \`skip_rules_coverage\` — Skip business rules coverage checks
-- \`skip_qualitative_validation\` — Skip sprint evaluation requirement
-`,
-    },
-    {
       id: 'knowledge-graph',
       title: 'Knowledge Graph',
       icon: <Network size={16} />,
       content: `
 ## Knowledge Graph — Structured project intelligence
 
-The Knowledge Graph (KG) extracts decisions, constraints, learnings, and relationships from your specs, cards, and sprints into a searchable, interactive graph.
+The Knowledge Graph (KG) projects project knowledge from Specs and Cards into a searchable, interactive graph. The source records remain authoritative; graph availability does not replace delivery evidence or governance gates.
 
 ### Accessing the Knowledge Graph
 
-Click the **Knowledge Graph** tab in the main navigation. The KG page has 6 sub-views, selectable from the left panel:
+Click the **Knowledge Graph** tab in the main navigation. The KG page has four views, shown according to your permissions in the left panel:
 
 | View | Purpose |
 |------|---------|
 | **Graph** | Interactive visualization with pan/zoom, node filtering, and edge rendering |
 | **Audit Log** | History of all consolidation sessions — who added what and when |
-| **Pending Queue** | Consolidation entries waiting to be processed |
-| **KG Health** | Provider/model status, schema version, queue depth, **manual tick** trigger, dedup snapshot |
-| **Settings** | KG configuration (GraphDB / Event Queue / Decay Tick tabs), provider status, danger zone |
-| **Global Search** | Cross-board semantic search by natural language query |
+| **Privacy** | Delete Board KG data with the dedicated erasure permission |
+| **Global Discovery** | Cross-board semantic search by natural language query |
+
+Open **KG Health** from the main menu for component availability and aggregate diagnostics. Its observations do not authorize repair operations.
 
 ### Node types (11)
 
@@ -1496,8 +1429,7 @@ Click the **Knowledge Graph** tab in the main navigation. The KG page has 6 sub-
 
 ### How consolidation works
 
-1. **Continuous consolidation** — When a card or sprint completes, the system automatically extracts entities and relationships into the graph
-2. **Historical consolidation** — Process existing specs and sprints retroactively (enable in Settings → "Enable Historical Consolidation")
+Source changes feed automatic structural projection. Semantic consolidation records reviewed knowledge through its existing authorized workflow. A failed projection remains visible as unavailable or pending; it does not establish that delivery or verification succeeded.
 
 Each consolidation session creates an audit trail: nodes added, updated, superseded, and edges created.
 
@@ -1518,52 +1450,30 @@ Clicking a node reveals:
 - **Find Similar** — Semantic search for related decisions
 - **Show History** — Supersedence chain showing what replaced what (Decision nodes)
 
-### KG Health & Manual Tick
+### KG Health
 
-The **KG Health** sub-view exposes runtime diagnostics:
+The **KG Health** panel exposes runtime diagnostics:
 
-- **Overall state** — \`healthy\`, \`at_risk\`, or \`recovery_needed\`. **\`at_risk\` is a preventive warning** (scheduler debt, dead-letter backlog, unavailable telemetry) — it is *not* corruption. \`recovery_needed\` means the graph needs the explicit recovery flow below.
+- **Overall state** — \`healthy\`, \`at_risk\`, or \`recovery_needed\`. **\`at_risk\` is a preventive warning** (scheduler debt, dead-letter backlog, unavailable telemetry) — it is *not* corruption. \`recovery_needed\` identifies an unavailable component; it does not authorize repair.
 - **Provider / model** — embedder backend (sentence-transformers or stub fallback)
-- **Schema version** — current graph schema (auto-migrated on hot path)
+- **Schema version** — current graph schema and compatibility status
 - **Queue depth / dead letters** — pending consolidation entries and DLQ count
 - **\`tick_in_progress\`** — \`true\` when the global advisory lock \`kg_daily_tick\` is held
-- **Dedup snapshot** — entity counts and recent dedup actions
-- **Orphan integrity** — zero-orphan projection (orphan count by type, samples); additive observability that never masks hard recovery signals
+- **Integrity** — aggregate projection health; unavailable telemetry never means that integrity has been verified
 
-### Recovery & deterministic rebuild
+### Component availability
 
-When a graph is degraded (or you want a clean re-materialization from the source of truth), the **Recovery panel** inside KG Health runs the ceremonial rebuild:
+Health reports the component, reason and limitation. An unavailable Global Discovery cache can coexist with a healthy Board graph. Affected operations remain blocked by their integrity checks. Health offers no rebuild or quarantine restore control and no alternate repair command.
 
-1. **Preflight** — read-only: enumerates every source artifact and produces a \`preflight_hash\` + \`manifest_ref\`
-2. **Confirm** — issues a **single-use, TTL-bound confirmation token** (audit-trailed)
-3. **Run** — quarantines the old graph files (never deletes), re-enqueues all sources, and waits for the worker to drain. The wait is **progress-aware**: it only fails if the queue stalls, so large boards complete instead of timing out.
+### Delivery failures
 
-A completed rebuild promotes a new **KG generation**, publishes \`kg.rebuilt\`, and marks every consolidable artifact as **pending cognitive consolidation** (see below). The rebuild report and audit row record outcomes, hashes, and affected files.
+KG Health reports failed delivery separately from active queue depth. A technical failure remains visible and cannot be waived through cognitive consolidation. There is no public dead-letter inspector or redrive control.
 
-#### Run tick now
+### Schema availability
 
-The **"Run tick now"** button forces a decay/recompute pass without waiting for the scheduler. The button is disabled while a tick is already running (cross-mount/cross-tab safe — backed by the advisory lock + 3s cooldown). Use it after major changes to recompute relevance scores immediately.
+A schema incompatibility makes the affected graph operation unavailable. Health observations are not authority to migrate or repair storage. Schema changes belong to the compatible release process; do not delete graph files to bypass an incompatibility.
 
-The same control surfaces in **Settings → Decay Tick** as **"Save & run now"**, which persists the 3 hot-reload settings (\`interval_minutes\`, \`staleness_days\`, \`max_age_days\`) and triggers a tick in one shot.
-
-### Dead Letter Queue (DLQ) Inspector
-
-When a consolidation entry exhausts its retries (5 attempts), it lands in the DLQ. The **DLQ Inspector** modal (accessible from the Pending Queue view) lets you:
-- List DLQ rows with full error history (one entry per attempt: timestamp, exception class, message)
-- Inspect the original payload that triggered the failure
-- **Reprocess** selected rows (or via the MCP tool \`kg_dead_letter_reprocess\`) after the root cause is fixed — idempotent: existing pending rows are reset instead of duplicated, and \`process_now\` runs an immediate batch
-
-Boards can also enable \`dlq_auto_drain_enabled\` to re-queue dead letters automatically. Use the inspector to diagnose extractor regressions, connectivity-guard rejections, embedder timeouts, or schema mismatches without tailing server logs.
-
-### Schema migration self-heal
-
-KG schema evolves across releases (e.g. v0.3.2 added \`human_curated\`, \`last_recomputed_at\`). The hot path **auto-migrates** on first read, so most users never notice. For boards stuck or pre-v0.3.2 graphs, a triplet is exposed:
-
-- **CLI** — \`okto-pulse kg migrate-schema\`
-- **MCP tool** — \`kg_migrate_schema\` (gemellar)
-- **REST** — \`POST /api/v1/kg/migrate-schema\`
-
-> **Important:** Never delete local graph database files manually — the migration preserves all nodes/edges. Deleting forces a full re-consolidation.
+The public KG maintenance CLI has been removed. Project knowledge queries and semantic consolidation retain their existing authorization.
 
 ### Cognitive consolidation (KG-03)
 
@@ -1577,9 +1487,13 @@ Structural nodes (Decision, Requirement, TestScenario…) are re-derivable mecha
 
 The zero-orphan **connectivity guard** validates every commit: new nodes must arrive connected (provenance \`belongs_to\` for deterministic writers; strict judgement-edge pairs for cognitive writers), so the graph never accumulates orphans.
 
-### Cognitive extractors (opt-in)
+### Authored Learning capture
 
-Beyond the structural extractors, the KG can suggest **Learning**, **Alternative**, and **Assumption** candidates via LLM. This is **opt-in** per board via \`cognitive_llm_config\` (provider + model + API key). When disabled, the system logs a structured event but does not call any LLM.
+Learning content is authored explicitly when closing a Bug. The capture records its source and provenance, follows the Board's closeout policy, and remains subject to delivery evidence, permissions and review gates. Recording a capture does not grant authority to approve the Bug.
+
+An admitted capture is durable before graph materialization. Its projection waits for the Bug to reach Done and for the required canonical source; replay preserves the capture history.
+
+These workflows do not require a server-side LLM configuration. Health reports actual component availability and pending work; an absent LLM configuration is not a failure.
 
 ### AI agent integration
 
@@ -1591,7 +1505,7 @@ MCP agents can query **and curate** the Knowledge Graph via 25+ tools:
 
 **Cognitive ledger** — \`kg_list_cognitive_pending_items\`, \`kg_update_cognitive_pending_item\`
 
-**Operate** — \`kg_health\`, \`kg_tick_run_now\`, \`kg_migrate_schema\`, \`kg_rebuild_preflight\` / \`kg_rebuild_confirm\` / \`kg_rebuild_run\`, \`kg_dead_letter_list\` / \`kg_dead_letter_reprocess\`, \`kg_orphan_report\` / \`kg_orphan_backfill\`, \`kg_schema_info\`
+**Observe** — \`kg_health\` reports availability and limitations. Health is not an alternate path to migrate, backfill, or repair storage.
 `,
     },
     {
@@ -1643,19 +1557,6 @@ These flags bypass specific coverage checks for the entire board:
 |---------|---------|-------------|
 | \`max_scenarios_per_card\` | 5 | Maximum test scenarios per card (1–10) |
 | \`skip_cognitive_consolidation\` | false | Allow \`done\` transitions even when cognitive consolidation is pending — badges and KG Health pending lists remain visible |
-| \`dlq_auto_drain_enabled\` | false | Automatically re-queue dead-lettered consolidation entries for reprocessing |
-
-### Runtime Settings Panel
-
-Beyond the static board settings above, the **Runtime Settings Panel** (Menu → Settings) exposes hot-reload knobs grouped into 3 tabs:
-
-| Tab | Controls |
-|-----|----------|
-| **GraphDB** | Grafx buffer budget, independent read participants, descriptor validation and advanced options |
-| **Event Queue** | \`kg_queue_min_interval_ms\` (0–1000), batch size, retry policy |
-| **Decay Tick** | \`interval_minutes\` (5–10080), \`staleness_days\` (1–365), \`max_age_days\` (0–365) — plus the **"Save & run now"** action that persists + triggers a tick atomically |
-
-Changes apply without restarting the server. The Decay Tick tab also polls \`/kg/health\` every 5s while open to surface \`tick_in_progress\` and disable conflicting buttons.
 
 ### Per-spec overrides
 
@@ -1711,7 +1612,7 @@ Configure the policy for the current board in **Menu → Board → Board Config*
 | **Advisory** | Enabled and stored as traceable evidence | Never blocks validation |
 | **Blocking** | Required | Requires a passing result for the current validation edition |
 
-**Advisory** is the recommended adoption mode while a team calibrates evidence and anchors. Promote the policy to **Blocking** once checklist runs are consistent. Use **Off** only for an intentional opt-out or legacy compatibility.
+**Advisory** is the recommended adoption mode while a team calibrates evidence and anchors. Promote the policy to **Blocking** once checklist runs are consistent. Use **Off** only for an intentional opt-out.
 
 ### The ten curated checks
 

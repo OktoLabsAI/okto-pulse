@@ -412,11 +412,11 @@ def test_ts_4727a157_onda_a_ready_only_with_complete_evidence():
 
 
 # ===========================================================================
-# ts_6201bdf5 — init/seed/app consume the composition helper (e2e smoke).
+# ts_6201bdf5 — init/app consume the composition helper (e2e smoke).
 # ===========================================================================
 def test_ts_6201bdf5_call_sites_consume_the_helper():
-    # AST/text: main / cli / seed reference the helper, not the concretes.
-    for mod in (_main_mod, _cli_mod, _seed_mod):
+    # Runtime entrypoints own composition. The empty My Board seed is relational.
+    for mod in (_main_mod, _cli_mod):
         src = Path(mod.__file__).read_text(encoding="utf-8")
         assert "configure_community_kg_registry" in src, (
             f"{mod.__name__} must consume configure_community_kg_registry"
@@ -425,6 +425,8 @@ def test_ts_6201bdf5_call_sites_consume_the_helper():
     cli_src = Path(_cli_mod.__file__).read_text(encoding="utf-8")
     assert "community_storage_provider" in main_src
     assert "community_storage_provider" in cli_src
+    seed_src = Path(_seed_mod.__file__).read_text(encoding="utf-8")
+    assert "configure_community_kg_registry" not in seed_src
 
     # e2e: configuring via the helper wires the Community Onda A adapters while
     # the core mounts graph/audit/event_bus.
@@ -477,7 +479,7 @@ def test_ts_2b099962_audit_flags_synthetic_contamination(tmp_path):
 
 def test_ts_2b099962_deferred_adapters_not_physically_moved():
     # R05-B moved nothing physically; later refactor specs moved concrete
-    # relational, Kuzu/Ladybug, MCP auth context and ML provider adapters to
+    # relational, legacy graph runtime, MCP auth context and ML provider adapters to
     # Community.
     # Remaining deferred/out-of-scope core helpers still exist at their core paths.
     for rel in (

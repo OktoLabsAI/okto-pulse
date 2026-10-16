@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from pathlib import Path
 
 import pytest
@@ -47,13 +48,17 @@ async def _build_engine(path: Path) -> AsyncEngine:
         await connection.execute(
             text(
                 "INSERT INTO specs "
-                "(id, board_id, title, status, version, created_by, archived) "
+                "(id, board_id, title, status, version, created_by, archived, architecture_adoption) "
                 "VALUES (:id, :board_id, :title, :status, 1, :created_by, "
-                ":archived)"
+                ":archived, :adoption)"
             ),
             [
                 {
                     "id": f"s{index:02d}",
+                    "adoption": ArchitectureAdoptionScope(
+                        board_id="b1", spec_id=f"s{index:02d}", actor_id="owner",
+                        adopted_in_edition=1, inherited_resource_ids=(),
+                    ).model_dump_json(),
                     "board_id": "b1",
                     "title": f"Needle Spec {index:02d}",
                     "status": statuses[index % len(statuses)],
@@ -65,6 +70,10 @@ async def _build_engine(path: Path) -> AsyncEngine:
             + [
                 {
                     "id": "s-archived",
+                    "adoption": ArchitectureAdoptionScope(
+                        board_id="b1", spec_id="s-archived", actor_id="owner",
+                        adopted_in_edition=1, inherited_resource_ids=(),
+                    ).model_dump_json(),
                     "board_id": "b1",
                     "title": "Needle Spec Archived",
                     "status": "draft",
@@ -73,6 +82,10 @@ async def _build_engine(path: Path) -> AsyncEngine:
                 },
                 {
                     "id": "s-foreign",
+                    "adoption": ArchitectureAdoptionScope(
+                        board_id="b2", spec_id="s-foreign", actor_id="other",
+                        adopted_in_edition=1, inherited_resource_ids=(),
+                    ).model_dump_json(),
                     "board_id": "b2",
                     "title": "Needle Spec Foreign",
                     "status": "draft",

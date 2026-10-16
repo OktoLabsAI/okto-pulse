@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 from urllib.parse import quote
-from okto_pulse.community.adapters.relational_schema_steps import (
+from okto_pulse.community.adapters.current_schema_guards import (
     global_discovery_source_revision_trigger_manifest,
     normalize_global_discovery_source_revision_trigger_sql,
 )

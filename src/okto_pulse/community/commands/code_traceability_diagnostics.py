@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
-from okto_pulse.core.models.schemas import BoardSettings, CodeTraceabilitySettings
+from okto_pulse.core.models.schemas import BoardSettings
 
 
 DiagnosticKind = Literal["request", "receipt"]
@@ -137,15 +137,15 @@ def list_receipts(
     """List receipt attestations and current/revoked lineage metadata."""
 
     bounded_limit = _bounded_limit(limit)
-    if outcome is not None and outcome not in {"accessible", "partial", "unavailable"}:
+    if outcome is not None and outcome not in {"evidence_applicable", "no_relevant_existing_implementation", "partial", "unavailable"}:
         raise CodeTraceabilityDiagnosticsError(
             "code_investigation_receipt_outcome_invalid",
-            "outcome must be accessible, partial, or unavailable",
+            "outcome must be evidence_applicable, no_relevant_existing_implementation, partial, or unavailable",
         )
     predicate = "receipt.board_id = ?"
     parameters: list[Any] = [board_id]
     if outcome is not None:
-        predicate += " AND receipt.outcome = ?"
+        predicate += " AND receipt.contextual_outcome = ?"
         parameters.append(outcome)
     parameters.append(bounded_limit)
     try:
@@ -155,7 +155,7 @@ def list_receipts(
                 "receipt.subject_type, receipt.subject_id, receipt.subject_version, "
                 "receipt.attestor_actor_id, receipt.generation, "
                 "receipt.predecessor_receipt_id, receipt.trust_level, "
-                "receipt.acceptance_status, receipt.outcome, receipt.capabilities, "
+                "receipt.acceptance_status, receipt.contextual_outcome, receipt.capabilities, "
                 "receipt.source_ref, receipt.declared_revision, "
                 "receipt.workspace_state_id, receipt.declared_dirty, "
                 "receipt.reproducibility_claim, receipt.omission_count, "
@@ -208,7 +208,7 @@ def inspect_record(
                 "receipt.subject_type, receipt.subject_id, receipt.subject_version, "
                 "receipt.attestor_actor_id, receipt.generation, "
                 "receipt.predecessor_receipt_id, receipt.trust_level, "
-                "receipt.acceptance_status, receipt.outcome, receipt.capabilities, "
+                "receipt.acceptance_status, receipt.contextual_outcome, receipt.capabilities, "
                 "receipt.source_ref, receipt.declared_revision, "
                 "receipt.workspace_state_id, receipt.declared_dirty, "
                 "receipt.reproducibility_claim, receipt.omission_count, "
@@ -286,17 +286,7 @@ def validate_policy(
             "Board not found",
         )
     decoded = dict(_decode_settings(row["settings"]))
-    raw_policy = decoded.get("code_traceability")
-    legacy_default_applied = (
-        "code_traceability" not in decoded
-        or raw_policy is None
-        or (isinstance(raw_policy, Mapping) and raw_policy.get("mode") == "off")
-    )
     try:
-        if legacy_default_applied:
-            decoded["code_traceability"] = CodeTraceabilitySettings.from_persisted(
-                raw_policy
-            ).model_dump(mode="json")
         settings = BoardSettings.model_validate(decoded)
     except ValidationError as exc:
         return {
@@ -314,7 +304,6 @@ def validate_policy(
     return {
         "valid": True,
         "effective_mode": policy.mode.value,
-        "legacy_default_applied": legacy_default_applied,
         "policy": policy.model_dump(mode="json"),
         "responsibility_boundary": "external_authenticated_agent",
     }
@@ -323,7 +312,7 @@ def validate_policy(
 def validate_schema(connection: sqlite3.Connection) -> dict[str, Any]:
     """Validate the Code Traceability table/trigger census and FK integrity."""
 
-    from okto_pulse.community.adapters.relational_schema_steps import (
+    from okto_pulse.community.adapters.current_schema_guards import (
         code_traceability_sqlite_trigger_manifest,
     )
 

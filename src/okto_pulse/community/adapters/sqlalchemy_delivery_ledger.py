@@ -367,54 +367,31 @@ class CommunitySqlAlchemyDeliveryLedger:
 
         del board_id  # Scope is intentionally global, not per-board.
         try:
-            payload_delivery_key = GlobalUpdateOutbox.payload[
-                "delivery_key"
-            ].as_string()
-            payload_delete_event_id = GlobalUpdateOutbox.payload[
-                "delete_event_id"
-            ].as_string()
-            attempt_marker = func.instr(
-                GlobalUpdateOutbox.event_id,
-                ":attempt:",
+            payload = GlobalUpdateOutbox.payload
+            current_identity = func.pulse_current_delivery_identity(
+                GlobalUpdateOutbox.event_id, GlobalUpdateOutbox.board_id,
+                GlobalUpdateOutbox.session_id, GlobalUpdateOutbox.event_type, payload,
             )
-            event_delivery_key = func.substr(
-                GlobalUpdateOutbox.event_id,
-                1,
-                attempt_marker - 1,
-            )
-            historical_candidate = or_(
-                GlobalDiscoveryDeliveryLedger.delivery_key == payload_delivery_key,
-                GlobalDiscoveryDeliveryLedger.delete_event_id
-                == payload_delete_event_id,
-                and_(
-                    GlobalUpdateOutbox.event_id.like("gd_parity:%"),
-                    attempt_marker > 0,
-                    GlobalDiscoveryDeliveryLedger.delivery_key == event_delivery_key,
-                ),
-            )
-            candidate_exists = (
-                select(GlobalDiscoveryDeliveryLedger.delivery_key)
-                .where(historical_candidate)
-                .correlate(GlobalUpdateOutbox)
-                .exists()
-            )
-            unresolved_candidate_exists = (
+            # One indexed logical identity, validated by the public envelope
+            # parser. Earlier native attempts remain history after redrive;
+            # partial/corrupt identities and future attempts cannot be excused.
+            delivered_native_attempt = (
                 select(GlobalDiscoveryDeliveryLedger.delivery_key)
                 .where(
-                    historical_candidate,
-                    GlobalDiscoveryDeliveryLedger.state
-                    != DeliveryState.DELIVERED.value,
+                    GlobalDiscoveryDeliveryLedger.delivery_key
+                    == payload["delivery_key"].as_string(),
+                    GlobalDiscoveryDeliveryLedger.delivery_key == current_identity,
+                    GlobalDiscoveryDeliveryLedger.board_id == GlobalUpdateOutbox.board_id,
+                    GlobalDiscoveryDeliveryLedger.artifact_type == payload["artifact_type"].as_string(),
+                    GlobalDiscoveryDeliveryLedger.artifact_id == payload["artifact_id"].as_string(),
+                    GlobalDiscoveryDeliveryLedger.generation == payload["generation"].as_integer(),
+                    GlobalDiscoveryDeliveryLedger.delete_event_id == payload["delete_event_id"].as_string(),
+                    GlobalDiscoveryDeliveryLedger.attempt >= payload["attempt"].as_integer(),
+                    GlobalDiscoveryDeliveryLedger.state == DeliveryState.DELIVERED.value,
                 )
                 .correlate(GlobalUpdateOutbox)
                 .exists()
             )
-            # Consumption remains strict. Only this historical DLQ probe is
-            # identity-tolerant: a unique logical key, unique delete event or
-            # physical attempt prefix may recover the ledger relationship. A
-            # row is suppressible only when at least one candidate exists and
-            # every candidate is delivered. Missing candidates and ambiguous
-            # delivered+non-delivered identities remain fail-closed. The outer
-            # LIMIT and correlated EXISTS probes do not materialize history.
             unresolved_terminal = await context.scalar(
                 select(GlobalUpdateOutbox.id)
                 .where(
@@ -424,10 +401,7 @@ class CommunitySqlAlchemyDeliveryLedger:
                         == GLOBAL_OUTBOX_DEAD_LETTER_SENTINEL,
                         GlobalUpdateOutbox.retry_count >= GLOBAL_OUTBOX_MAX_RETRIES,
                     ),
-                    or_(
-                        ~candidate_exists,
-                        unresolved_candidate_exists,
-                    ),
+                    ~delivered_native_attempt,
                 )
                 .limit(1)
             )

@@ -38,6 +38,7 @@ from okto_pulse.core.ports.bug_cognitive_context import (
 )
 from okto_pulse.core.ports.test_evidence import (
     register_test_evidence_execution_issuer,
+    register_test_verification_report_issuer,
     register_test_evidence_write_verifier,
 )
 from okto_pulse.core.ports.queue_health import register_queue_health_read_port
@@ -52,12 +53,9 @@ from okto_pulse.core.ports.discovery_catalog import (
 from okto_pulse.core.ports.amendment_revision import (
     register_amendment_revision_store,
 )
-from okto_pulse.core.ports.sprint_activation_baseline import (
-    register_sprint_activation_baseline_store,
-)
 from okto_pulse.core.ports.parent_artifact import register_parent_artifact_read_port
-from okto_pulse.core.ports.architecture_legacy import (
-    register_architecture_legacy_snapshot_read_port,
+from okto_pulse.core.ports.architecture_snapshot import (
+    register_architecture_snapshot_snapshot_read_port,
 )
 from okto_pulse.core.ports.bug_regression_preview import (
     register_bug_regression_preview_read_port,
@@ -408,14 +406,11 @@ def register_community_relational_effects(
     from okto_pulse.community.adapters.sqlalchemy_amendment_revision import (
         CommunitySqlAlchemyAmendmentRevisionStore,
     )
-    from okto_pulse.community.adapters.sqlalchemy_sprint_activation_baseline import (
-        CommunitySqlAlchemySprintActivationBaselineStore,
-    )
     from okto_pulse.community.adapters.sqlalchemy_parent_artifact import (
         CommunitySqlAlchemyParentArtifactReader,
     )
-    from okto_pulse.community.adapters.sqlalchemy_architecture_legacy import (
-        CommunitySqlAlchemyArchitectureLegacySnapshotReader,
+    from okto_pulse.community.adapters.sqlalchemy_architecture_snapshot import (
+        CommunitySqlAlchemyArchitectureSnapshotReader,
     )
     from okto_pulse.community.adapters.sqlalchemy_bug_regression_preview import (
         CommunitySqlAlchemyBugRegressionPreviewReader,
@@ -515,6 +510,8 @@ def register_community_relational_effects(
     register_test_evidence_write_verifier(
         CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger)
     )
+    from okto_pulse.community.adapters.test_evidence import CommunityTestVerificationReportIssuer
+    register_test_verification_report_issuer(CommunityTestVerificationReportIssuer(ledger=evidence_ledger))
     register_test_evidence_execution_issuer(
         CommunityTestEvidenceExecutionIssuer(
             ledger=evidence_ledger,
@@ -530,12 +527,9 @@ def register_community_relational_effects(
     register_skip_override_read_port(CommunitySqlAlchemySkipOverrideReader())
     register_discovery_catalog_read_port(CommunitySqlAlchemyDiscoveryCatalogReader())
     register_amendment_revision_store(CommunitySqlAlchemyAmendmentRevisionStore())
-    register_sprint_activation_baseline_store(
-        CommunitySqlAlchemySprintActivationBaselineStore()
-    )
     register_parent_artifact_read_port(CommunitySqlAlchemyParentArtifactReader())
-    register_architecture_legacy_snapshot_read_port(
-        CommunitySqlAlchemyArchitectureLegacySnapshotReader()
+    register_architecture_snapshot_snapshot_read_port(
+        CommunitySqlAlchemyArchitectureSnapshotReader()
     )
     register_bug_regression_preview_read_port(
         CommunitySqlAlchemyBugRegressionPreviewReader()

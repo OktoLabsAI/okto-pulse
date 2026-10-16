@@ -116,13 +116,15 @@ class DecaySchedulerDiagnostics(BaseModel):
 class StorageFootprintProxy(BaseModel):
     """Adapter-provided storage footprint; not direct memory/buffer telemetry."""
 
+    model_config = ConfigDict(extra="forbid")
+
     source: str = "runtime_capability"
     status: str = "unavailable"
     percentage: float | None = None
     percentage_status: Literal["available", "not_applicable", "unavailable"] = "unavailable"
     percentage_reason: str | None = None
     high_water_mark_pct: float | None = None
-    graph_lbug_bytes: int | None = None
+    graph_primary_bytes: int | None = None
     primary_bytes: int | None = None
     sidecar_bytes: int | None = None
     total_bytes: int | None = None
@@ -219,23 +221,11 @@ class NativeRuntimeBudget(BaseModel):
     unavailable_reason: str | None = None
 
 
-class OrphanIntegritySample(BaseModel):
-    node_id: str
-    node_type: str
-    writer_path: str
-    source_artifact_ref: str | None = None
-    source_resolution_status: str
-    generation_id: str | None = None
-    reason: str
-    correlation_id: str
-
-
 class OrphanIntegrityProjection(BaseModel):
     classification_delta: str = "none"
     integrity_warning: bool = False
     orphan_count: int = 0
     orphan_count_by_type: dict[str, int] = Field(default_factory=dict)
-    samples: list[OrphanIntegritySample] = Field(default_factory=list)
     unresolved_reasons: dict[str, int] = Field(default_factory=dict)
     allowlisted_root_count: int = 0
     generation_id: str | None = None
@@ -250,9 +240,8 @@ class GraphStorageRoute(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     scope: Literal["board", "global"]
-    backend: Literal["ladybug", "grafx"] | None = None
+    backend: Literal["grafx"] | None = None
     binding_status: Literal["bound", "missing", "unavailable"] = "unavailable"
-    physical_path: str | None = None
     generation: str | None = None
     page_size: int | None = None
 
@@ -301,17 +290,21 @@ def _graph_storage_route(
         return _unavailable_graph_storage(scope, binding_status=status)
 
     try:
-        physical_path = snapshot.active_path.relative_to(storage_root).as_posix()
+        # Retain the route consistency check without publishing even a relative
+        # storage path. Public Health carries availability, not filesystem layout.
+        snapshot.active_path.relative_to(storage_root)
     except (AttributeError, TypeError, ValueError):
         # A path outside the configured storage root is never disclosed.  The
         # route authority is inconsistent, so Health reports it fail-closed.
+        return _unavailable_graph_storage(scope)
+
+    if snapshot.backend != "grafx":
         return _unavailable_graph_storage(scope)
 
     return GraphStorageRoute(
         scope=scope,
         backend=snapshot.backend,
         binding_status="bound",
-        physical_path=physical_path,
         generation=snapshot.generation,
         page_size=snapshot.page_size,
     )
@@ -339,18 +332,15 @@ def _graph_storage_snapshot_from_bundle(
     )
 
 
-def _graph_storage_snapshot(board_id: str) -> GraphStorageSnapshot:
-    try:
-        from okto_pulse.community.adapters.composition import (
-            require_community_routed_graph_composition,
-        )
+async def _graph_storage_snapshot(board_id: str) -> GraphStorageSnapshot:
+    from okto_pulse.community.adapters.health_route_observation import (
+        observe_graph_route_metadata,
+    )
 
-        bundle = require_community_routed_graph_composition()
-        return _graph_storage_snapshot_from_bundle(bundle, board_id)
-    except (AttributeError, RuntimeError):
-        # Health remains available even before routing composition exists.  It
-        # must not guess Ladybug or Grafx when no authenticated route is known.
-        return GraphStorageSnapshot()
+    return await observe_graph_route_metadata(
+        board_id, render=_graph_storage_snapshot_from_bundle,
+        unavailable=GraphStorageSnapshot(),
+    )
 
 
 class KGHealthResponse(BaseModel):
@@ -398,17 +388,16 @@ class KGHealthResponse(BaseModel):
     recent_events: list[RecentHealthEvent] = []
     checked_at: str
 
-    # --- Legacy / dashboard fields (preserved for backward compatibility) ---
+    # --- Current dashboard observations ---
     queue_depth: int
     oldest_pending_age_s: float | None
     dead_letter_count: int
     global_outbox_dead_letter_count: int = 0
-    total_nodes: int
-    default_score_count: int
-    default_score_ratio: float
-    avg_relevance: float
-    schema_version: str
-    health_schema_version: str = "1.1"
+    total_nodes: int | None
+    default_score_count: int | None
+    default_score_ratio: float | None
+    avg_relevance: float | None
+    health_schema_version: Literal["1.3"]
     graph_schema_version: str | None = None
     source_count: int | None = None
     contradict_warn_count: int
@@ -496,10 +485,9 @@ async def get_kg_health_endpoint(
 ) -> KGHealthResponse:
     """Return the live KG health snapshot for ``board_id``.
 
-    Compute is in-process: SQL aggregations on the app DB and
-    per-node-type queries against the board's Kùzu graph. Kùzu errors
-    degrade gracefully (zeros), so the endpoint stays available even when
-    Kùzu hasn't been bootstrapped or is under a transient lock.
+    Observations come from the edition's bounded Health providers. Route
+    metadata is inspected without opening storage; absent or inconsistent
+    bindings remain explicitly missing or unavailable.
 
     Per contract api_3ed9037f the endpoint MUST NOT mutate graph or
     discovery storage. It is read-only.
@@ -515,11 +503,7 @@ async def get_kg_health_endpoint(
             uow=db,
         )
         data = dict(result.data)
-        footprint = dict(data.get("storage_footprint_proxy") or {})
-        if "graph_primary_bytes" in footprint:
-            footprint["graph_lbug_bytes"] = footprint.pop("graph_primary_bytes")
-        data["storage_footprint_proxy"] = footprint
-        data["graph_storage"] = _graph_storage_snapshot(board_id)
+        data["graph_storage"] = await _graph_storage_snapshot(board_id)
     except PermissionDeniedError as exc:
         raise RESTAdapterContract.http_error(exc) from exc
     except (AccessBoardNotFoundError, KgBoardNotFoundError) as exc:
@@ -532,9 +516,6 @@ async def get_kg_health_readiness_endpoint(
     request: Request,
     board_id: str = Query(..., description="Board ID (uuid)"),
     profile: str = Query("summary", description="summary | full"),
-    artifact_ref: str | None = Query(
-        None, description="Optional type:id ref to scope non_maskable_items"
-    ),
     user_id: str = Depends(require_user),
     db: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> dict:
@@ -546,9 +527,13 @@ async def get_kg_health_readiness_endpoint(
     vs ``would_block_done`` + ``reasons`` + ``policy_reason``), the top-level
     ``cognitive_enforcement_mode`` / ``enforcement_active`` and
     ``non_maskable_items`` are exposed in BOTH the summary and full profiles — a
-    summary view never masks a technical blocker or its drill_down_tool. The full
+    summary view never masks a technical blocker; items are bounded Board aggregates,
+    without row IDs, raw errors or maintenance actions. The full
     profile only ADDS the prose ``health_issues`` + ``root_cause``. Read-only."""
     from okto_pulse.core.services.kg_health_readiness_service import InvalidProfileError
+
+    if set(request.query_params) - {"board_id", "profile"}:
+        raise HTTPException(status_code=422, detail="unsupported_query_parameter")
 
     try:
         actor = _board_actor(user_id, board_id)
@@ -557,7 +542,6 @@ async def get_kg_health_readiness_endpoint(
                 board_id,
                 profile=profile,
                 surface="rest",
-                artifact_ref=artifact_ref,
                 scheduler_control=scheduler_control_from_request(request),
             ),
             actor=actor,

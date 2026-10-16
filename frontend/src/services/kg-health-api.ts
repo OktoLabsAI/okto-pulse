@@ -2,21 +2,12 @@
  * API client for the KG health snapshot endpoint (spec d754d004).
  *
  * Polled by KGHealthView every 30s while the overlay is mounted and the
- * tab is visible. Backend mirror: core/api/kg_health.py (KGHealthResponse).
+ * tab is visible. Backend mirror: community/api/kg_health.py (KGHealthResponse).
  *
  * Mirror do padrão de queue-health-api.ts — interface tipada + função
  * fetch com AbortSignal. Sem libs novas; usa fetch nativo + cookie do
  * Clerk injetado pelo authAdapter.
  */
-
-// KG Health presents the historical recovery controls, while the transport
-// remains the shared KG API contract used by the empty-state workflow.
-export {
-  cancelHistorical,
-  getHistoricalProgress,
-  startHistorical,
-  type HistoricalProgress,
-} from './kg-api';
 
 export interface TopDisconnectedNode {
   id: string;
@@ -56,13 +47,13 @@ export interface DecaySchedulerDiagnostics {
 }
 
 export interface StorageFootprintProxy {
-  source: 'file_size_proxy' | string;
+  source: 'runtime_capability' | string;
   status: string;
   percentage: number | null;
   percentage_status?: 'available' | 'not_applicable' | 'unavailable';
   percentage_reason?: string | null;
   high_water_mark_pct: number | null;
-  graph_lbug_bytes: number | null;
+  graph_primary_bytes: number | null;
   sidecar_bytes: number | null;
   total_bytes: number | null;
   configured_max_db_size_bytes: number | null;
@@ -81,18 +72,18 @@ export interface KGLayerCounts {
 }
 
 export interface CanonicalDebtSummary {
-  open_count: number;
-  retryable_count: number;
-  blocked_count: number;
-  retry_scheduled_count: number;
-  terminal_count: number;
+  open_count: number | null;
+  retryable_count: number | null;
+  blocked_count: number | null;
+  retry_scheduled_count: number | null;
+  terminal_count: number | null;
   by_state: Record<string, number>;
   status?: string;
 }
 
 export interface RebuildDiagnostics {
   last_outcome: string;
-  canonical_open_debt_count: number;
+  canonical_open_debt_count: number | null;
   layer_counts_status: string;
   operator_action: string;
 }
@@ -100,7 +91,8 @@ export interface RebuildDiagnostics {
 export interface KGOperationalDomain {
   domain?: string;
   semantics?: string;
-  count: number;
+  count: number | null;
+  status?: 'available' | 'unavailable';
   classification?: string;
   oldest_age_seconds?: number;
   drill_down_tool?: string;
@@ -109,9 +101,8 @@ export interface KGOperationalDomain {
 
 export interface KGGraphStorageRoute {
   scope: 'board' | 'global';
-  backend: 'ladybug' | 'grafx' | null;
+  backend: 'grafx' | null;
   binding_status: 'bound' | 'missing' | 'unavailable';
-  physical_path: string | null;
   generation: string | null;
   page_size: number | null;
 }
@@ -131,12 +122,11 @@ export interface KGHealth {
   dead_letter_count: number;
   global_outbox_dead_letter_count: number;
   operational_domains?: Record<string, KGOperationalDomain>;
-  total_nodes: number;
-  default_score_count: number;
-  default_score_ratio: number;
-  avg_relevance: number;
+  total_nodes: number | null;
+  default_score_count: number | null;
+  default_score_ratio: number | null;
+  avg_relevance: number | null;
   top_disconnected_nodes: TopDisconnectedNode[];
-  schema_version: string;
   graph_schema_version?: string | null;
   source_count?: number | null;
   contradict_warn_count: number;
@@ -156,129 +146,12 @@ export interface KGHealth {
   current_kg_generation_id?: string | null;
   classification_reason?: string | null;
   health_issues?: KGHealthIssue[];
-  decay_scheduler_diagnostics?: DecaySchedulerDiagnostics;
+  decay_scheduler_diagnostics: DecaySchedulerDiagnostics;
   storage_footprint_proxy?: StorageFootprintProxy;
   kg_layer_counts?: KGLayerCounts;
   canonical_debt?: CanonicalDebtSummary;
   rebuild_diagnostics?: RebuildDiagnostics;
   graph_storage?: KGGraphStorageSnapshot;
-}
-
-// ---- KG-02 rebuild lifecycle (spec e7360ffe, mockup sm_a30278ad) -------
-
-export interface RebuildPreflightResult {
-  board_id: string;
-  outcome: 'ready' | 'confirmation_required' | 'blocked' | string;
-  action_required: string;
-  reason: string | null;
-  base_state: string;
-  metric_status: string;
-  current_kg_generation_id: string | null;
-  eligible_source_count: number;
-  skipped_cancelled_count: number;
-  has_non_deterministic_inputs: boolean;
-  canonical_source_count?: number;
-  working_source_count?: number;
-  skipped_by_maturity_count?: number;
-  skipped_expired_working_count?: number;
-  legacy_unknown_count?: number;
-  layer_counts?: Record<string, number>;
-  source_partition_counts?: Record<string, number>;
-  preflight_hash: string;
-  generated_at: string;
-  rebuild_status?: string;
-  operational_substatus?: string;
-  manifest_ref: string | null;
-  source_set_hash: string | null;
-  execution_mode?: string;
-  operator_action?: string;
-  remediation?: string;
-}
-
-export interface RebuildConfirmResult {
-  confirmation_id: string;
-  manifest_ref: string | null;
-  source_set_hash: string;
-  expires_at: string;
-}
-
-export interface RebuildRunResult {
-  run_id: string;
-  outcome: 'completed' | 'failed' | 'rebuild_failed' | 'report_persist_failed'
-    | 'confirmation_required' | 'manifest_drift' | 'lock_contention'
-    | 'unsupported_operation' | string;
-  reason: string;
-  audit_ref: string;
-  previous_kg_generation_id: string | null;
-  current_kg_generation_id: string | null;
-  started_at: string;
-  finished_at: string;
-  affected_files: string[];
-  report_ref?: string | null;
-  report_id?: string | null;
-  publishable_status?: string | null;
-  promotion_outcome?: string | null;
-  operator_action?: string | null;
-  event_emitted?: boolean;
-}
-
-async function postJSON<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
-  const resp = await fetch(`${BASE}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal,
-  });
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-    const msg =
-      typeof err.detail === 'string'
-        ? err.detail
-        : err.detail?.reason || err.detail?.error || err.message || `HTTP ${resp.status}`;
-    throw new Error(msg);
-  }
-  return resp.json();
-}
-
-export async function runRebuildPreflight(
-  boardId: string,
-  signal?: AbortSignal,
-): Promise<RebuildPreflightResult> {
-  const resp = await fetch(
-    `${BASE}/kg/rebuild/preflight?board_id=${encodeURIComponent(boardId)}`,
-    { method: 'POST', headers: { 'Content-Type': 'application/json' }, signal },
-  );
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-    throw new Error(err.detail || err.message || `HTTP ${resp.status}`);
-  }
-  return resp.json();
-}
-
-export interface RebuildConfirmRequest {
-  board_id: string;
-  operation: string;
-  preflight_hash: string;
-  manifest_ref: string;
-}
-
-export function runRebuildConfirm(
-  body: RebuildConfirmRequest,
-  signal?: AbortSignal,
-): Promise<RebuildConfirmResult> {
-  return postJSON<RebuildConfirmResult>('/kg/rebuild/confirm', body, signal);
-}
-
-export interface RebuildRunRequest extends RebuildConfirmRequest {
-  confirmation_id: string;
-  reason: string;
-}
-
-export function runRebuildRun(
-  body: RebuildRunRequest,
-  signal?: AbortSignal,
-): Promise<RebuildRunResult> {
-  return postJSON<RebuildRunResult>('/kg/rebuild/run', body, signal);
 }
 
 const BASE = '/api/v1';
@@ -294,70 +167,6 @@ export async function getKGHealth(
       signal,
     },
   );
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-    throw new Error(err.detail || err.message || `HTTP ${resp.status}`);
-  }
-  return resp.json();
-}
-
-export interface CanonicalDebtItem {
-  id: string;
-  board_id: string;
-  artifact_type: string;
-  artifact_id: string;
-  source_ref: string;
-  source_version: string | null;
-  content_hash: string;
-  target_status: string;
-  canonical_state: string;
-  graph_layer: string;
-  maturity_status: string | null;
-  failure_reason: string | null;
-  last_error: string | null;
-  retry_count: number;
-  next_retry_at: string | null;
-  last_attempt_at: string | null;
-  owner_agent_id: string | null;
-  correlation_id: string | null;
-  queue_ref: string | null;
-  dlq_ref: string | null;
-  evidence_ref: string | null;
-  created_at: string | null;
-  updated_at: string | null;
-}
-
-export interface CanonicalDebtListResponse {
-  board_id: string;
-  items: CanonicalDebtItem[];
-  counts: CanonicalDebtSummary;
-  total: number;
-  limit: number;
-  offset: number;
-}
-
-export interface GetCanonicalDebtOptions {
-  artifactType?: string;
-  state?: string;
-  limit?: number;
-  offset?: number;
-}
-
-export async function getCanonicalDebt(
-  boardId: string,
-  options: GetCanonicalDebtOptions = {},
-  signal?: AbortSignal,
-): Promise<CanonicalDebtListResponse> {
-  const params = new URLSearchParams({ board_id: boardId });
-  if (options.artifactType) params.set('artifact_type', options.artifactType);
-  if (options.state) params.set('state', options.state);
-  if (typeof options.limit === 'number') params.set('limit', String(options.limit));
-  if (typeof options.offset === 'number') params.set('offset', String(options.offset));
-
-  const resp = await fetch(`${BASE}/kg/canonical-debt?${params.toString()}`, {
-    headers: { 'Content-Type': 'application/json' },
-    signal,
-  });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({ detail: resp.statusText }));
     throw new Error(err.detail || err.message || `HTTP ${resp.status}`);
@@ -399,7 +208,6 @@ export interface KGCognitivePendingResponse {
   board_id: string;
   selected_kg_generation_id: string | null;
   readonly: true;
-  legacy_mode: boolean;
   counts: KGCognitivePendingCounts;
   items: KGCognitivePendingItem[];
 }
@@ -447,83 +255,6 @@ export async function getKGCognitivePendingItems(
       typeof detail === 'string'
         ? detail
         : detail?.message || detail?.code || err.message || `HTTP ${resp.status}`;
-    throw new Error(message);
-  }
-  return resp.json();
-}
-
-// ---- R7 IMP4 canonical partition integrity (read-only drilldown) -------
-// api_24f4c9c0: GET /api/v1/kg/{board_id}/canonical-partition-integrity.
-// Aggregate KG Health points here via drill_down_tool. READ-ONLY: there is no
-// skip/resolve affordance for R7 holds/debt — that is human-only and lives on
-// the cognitive-readiness surface, never here.
-
-export type CanonicalPartitionStatus =
-  | 'cognitive_pending'
-  | 'canonical_debt'
-  | 'mixed_evidence_deferred'
-  | 'provenance_only_observed'
-  | string;
-
-export interface CanonicalPartitionIntegrityItem {
-  node_id: string | null;
-  node_type: string;
-  artifact_id: string;
-  source_artifact_ref: string;
-  reason_code: string;
-  graph_layer: string;
-  status: CanonicalPartitionStatus;
-  blocking: boolean;
-  canonical_degree: number;
-  working_endpoint_refs: string[];
-  operator_action: string;
-}
-
-export interface CanonicalPartitionIntegrityResponse {
-  board_id: string;
-  items: CanonicalPartitionIntegrityItem[];
-  counts: Record<string, number>;
-  health_issue_code: string;
-  total: number;
-  limit: number;
-  offset: number;
-}
-
-export interface GetCanonicalPartitionIntegrityOptions {
-  reasonCode?: string;
-  graphLayer?: string;
-  sourceRef?: string;
-  nodeId?: string;
-  status?: string;
-  limit?: number;
-  offset?: number;
-}
-
-export async function getCanonicalPartitionIntegrity(
-  boardId: string,
-  options: GetCanonicalPartitionIntegrityOptions = {},
-  signal?: AbortSignal,
-): Promise<CanonicalPartitionIntegrityResponse> {
-  const params = new URLSearchParams();
-  if (options.reasonCode) params.set('reason_code', options.reasonCode);
-  if (options.graphLayer) params.set('graph_layer', options.graphLayer);
-  if (options.sourceRef) params.set('source_ref', options.sourceRef);
-  if (options.nodeId) params.set('node_id', options.nodeId);
-  if (options.status) params.set('status', options.status);
-  if (typeof options.limit === 'number') params.set('limit', String(options.limit));
-  if (typeof options.offset === 'number') params.set('offset', String(options.offset));
-  const qs = params.toString();
-  const resp = await fetch(
-    `${BASE}/kg/${encodeURIComponent(boardId)}/canonical-partition-integrity${qs ? `?${qs}` : ''}`,
-    { headers: { 'Content-Type': 'application/json' }, signal },
-  );
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
-    const detail = err.detail;
-    const message =
-      typeof detail === 'string'
-        ? detail
-        : detail?.message || detail?.error || err.message || `HTTP ${resp.status}`;
     throw new Error(message);
   }
   return resp.json();

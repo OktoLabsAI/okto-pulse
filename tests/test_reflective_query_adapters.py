@@ -322,20 +322,17 @@ def test_real_grafx_multiple_seed_expansion_round_trip(tmp_path, monkeypatch, re
         database.close()
 
 
-def test_operational_kg_resource_describes_the_real_reflective_loop() -> None:
-    resource = (
-        Path(__file__).resolve().parents[1]
-        / "src"
-        / "okto_pulse"
-        / "community"
-        / "resources"
-        / "operational"
-        / "reference"
-        / "tool-docs"
-        / "kg.md"
-    ).read_text(encoding="utf-8")
+def test_operational_kg_resource_describes_the_real_reflective_loop(active_runtime_registry) -> None:
+    from okto_pulse.core.mcp import server
+    from okto_pulse.community.adapters.resources import register_and_freeze_community_resource_catalog
 
-    assert "production bounded retrieve → critic → corrective-action loop" in resource
+    register_and_freeze_community_resource_catalog(active_runtime_registry)
+    # Tool contracts are shared Core resources, served by the composed catalog;
+    # a second handwritten Community copy must not be required.
+    resource = next(item for item in server.effective_resource_catalog().specs()
+                    if item.uri == "okto-pulse://reference/tool-docs/kg").read()
+
+    assert "retrieve → critic → corrective action" in resource
     assert "deterministic critic" in resource
     assert "max_iterations" in resource
     assert "budget_units" in resource
@@ -348,8 +345,12 @@ async def test_community_registry_mcp_real_retrieval_reaches_rejected_terminal(
     tmp_path,
     monkeypatch,
 ) -> None:
-    """TR-3: full Community composition -> MCP -> Kuzu -> critic terminal."""
+    """TR-3: full Community composition -> MCP -> graph -> critic terminal."""
 
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+    from okto_pulse.core import runtime_registry
+    from okto_pulse.core.domain.realm import LOCAL_REALM_ID
     import okto_pulse.core.infra.config as core_config
     from okto_pulse.community.adapters.composition import (
         configure_community_kg_registry,
@@ -364,7 +365,18 @@ async def test_community_registry_mcp_real_retrieval_reaches_rejected_terminal(
     from okto_pulse.core.mcp.catalog import CoreMcpCatalog
     from okto_pulse.core.mcp.kg_power_tools import register_kg_power_tools
 
-    board_id = "reflective-mcp-real-kuzu"
+    board_id = "reflective-mcp-real-graph"
+    # The graph composition fixture has no relational runtime. Supply its
+    # Board reader explicitly; retain the actual policy use case and ACL.
+    board = SimpleNamespace(id=board_id, owner_id='owner', realm_id=LOCAL_REALM_ID,
+                            settings={'kg_query_timeout_ms': 15000})
+
+    @asynccontextmanager
+    async def policy_uow(*, actor):
+        assert actor.board_id == board_id
+        yield SimpleNamespace(boards=SimpleNamespace(get=AsyncMock(return_value=board)))
+
+    monkeypatch.setattr(runtime_registry, 'resolve_unit_of_work_factory', lambda: policy_uow)
     kg_root = tmp_path / "kg"
     original_settings = core_config.get_settings()
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
@@ -386,6 +398,7 @@ async def test_community_registry_mcp_real_retrieval_reaches_rejected_terminal(
         return SimpleNamespace(
             agent_id="agent-reflective-e2e",
             permissions=None,
+            realm_id=LOCAL_REALM_ID,
         )
 
     settings = CommunitySettings(

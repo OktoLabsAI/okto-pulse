@@ -1,0 +1,103 @@
+- generic [ref=f4e3]:
+  - banner [ref=f4e4]:
+    - generic [ref=f4e5]:
+      - generic [ref=f4e6]:
+        - button "Hide sidebar" [ref=f4e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f4e12]
+        - generic [ref=f4e31]: / My Board
+      - generic [ref=f4e32]:
+        - button "Refresh board" [ref=f4e33] [cursor=pointer]
+        - button [ref=f4e40] [cursor=pointer]
+  - generic [ref=f4e13]:
+    - complementary [ref=f4e14]:
+      - generic [ref=f4e15]:
+        - generic [ref=f4e17]:
+          - heading "Boards" [level=2] [ref=f4e18]
+          - button "New board" [ref=f4e19] [cursor=pointer]
+        - navigation [ref=f4e21]:
+          - generic [ref=f4e22]:
+            - heading "My Boards" [level=3] [ref=f4e23]
+            - list [ref=f4e44]:
+              - listitem [ref=f4e45]:
+                - button "My Board" [ref=f4e46] [cursor=pointer]
+    - main [ref=f4e26]:
+      - group "Board views" [ref=f4e53]:
+        - button "Stories" [ref=f4e54] [cursor=pointer]
+        - button "Ideations" [pressed] [ref=f4e58] [cursor=pointer]
+        - button "Refinements" [ref=f4e61] [cursor=pointer]
+        - button "Specs" [ref=f4e66] [cursor=pointer]
+        - button "Tasks" [ref=f4e71] [cursor=pointer]
+      - generic [ref=f4e243]:
+        - generic [ref=f4e244]:
+          - generic [ref=f4e245]:
+            - heading "Ideations" [level=2] [ref=f4e246]
+            - generic [ref=f4e247]: (1 of 1)
+          - generic [ref=f4e248]:
+            - textbox "Search ideations…" [ref=f4e250]
+            - group "View mode" [ref=f4e251]:
+              - button "List view" [pressed] [ref=f4e252] [cursor=pointer]
+              - button "Grid view" [ref=f4e254] [cursor=pointer]
+            - button "New Ideation" [ref=f4e260] [cursor=pointer]
+        - generic [ref=f4e262]:
+          - button "All" [ref=f4e263] [cursor=pointer]
+          - button "Draft" [ref=f4e264] [cursor=pointer]
+          - button "Review" [ref=f4e265] [cursor=pointer]
+          - button "Approved" [ref=f4e266] [cursor=pointer]
+          - button "Evaluating" [ref=f4e267] [cursor=pointer]
+          - button "Done" [ref=f4e268] [cursor=pointer]
+          - button "No derivation" [ref=f4e269] [cursor=pointer]
+          - button "Show archived" [ref=f4e274] [cursor=pointer]
+        - generic [ref=f4e277] [cursor=pointer]:
+          - generic [ref=f4e278]:
+            - generic [ref=f4e279]:
+              - generic [ref=f4e280]: Draft
+              - generic [ref=f4e283]: Edition 1
+            - 'heading "Mock — Completude de cards: implementação e entrega verificada" [level=3] [ref=f4e284]'
+            - paragraph [ref=f4e285]: Diferenciar visualmente implementação comprovada e maturidade da entrega, reproduzindo percentuais a partir de obrigações e provas atuais em um mock controlado.
+            - 'generic "Ambiguity: no current result · Edition 1; 0 previous results" [ref=f4e287]':
+              - generic [ref=f4e288]: Ambiguity
+              - strong [ref=f4e289]: Not assessed
+            - generic [ref=f4e290]:
+              - generic [ref=f4e291]: completude
+              - generic [ref=f4e292]: mock
+          - generic [ref=f4e293]:
+            - button "Open lineage graph" [ref=f4e294]
+            - button "Archive tree" [ref=f4e299]
+        - generic [ref=f4e305]:
+          - status [ref=f4e306]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f4e307]:
+            - generic [ref=f4e308]:
+              - generic [ref=f4e309]: Items per page
+              - combobox "Items per page" [ref=f4e310]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Ideations pagination" [ref=f4e311]:
+              - generic [ref=f4e312]:
+                - button "Previous page" [disabled] [ref=f4e313]: Previous
+                - button "Page 1" [disabled] [ref=f4e314]: "1"
+                - button "Next page" [disabled] [ref=f4e315]: Next
+  - generic [ref=f4e375]:
+    - generic [ref=f4e376]:
+      - heading "Agents" [level=2] [ref=f4e377]
+      - button [ref=f4e382] [cursor=pointer]
+    - generic [ref=f4e386]:
+      - button "My Agents" [ref=f4e387] [cursor=pointer]
+      - button "Board Access" [active] [ref=f4e392] [cursor=pointer]
+    - generic [ref=f4e395]:
+      - generic [ref=f4e448]:
+        - generic [ref=f4e449]: "Board ID:"
+        - code [ref=f4e450] [cursor=pointer]: 8337f239-a9cc-41ba-acb3-7352245103f8
+        - button [ref=f4e451] [cursor=pointer]
+      - generic [ref=f4e455]:
+        - combobox [ref=f4e456]:
+          - option "Select an agent..." [selected]
+          - option "Codex"
+        - button "Grant Access" [disabled] [ref=f4e457]
+      - generic [ref=f4e461]:
+        - button "Edit board access for Local Agent" [ref=f4e462] [cursor=pointer]:
+          - generic [ref=f4e465]:
+            - heading "Local Agent" [level=4] [ref=f4e466]
+            - paragraph [ref=f4e467]: Default agent for local MCP integration
+            - paragraph [ref=f4e468]: Active
+        - button "Revoke" [ref=f4e469] [cursor=pointer]

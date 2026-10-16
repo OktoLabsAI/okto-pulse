@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import subprocess
 import sys
@@ -95,33 +96,28 @@ def test_inspect_finds_record_outside_first_diagnostics_page() -> None:
     assert "challenge_token_hash" not in record
 
 
-def test_policy_validation_upgrades_legacy_off_and_rejects_invalid_enum() -> None:
+@pytest.mark.parametrize("invalid_mode", ["off", "invalid"])
+def test_policy_validation_uses_native_defaults_and_rejects_removed_modes(invalid_mode) -> None:
     connection = _request_database()
-
-    legacy = validate_policy(connection, board_id="board-1")
-    assert legacy["valid"] is True
-    assert legacy["effective_mode"] == "advisory"
-    assert legacy["legacy_default_applied"] is True
-    assert legacy["policy"]["mode"] == "advisory"
-    assert legacy["responsibility_boundary"] == "external_authenticated_agent"
-
-    connection.execute(
-        "UPDATE boards SET settings = ? WHERE id = 'board-1'",
-        ('{"code_traceability":{"mode":"off","minimum_trust":"corroborated"}}',),
-    )
-    explicit_off = validate_policy(connection, board_id="board-1")
-    assert explicit_off["effective_mode"] == "advisory"
-    assert explicit_off["legacy_default_applied"] is True
-    assert explicit_off["policy"]["minimum_trust"] == "corroborated"
+    before = connection.total_changes
+    defaults = validate_policy(connection, board_id="board-1")
+    assert defaults["valid"] is True
+    assert defaults["effective_mode"] == "advisory"
+    assert defaults["policy"]["mode"] == "advisory"
+    assert defaults["responsibility_boundary"] == "external_authenticated_agent"
+    assert "legacy_default_applied" not in defaults
+    assert connection.total_changes == before
 
     connection.execute(
         "UPDATE boards SET settings = ? WHERE id = 'board-1'",
-        ('{"code_traceability":{"mode":"invalid"}}',),
+        (json.dumps({"code_traceability": {"mode": invalid_mode, "minimum_trust": "corroborated"}}),),
     )
+    before = connection.total_changes
     invalid = validate_policy(connection, board_id="board-1")
     assert invalid["valid"] is False
     assert invalid["effective_mode"] == "invalid"
     assert invalid["errors"][0]["path"] == "code_traceability.mode"
+    assert connection.total_changes == before
 
 
 def test_database_is_opened_read_only(tmp_path: Path) -> None:

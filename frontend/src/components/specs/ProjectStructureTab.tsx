@@ -37,6 +37,7 @@ import { useDashboardApi } from '@/services/api';
 import type {
   CardSummaryForSpec,
   ProjectStructureMutationOperation,
+  ProjectStructureMutationRequest,
   ProjectStructureMutationResponse,
   ProjectStructureNode,
   ProjectStructureNodeClassification,
@@ -103,6 +104,7 @@ interface NodeEditor {
   mode: 'create' | 'edit';
   nodeId: string | null;
   draft: NodeDraft;
+  base: { specVersion: number; structureRevision: number };
 }
 
 interface ConflictState {
@@ -135,6 +137,10 @@ export interface ProjectStructureTabProps {
   canLinkEvidence: boolean;
   canUnlinkEvidence: boolean;
   canReadEvidence?: boolean;
+  refreshKey?: number;
+  readCurrent?: boolean;
+  onAccessLost?: () => void;
+  onReload?: () => Promise<void>;
   onStructureChange: (change: ProjectStructureChange) => void;
 }
 
@@ -384,7 +390,11 @@ function NodeReferences({
   );
 }
 
-export function ProjectStructureTab({
+export function ProjectStructureTab(props: ProjectStructureTabProps) {
+  return <ProjectStructureWorkspace key={`${props.boardId}:${props.spec.id}`} {...props} />;
+}
+
+function ProjectStructureWorkspace({
   boardId,
   spec,
   focusNodeId,
@@ -400,6 +410,10 @@ export function ProjectStructureTab({
   canLinkEvidence,
   canUnlinkEvidence,
   canReadEvidence = false,
+  refreshKey = 0,
+  readCurrent = true,
+  onAccessLost,
+  onReload,
   onStructureChange,
 }: ProjectStructureTabProps) {
   const api = useDashboardApi();
@@ -425,6 +439,14 @@ export function ProjectStructureTab({
   const [editorError, setEditorError] = useState<string | null>(null);
   const [busyNodeId, setBusyNodeId] = useState<string | null>(null);
   const [conflict, setConflict] = useState<ConflictState | null>(null);
+  const [uncertainRequest, setUncertainRequest] = useState<ProjectStructureMutationRequest | null>(null);
+  const writing = useRef(false);
+  const live = useRef(true);
+  const accessGeneration = useRef(0);
+  const latestTokens = useRef({ specVersion, structureRevision });
+  latestTokens.current = { specVersion: Math.max(specVersion, spec.version), structureRevision: Math.max(structureRevision, spec.project_structure_revision ?? 0) };
+  const accessLostRef = useRef(onAccessLost);
+  accessLostRef.current = onAccessLost;
   const [evidenceOptions, setEvidenceOptions] = useState<Array<{ id: string; label: string }>>([]);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
   const expansionInitializedFor = useRef<string | null>(null);
@@ -434,6 +456,7 @@ export function ProjectStructureTab({
   // overwrite the nodes and CAS tokens of a mutation that completed after it
   // started.
   const snapshotGeneration = useRef(0);
+  useEffect(() => { live.current = true; return () => { live.current = false; snapshotGeneration.current += 1; }; }, []);
   const pendingLoads = useRef(0);
   const onStructureChangeRef = useRef(onStructureChange);
   useEffect(() => {
@@ -453,6 +476,23 @@ export function ProjectStructureTab({
     || canUnlinkEvidence
   );
   const isEditing = mode === 'edit' && !readOnly;
+  const editorBaseChanged = Boolean(editor && (editor.base.specVersion !== specVersion || editor.base.structureRevision !== structureRevision));
+  const editorMissing = Boolean(editor?.nodeId && !nodes.some(node => node.id === editor.nodeId && node.status === 'active'));
+  const mutationsDisabled = !readCurrent || loading || Boolean(loadError) || Boolean(uncertainRequest) || busyNodeId !== null;
+  const editorSaveDisabled = mutationsDisabled || editorBaseChanged || editorMissing
+    || (editor?.mode === 'create' ? !canCreate : !canUpdate);
+  const operationPermissions: Record<string, boolean> = useMemo(() => ({
+    create: canCreate, update: canUpdate, revoke: canRevoke, restore: canRestore, reorder: canReorder,
+    link_task: canLinkTask, unlink_task: canUnlinkTask, link_test: canLinkTest, unlink_test: canUnlinkTest,
+    link_evidence: canLinkEvidence, unlink_evidence: canUnlinkEvidence,
+  }), [canCreate, canUpdate, canRevoke, canRestore, canReorder, canLinkTask, canUnlinkTask, canLinkTest, canUnlinkTest, canLinkEvidence, canUnlinkEvidence]);
+
+  const clearDeniedContent = useCallback(() => {
+    accessGeneration.current += 1;
+    snapshotGeneration.current += 1;
+    setNodes([]); setEditor(null); setConflict(null); setUncertainRequest(null); setEvidenceOptions([]);
+    accessLostRef.current?.();
+  }, []);
 
   const publishSnapshot = useCallback((snapshot: ProjectStructureSnapshot) => {
     const parsed = parseProjectStructureNodes(snapshot.nodes);
@@ -480,9 +520,14 @@ export function ProjectStructureTab({
     try {
       const snapshot = await api.getProjectStructure(boardId, spec.id);
       if (generation !== snapshotGeneration.current) return;
+      if (snapshot.spec_id !== spec.id || snapshot.spec_version < latestTokens.current.specVersion
+        || snapshot.structure_revision < latestTokens.current.structureRevision) {
+        throw new Error('The project structure response is stale or belongs to another Spec. Reload the current structure.');
+      }
       const loadedNodes = publishSnapshot(snapshot);
       if (reviewConflict) {
         setConflict((current) => current ? { ...current, reviewed: true } : current);
+        setEditor(current => current ? { ...current, base: { specVersion: snapshot.spec_version, structureRevision: snapshot.structure_revision } } : current);
       }
       if (expansionInitializedFor.current !== spec.id) {
         expansionInitializedFor.current = spec.id;
@@ -495,19 +540,26 @@ export function ProjectStructureTab({
     } catch (error) {
       if (generation !== snapshotGeneration.current) return;
       setLoadError(humanError(error));
+      if (error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status)) clearDeniedContent();
     } finally {
       pendingLoads.current -= 1;
-      if (pendingLoads.current === 0) setLoading(false);
+      if (live.current && pendingLoads.current === 0) setLoading(false);
     }
-  }, [api, boardId, publishSnapshot, spec.id]);
+  }, [api, boardId, clearDeniedContent, publishSnapshot, spec.id]);
+
+  const refreshSnapshot = async (reviewConflict = false) => {
+    try {
+      await onReload?.();
+      if (live.current) await loadSnapshot(reviewConflict);
+    } catch (error) {
+      if (live.current) setLoadError(humanError(error));
+    }
+  };
 
   useEffect(() => {
-    expansionInitializedFor.current = null;
-    setMode('view');
-    setEditor(null);
-    setConflict(null);
     void loadSnapshot();
-  }, [loadSnapshot, spec.id]);
+    return () => { snapshotGeneration.current += 1; };
+  }, [loadSnapshot, refreshKey]);
 
   useEffect(() => {
     if (!readOnly) return;
@@ -515,6 +567,10 @@ export function ProjectStructureTab({
     setEditor(null);
     setConflict(null);
   }, [readOnly]);
+
+  useEffect(() => {
+    if (editor && (editor.mode === 'create' ? !canCreate : !canUpdate)) setEditor(null);
+  }, [canCreate, canUpdate, editor]);
 
   useEffect(() => {
     if (!canReadEvidence) {
@@ -571,6 +627,8 @@ export function ProjectStructureTab({
 
   const applyResult = useCallback((result: ProjectStructureMutationResponse) => {
     snapshotGeneration.current += 1;
+    // A replay acknowledges its original result; it must not roll back a newer read.
+    if (result.spec_version < latestTokens.current.specVersion || result.structure_revision < latestTokens.current.structureRevision) return;
     const parsed = parseProjectStructureNodes(result.nodes);
     const state = stateFor(parsed.nodes, true);
     setNodes(parsed.nodes);
@@ -590,19 +648,31 @@ export function ProjectStructureTab({
 
   const performOperation = useCallback(async (
     operation: ProjectStructureMutationOperation,
+    original?: ProjectStructureMutationRequest,
+    base?: NodeEditor['base'],
   ): Promise<boolean> => {
+    if (writing.current || !readCurrent || !operationPermissions[operation.operation] || (!original && mutationsDisabled)) return false;
+    const request: ProjectStructureMutationRequest = original ?? {
+      expected_spec_version: base?.specVersion ?? specVersion,
+      expected_structure_revision: base?.structureRevision ?? structureRevision,
+      idempotency_key: `project-structure-ui-${uuidv4()}`,
+      operations: [operation],
+    };
+    writing.current = true;
+    const access = accessGeneration.current;
     setBusyNodeId(operation.entity_id ?? '__collection__');
     setEditorError(null);
     try {
-      const result = await api.mutateProjectStructure(boardId, spec.id, {
-        expected_spec_version: specVersion,
-        expected_structure_revision: structureRevision,
-        idempotency_key: `project-structure-ui-${uuidv4()}`,
-        operations: [operation],
-      });
+      const result = await api.mutateProjectStructure(boardId, spec.id, request);
+      if (!live.current || access !== accessGeneration.current) return false;
       applyResult(result);
+      setUncertainRequest(null);
       return true;
     } catch (error) {
+      if (!live.current || access !== accessGeneration.current) return false;
+      const rejected = error instanceof AuthenticatedFetchError && error.status >= 400 && error.status < 500 && error.status !== 408;
+      setUncertainRequest(rejected ? null : request);
+      if (error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status)) clearDeniedContent();
       if (isConflict(error)) {
         setConflict({
           operation,
@@ -614,23 +684,27 @@ export function ProjectStructureTab({
       }
       return false;
     } finally {
-      setBusyNodeId(null);
+      writing.current = false;
+      if (live.current) setBusyNodeId(null);
     }
-  }, [api, applyResult, boardId, spec.id, specVersion, structureRevision]);
+  }, [api, applyResult, boardId, spec.id, specVersion, structureRevision, readCurrent, mutationsDisabled, clearDeniedContent, operationPermissions]);
 
   const openCreate = (parentId: string | null) => {
-    setEditor({ mode: 'create', nodeId: null, draft: defaultDraft(nodes, parentId) });
+    if (mutationsDisabled) return;
+    setEditor({ mode: 'create', nodeId: null, draft: defaultDraft(nodes, parentId), base: { specVersion, structureRevision } });
     setEditorError(null);
     setConflict(null);
   };
 
   const openEdit = (node: ProjectStructureNode) => {
-    setEditor({ mode: 'edit', nodeId: node.id, draft: draftForNode(node) });
+    if (mutationsDisabled) return;
+    setEditor({ mode: 'edit', nodeId: node.id, draft: draftForNode(node), base: { specVersion, structureRevision } });
     setEditorError(null);
     setConflict(null);
   };
 
   const updateDraft = (patch: Partial<NodeDraft>) => {
+    if (writing.current || uncertainRequest) return;
     setEditor((current) => current
       ? { ...current, draft: { ...current.draft, ...patch } }
       : current);
@@ -639,7 +713,7 @@ export function ProjectStructureTab({
   };
 
   const saveEditor = async () => {
-    if (!editor) return;
+    if (!editor || editorSaveDisabled) return;
     const name = editor.draft.name.trim();
     if (!name) {
       setEditorError('Name is required.');
@@ -688,7 +762,7 @@ export function ProjectStructureTab({
       operation: editor.mode === 'create' ? 'create' : 'update',
       ...(editor.nodeId ? { entity_id: editor.nodeId } : {}),
       payload,
-    });
+    }, undefined, editor.base);
     if (success) {
       setEditor(null);
       toast.success(editor.mode === 'create' ? 'Project node created' : 'Project node saved');
@@ -793,7 +867,7 @@ export function ProjectStructureTab({
     await performOperation(conflict.operation);
   };
 
-  if (loading && nodes.length === 0) {
+  if (loading && nodes.length === 0 && !editor) {
     return (
       <div role="status" className="flex items-center justify-center gap-2 rounded-lg border border-gray-200 py-12 text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
         <Loader2 size={16} className="animate-spin" /> Loading project structure…
@@ -801,11 +875,11 @@ export function ProjectStructureTab({
     );
   }
 
-  if (loadError && nodes.length === 0) {
+  if (loadError && nodes.length === 0 && !editor) {
     return (
       <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-5 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
         <p>{loadError}</p>
-        <button type="button" onClick={() => void loadSnapshot()} className="btn btn-secondary mt-3 inline-flex items-center gap-1.5 text-xs">
+        <button type="button" onClick={() => void refreshSnapshot()} className="btn btn-secondary mt-3 inline-flex items-center gap-1.5 text-xs">
           <RefreshCw size={13} /> Retry
         </button>
       </div>
@@ -849,11 +923,11 @@ export function ProjectStructureTab({
               Show removed
             </label>
           )}
-          <button type="button" onClick={() => void loadSnapshot()} disabled={loading || busyNodeId !== null} className="btn btn-secondary inline-flex items-center gap-1.5 text-xs">
+          <button type="button" onClick={() => void refreshSnapshot()} disabled={loading || busyNodeId !== null} className="btn btn-secondary inline-flex items-center gap-1.5 text-xs">
             <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Refresh
           </button>
           {isEditing && canCreate && (
-            <button type="button" onClick={() => openCreate(null)} disabled={busyNodeId !== null} className="btn btn-primary inline-flex items-center gap-1.5 text-xs">
+            <button type="button" onClick={() => openCreate(null)} disabled={mutationsDisabled} className="btn btn-primary inline-flex items-center gap-1.5 text-xs">
               <Plus size={13} /> Add root
             </button>
           )}
@@ -865,6 +939,25 @@ export function ProjectStructureTab({
           Read-only. You can review the canonical structure, classifications and references.
         </div>
       )}
+
+      {(!readCurrent || loadError) && <div role="status" className="rounded-lg border border-amber-300 p-3 text-xs text-amber-700 dark:text-amber-300">
+        {loadError || 'Current project structure could not be verified. Your draft is preserved; refresh before writing.'}
+      </div>}
+      {uncertainRequest && <div role="status" className="rounded-lg border border-amber-300 p-3 text-xs text-amber-700 dark:text-amber-300">
+        <p>The response was lost. Retry the original operation to recover its receipt; its identity, payload and preconditions are preserved.</p>
+        <button type="button" className="btn btn-secondary text-xs mt-2" disabled={busyNodeId !== null || !readCurrent || !operationPermissions[uncertainRequest.operations[0].operation]}
+          onClick={() => { void performOperation(uncertainRequest.operations[0], uncertainRequest).then(ok => { if (ok && live.current) { setEditor(null); setConflict(null); } }); }}>Retry original operation</button>
+      </div>}
+      {isEditing && editorBaseChanged && !conflict && !uncertainRequest && <div role="status" className="rounded-lg border border-amber-300 p-3 text-xs text-amber-700 dark:text-amber-300">
+        <p>The project structure changed. Your input is preserved. Review the current tree before saving.</p>
+        <button type="button" className="btn btn-secondary text-xs mt-2" disabled={!readCurrent || loading || Boolean(loadError) || editorMissing}
+          onClick={() => setEditor(current => current ? { ...current, base: { specVersion, structureRevision } } : current)}>Review current structure</button>
+      </div>}
+      {isEditing && editorMissing && editor && <div className="space-y-2">
+        <p role="status" className="text-xs text-amber-600">This node was removed. Your draft is preserved and cannot recreate the node.</p>
+        <NodeEditorForm editor={editor} nodes={nodes} busy={busyNodeId !== null} locked={Boolean(uncertainRequest)} saveDisabled error={editorError}
+          onChange={updateDraft} onSave={saveEditor} onCancel={() => { setEditor(null); setEditorError(null); setConflict(null); }} />
+      </div>}
 
       {combinedIssues.length > 0 && (
         <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
@@ -881,10 +974,10 @@ export function ProjectStructureTab({
               <p className="font-semibold">Concurrent change</p>
               <p className="mt-0.5 text-xs">{conflict.message}</p>
               <div className="mt-2 flex flex-wrap gap-2">
-                <button type="button" onClick={() => void loadSnapshot(true)} disabled={loading} className="btn btn-secondary inline-flex items-center gap-1.5 text-xs">
+                <button type="button" onClick={() => void refreshSnapshot(true)} disabled={loading || Boolean(uncertainRequest)} className="btn btn-secondary inline-flex items-center gap-1.5 text-xs">
                   <RefreshCw size={12} /> Refresh & review
                 </button>
-                <button type="button" onClick={() => void retryConflict()} disabled={!conflict.reviewed || busyNodeId !== null} className="btn btn-primary text-xs disabled:opacity-40">
+                <button type="button" onClick={() => void retryConflict()} disabled={!conflict.reviewed || mutationsDisabled || editorMissing || editorBaseChanged} className="btn btn-primary text-xs disabled:opacity-40">
                   Retry saved input
                 </button>
               </div>
@@ -898,6 +991,8 @@ export function ProjectStructureTab({
           editor={editor}
           nodes={nodes}
           busy={busyNodeId !== null}
+          locked={Boolean(uncertainRequest)}
+          saveDisabled={editorSaveDisabled}
           error={editorError}
           onChange={updateDraft}
           onSave={saveEditor}
@@ -927,7 +1022,7 @@ export function ProjectStructureTab({
         <div role="tree" aria-label="Project structure tree" className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
           {flattened.rows.map(({ node, depth, hasChildren }, rowIndex) => {
             const isExpanded = expandedIds.has(node.id);
-            const currentEditor = isEditing && editor?.mode === 'edit' && editor.nodeId === node.id
+            const currentEditor = isEditing && !editorMissing && editor?.mode === 'edit' && editor.nodeId === node.id
               ? editor
               : null;
             const siblings = siblingNodes(nodes, node.parent_id);
@@ -994,6 +1089,8 @@ export function ProjectStructureTab({
                       editor={currentEditor}
                       nodes={nodes}
                       busy={busyNodeId !== null}
+                      locked={Boolean(uncertainRequest)}
+                      saveDisabled={editorSaveDisabled}
                       error={editorError}
                       onChange={updateDraft}
                       onSave={saveEditor}
@@ -1007,7 +1104,7 @@ export function ProjectStructureTab({
                           {note || 'No note'}
                         </p>
                         {isEditing && node.status === 'active' && canUpdate && (
-                          <button type="button" aria-label={`Edit ${node.name}`} onClick={() => openEdit(node)} disabled={busyNodeId !== null} className={`${iconButtonClassName()} opacity-70 group-hover/note:opacity-100 focus:opacity-100`} title="Edit node">
+                          <button type="button" aria-label={`Edit ${node.name}`} onClick={() => openEdit(node)} disabled={mutationsDisabled} className={`${iconButtonClassName()} opacity-70 group-hover/note:opacity-100 focus:opacity-100`} title="Edit node">
                             <Pencil size={13} />
                           </button>
                         )}
@@ -1019,14 +1116,14 @@ export function ProjectStructureTab({
                 {isEditing && !currentEditor && (
                   <div className="ml-[42px] mt-2 flex flex-wrap items-center gap-1.5">
                     {node.status === 'active' && node.kind === 'folder' && canCreate && (
-                      <button type="button" aria-label={`Add child to ${node.name}`} onClick={() => { setExpandedIds((current) => new Set(current).add(node.id)); openCreate(node.id); }} disabled={busyNodeId !== null} className={iconButtonClassName()} title="Add child">
+                      <button type="button" aria-label={`Add child to ${node.name}`} onClick={() => { setExpandedIds((current) => new Set(current).add(node.id)); openCreate(node.id); }} disabled={mutationsDisabled} className={iconButtonClassName()} title="Add child">
                         <Plus size={13} />
                       </button>
                     )}
                     {node.status === 'active' && canReorder && (
                       <>
-                        <button type="button" aria-label={`Move ${node.name} up`} onClick={() => void moveWithinSiblings(node, -1)} disabled={busyNodeId !== null || siblingIndex <= 0} className={iconButtonClassName()} title="Move up (Alt+↑)"><ArrowUp size={13} /></button>
-                        <button type="button" aria-label={`Move ${node.name} down`} onClick={() => void moveWithinSiblings(node, 1)} disabled={busyNodeId !== null || siblingIndex < 0 || siblingIndex >= siblings.length - 1} className={iconButtonClassName()} title="Move down (Alt+↓)"><ArrowDown size={13} /></button>
+                        <button type="button" aria-label={`Move ${node.name} up`} onClick={() => void moveWithinSiblings(node, -1)} disabled={mutationsDisabled || siblingIndex <= 0} className={iconButtonClassName()} title="Move up (Alt+↑)"><ArrowUp size={13} /></button>
+                        <button type="button" aria-label={`Move ${node.name} down`} onClick={() => void moveWithinSiblings(node, 1)} disabled={mutationsDisabled || siblingIndex < 0 || siblingIndex >= siblings.length - 1} className={iconButtonClassName()} title="Move down (Alt+↓)"><ArrowDown size={13} /></button>
                       </>
                     )}
                     {node.status === 'active' && canUpdate && (
@@ -1036,7 +1133,7 @@ export function ProjectStructureTab({
                           id={`project-node-${node.id}-move-to`}
                           aria-label={`Move ${node.name} to another folder`}
                           value={node.parent_id ?? ''}
-                          disabled={busyNodeId !== null}
+                          disabled={mutationsDisabled}
                           onChange={(event) => void moveToParent(node, event.target.value || null)}
                           className="rounded border border-gray-200 bg-white px-1.5 py-1 text-[11px] text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200"
                         >
@@ -1054,12 +1151,12 @@ export function ProjectStructureTab({
                         if (window.confirm(`Remove “${node.name}” from the active project structure?`)) {
                           void performOperation({ operation: 'revoke', entity_id: node.id });
                         }
-                      }} disabled={busyNodeId !== null || hasActiveChildren} className={iconButtonClassName(true)} title={hasActiveChildren ? 'Move or remove child nodes first' : 'Remove'}>
+                      }} disabled={mutationsDisabled || hasActiveChildren} className={iconButtonClassName(true)} title={hasActiveChildren ? 'Move or remove child nodes first' : 'Remove'}>
                         <Trash2 size={13} />
                       </button>
                     )}
                     {node.status === 'revoked' && canRestore && (
-                      <button type="button" onClick={() => void performOperation({ operation: 'restore', entity_id: node.id, position: nextSiblingPosition(nodes, node.parent_id) })} disabled={busyNodeId !== null} className="btn btn-secondary inline-flex items-center gap-1 text-xs">
+                      <button type="button" onClick={() => void performOperation({ operation: 'restore', entity_id: node.id, position: nextSiblingPosition(nodes, node.parent_id) })} disabled={mutationsDisabled} className="btn btn-secondary inline-flex items-center gap-1 text-xs">
                         <RotateCcw size={12} /> Restore
                       </button>
                     )}
@@ -1072,7 +1169,7 @@ export function ProjectStructureTab({
                       node={node}
                       cards={spec.cards ?? []}
                       evidence={evidenceOptions}
-                      disabled={busyNodeId !== null}
+                      disabled={mutationsDisabled}
                       canLinkTask={isEditing && canLinkTask}
                       canUnlinkTask={isEditing && canUnlinkTask}
                       canLinkTest={isEditing && canLinkTest}
@@ -1106,6 +1203,8 @@ function NodeEditorForm({
   editor,
   nodes,
   busy,
+  locked = false,
+  saveDisabled = false,
   error,
   compact = false,
   onChange,
@@ -1115,6 +1214,8 @@ function NodeEditorForm({
   editor: NodeEditor;
   nodes: ProjectStructureNode[];
   busy: boolean;
+  locked?: boolean;
+  saveDisabled?: boolean;
   error: string | null;
   compact?: boolean;
   onChange: (patch: Partial<NodeDraft>) => void;
@@ -1137,6 +1238,7 @@ function NodeEditorForm({
         }
       }}
     >
+      <fieldset disabled={busy || locked} className="space-y-3">
       {!compact && (
         <NodeMetadataFields
           editor={editor}
@@ -1161,10 +1263,11 @@ function NodeEditorForm({
       {error && <div role="alert" className="rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">{error}</div>}
       <div className="flex flex-wrap justify-end gap-2">
         <button type="button" onClick={onCancel} disabled={busy} className="btn btn-secondary inline-flex items-center gap-1 text-xs"><X size={12} /> Cancel</button>
-        <button type="submit" disabled={busy || !editor.draft.name.trim()} className="btn btn-primary inline-flex items-center gap-1 text-xs disabled:opacity-40">
+        <button type="submit" disabled={busy || saveDisabled || !editor.draft.name.trim()} className="btn btn-primary inline-flex items-center gap-1 text-xs disabled:opacity-40">
           {busy ? <Loader2 size={12} className="animate-spin" /> : <Save size={12} />} Save
         </button>
       </div>
+      </fieldset>
     </form>
   );
 }

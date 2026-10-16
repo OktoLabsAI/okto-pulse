@@ -1,6 +1,6 @@
 [project]
 name = "okto-pulse"
-version = "0.3.3"
+version = "0.4.0"
 description = "Okto Pulse — spec-driven project management with AI agents via MCP. Local-first, single command setup."
 requires-python = ">=3.11"
 license = {text = "Elastic-2.0"}
@@ -26,7 +26,7 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "okto-pulse-core>=0.3.3,<1.0.0",
+    "okto-pulse-core==0.4.0",
     # 0.137.0 regressed include_router for empty collection paths; 0.137.1 fixed it.
     "fastapi>=0.109.0,!=0.137.0,<1.0.0",
     "starlette>=0.35.0,<2.0.0",
@@ -59,6 +59,7 @@ dev = [
     "build>=1.2.0,<2.0.0",
     "pytest>=8.0.0,<10.0.0",
     "pytest-asyncio>=0.24.0,<2.0.0",
+    "tiktoken>=0.8.0,<1.0.0",
     "uv>=0.8.0,<1.0.0",
 ]
 
@@ -75,8 +76,12 @@ content-type = "text/markdown"
 
 [project.scripts]
 okto-pulse = "okto_pulse.community.cli:main"
-okto-pulse-kg-recovery-only = "okto_pulse.community.kg_recovery_only:main"
 okto-pulse-saas-closure = "okto_pulse.community.saas_closure:main"
+
+[tool.uv.sources]
+# Resolve the sibling source tree while 0.4.0 is unpublished. pip/release wheels
+# retain the exact okto-pulse-core==0.4.0 dependency declared above.
+okto-pulse-core = { path = "../okto_labs_pulse_core", editable = true }
 
 [build-system]
 requires = ["hatchling"]

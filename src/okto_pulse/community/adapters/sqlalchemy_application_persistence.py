@@ -13,9 +13,6 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import selectinload
 
 from okto_pulse.community.adapters import sqlalchemy_models as models
-from okto_pulse.community.adapters.permission_policy import (
-    direct_permission_review,
-)
 from okto_pulse.community.adapters.sqlalchemy_knowledge_propagation import (
     is_knowledge_creation_race_error,
 )
@@ -33,9 +30,8 @@ from okto_pulse.core.ports.application_persistence import (
 )
 from okto_pulse.core.ports.permission_policy import (
     PermissionPresetLineageNode,
-    legacy_permissions_to_flags,
     resolve_effective_permissions,
-    resolve_preset_lineage,
+    resolve_agent_permission_facts,
 )
 from okto_pulse.core.domain.ownership import aggregate_ownership
 from okto_pulse.core.domain.realm import (
@@ -78,9 +74,6 @@ _ENTITY_CLASSES = {
     "spec_history": models.SpecHistory,
     "spec_knowledge_base": models.SpecKnowledgeBase,
     "spec_qa_item": models.SpecQAItem,
-    "sprint": models.Sprint,
-    "sprint_history": models.SprintHistory,
-    "sprint_qa_item": models.SprintQAItem,
     "story": models.Story,
     "story_ideation_link": models.StoryIdeationLink,
     "topic": models.Topic,
@@ -141,8 +134,6 @@ _PARENT_SCOPE_PATHS: dict[str, tuple[str, str]] = {
     "spec_history": ("spec_id", "spec"),
     "spec_knowledge_base": ("spec_id", "spec"),
     "spec_qa_item": ("spec_id", "spec"),
-    "sprint_history": ("sprint_id", "sprint"),
-    "sprint_qa_item": ("sprint_id", "sprint"),
 }
 
 
@@ -188,7 +179,7 @@ def _realm_predicate(entity: str, scope: RealmScope):
     return (
         select(parent_model.id)
         .where(
-            parent_model.id == getattr(model, foreign_key),
+            parent_model.id == _application_attribute(model, foreign_key),
             _realm_predicate(parent_entity, scope),
         )
         .exists()
@@ -204,13 +195,7 @@ def _predicate(model: Any, item: ApplicationFilter):
         entries = func.json_each(
             func.coalesce(models.Card.conclusions, "[]")
         ).table_valued("key", "value", joins_implicitly=True)
-        actor_id = func.coalesce(
-            func.json_extract(entries.c.value, "$.author_id"),
-            func.json_extract(entries.c.value, "$.actor_id"),
-            func.json_extract(entries.c.value, "$.author_agent_id"),
-            func.json_extract(entries.c.value, "$.author"),
-            func.json_extract(entries.c.value, "$.created_by"),
-        )
+        actor_id = func.json_extract(entries.c.value, "$.author_id")
         return (
             select(1)
             .select_from(entries)
@@ -333,7 +318,7 @@ def _predicate(model: Any, item: ApplicationFilter):
             .scalar_subquery()
         )
     else:
-        column = getattr(model, item.field)
+        column = _application_attribute(model, item.field)
     value: Any = item.value
     # SQLite's CURRENT_TIMESTAMP stores second precision without a fractional
     # suffix, while SQLAlchemy datetime binds include ``.000000``. Lexical
@@ -405,13 +390,29 @@ def _predicate(model: Any, item: ApplicationFilter):
     raise ValueError(f"unsupported_application_operator:{item.operator}")
 
 
+def _application_attribute(model: Any, name: str, *default):
+    """Retired ORM relations cannot bypass the operational entity catalog.
+
+    Legacy tables remain owned by offline capture until the atomic schema cut.
+    Reject includes, filters, projections and ordering before any SQL executes.
+    """
+    try:
+        attribute = getattr(model, name, *default)
+    except AttributeError as error:
+        raise ValueError(f"unsupported_application_attribute:{name}") from error
+    relationship = model.__mapper__.relationships.get(name)
+    if relationship is not None and relationship.mapper.class_ not in _CLASS_ENTITIES:
+        raise ValueError(f"unsupported_application_relationship:{name}")
+    return attribute
+
+
 def _load_option(model: Any, path: str):
     parts = path.split(".")
-    relationship = getattr(model, parts[0])
+    relationship = _application_attribute(model, parts[0])
     option = selectinload(relationship)
     related_model = relationship.property.mapper.class_
     for part in parts[1:]:
-        relationship = getattr(related_model, part)
+        relationship = _application_attribute(related_model, part)
         option = option.selectinload(relationship)
         related_model = relationship.property.mapper.class_
     return option
@@ -445,7 +446,6 @@ def _projection_expression(model: Any, field_name: str) -> Any:
             models.RefinementQAItem.refinement_id,
         ),
         models.Spec: (models.SpecQAItem, models.SpecQAItem.spec_id),
-        models.Sprint: (models.SprintQAItem, models.SprintQAItem.sprint_id),
     }.get(model)
     if field_name == "open_qa_count" and open_qa_binding is not None:
         qa_model, parent_id = open_qa_binding
@@ -485,12 +485,12 @@ def _projection_expression(model: Any, field_name: str) -> Any:
         entries = func.json_each(
             func.coalesce(models.Card.validations, "[]")
         ).table_valued("key", "value", joins_implicitly=True)
-        verdict = func.json_extract(entries.c.value, "$.verdict")
+        outcome = func.json_extract(entries.c.value, "$.outcome")
         if field_name == "validations_fail_count":
             return (
                 select(func.count())
                 .select_from(entries)
-                .where(verdict == "fail")
+                .where(outcome == "failed")
                 .correlate(models.Card)
                 .scalar_subquery()
                 .label(field_name)
@@ -498,7 +498,7 @@ def _projection_expression(model: Any, field_name: str) -> Any:
         return (
             select(1)
             .select_from(entries)
-            .where(verdict == "pass")
+            .where(outcome == "success")
             .correlate(models.Card)
             .exists()
             .label(field_name)
@@ -513,7 +513,7 @@ def _projection_expression(model: Any, field_name: str) -> Any:
         first_pass_key = (
             select(func.min(key_entries.c.key))
             .select_from(key_entries)
-            .where(func.json_extract(key_entries.c.value, "$.verdict") == "pass")
+            .where(func.json_extract(key_entries.c.value, "$.outcome") == "success")
             .correlate(models.Card)
             .scalar_subquery()
         )
@@ -521,7 +521,8 @@ def _projection_expression(model: Any, field_name: str) -> Any:
             func.coalesce(models.Card.validations, "[]")
         ).table_valued("key", "value", joins_implicitly=True)
         return (
-            select(func.json_extract(entries.c.value, f"$.{metric}"))
+            select(func.json_extract(entries.c.value,
+                f"$.{metric if metric == 'confidence' else 'estimated_' + metric}"))
             .select_from(entries)
             .where(entries.c.key == first_pass_key)
             .correlate(models.Card)
@@ -552,7 +553,7 @@ def _projection_expression(model: Any, field_name: str) -> Any:
             .scalar_subquery()
             .label(field_name)
         )
-    column = getattr(model, field_name, None)
+    column = _application_attribute(model, field_name, None)
     if column is None:
         raise ValueError(f"unsupported_application_projection:{field_name}")
     return column.label(field_name)
@@ -783,74 +784,23 @@ class CommunitySqlAlchemyApplicationPersistence:
     async def resolve_user_permissions(
         self, context: Any, *, user_id: str, board_id: str
     ) -> Any:
-        """Resolve direct flags, preset lineage and the board ceiling."""
-        result = await context.execute(
-            select(
-                models.Agent.permission_flags,
-                models.Agent.permissions,
-                models.Agent.preset_id,
-                models.AgentBoard.permission_overrides,
-            )
-            .outerjoin(
-                models.AgentBoard,
-                and_(
-                    models.AgentBoard.agent_id == models.Agent.id,
-                    models.AgentBoard.board_id == board_id,
-                ),
-            )
-            .where(models.Agent.created_by == user_id)
-            .limit(1)
-        )
-        row = result.first()
+        """Load policy facts within the existing compact relational query budget."""
+        row = (await context.execute(select(
+            models.Agent.permission_flags, models.Agent.preset_id,
+            models.AgentBoard.permission_overrides,
+        ).outerjoin(models.AgentBoard, and_(models.AgentBoard.agent_id == models.Agent.id,
+            models.AgentBoard.board_id == board_id))
+        .where(models.Agent.created_by == user_id).limit(1))).first()
         if row is None:
             return resolve_effective_permissions(None, None, None)
-        permission_flags, legacy_permissions, preset_id, board_overrides = row
-        agent_flags = (
-            copy.deepcopy(permission_flags) if permission_flags is not None else None
-        )
-        owner_review_required, review_reason = direct_permission_review(
-            agent_flags,
-            preset_id=preset_id,
-        )
-        if agent_flags is None and isinstance(legacy_permissions, list):
-            agent_flags = legacy_permissions_to_flags(legacy_permissions)
-
-        preset_flags = None
+        flags, preset_id, overrides = row
+        presets = ()
         if preset_id:
-            preset_rows = list(
-                (
-                    await context.execute(
-                        select(
-                            models.PermissionPreset.id,
-                            models.PermissionPreset.base_preset_id,
-                            models.PermissionPreset.flags,
-                        ).order_by(models.PermissionPreset.id)
-                    )
-                ).all()
-            )
-            lineage = resolve_preset_lineage(
-                preset_id,
-                tuple(
-                    PermissionPresetLineageNode(
-                        id=preset_row.id,
-                        base_preset_id=preset_row.base_preset_id,
-                        # Preserve malformed top-level JSON so the canonical
-                        # lineage resolver can fail closed and request review.
-                        flags=copy.deepcopy(preset_row.flags),
-                    )
-                    for preset_row in preset_rows
-                ),
-            )
-            preset_flags = lineage.flags
-            owner_review_required = lineage.owner_review_required
-            review_reason = lineage.review_reason
-        return resolve_effective_permissions(
-            agent_flags,
-            preset_flags,
-            board_overrides,
-            owner_review_required=owner_review_required,
-            review_reason=review_reason,
-        )
+            rows = (await context.execute(select(models.PermissionPreset.id,
+                models.PermissionPreset.base_preset_id, models.PermissionPreset.flags).order_by(models.PermissionPreset.id))).all()
+            presets = tuple(PermissionPresetLineageNode(item.id, item.flags, item.base_preset_id) for item in rows)
+        return resolve_agent_permission_facts(agent_flags=flags,
+            preset_id=preset_id, presets=presets, board_overrides=overrides)
 
     async def list(
         self, context: Any, query: ApplicationQuery
@@ -898,7 +848,7 @@ class CommunitySqlAlchemyApplicationPersistence:
                 *(_load_option(model, path) for path in query.includes)
             )
         for field_name, descending in query.order_by:
-            column = getattr(model, field_name)
+            column = _application_attribute(model, field_name)
             statement = statement.order_by(
                 column.desc() if descending else column.asc()
             )
@@ -940,6 +890,11 @@ class CommunitySqlAlchemyApplicationPersistence:
         if query.select_fields and query.includes:
             raise ValueError("application_projection_includes_conflict")
 
+        # Validate the complete requested shape before the count/page query,
+        # including when the page is empty or uses the Refinement count path.
+        projections = tuple(_projection_expression(model, field) for field in query.select_fields)
+        include_options = tuple(_load_option(model, path) for path in query.includes)
+
         # Refinement query-plan tests (TR2) require the canonical index order
         # to remain free of a table-level TEMP B-TREE. SQLite's COUNT window
         # introduces such a sort even when the underlying page is indexable;
@@ -976,7 +931,7 @@ class CommunitySqlAlchemyApplicationPersistence:
                 )
             )
         for field_name, descending in query.order_by:
-            column = getattr(model, field_name)
+            column = _application_attribute(model, field_name)
             key_statement = key_statement.order_by(
                 column.desc() if descending else column.asc()
             )
@@ -997,10 +952,7 @@ class CommunitySqlAlchemyApplicationPersistence:
             fetch_id_label = "__okto_fetch_id"
             fetch_statement = select(
                 model.id.label(fetch_id_label),
-                *(
-                    _projection_expression(model, field_name)
-                    for field_name in query.select_fields
-                ),
+                *projections,
             )
             if model is models.Refinement and "ideation_title" in query.select_fields:
                 fetch_statement = fetch_statement.select_from(models.Refinement).join(
@@ -1016,9 +968,7 @@ class CommunitySqlAlchemyApplicationPersistence:
             )
         fetch_statement = fetch_statement.where(model.id.in_(ordered_ids))
         if query.includes:
-            fetch_statement = fetch_statement.options(
-                *(_load_option(model, path) for path in query.includes)
-            )
+            fetch_statement = fetch_statement.options(*include_options)
         fetch_result = await context.execute(
             fetch_statement.execution_options(populate_existing=True)
         )
@@ -1092,7 +1042,7 @@ class CommunitySqlAlchemyApplicationPersistence:
             raise ValueError("application_group_count_fields_required")
         group_columns: list[Any] = []
         for field_name in query.group_by:
-            column = getattr(model, field_name, None)
+            column = _application_attribute(model, field_name, None)
             if column is None:
                 raise ValueError(f"unsupported_application_group_field:{field_name}")
             group_columns.append(column)
@@ -1174,9 +1124,9 @@ class CommunitySqlAlchemyApplicationPersistence:
         for field_name, expected in expected_values.items():
             if field_name not in model.__table__.columns:
                 raise ValueError(f"unsupported_application_fence_field:{field_name}")
-            predicates.append(getattr(model, field_name) == expected)
+            predicates.append(_application_attribute(model, field_name) == expected)
         fence_values = {
-            column.key: getattr(model, column.key)
+            column.key: _application_attribute(model, column.key)
             for column in model.__table__.columns
             if column.primary_key or column.onupdate is not None
         }
@@ -1317,6 +1267,7 @@ class CommunitySqlAlchemyApplicationPersistence:
     async def refresh(
         self, context: Any, record: ApplicationRecord
     ) -> ApplicationRecord:
+        _model(record.entity)
         await self.flush(context)
         rows = await self.list(
             context,
@@ -1348,36 +1299,6 @@ class CommunitySqlAlchemyApplicationPersistence:
         await context.rollback()
         self._clear_tracking(context)
 
-    async def backfill_qa_answered_at(self, context: Any) -> dict[str, int]:
-        from sqlalchemy import text
-
-        tables = (
-            ("ideation_qa_items", True),
-            ("refinement_qa_items", True),
-            ("spec_qa_items", True),
-            ("sprint_qa_items", True),
-            ("qa_items", False),
-        )
-        fixed: dict[str, int] = {}
-        for table, has_selected in tables:
-            answered = "(answer IS NOT NULL AND answer != '')"
-            if has_selected:
-                answered = (
-                    f"({answered} OR (selected IS NOT NULL "
-                    "AND CAST(selected AS TEXT) NOT IN ('', '[]', 'null')))"
-                )
-            result = await context.execute(
-                text(
-                    f"UPDATE {table} "
-                    "SET answered_at = COALESCE(created_at, CURRENT_TIMESTAMP) "
-                    f"WHERE answered_at IS NULL AND {answered}"
-                )
-            )
-            count = result.rowcount if result.rowcount and result.rowcount > 0 else 0
-            if count:
-                fixed[table] = count
-        await context.commit()
-        return fixed
 
 
 __all__ = ["CommunitySqlAlchemyApplicationPersistence"]

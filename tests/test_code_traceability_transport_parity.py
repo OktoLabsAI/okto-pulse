@@ -682,7 +682,7 @@ async def test_contextual_interpretation_limit_rejection_is_transport_identical_
     }
 
     rest_uow = FakeUnitOfWork()
-    rest_body = rest_api.CodeEvidenceBodyV2.model_validate(body_payload)
+    rest_body = rest_api.CodeEvidenceBody.model_validate(body_payload)
     with pytest.raises(ValidationError) as rest_error:
         await rest_api.submit_code_evidence(
             "board-1",
@@ -754,15 +754,6 @@ async def test_projection_output_parity_covers_every_subject_profile_and_scope(
     async def execute(_self, query, *, actor, uow):
         assert actor is not None
         assert uow is not None
-        editable = (
-            query.subject_type is CodeTraceabilitySubjectType.REFINEMENT
-            and query.profile
-            in {
-                CodeTraceabilityProjectionProfile.DETAIL,
-                CodeTraceabilityProjectionProfile.FULL,
-            }
-            and query.context_scope is CodeTraceabilityContextScope.DEFAULT
-        )
         return Projection(
             {
                 "subject_type": query.subject_type.value,
@@ -770,24 +761,12 @@ async def test_projection_output_parity_covers_every_subject_profile_and_scope(
                 "subject_version": query.subject_version,
                 "profile": query.profile.value,
                 "context_scope": query.context_scope.value,
-                "source_context_classification_inputs": (
-                    [
-                        {
-                            "evidence_id": "legacy-1",
-                            "expected_evidence_payload_sha256": "a" * 64,
-                            "expected_classification_revision": 0,
-                        }
-                    ]
-                    if editable
-                    else []
-                ),
                 "contextual_evidence_coverage": {
                     "total": 2,
                     "linked": 1,
                     "dispositioned": 0,
                     "pending": 1,
                     "pending_ids": ["technical_requirement:tr-2"],
-                    "unresolved_applicability_count": 0,
                     "coverage_pct": 50.0,
                     "projection_complete": True,
                 },
@@ -849,16 +828,7 @@ async def test_projection_output_parity_covers_every_subject_profile_and_scope(
 
             assert rest_response.status_code == 200
             assert rest_response.json() == mcp_payload
-            editable = (
-                subject_type is CodeTraceabilitySubjectType.REFINEMENT
-                and profile
-                in {
-                    CodeTraceabilityProjectionProfile.DETAIL,
-                    CodeTraceabilityProjectionProfile.FULL,
-                }
-                and scope is CodeTraceabilityContextScope.DEFAULT
-            )
-            assert bool(mcp_payload["source_context_classification_inputs"]) is editable
+            assert "source_context_classification_inputs" not in mcp_payload
             assert mcp_payload["contextual_evidence_coverage"]["coverage_pct"] == 50.0
 
 
@@ -1005,7 +975,7 @@ async def test_ts_comm_10_greenfield_absence_has_real_rest_mcp_parity(
     assert rest_payload["source_context"]["evidence_applicable"] is False
     assert rest_payload["evidence"] == []
     assert rest_payload["source_context_items"] == []
-    assert rest_payload["source_context_classification_inputs"] == []
+    assert "source_context_classification_inputs" not in rest_payload
     assert rest_payload["waivers"] == []
     assert rest_payload["coverage"]["skipped"] is False
     contextual_coverage = rest_payload["contextual_evidence_coverage"]
@@ -1015,10 +985,10 @@ async def test_ts_comm_10_greenfield_absence_has_real_rest_mcp_parity(
         "dispositioned": 0,
         "pending": 0,
         "pending_ids": [],
-        "unresolved_applicability_count": 0,
         "coverage_pct": None,
         "projection_complete": True,
     }
+    assert "unresolved_applicability_count" not in contextual_coverage
     assert "status" not in contextual_coverage
     assert "not_applicable" not in contextual_coverage.values()
     await engine.dispose()
@@ -1214,6 +1184,7 @@ async def test_local_rest_keeps_agent_only_start_human_and_returns_typed_403(
                 },
                 "observed_at": NOW.isoformat(),
                 "idempotency_key": "receipt-human-denied",
+                "contract_version": 2,
             },
             id="investigation-receipt",
         ),
@@ -1231,6 +1202,15 @@ async def test_local_rest_keeps_agent_only_start_human_and_returns_typed_403(
                 },
                 "declared_source_content_sha256": "b" * 64,
                 "idempotency_key": "evidence-human-denied",
+                "contract_version": 2,
+                "source_role": "current_implementation",
+                "relevance_summary": "Current implementation behavior.",
+                "scope_relation": "same delivery scope",
+                "source_origin": "repository baseline",
+                "baseline_provenance": {
+                    "presence": "committed_snapshot",
+                    "workspace_state_id": "workspace-1",
+                },
             },
             id="code-evidence",
         ),
@@ -1248,6 +1228,15 @@ async def test_local_rest_keeps_agent_only_start_human_and_returns_typed_403(
                 },
                 "declared_source_content_sha256": "c" * 64,
                 "idempotency_key": "supersession-human-denied",
+                "contract_version": 2,
+                "source_role": "current_implementation",
+                "relevance_summary": "Current implementation behavior.",
+                "scope_relation": "same delivery scope",
+                "source_origin": "repository baseline",
+                "baseline_provenance": {
+                    "presence": "committed_snapshot",
+                    "workspace_state_id": "workspace-1",
+                },
                 "supersession_reason": "Agent observed a newer revision.",
             },
             id="code-evidence-supersession",

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import dataclasses
 from datetime import datetime, timezone
 
 from okto_pulse.community.adapters.rebuild_audit_storage import (
@@ -25,8 +24,6 @@ from okto_pulse.core.kg.rebuild_sources import (
     RebuildSourceRow,
     RebuildSourceSet,
     SourceSetRevalidation,
-    _compose_source_set_hash_v1,
-    read_spec_manifest_rebaseline_audit,
 )
 
 
@@ -43,7 +40,6 @@ def test_af29_s3r_community_store_preserves_rebuild_audit_roots(tmp_path):
                 source_ref="spec:1",
                 source_version="1",
                 content_hash="a" * 64,
-                content_hash_v1="0" * 64,
                 created_at=now,
                 id="1",
             ),
@@ -58,28 +54,10 @@ def test_af29_s3r_community_store_preserves_rebuild_audit_roots(tmp_path):
     )
     assert (tmp_path / "rebuild" / "manifests" / f"{manifest.manifest_ref}.json").exists()
     assert KGRebuildSourceManifest(artifact_store=store).load(manifest.manifest_ref)
-    legacy_manifest = dataclasses.replace(
-        manifest,
-        manifest_schema_version=1,
-        source_set_hash=_compose_source_set_hash_v1(source_set),
+    current = KGRebuildSourceManifest(artifact_store=store).classify_revalidation(
+        manifest=manifest, current_source_set=source_set,
     )
-    rebaseline = KGRebuildSourceManifest(artifact_store=store).revalidate(
-        manifest=legacy_manifest,
-        current_source_set=source_set,
-    )
-    assert rebaseline.outcome == SourceSetRevalidation.REBASELINE
-    rebaseline_records = read_spec_manifest_rebaseline_audit(
-        None,
-        board_id,
-        artifact_store=store,
-    )
-    assert rebaseline_records
-    assert (
-        tmp_path
-        / "rebuild"
-        / "rebaseline_audit"
-        / "records.json"
-    ).exists()
+    assert current.outcome is SourceSetRevalidation.EQUIVALENT
 
     confirmation_store = RebuildConfirmationStore(artifact_store=store)
     token = confirmation_store.issue(

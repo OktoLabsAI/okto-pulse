@@ -1,3 +1,4 @@
+import { workspaceItem, workspacePage } from '@/testFixtures/effectiveResources';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CreateCardModal } from '../CreateCardModal';
@@ -99,66 +100,22 @@ const specWithKnowledge = {
   ],
 };
 
-const effectiveSpecKnowledge = {
-  board_id: 'board-1',
-  entity_type: 'spec',
-  entity_id: 'spec-1',
-  resources: {
-    architecture_design: [],
-    screen_mockup: [],
-    knowledge_base: [
-      {
-        id: 'effective-direct-row',
-        resource_type: 'knowledge_base',
-        resource_id: 'effective-direct-resource',
-        attachment_kind: 'direct',
-        inherited: false,
-        read_only: false,
-        hydrated: true,
-        ref: {
-          root_resource_id: 'root-kb-1',
-          knowledge_assignment_stale: false,
-          origin_class: 'v2',
-        },
-        resource: {
-          id: 'effective-direct-resource',
-          title: 'Stable root knowledge',
-          description: 'Technical reference',
-        },
-      },
-      {
-        id: 'effective-inherited-row',
-        resource_type: 'knowledge_base',
-        resource_id: 'effective-inherited-resource',
-        attachment_kind: 'inherited_reference',
-        inherited: true,
-        read_only: true,
-        hydrated: true,
-        ref: {
-          root_resource_id: 'root-inherited-kb',
-          knowledge_assignment_stale: true,
-          origin_class: 'legacy_all',
-        },
-        provenance: {
-          source_entity_type: 'refinement',
-          source_entity_id: 'refinement-parent',
-          source_entity_title: 'Parent refinement',
-        },
-        resource: {
-          id: 'effective-inherited-resource',
-          title: 'Inherited stale knowledge',
-          description: 'Inherited technical reference',
-        },
-      },
-    ],
-  },
-};
+const effectiveSpecKnowledge = workspacePage('board-1', 'spec', 'spec-1', 'knowledge_base', [
+  workspaceItem('knowledge_base', 'root-kb-1', 'Stable root knowledge', {
+    representative_resource_id: 'effective-direct-resource',
+  }),
+  workspaceItem('knowledge_base', 'root-inherited-kb', 'Inherited stale knowledge', {
+    representative_resource_id: 'effective-inherited-resource', inherited: true, stale: true,
+    attachment_kind: 'inherited_reference',
+    provenance: { source_entity_type: 'refinement', source_entity_id: 'refinement-parent',
+      source_entity_title: 'Parent refinement', origin_class: 'v2', source_revision: '1', source_content_sha256: null },
+  }),
+]);
 
 const createdCard = {
   id: 'card-1',
   board_id: 'board-1',
   spec_id: 'spec-1',
-  sprint_id: null,
   title: 'Implement selective propagation',
   description: null,
   details: null,
@@ -215,6 +172,64 @@ beforeEach(() => {
 });
 
 describe('CreateCardModal selective Knowledge integration', () => {
+  it.each(['Task', 'Test'] as const)('plans a %s in Draft with execution disabled', async (type) => {
+    apiMock.listSpecs.mockImplementation((_boardId: string, status: string) =>
+      Promise.resolve(status === 'draft' ? [{ ...specSummary, status: 'draft' }] : []));
+    apiMock.getSpec.mockResolvedValue({
+      ...specWithKnowledge, status: 'draft',
+      test_scenarios: [{ id: 'ts-plan', title: 'Planned scenario' }],
+    });
+    render(<CreateCardModal boardId="board-1" initialStatus="started" onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: type }));
+    await screen.findByRole('option', { name: 'Selective propagation spec (draft)' });
+    fireEvent.change(specSelect(), { target: { value: 'spec-1' } });
+    await screen.findByRole('checkbox', { name: 'Select Stable root knowledge' });
+    const status = screen.getByText('Status').parentElement!.querySelector('select')!;
+    expect(status).toHaveValue('not_started');
+    expect(within(status).getAllByRole('option')).toHaveLength(1);
+    if (type === 'Test') {
+      fireEvent.click(await screen.findByRole('checkbox', { name: 'Planned scenario' }));
+    }
+    fireEvent.change(screen.getByPlaceholderText('E.g.: Implement feature X'), {
+      target: { value: 'Plan before approval' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Card' }));
+    await waitFor(() => expect(apiMock.createCard).toHaveBeenCalledTimes(1));
+    expect(apiMock.createCard).toHaveBeenCalledWith('board-1', expect.objectContaining({
+      spec_id: 'spec-1', status: 'not_started',
+      ...(type === 'Test' ? { card_type: 'test', test_scenario_ids: ['ts-plan'] } : {}),
+    }));
+  });
+
+  it('clears the Draft parent when switching from planned work to Bug', async () => {
+    apiMock.listSpecs.mockImplementation((_boardId: string, status: string) =>
+      Promise.resolve(status === 'draft' ? [{ ...specSummary, status: 'draft' }] : []));
+    render(<CreateCardModal boardId="board-1" initialStatus="not_started" onClose={vi.fn()} />);
+    await screen.findByRole('option', { name: 'Selective propagation spec (draft)' });
+    fireEvent.change(specSelect(), { target: { value: 'spec-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Bug' }));
+    await waitFor(() => expect(specSelect()).toHaveValue(''));
+    expect(screen.queryByRole('option', { name: 'Selective propagation spec (draft)' })).not.toBeInTheDocument();
+    expect(apiMock.createCard).not.toHaveBeenCalled();
+  });
+
+  it('keeps Done Specs for bug/regression work and clears the parent on switching to normal work', async () => {
+    apiMock.listSpecs.mockImplementation((_boardId: string, status: string) =>
+      Promise.resolve(status === 'done' ? [{ ...specSummary, status: 'done' }] : []));
+    render(<CreateCardModal boardId="board-1" initialStatus="not_started" onClose={vi.fn()} />);
+    await waitFor(() => expect(apiMock.listSpecs).toHaveBeenCalledTimes(5));
+    expect(screen.queryByRole('option', { name: /Selective propagation spec/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Test' }));
+    expect(await screen.findByRole('option', { name: 'Selective propagation spec (done)' })).toBeInTheDocument();
+    fireEvent.change(specSelect(), { target: { value: 'spec-1' } });
+    expect(specSelect()).toHaveValue('spec-1');
+    fireEvent.click(screen.getByRole('button', { name: 'Task' }));
+    await waitFor(() => expect(specSelect()).toHaveValue(''));
+    expect(apiMock.createCard).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Bug' }));
+    expect(await screen.findByRole('option', { name: 'Selective propagation spec (done)' })).toBeInTheDocument();
+  });
+
   it.each(['validation', 'rejected'] as const)(
     'only offers initial lifecycle states and normalizes %s on create',
     async (initialStatus) => {
@@ -265,7 +280,7 @@ describe('CreateCardModal selective Knowledge integration', () => {
       <CreateCardModal boardId="board-1" initialStatus="not_started" onClose={onClose} />,
     );
 
-    await waitFor(() => expect(apiMock.listSpecs).toHaveBeenCalledTimes(4));
+    await waitFor(() => expect(apiMock.listSpecs).toHaveBeenCalledTimes(5));
     await chooseSpec();
 
     const knowledge = screen.getByRole('checkbox', {
@@ -320,6 +335,7 @@ describe('CreateCardModal selective Knowledge integration', () => {
         'board-1',
         'spec',
         'spec-1',
+        { profile: 'summary', resource_type: 'knowledge_base', limit: 25 },
       ),
     );
     expect(
@@ -328,7 +344,7 @@ describe('CreateCardModal selective Knowledge integration', () => {
       }),
     ).toBeInTheDocument();
     expect(screen.getByText('stale')).toBeInTheDocument();
-    expect(screen.getByText('legacy all')).toBeInTheDocument();
+    expect(screen.getAllByText('v2')).toHaveLength(2);
 
     fireEvent.click(screen.getByRole('radio', { name: 'Reference' }));
     fireEvent.click(

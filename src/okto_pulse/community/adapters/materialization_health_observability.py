@@ -1,17 +1,19 @@
 """Filesystem mutation guard for Community KG health evidence.
 
-Snapshots use metadata only. They never open Ladybug, read file contents, make
-directories, or resolve the active Global Discovery pointer. The retained
-comparison is bounded to the exact storage paths and their immediate parents.
+Snapshots never open Grafx or create paths. Routing may authenticate bounded
+Global metadata inside the observation scope. The retained comparison uses
+the exact storage paths and their immediate parents, under the Health deadline.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
+from okto_pulse.core.kg.interfaces.graph_health_observation import GraphHealthObservation
 
 from okto_pulse.core.ports.materialization_health import (
     record_read_side_mutation_guard,
@@ -44,9 +46,11 @@ class CommunityFilesystemMutationGuard:
         *,
         board_paths: Callable[[str], Iterable[Path]],
         discovery_paths: Callable[[], Iterable[Path]],
+        graph_health_observation: GraphHealthObservation | None = None,
     ) -> None:
         self._board_paths = board_paths
         self._discovery_paths = discovery_paths
+        self._graph_health_observation = graph_health_observation
 
     @classmethod
     def from_runtime_stores(
@@ -54,6 +58,7 @@ class CommunityFilesystemMutationGuard:
         *,
         board_store: Any,
         discovery_store: Any,
+        graph_health_observation: GraphHealthObservation | None = None,
     ) -> "CommunityFilesystemMutationGuard":
         def board_paths(board_id: str) -> Iterable[Path]:
             provider = getattr(
@@ -78,23 +83,40 @@ class CommunityFilesystemMutationGuard:
         return cls(
             board_paths=board_paths,
             discovery_paths=discovery_paths,
+            graph_health_observation=graph_health_observation,
         )
 
-    def capture(self, board_id: str) -> FilesystemMetadataSnapshot:
+    def capture(self, board_id: str, *, deadline_at: float | None = None) -> FilesystemMetadataSnapshot:
         try:
-            configured = (
-                *self._board_paths(str(board_id)),
-                *self._discovery_paths(),
-            )
-            paths: set[Path] = set()
-            for raw in configured:
-                path = Path(raw).resolve(strict=False)
-                paths.add(path)
-                paths.add(path.parent)
-            entries = tuple(
-                (str(path), self._metadata(path))
-                for path in sorted(paths, key=lambda item: str(item).casefold())
-            )
+            if self._graph_health_observation is None:
+                raise RuntimeError("graph_health_observation_unavailable")
+            deadline = min(deadline_at if deadline_at is not None else float("inf"), time.monotonic() + 0.35)
+
+            def remaining():
+                seconds = deadline - time.monotonic()
+                if seconds <= 0:
+                    raise TimeoutError("mutation_guard_observation_timeout")
+                return seconds
+
+            with self._graph_health_observation.scope(str(board_id), timeout_seconds=remaining()):
+                paths: set[Path] = set()
+                consumed = 0
+                for provider in (lambda: self._board_paths(str(board_id)), self._discovery_paths):
+                    remaining()
+                    for raw in provider():
+                        remaining()
+                        consumed += 1
+                        if consumed > 2000:
+                            raise OSError("mutation_guard_path_limit")
+                        path = Path(raw).resolve(strict=False)
+                        paths.add(path)
+                        paths.add(path.parent)
+                entries_list = []
+                for path in sorted(paths, key=lambda item: str(item).casefold()):
+                    remaining()
+                    entries_list.append((str(path), self._metadata(path)))
+                entries = tuple(entries_list)
+                remaining()
         except Exception as exc:
             return FilesystemMetadataSnapshot(
                 sha256=None,
@@ -107,6 +129,8 @@ class CommunityFilesystemMutationGuard:
             separators=(",", ":"),
             ensure_ascii=True,
         ).encode("utf-8")
+        if time.monotonic() >= deadline:
+            return FilesystemMetadataSnapshot(sha256=None, entries=(), unavailable_reason="TimeoutError")
         return FilesystemMetadataSnapshot(
             sha256=hashlib.sha256(encoded).hexdigest(),
             entries=entries,
@@ -150,8 +174,9 @@ class CommunityFilesystemMutationGuard:
         *,
         board_id: str,
         before: FilesystemMetadataSnapshot,
+        deadline_at: float | None = None,
     ) -> FilesystemMutationGuardResult:
-        after = self.capture(board_id)
+        after = self.capture(board_id, deadline_at=deadline_at)
         if before.unavailable_reason or after.unavailable_reason:
             outcome = "unavailable"
             changed_paths: tuple[str, ...] = ()

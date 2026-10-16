@@ -31,7 +31,7 @@ export type PolicyTransitionPreviewLoadState =
     };
 
 export type PolicyTransitionPresentationMode =
-  | 'legacy'
+  | 'subject-version'
   | 'lifecycle-edition';
 
 export interface GovernedPolicyTransition {
@@ -108,9 +108,6 @@ const CURRENTNESS_REASON_ORDER = [
   'guideline_revision_digest_changed',
   'binding_revision_changed',
   'binding_configuration_changed',
-  'policy_set_changed',
-  'binding_head_changed',
-  'input_digest_changed',
 ] as const satisfies readonly SemanticAssessmentCurrentnessReason[];
 
 const INADMISSIBILITY_CAUSES =
@@ -1356,7 +1353,7 @@ export function readPolicyTransitionRejection(
 
 export function policyTransitionRejectionMessage(
   rejection: PolicyTransitionRejection,
-  presentationMode: PolicyTransitionPresentationMode = 'legacy',
+  presentationMode: PolicyTransitionPresentationMode = 'subject-version',
 ): string {
   const blocking = rejection.decision.blocking_metric_count ?? 0;
   if (presentationMode === 'lifecycle-edition') {

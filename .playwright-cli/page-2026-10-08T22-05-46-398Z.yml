@@ -1,0 +1,675 @@
+- generic [ref=f3e3]:
+  - banner [ref=f3e4]:
+    - generic [ref=f3e5]:
+      - generic [ref=f3e6]:
+        - button "Hide sidebar" [ref=f3e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f3e12]
+        - generic [ref=f3e357]: / My Board
+      - generic [ref=f3e358]:
+        - button "Refresh board" [ref=f3e359] [cursor=pointer]
+        - button [ref=f3e366] [cursor=pointer]
+  - generic [ref=f3e13]:
+    - complementary [ref=f3e14]:
+      - generic [ref=f3e15]:
+        - generic [ref=f3e17]:
+          - heading "Boards" [level=2] [ref=f3e18]
+          - button "New board" [ref=f3e19] [cursor=pointer]
+        - navigation [ref=f3e21]:
+          - generic [ref=f3e22]:
+            - heading "My Boards" [level=3] [ref=f3e23]
+            - list [ref=f3e370]:
+              - listitem [ref=f3e371]:
+                - button "My Board" [ref=f3e372] [cursor=pointer]
+    - main [ref=f3e26]:
+      - group "Board views" [ref=f3e379]:
+        - button "Stories" [ref=f3e380] [cursor=pointer]
+        - button "Ideations" [ref=f3e384] [cursor=pointer]
+        - button "Refinements" [ref=f3e387] [cursor=pointer]
+        - button "Specs" [pressed] [ref=f3e392] [cursor=pointer]
+        - button "Tasks" [ref=f3e397] [cursor=pointer]
+      - generic [ref=f3e637]:
+        - generic [ref=f3e638]:
+          - generic [ref=f3e639]:
+            - heading "Specifications" [level=2] [ref=f3e640]
+            - generic [ref=f3e641]: (1 of 1)
+          - generic [ref=f3e642]:
+            - textbox "Search specs…" [ref=f3e644]
+            - group "View mode" [ref=f3e645]:
+              - button "List view" [pressed] [ref=f3e646] [cursor=pointer]
+              - button "Grid view" [ref=f3e648] [cursor=pointer]
+            - generic [ref=f3e654]: Group specs
+            - combobox "Group specs" [ref=f3e660]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=f3e661] [cursor=pointer]
+        - generic [ref=f3e663]:
+          - button "All" [ref=f3e664] [cursor=pointer]
+          - button "Draft" [ref=f3e665] [cursor=pointer]
+          - button "Review" [ref=f3e666] [cursor=pointer]
+          - button "Approved" [ref=f3e667] [cursor=pointer]
+          - button "Validated" [ref=f3e668] [cursor=pointer]
+          - button "In Progress" [ref=f3e669] [cursor=pointer]
+          - button "Done" [ref=f3e670] [cursor=pointer]
+          - button "Show archived" [ref=f3e671] [cursor=pointer]
+        - generic [ref=f3e674]:
+          - generic [ref=f3e675] [cursor=pointer]:
+            - 'heading "Refinement: Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f3e682]'
+            - generic [ref=f3e683]: (1)
+          - generic [ref=f3e687] [cursor=pointer]:
+            - generic [ref=f3e688]:
+              - generic [ref=f3e689]:
+                - generic [ref=f3e690]: Draft
+                - generic "Edition 1" [ref=f3e694]
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f3e695]
+              - paragraph [ref=f3e696]: "Especificação conceitual H01–H04: consultar, criar, alterar e cancelar reservas próprias com consistência, idempotência, histórico e arquitetura hexagonal. Exercício de testes do Pulse; nenhuma implementação real solicitada."
+              - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=f3e698]':
+                - generic [ref=f3e699]: Requirement lint
+                - strong [ref=f3e700]: Not assessed
+              - generic [ref=f3e701]:
+                - generic [ref=f3e702]: mock
+                - generic [ref=f3e703]: reserva-de-salas
+                - generic [ref=f3e704]: teste-sdlc
+            - generic [ref=f3e705]:
+              - button "Open lineage graph" [ref=f3e706]
+              - button "Archive tree" [ref=f3e711]
+        - generic [ref=f3e717]:
+          - status [ref=f3e718]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f3e719]:
+            - generic [ref=f3e720]:
+              - generic [ref=f3e721]: Items per page
+              - combobox "Items per page" [ref=f3e722]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=f3e723]:
+              - generic [ref=f3e724]:
+                - button "Previous page" [disabled] [ref=f3e725]: Previous
+                - button "Page 1" [disabled] [ref=f3e726]: "1"
+                - button "Next page" [disabled] [ref=f3e727]: Next
+        - dialog [ref=f3e735]:
+          - generic [ref=f3e736]:
+            - generic [ref=f3e737]:
+              - generic [ref=f3e738]: Draft
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=2] [ref=f3e742]
+              - generic "Edition 1" [ref=f3e743]
+            - generic [ref=f3e744]:
+              - button "Open lineage graph" [ref=f3e745] [cursor=pointer]
+              - button "Export report" [ref=f3e750] [cursor=pointer]
+              - button "Refresh" [ref=f3e754] [cursor=pointer]
+              - button "Expand" [ref=f3e760] [cursor=pointer]
+              - button "Close spec" [ref=f3e766] [cursor=pointer]
+          - generic [ref=f3e770]:
+            - generic [ref=f3e771]: "Move to:"
+            - button "Review" [ref=f3e772] [cursor=pointer]
+            - button "Cancelled" [ref=f3e775] [cursor=pointer]
+          - generic [ref=f3e778]:
+            - generic [ref=f3e779]: "From:"
+            - button "Reserva de salas — teste do SDLC v24" [ref=f3e780] [cursor=pointer]:
+              - text: Reserva de salas — teste do SDLC
+              - generic [ref=f3e783]: v24
+            - button "Reserva de salas — consistência das reservas e contratos hexagonais v39" [ref=f3e786] [cursor=pointer]:
+              - text: Reserva de salas — consistência das reservas e contratos hexagonais
+              - generic [ref=f3e791]: v39
+          - generic [ref=f3e793]:
+            - tablist "Spec sections" [ref=f3e794]:
+              - tab "Details" [ref=f3e795] [cursor=pointer]
+              - tab "Coverage" [selected] [ref=f3e800] [cursor=pointer]
+              - tab "Code Evidence Matrix" [ref=f3e806] [cursor=pointer]
+              - tab "Project structure" [ref=f3e810] [cursor=pointer]
+              - tab "Tests 51" [ref=f3e817] [cursor=pointer]:
+                - generic [ref=f3e820]: Tests
+                - generic [ref=f3e821]: "51"
+              - tab "Rules 8" [ref=f3e822] [cursor=pointer]:
+                - generic [ref=f3e827]: Rules
+                - generic [ref=f3e828]: "8"
+              - tab "Dependencies" [ref=f3e829] [cursor=pointer]
+              - tab "Contracts 6" [ref=f3e835] [cursor=pointer]:
+                - generic [ref=f3e841]: Contracts
+                - generic [ref=f3e842]: "6"
+              - tab "IRs 13" [ref=f3e843] [cursor=pointer]:
+                - generic [ref=f3e849]: IRs
+                - generic [ref=f3e850]: "13"
+              - tab "ORs 2" [ref=f3e851] [cursor=pointer]:
+                - generic [ref=f3e855]: ORs
+                - generic [ref=f3e856]: "2"
+              - tab "TRs 6" [ref=f3e857] [cursor=pointer]:
+                - generic [ref=f3e861]: TRs
+                - generic [ref=f3e862]: "6"
+              - tab "Decisions 5" [ref=f3e863] [cursor=pointer]:
+                - generic [ref=f3e868]: Decisions
+                - generic [ref=f3e869]: "5"
+              - tab "Resources" [ref=f3e870] [cursor=pointer]
+              - tab "Q&A 9" [ref=f3e874] [cursor=pointer]:
+                - generic [ref=f3e878]: Q&A
+                - generic [ref=f3e879]: "9"
+              - tab "References" [ref=f3e880] [cursor=pointer]
+              - tab "KG Graph" [ref=f3e885] [cursor=pointer]
+              - tab "Validation" [ref=f3e892] [cursor=pointer]
+              - tab "Activity" [ref=f3e897] [cursor=pointer]
+            - button "Scroll Spec sections right" [ref=f3e903] [cursor=pointer]
+          - tabpanel "Coverage" [ref=f3e2067]:
+            - region "Spec coverage" [ref=f3e2068]:
+              - generic [ref=f3e2070]:
+                - heading "Coverage" [level=3] [ref=f3e2071]
+                - paragraph [ref=f3e2072]: Find planning gaps and track proof of delivery.
+              - tablist "Coverage views" [ref=f3e2075]:
+                - tab "Overview" [ref=f3e2076] [cursor=pointer]
+                - tab "Planning" [ref=f3e2078] [cursor=pointer]
+                - tab "Implementation" [selected] [ref=f3e2080] [cursor=pointer]
+              - tabpanel "Implementation" [ref=f3e2115]:
+                - region "Implementation and verification" [ref=f3e2116]:
+                  - paragraph [ref=f3e2117]: Track implementation and verification for each obligation. Expand an item to inspect its evidence.
+                  - generic [ref=f3e2118]:
+                    - generic [ref=f3e2119]:
+                      - generic [ref=f3e2120]: Blocked
+                      - status [ref=f3e2121]: implementation missing on 79 · test coverage missing on 79 obligations · Edition 1
+                    - generic [ref=f3e2122]:
+                      - generic [ref=f3e2123]: "Gate: Blocking (Board)"
+                      - button "Refresh delivery rollup" [ref=f3e2124] [cursor=pointer]: Refresh
+                  - generic [ref=f3e2130]:
+                    - generic [ref=f3e2131]:
+                      - text: Skip delivery evidence requirement
+                      - paragraph [ref=f3e2132]: Allow moving spec to Done without complete delivery proof — the coverage verdict stays visible. Waivers (per obligation) remain human-only.
+                    - switch "Skip delivery evidence requirement" [ref=f3e2133] [cursor=pointer]
+                  - generic [ref=f3e2135]:
+                    - heading "Coverage by obligation" [level=3] [ref=f3e2136]
+                    - table [ref=f3e2138]:
+                      - rowgroup [ref=f3e2139]:
+                        - row [ref=f3e2140]:
+                          - columnheader "Obligation" [ref=f3e2141]
+                          - columnheader "Implementation" [ref=f3e2142]
+                          - columnheader "Verification" [ref=f3e2143]
+                      - rowgroup [ref=f3e2144]:
+                        - row [ref=f3e2145]:
+                          - cell [ref=f3e2146]:
+                            - group [ref=f3e2147]:
+                              - generic "No contrato ir_res_cancel, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f3e2148] [cursor=pointer]
+                          - cell "◌" [ref=f3e2149]
+                          - cell "◌" [ref=f3e2150]
+                        - row [ref=f3e2151]:
+                          - cell [ref=f3e2152]:
+                            - group [ref=f3e2153]:
+                              - generic "No contrato ir_res_change, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f3e2154] [cursor=pointer]
+                          - cell "◌" [ref=f3e2155]
+                          - cell "◌" [ref=f3e2156]
+                        - row [ref=f3e2157]:
+                          - cell [ref=f3e2158]:
+                            - group [ref=f3e2159]:
+                              - generic "No contrato ir_res_clock_port, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f3e2160] [cursor=pointer]
+                          - cell "◌" [ref=f3e2161]
+                          - cell "◌" [ref=f3e2162]
+                        - row [ref=f3e2163]:
+                          - cell [ref=f3e2164]:
+                            - group [ref=f3e2165]:
+                              - generic "No contrato ir_res_create, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f3e2166] [cursor=pointer]
+                          - cell "◌" [ref=f3e2167]
+                          - cell "◌" [ref=f3e2168]
+                        - row [ref=f3e2169]:
+                          - cell [ref=f3e2170]:
+                            - group [ref=f3e2171]:
+                              - generic "No contrato ir_res_history, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f3e2172] [cursor=pointer]
+                          - cell "◌" [ref=f3e2173]
+                          - cell "◌" [ref=f3e2174]
+                        - row [ref=f3e2175]:
+                          - cell [ref=f3e2176]:
+                            - group [ref=f3e2177]:
+                              - generic "No contrato ir_res_identity_port, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f3e2178] [cursor=pointer]
+                          - cell "◌" [ref=f3e2179]
+                          - cell "◌" [ref=f3e2180]
+                        - row [ref=f3e2181]:
+                          - cell [ref=f3e2182]:
+                            - group [ref=f3e2183]:
+                              - generic "No contrato ir_res_list, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f3e2184] [cursor=pointer]
+                          - cell "◌" [ref=f3e2185]
+                          - cell "◌" [ref=f3e2186]
+                        - row [ref=f3e2187]:
+                          - cell [ref=f3e2188]:
+                            - group [ref=f3e2189]:
+                              - generic "No contrato ir_res_rules, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f3e2190] [cursor=pointer]
+                          - cell "◌" [ref=f3e2191]
+                          - cell "◌" [ref=f3e2192]
+                        - row [ref=f3e2193]:
+                          - cell [ref=f3e2194]:
+                            - group [ref=f3e2195]:
+                              - generic "No contrato ir_res_search, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f3e2196] [cursor=pointer]
+                          - cell "◌" [ref=f3e2197]
+                          - cell "◌" [ref=f3e2198]
+                        - row [ref=f3e2199]:
+                          - cell [ref=f3e2200]:
+                            - group [ref=f3e2201]:
+                              - generic "No contrato ir_res_storage, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f3e2202] [cursor=pointer]
+                          - cell "◌" [ref=f3e2203]
+                          - cell "◌" [ref=f3e2204]
+                        - row [ref=f3e2205]:
+                          - cell [ref=f3e2206]:
+                            - group [ref=f3e2207]:
+                              - generic "No contrato ir_res_uow, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f3e2208] [cursor=pointer]
+                          - cell "◌" [ref=f3e2209]
+                          - cell "◌" [ref=f3e2210]
+                        - row [ref=f3e2211]:
+                          - cell [ref=f3e2212]:
+                            - group [ref=f3e2213]:
+                              - generic "No contrato ir_res_usecases, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f3e2214] [cursor=pointer]
+                          - cell "◌" [ref=f3e2215]
+                          - cell "◌" [ref=f3e2216]
+                        - row [ref=f3e2217]:
+                          - cell [ref=f3e2218]:
+                            - group [ref=f3e2219]:
+                              - generic "No contrato ir_res_wiring, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador." [ref=f3e2220] [cursor=pointer]
+                          - cell "◌" [ref=f3e2221]
+                          - cell "◌" [ref=f3e2222]
+                        - row [ref=f3e2223]:
+                          - cell [ref=f3e2224]:
+                            - group [ref=f3e2225]:
+                              - generic "Em320px e zoom200% fluxo principal sem overflow horizontal; modal inicia em Manter, contém foco, Escape não cancela, devolve foco; resultados e erros possuem nome/anúncio acessível." [ref=f3e2226] [cursor=pointer]
+                          - cell "◌" [ref=f3e2227]
+                          - cell "◌" [ref=f3e2228]
+                        - row [ref=f3e2229]:
+                          - cell [ref=f3e2230]:
+                            - group [ref=f3e2231]:
+                              - generic "Duas conexões concorrentes não confirmam sobreposição nem duas alterações com mesmo expected_version; falha entre reserva e commit reverte reserva,histórico e recibo." [ref=f3e2232] [cursor=pointer]
+                          - cell "◌" [ref=f3e2233]
+                          - cell "◌" [ref=f3e2234]
+                        - row [ref=f3e2235]:
+                          - cell [ref=f3e2236]:
+                            - group [ref=f3e2237]:
+                              - generic "Aceitar apenas seg–sex08h–18h, mesmo dia local, início futuro em:00/:30 e até data local+30; duração30min–4h em múltiplos30, sem segundos/micros; recusar cada limite violado sem mutação." [ref=f3e2238] [cursor=pointer]
+                          - cell "◌" [ref=f3e2239]
+                          - cell "◌" [ref=f3e2240]
+                        - row [ref=f3e2241]:
+                          - cell [ref=f3e2242]:
+                            - group [ref=f3e2243]:
+                              - generic "Cancelamento válido mantém reserva cancelled e histórico e libera intervalo; no início/depois ou nova intenção em cancelled é recusado; replay não cria evento." [ref=f3e2244] [cursor=pointer]
+                          - cell "◌" [ref=f3e2245]
+                          - cell "◌" [ref=f3e2246]
+                        - row [ref=f3e2247]:
+                          - cell [ref=f3e2248]:
+                            - group [ref=f3e2249]:
+                              - generic "Participantes deve ser inteiro>=1 e<=capacidade da sala existente; zero,negativo,fracionário e excesso são recusados sem escrita." [ref=f3e2250] [cursor=pointer]
+                          - cell "◌" [ref=f3e2251]
+                          - cell "◌" [ref=f3e2252]
+                        - row [ref=f3e2253]:
+                          - cell [ref=f3e2254]:
+                            - group [ref=f3e2255]:
+                              - generic "Alteração válida incrementa versão exatamente1 e gera evento; conflito/versão incorreta preservam before e não criam recibo de sucesso." [ref=f3e2256] [cursor=pointer]
+                          - cell "◌" [ref=f3e2257]
+                          - cell "◌" [ref=f3e2258]
+                        - row [ref=f3e2259]:
+                          - cell [ref=f3e2260]:
+                            - group [ref=f3e2261]:
+                              - generic "Com Clock controlado, comando bloqueado pela transação usa now obtido após aquisição; UTC e fuso local produzem os mesmos limites, sem relógio global no domínio." [ref=f3e2262] [cursor=pointer]
+                          - cell "◌" [ref=f3e2263]
+                          - cell "◌" [ref=f3e2264]
+                        - row [ref=f3e2265]:
+                          - cell [ref=f3e2266]:
+                            - group [ref=f3e2267]:
+                              - generic "Primeira criação válida produz exatamente1 reserva confirmed versão1,1 evento e1 recibo; resposta somente após commit." [ref=f3e2268] [cursor=pointer]
+                          - cell "◌" [ref=f3e2269]
+                          - cell "◌" [ref=f3e2270]
+                        - row [ref=f3e2271]:
+                          - cell [ref=f3e2272]:
+                            - group [ref=f3e2273]:
+                              - generic "Teste estático detecta imports de mecanismo/reach-in privado; domínio/aplicação testáveis com fakes sem infraestrutura; nenhuma porta interna contém http_status." [ref=f3e2274] [cursor=pointer]
+                          - cell "◌" [ref=f3e2275]
+                          - cell "◌" [ref=f3e2276]
+                        - row [ref=f3e2277]:
+                          - cell [ref=f3e2278]:
+                            - group [ref=f3e2279]:
+                              - generic "Histórico retorna eventos ordenados versão asc, before=null somente na criação, after explícito, sem mutação por leitura ou replay." [ref=f3e2280] [cursor=pointer]
+                          - cell "◌" [ref=f3e2281]
+                          - cell "◌" [ref=f3e2282]
+                        - row [ref=f3e2283]:
+                          - cell [ref=f3e2284]:
+                            - group [ref=f3e2285]:
+                              - generic "Lista/histórico só incluem o ator; default20,max100; cursor inválido e limite101 são recusados; páginas não duplicam itens em dataset estável." [ref=f3e2286] [cursor=pointer]
+                          - cell "◌" [ref=f3e2287]
+                          - cell "◌" [ref=f3e2288]
+                        - row [ref=f3e2289]:
+                          - cell [ref=f3e2290]:
+                            - group [ref=f3e2291]:
+                              - generic "Cada tentativa tem registro com request_id,operação,resultado,replayed,duração_ms; inspeção dos logs encontra zero cookie,senha,SQL ou payload de reserva." [ref=f3e2292] [cursor=pointer]
+                          - cell "◌" [ref=f3e2293]
+                          - cell "◌" [ref=f3e2294]
+                        - row [ref=f3e2295]:
+                          - cell [ref=f3e2296]:
+                            - group [ref=f3e2297]:
+                              - generic "Contador reservation_commands_total aumenta exatamente1 por tentativa no rótulo operação/resultado correto; replay/conflitos/unavailable distinguíveis, sem criar SLO." [ref=f3e2298] [cursor=pointer]
+                          - cell "◌" [ref=f3e2299]
+                          - cell "◌" [ref=f3e2300]
+                        - row [ref=f3e2301]:
+                          - cell [ref=f3e2302]:
+                            - group [ref=f3e2303]:
+                              - generic "Busy esgota orçamento2s e retorna503 sem escrita parcial; após commit e perda da resposta, reinício+replay recupera mesma reserva/evento únicos." [ref=f3e2304] [cursor=pointer]
+                          - cell "◌" [ref=f3e2305]
+                          - cell "◌" [ref=f3e2306]
+                        - row [ref=f3e2307]:
+                          - cell [ref=f3e2308]:
+                            - group [ref=f3e2309]:
+                              - generic "Mesmo ator/operação/chave/carga retorna resultado original com replayed=true; chave/carga diferente recusa; outro ator não reutiliza nem observa recibo alheio." [ref=f3e2310] [cursor=pointer]
+                          - cell "◌" [ref=f3e2311]
+                          - cell "◌" [ref=f3e2312]
+                        - row [ref=f3e2313]:
+                          - cell [ref=f3e2314]:
+                            - group [ref=f3e2315]:
+                              - generic "Busca retorna somente salas com capacidade>=participantes e sem confirmed sobreposta; intervalos adjacentes permitidos; falha de leitura é erro, nunca lista vazia." [ref=f3e2316] [cursor=pointer]
+                          - cell "◌" [ref=f3e2317]
+                          - cell "◌" [ref=f3e2318]
+                        - row [ref=f3e2319]:
+                          - cell [ref=f3e2320]:
+                            - group [ref=f3e2321]:
+                              - generic "Sessão ausente/expirada, ID alheio, owner_id forjado e CSRF inválido são recusados sem escrita e sem vazamento; logs excluem segredos." [ref=f3e2322] [cursor=pointer]
+                          - cell "◌" [ref=f3e2323]
+                          - cell "◌" [ref=f3e2324]
+                        - row [ref=f3e2325]:
+                          - cell [ref=f3e2326]:
+                            - group [ref=f3e2327]:
+                              - generic "H01–H04 apresentam loading/vazio/erro/sucesso/conflicto/incerto distintos, preservam entrada/chave correta e exibem fuso; dupla submissão não cria nova intenção." [ref=f3e2328] [cursor=pointer]
+                          - cell "◌" [ref=f3e2329]
+                          - cell "◌" [ref=f3e2330]
+                        - row [ref=f3e2331]:
+                          - cell [ref=f3e2332]:
+                            - group [ref=f3e2333]:
+                              - generic "Default limit=20; ordenar start_at desc e ID como desempate; cursor opaco. Não aceitar filtro owner_id." [ref=f3e2334] [cursor=pointer]
+                          - cell "◌" [ref=f3e2335]
+                          - cell "◌" [ref=f3e2336]
+                        - row [ref=f3e2337]:
+                          - cell [ref=f3e2338]:
+                            - group [ref=f3e2339]:
+                              - generic "Atualização completa; ID do caminho deve corresponder. Revalida ownership, estado/tempo, versão, capacidade e conflito excluindo a própria reserva. 200; falha preserva original." [ref=f3e2340] [cursor=pointer]
+                          - cell "◌" [ref=f3e2341]
+                          - cell "◌" [ref=f3e2342]
+                        - row [ref=f3e2343]:
+                          - cell [ref=f3e2344]:
+                            - group [ref=f3e2345]:
+                              - generic "Sessão requerida. Sem owner_id ou reservas de terceiros. Resultado indicativo; capacidade e regras de calendário aplicadas." [ref=f3e2346] [cursor=pointer]
+                          - cell "◌" [ref=f3e2347]
+                          - cell "◌" [ref=f3e2348]
+                        - row [ref=f3e2349]:
+                          - cell [ref=f3e2350]:
+                            - group [ref=f3e2351]:
+                              - generic "Somente responsável; 404 para alheia/inexistente. Ordenar versão ascendente, default20, máximo100; cursor opaco. Sem segredos ou dados de terceiros; replay não adiciona evento." [ref=f3e2352] [cursor=pointer]
+                          - cell "◌" [ref=f3e2353]
+                          - cell "◌" [ref=f3e2354]
+                        - row [ref=f3e2355]:
+                          - cell [ref=f3e2356]:
+                            - group [ref=f3e2357]:
+                              - generic "Principal vem da sessão; 201 na primeira confirmação, 200 no replay; mesmo ator/operação/chave/carga. Sem owner_id aceito." [ref=f3e2358] [cursor=pointer]
+                          - cell "◌" [ref=f3e2359]
+                          - cell "◌" [ref=f3e2360]
+                        - row [ref=f3e2361]:
+                          - cell [ref=f3e2362]:
+                            - group [ref=f3e2363]:
+                              - generic "200; cancelamento lógico e histórico na mesma transação. Replay exato não produz novo evento. Nova intenção para já cancelada retorna reservation_locked." [ref=f3e2364] [cursor=pointer]
+                          - cell "◌" [ref=f3e2365]
+                          - cell "◌" [ref=f3e2366]
+                        - row [ref=f3e2367]:
+                          - cell [ref=f3e2368]:
+                            - group [ref=f3e2369]:
+                              - generic "Commit e recuperação" [ref=f3e2370] [cursor=pointer]
+                          - cell "◌" [ref=f3e2371]
+                          - cell "◌" [ref=f3e2372]
+                        - row [ref=f3e2373]:
+                          - cell [ref=f3e2374]:
+                            - group [ref=f3e2375]:
+                              - generic "Intenção e feedback da interface" [ref=f3e2376] [cursor=pointer]
+                          - cell "◌" [ref=f3e2377]
+                          - cell "◌" [ref=f3e2378]
+                        - row [ref=f3e2379]:
+                          - cell [ref=f3e2380]:
+                            - group [ref=f3e2381]:
+                              - generic "Idempotência por intenção" [ref=f3e2382] [cursor=pointer]
+                          - cell "◌" [ref=f3e2383]
+                          - cell "◌" [ref=f3e2384]
+                        - row [ref=f3e2385]:
+                          - cell [ref=f3e2386]:
+                            - group [ref=f3e2387]:
+                              - generic "Exclusão de sobreposição" [ref=f3e2388] [cursor=pointer]
+                          - cell "◌" [ref=f3e2389]
+                          - cell "◌" [ref=f3e2390]
+                        - row [ref=f3e2391]:
+                          - cell [ref=f3e2392]:
+                            - group [ref=f3e2393]:
+                              - generic "Autoridade exclusiva do responsável" [ref=f3e2394] [cursor=pointer]
+                          - cell "◌" [ref=f3e2395]
+                          - cell "◌" [ref=f3e2396]
+                        - row [ref=f3e2397]:
+                          - cell [ref=f3e2398]:
+                            - group [ref=f3e2399]:
+                              - generic "Ciclo de vida e versão" [ref=f3e2400] [cursor=pointer]
+                          - cell "◌" [ref=f3e2401]
+                          - cell "◌" [ref=f3e2402]
+                        - row [ref=f3e2403]:
+                          - cell [ref=f3e2404]:
+                            - group [ref=f3e2405]:
+                              - generic "Histórico e paginação" [ref=f3e2406] [cursor=pointer]
+                          - cell "◌" [ref=f3e2407]
+                          - cell "◌" [ref=f3e2408]
+                        - row [ref=f3e2409]:
+                          - cell [ref=f3e2410]:
+                            - group [ref=f3e2411]:
+                              - generic "Calendário e capacidade" [ref=f3e2412] [cursor=pointer]
+                          - cell "◌" [ref=f3e2413]
+                          - cell "◌" [ref=f3e2414]
+                        - row [ref=f3e2415]:
+                          - cell [ref=f3e2416]:
+                            - group [ref=f3e2417]:
+                              - generic "Escopo conceitual do exercício" [ref=f3e2418] [cursor=pointer]
+                          - cell "◌" [ref=f3e2419]
+                          - cell "◌" [ref=f3e2420]
+                        - row [ref=f3e2421]:
+                          - cell [ref=f3e2422]:
+                            - group [ref=f3e2423]:
+                              - generic "SQLite local e transação única" [ref=f3e2424] [cursor=pointer]
+                          - cell "◌" [ref=f3e2425]
+                          - cell "◌" [ref=f3e2426]
+                        - row [ref=f3e2427]:
+                          - cell [ref=f3e2428]:
+                            - group [ref=f3e2429]:
+                              - generic "Idempotência e CAS" [ref=f3e2430] [cursor=pointer]
+                          - cell "◌" [ref=f3e2431]
+                          - cell "◌" [ref=f3e2432]
+                        - row [ref=f3e2433]:
+                          - cell [ref=f3e2434]:
+                            - group [ref=f3e2435]:
+                              - generic "Sessão local e ownership" [ref=f3e2436] [cursor=pointer]
+                          - cell "◌" [ref=f3e2437]
+                          - cell "◌" [ref=f3e2438]
+                        - row [ref=f3e2439]:
+                          - cell [ref=f3e2440]:
+                            - group [ref=f3e2441]:
+                              - generic "Portas públicas e composição externa" [ref=f3e2442] [cursor=pointer]
+                          - cell "◌" [ref=f3e2443]
+                          - cell "◌" [ref=f3e2444]
+                        - row [ref=f3e2445]:
+                          - cell [ref=f3e2446]:
+                            - group [ref=f3e2447]:
+                              - generic "Cancelar reserva" [ref=f3e2448] [cursor=pointer]
+                          - cell "◌" [ref=f3e2449]
+                          - cell "◌" [ref=f3e2450]
+                        - row [ref=f3e2451]:
+                          - cell [ref=f3e2452]:
+                            - group [ref=f3e2453]:
+                              - generic "Alterar reserva" [ref=f3e2454] [cursor=pointer]
+                          - cell "◌" [ref=f3e2455]
+                          - cell "◌" [ref=f3e2456]
+                        - row [ref=f3e2457]:
+                          - cell [ref=f3e2458]:
+                            - group [ref=f3e2459]:
+                              - generic "Criar reserva" [ref=f3e2460] [cursor=pointer]
+                          - cell "◌" [ref=f3e2461]
+                          - cell "◌" [ref=f3e2462]
+                        - row [ref=f3e2463]:
+                          - cell [ref=f3e2464]:
+                            - group [ref=f3e2465]:
+                              - generic "Consultar histórico próprio" [ref=f3e2466] [cursor=pointer]
+                          - cell "◌" [ref=f3e2467]
+                          - cell "◌" [ref=f3e2468]
+                        - row [ref=f3e2469]:
+                          - cell [ref=f3e2470]:
+                            - group [ref=f3e2471]:
+                              - generic "Consultar próprias reservas" [ref=f3e2472] [cursor=pointer]
+                          - cell "◌" [ref=f3e2473]
+                          - cell "◌" [ref=f3e2474]
+                        - row [ref=f3e2475]:
+                          - cell [ref=f3e2476]:
+                            - group [ref=f3e2477]:
+                              - generic "Repetir comandos sem duplicação" [ref=f3e2478] [cursor=pointer]
+                          - cell "◌" [ref=f3e2479]
+                          - cell "◌" [ref=f3e2480]
+                        - row [ref=f3e2481]:
+                          - cell [ref=f3e2482]:
+                            - group [ref=f3e2483]:
+                              - generic "Consultar salas disponíveis" [ref=f3e2484] [cursor=pointer]
+                          - cell "◌" [ref=f3e2485]
+                          - cell "◌" [ref=f3e2486]
+                        - row [ref=f3e2487]:
+                          - cell [ref=f3e2488]:
+                            - group [ref=f3e2489]:
+                              - generic "Interagir com H01–H04" [ref=f3e2490] [cursor=pointer]
+                          - cell "◌" [ref=f3e2491]
+                          - cell "◌" [ref=f3e2492]
+                        - row [ref=f3e2493]:
+                          - cell [ref=f3e2494]:
+                            - group [ref=f3e2495]:
+                              - generic "Cancelar reserva" [ref=f3e2496] [cursor=pointer]
+                          - cell "◌" [ref=f3e2497]
+                          - cell "◌" [ref=f3e2498]
+                        - row [ref=f3e2499]:
+                          - cell [ref=f3e2500]:
+                            - group [ref=f3e2501]:
+                              - generic "Alterar reserva" [ref=f3e2502] [cursor=pointer]
+                          - cell "◌" [ref=f3e2503]
+                          - cell "◌" [ref=f3e2504]
+                        - row [ref=f3e2505]:
+                          - cell [ref=f3e2506]:
+                            - group [ref=f3e2507]:
+                              - generic "Clock" [ref=f3e2508] [cursor=pointer]
+                          - cell "◌" [ref=f3e2509]
+                          - cell "◌" [ref=f3e2510]
+                        - row [ref=f3e2511]:
+                          - cell [ref=f3e2512]:
+                            - group [ref=f3e2513]:
+                              - generic "Criar reserva" [ref=f3e2514] [cursor=pointer]
+                          - cell "◌" [ref=f3e2515]
+                          - cell "◌" [ref=f3e2516]
+                        - row [ref=f3e2517]:
+                          - cell [ref=f3e2518]:
+                            - group [ref=f3e2519]:
+                              - generic "Ler histórico da própria reserva" [ref=f3e2520] [cursor=pointer]
+                          - cell "◌" [ref=f3e2521]
+                          - cell "◌" [ref=f3e2522]
+                        - row [ref=f3e2523]:
+                          - cell [ref=f3e2524]:
+                            - group [ref=f3e2525]:
+                              - generic "IdentityProvider" [ref=f3e2526] [cursor=pointer]
+                          - cell "◌" [ref=f3e2527]
+                          - cell "◌" [ref=f3e2528]
+                        - row [ref=f3e2529]:
+                          - cell [ref=f3e2530]:
+                            - group [ref=f3e2531]:
+                              - generic "Listar próprias reservas" [ref=f3e2532] [cursor=pointer]
+                          - cell "◌" [ref=f3e2533]
+                          - cell "◌" [ref=f3e2534]
+                        - row [ref=f3e2535]:
+                          - cell [ref=f3e2536]:
+                            - group [ref=f3e2537]:
+                              - generic "Contrato de invariantes" [ref=f3e2538] [cursor=pointer]
+                          - cell "◌" [ref=f3e2539]
+                          - cell "◌" [ref=f3e2540]
+                        - row [ref=f3e2541]:
+                          - cell [ref=f3e2542]:
+                            - group [ref=f3e2543]:
+                              - generic "Consultar disponibilidade" [ref=f3e2544] [cursor=pointer]
+                          - cell "◌" [ref=f3e2545]
+                          - cell "◌" [ref=f3e2546]
+                        - row [ref=f3e2547]:
+                          - cell [ref=f3e2548]:
+                            - group [ref=f3e2549]:
+                              - generic "Persistência de transação" [ref=f3e2550] [cursor=pointer]
+                          - cell "◌" [ref=f3e2551]
+                          - cell "◌" [ref=f3e2552]
+                        - row [ref=f3e2553]:
+                          - cell [ref=f3e2554]:
+                            - group [ref=f3e2555]:
+                              - generic "ReservationUnitOfWork" [active] [ref=f3e2556] [cursor=pointer]
+                              - generic [ref=f3e2620]:
+                                - generic [ref=f3e2621]:
+                                  - text: IR
+                                  - generic [ref=f3e2622]: (ir_res_uow)
+                                - paragraph [ref=f3e2623]: 0 planned implementation Card(s)
+                                - paragraph [ref=f3e2624]: "Semantic revision: 0aac3bf966bfbe01f3bd568f2b616501b7fbffee5c23dd4408f035c6d384d533"
+                                - generic [ref=f3e2625]:
+                                  - region "Implementation evidence" [ref=f3e2626]:
+                                    - heading "Implementation evidence" [level=4] [ref=f3e2627]
+                                    - paragraph [ref=f3e2628]: No admitted implementation evidence.
+                                  - region "Verification evidence" [ref=f3e2629]:
+                                    - heading "Verification evidence" [level=4] [ref=f3e2630]
+                                    - paragraph [ref=f3e2631]: No admitted verification evidence.
+                          - cell "◌" [ref=f3e2557]
+                          - cell "◌" [ref=f3e2558]
+                        - row [ref=f3e2559]:
+                          - cell [ref=f3e2560]:
+                            - group [ref=f3e2561]:
+                              - generic "Porta pública de casos de uso" [ref=f3e2562] [cursor=pointer]
+                          - cell "◌" [ref=f3e2563]
+                          - cell "◌" [ref=f3e2564]
+                        - row [ref=f3e2565]:
+                          - cell [ref=f3e2566]:
+                            - group [ref=f3e2567]:
+                              - generic "Injeção de adaptadores" [ref=f3e2568] [cursor=pointer]
+                          - cell "◌" [ref=f3e2569]
+                          - cell "◌" [ref=f3e2570]
+                        - row [ref=f3e2571]:
+                          - cell [ref=f3e2572]:
+                            - group [ref=f3e2573]:
+                              - generic "Contagem de conflito e indisponibilidade" [ref=f3e2574] [cursor=pointer]
+                          - cell "◌" [ref=f3e2575]
+                          - cell "◌" [ref=f3e2576]
+                        - row [ref=f3e2577]:
+                          - cell [ref=f3e2578]:
+                            - group [ref=f3e2579]:
+                              - generic "Diagnóstico seguro de comandos" [ref=f3e2580] [cursor=pointer]
+                          - cell "◌" [ref=f3e2581]
+                          - cell "◌" [ref=f3e2582]
+                        - row [ref=f3e2583]:
+                          - cell [ref=f3e2584]:
+                            - group [ref=f3e2585]:
+                              - generic "Atomicidade e concorrência" [ref=f3e2586] [cursor=pointer]
+                          - cell "◌" [ref=f3e2587]
+                          - cell "◌" [ref=f3e2588]
+                        - row [ref=f3e2589]:
+                          - cell [ref=f3e2590]:
+                            - group [ref=f3e2591]:
+                              - generic "Tempo determinístico" [ref=f3e2592] [cursor=pointer]
+                          - cell "◌" [ref=f3e2593]
+                          - cell "◌" [ref=f3e2594]
+                        - row [ref=f3e2595]:
+                          - cell [ref=f3e2596]:
+                            - group [ref=f3e2597]:
+                              - generic "Isolamento hexagonal" [ref=f3e2598] [cursor=pointer]
+                          - cell "◌" [ref=f3e2599]
+                          - cell "◌" [ref=f3e2600]
+                        - row [ref=f3e2601]:
+                          - cell [ref=f3e2602]:
+                            - group [ref=f3e2603]:
+                              - generic "Falhas recuperáveis" [ref=f3e2604] [cursor=pointer]
+                          - cell "◌" [ref=f3e2605]
+                          - cell "◌" [ref=f3e2606]
+                        - row [ref=f3e2607]:
+                          - cell [ref=f3e2608]:
+                            - group [ref=f3e2609]:
+                              - generic "Identidade e privacidade" [ref=f3e2610] [cursor=pointer]
+                          - cell "◌" [ref=f3e2611]
+                          - cell "◌" [ref=f3e2612]
+                        - row [ref=f3e2613]:
+                          - cell [ref=f3e2614]:
+                            - group [ref=f3e2615]:
+                              - generic "Acessibilidade e apresentação" [ref=f3e2616] [cursor=pointer]
+                          - cell "◌" [ref=f3e2617]
+                          - cell "◌" [ref=f3e2618]
+                  - paragraph [ref=f3e2619]: Waivers are recorded at rollup level and require human authorization. Proof is recorded on each task or test card.
+          - generic [ref=f3e2063]:
+            - button "Delete spec" [ref=f3e2064] [cursor=pointer]
+            - button "Close" [ref=f3e2066] [cursor=pointer]

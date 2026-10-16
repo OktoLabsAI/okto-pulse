@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
-from typing import Any
+from typing import Any, NoReturn
 
 from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphCapabilityUnavailable,
@@ -130,6 +130,7 @@ class CommunityGrafxGlobalDiscoveryRuntime:
         *,
         admission: GlobalAdmission | None = None,
         privacy_artifact_resolver: PrivacyArtifactResolver | None = None,
+        query_timeout: Callable[[], float | None] | None = None,
     ) -> None:
         self._database_resolver = database_resolver
         self._path_resolver = path_resolver
@@ -137,6 +138,7 @@ class CommunityGrafxGlobalDiscoveryRuntime:
         self._revalidate_fence = revalidate_fence
         self._admission = admission
         self._privacy_artifact_resolver = privacy_artifact_resolver
+        self._query_timeout = query_timeout
         self._lock = RLock()
 
     def _database(self):
@@ -145,6 +147,11 @@ class CommunityGrafxGlobalDiscoveryRuntime:
         return database
 
     def _fence(self, phase: str) -> None:
+        if self._query_timeout is not None and self._query_timeout() is not None:
+            raise GraphCapabilityUnavailable(
+                "Global Health cannot perform maintenance or writes.",
+                details={"reason": "graph_health_maintenance_forbidden", "phase": phase},
+            )
         self._revalidate_fence(phase)
 
     @staticmethod
@@ -172,7 +179,7 @@ class CommunityGrafxGlobalDiscoveryRuntime:
 
         observed_at = datetime.now(timezone.utc)
         try:
-            legacy = Path(self._path_resolver())
+            anchor = Path(self._path_resolver())
         except Exception:
             return self._state_value(
                 GraphRuntimeObservationState.PROVIDER_UNAVAILABLE,
@@ -181,12 +188,19 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                 observed_at=observed_at,
             )
         try:
-            active = read_safe_active_generation(legacy)
+            from okto_pulse.community.adapters.filesystem_observation import FilesystemObservationBudget
+
+            observation = None
+            if self._query_timeout is not None and self._query_timeout() is not None:
+                observation = FilesystemObservationBudget(self._query_timeout)
+            active = read_safe_active_generation(anchor, observation=observation)
             if active is not None:
                 if not has_grafx_identity(active.graph_path):
                     raise GlobalDiscoveryLayoutError(
                         "active_generation_identity_missing"
                     )
+                if observation is not None:
+                    observation.check()
                 return self._state_value(
                     GraphRuntimeObservationState.PRESENT_READABLE_CANDIDATE,
                     generation=generation or active.generation_id,
@@ -197,14 +211,18 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                         "manifest_sha256": active.manifest_sha256,
                     },
                 )
-            if has_grafx_identity(legacy):
+            if has_grafx_identity(anchor):
+                if observation is not None:
+                    observation.check()
                 return self._state_value(
                     GraphRuntimeObservationState.PRESENT_READABLE_CANDIDATE,
                     generation=generation,
-                    reason_code="global_discovery_legacy_primary_present",
+                    reason_code="global_discovery_anchor_primary_present",
                     observed_at=observed_at,
                 )
-            residues = global_layout_targets(legacy)
+            residues = global_layout_targets(anchor, observation=observation)
+            if observation is not None:
+                observation.check()
             if residues:
                 return self._state_value(
                     GraphRuntimeObservationState.PRESENT_UNREADABLE_OR_ERROR,
@@ -255,22 +273,6 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                 mapped = map_grafx_error(exc, operation="global_bootstrap")
                 raise mapped from exc
 
-    def ensure_layer_schema(self) -> tuple[str, ...]:
-        with self._lock:
-            try:
-                self._fence("ensure_layer_schema")
-                database = self._database()
-                result = ensure_current_grafx_global_schema(
-                    database,
-                    revalidate_fence=self._fence,
-                )
-                validate_current_grafx_global_schema(database)
-                return ("DecisionDigest.graph_layer",) if result.changed else ()
-            except GraphError:
-                raise
-            except Exception as exc:
-                mapped = map_grafx_error(exc, operation="ensure_layer_schema")
-                raise mapped from exc
 
     def _execute_on_database(
         self,
@@ -281,6 +283,11 @@ class CommunityGrafxGlobalDiscoveryRuntime:
         operation: str,
         write: bool,
     ) -> GraphStatementResult:
+        remaining = self._query_timeout() if self._query_timeout is not None else None
+        if remaining is not None:
+            if write:
+                self._fence(operation)
+            return self._observe_query(database, statement, params, remaining)
         transaction = database.begin("write" if write else "read")
         try:
             if write:
@@ -294,6 +301,8 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                 columns=native.columns,
                 affected_count=_affected_count(dict(native.statistics)),
             )
+            if self._query_timeout is not None:
+                self._query_timeout()
             if write:
                 self._fence("commit")
                 report = transaction.commit()
@@ -309,6 +318,61 @@ class CommunityGrafxGlobalDiscoveryRuntime:
             if transaction.active:
                 transaction.rollback()
             raise
+
+    def _observe_query(
+        self, database: Any, statement: str, params: dict[str, Any] | None,
+        timeout_seconds: float,
+    ) -> GraphStatementResult:
+        """Bound accumulated Health results while owning just one read snapshot.
+
+        A native cursor detaches one row at a time. Its native value limits still
+        govern that row and its operators; this budget bounds our aggregate,
+        not every temporary allocation inside the engine or a blocked OS call.
+        """
+        max_rows, max_bytes = 1000, 4 * 1024 * 1024
+        assert self._query_timeout is not None
+
+        def refuse(reason: str = "graph_health_result_limit_exceeded") -> NoReturn:
+            raise GraphCapabilityUnavailable(
+                "Global Health could not observe a complete bounded result.",
+                details={"reason": reason},
+            )
+
+        def size(value: object, remaining: int) -> int:
+            if type(value) is str:
+                if len(value) > remaining:
+                    refuse()
+                return len(value.encode("utf-8")) + 8
+            if value is None or type(value) in (bool, int, float):
+                return 8
+            # Health's global inputs are flat scalar columns, not arbitrary
+            # detached graph entities or containers whose size is unproven.
+            refuse("graph_health_result_shape_unavailable")
+
+        rows = []
+        with database.query(statement, params or {}).cursor(
+            batch_size=1, timeout_seconds=timeout_seconds,
+        ) as cursor:
+            columns = cursor.columns
+            if len(columns) > 64:
+                refuse()
+            total = 0
+            for column in columns:
+                total += size(column, max_bytes - total)
+                if total > max_bytes:
+                    refuse()
+            for row in cursor:
+                if len(rows) >= max_rows:
+                    refuse()
+                total += 16
+                for value in row:
+                    total += size(value, max_bytes - total)
+                    if total > max_bytes:
+                        refuse()
+                self._query_timeout()
+                rows.append(row)
+            self._query_timeout()
+            return GraphStatementResult.from_rows(rows, columns=columns, affected_count=0)
 
     def execute(
         self,
@@ -889,8 +953,8 @@ class CommunityGrafxGlobalDiscoveryRuntime:
 
         with self._lock:
             try:
-                legacy = Path(self._path_resolver())
-                active_path = resolved_global_graph_path(legacy)
+                anchor = Path(self._path_resolver())
+                active_path = resolved_global_graph_path(anchor)
                 self._fence("flush")
                 database = self._database()
                 self._fence("flush")
@@ -928,10 +992,10 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                 raise mapped from exc
 
     @staticmethod
-    def _quarantine(legacy: Path, targets: tuple[Path, ...], *, reason: str) -> int:
+    def _quarantine(anchor: Path, targets: tuple[Path, ...], *, reason: str) -> int:
         service = KGQuarantineService(
-            base_storage_ref_hint=local_storage_ref(legacy.parent.parent),
-            scope_storage_refs=[local_storage_ref(legacy.parent)],
+            base_storage_ref_hint=local_storage_ref(anchor.parent.parent),
+            scope_storage_refs=[local_storage_ref(anchor.parent)],
         )
         response = service.create(
             board_id=GLOBAL_SCOPE,
@@ -945,8 +1009,8 @@ class CommunityGrafxGlobalDiscoveryRuntime:
     def purge(self, *, reason: str = "manual") -> GraphPurgeResult:
         with self._lock:
             try:
-                legacy = Path(self._path_resolver())
-                targets = global_layout_targets(legacy)
+                anchor = Path(self._path_resolver())
+                targets = global_layout_targets(anchor)
                 if not targets:
                     return GraphPurgeResult(
                         board_id=GLOBAL_SCOPE,
@@ -961,8 +1025,8 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                 for target in targets:
                     validate_plain_global_artifact(target)
                 self._fence("purge_global_discovery")
-                moved = self._quarantine(legacy, targets, reason=reason)
-                remaining = global_layout_targets(legacy)
+                moved = self._quarantine(anchor, targets, reason=reason)
+                remaining = global_layout_targets(anchor)
                 if moved <= 0 or remaining:
                     return GraphPurgeResult(
                         board_id=GLOBAL_SCOPE,
@@ -1058,12 +1122,12 @@ class CommunityGrafxGlobalDiscoveryRuntime:
         safe_board_id = validate_scope_id(board_id)
         with self._lock:
             try:
-                legacy = Path(self._path_resolver())
+                anchor = Path(self._path_resolver())
                 boards, digests, links = self._capture_privacy_survivors(
                     board_id=safe_board_id,
                     survivor_board_ids=survivor_board_ids,
                 )
-                targets = list(global_layout_targets(legacy))
+                targets = list(global_layout_targets(anchor))
                 if self._privacy_artifact_resolver is not None:
                     targets.extend(self._privacy_artifact_resolver(safe_board_id))
                 unique_targets: list[Path] = []
@@ -1077,7 +1141,7 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                 directories_removed = 0
                 for target in unique_targets:
                     self._fence("privacy_erase_global_discovery")
-                    base = legacy.parent
+                    base = anchor.parent
                     if (
                         self._privacy_artifact_resolver is not None
                         and target.parent != base
@@ -1092,15 +1156,15 @@ class CommunityGrafxGlobalDiscoveryRuntime:
                     )
                     files_removed += files
                     directories_removed += directories
-                reject_filesystem_alias_ancestry(legacy.parent.parent)
+                reject_filesystem_alias_ancestry(anchor.parent.parent)
                 try:
-                    legacy.parent.lstat()
+                    anchor.parent.lstat()
                 except FileNotFoundError:
                     pass
                 else:
-                    reject_filesystem_alias_ancestry(legacy.parent)
-                    fsync_directory(legacy.parent)
-                if global_layout_targets(legacy):
+                    reject_filesystem_alias_ancestry(anchor.parent)
+                    fsync_directory(anchor.parent)
+                if global_layout_targets(anchor):
                     raise _capability(
                         "privacy_physical_erasure_unverified",
                         operation="erase_storage_for_privacy",

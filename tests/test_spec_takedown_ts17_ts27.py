@@ -91,7 +91,7 @@ async def takedown_db(tmp_path):
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     async with sessions() as session:
-        session.add(Board(id=BOARD_ID, name="TS17-TS27", owner_id="tester"))
+        session.add(Board(realm_id="local", id=BOARD_ID, name="TS17-TS27", owner_id="tester"))
         await session.commit()
     try:
         yield SimpleNamespace(

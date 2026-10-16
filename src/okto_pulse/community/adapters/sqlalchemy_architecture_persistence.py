@@ -6,7 +6,7 @@ import copy
 from typing import Any
 from weakref import WeakKeyDictionary
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ArchitectureDesign,
@@ -129,6 +129,20 @@ class CommunitySqlAlchemyArchitecturePersistence:
         context.add(row)
         await context.flush()
         return self._track(context, _record(entity, row))
+
+    async def fence_version(
+        self, context: Any, *, design_id: str, expected_version: int
+    ) -> bool:
+        # A conditional no-op write provides a transaction fence on SQLite and
+        # row-locking databases without relying on SELECT FOR UPDATE support.
+        with context.no_autoflush:
+            result = await context.execute(
+                update(ArchitectureDesign)
+                .where(ArchitectureDesign.id == design_id, ArchitectureDesign.version == expected_version)
+                .values(version=ArchitectureDesign.version, updated_at=ArchitectureDesign.updated_at)
+                .execution_options(synchronize_session=False)
+            )
+        return result.rowcount == 1
 
     async def delete(self, context: Any, record: ArchitectureRecord) -> None:
         row = await context.get(_model(record.entity), record.id)

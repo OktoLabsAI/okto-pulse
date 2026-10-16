@@ -37,7 +37,8 @@ def test_ts04_consolidated_golden_replay_effective_community_catalog(
 ):
     from okto_pulse.core.mcp import payload_budget
 
-    baseline_uris = {s.uri for s in srv.effective_resource_catalog().specs()}
+    common = {s.uri: s.read() for s in srv.effective_resource_catalog().specs()}
+    baseline_uris = set(common)
 
     # compose the Community catalog exactly as combined_lifespan does.
     register_and_freeze_community_resource_catalog(active_runtime_registry)
@@ -65,7 +66,7 @@ def test_ts04_consolidated_golden_replay_effective_community_catalog(
     # (d) byte-equivalence: each operational overlay's merged content == the
     #     byte-exact pre-split original (today's content).
     for uri, rel, _cap in _COMMUNITY_REPLACEMENT_TABLE:
-        assert by_uri[uri].read() == (_OPERATIONAL_DIR / rel).read_text(
+        assert by_uri[uri].read() == common[uri].rstrip() + "\n\n" + (_OPERATIONAL_DIR / rel).read_text(
             encoding="utf-8"
         )
 
@@ -92,18 +93,18 @@ def test_rejected_card_runbook_is_present_in_effective_errors_overlay(
     ]
 
     required_fragments = (
-        "For **Normal and Bug** cards",
-        "from `validation` to `rejected`",
-        "The only public rework",
+        "Normal/Bug validation",
+        "admitted assessment/completion",
+        "sole public rework edge",
         "`rejected` → `in_progress`",
-        "new executor report",
-        "consequence-only",
+        "new report and validation attempt",
+        "internal consequence",
         "card_rejected_rework_handoff_required",
         "current_rejection_cause_missing",
         "task_validation_subject_version_conflict",
         "task_validation_idempotency_conflict",
         "task_validation_history_append_only",
-        "append-only",
+        "causal history",
     )
     assert all(fragment in body for fragment in required_fragments)
     assert (

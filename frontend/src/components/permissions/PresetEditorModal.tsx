@@ -65,6 +65,11 @@ export function PresetEditorModal({
   const [flags, setFlags] = useState<FlagsMap>(
     preset?.flags || templateFlags || {}
   );
+  const [flagsEdited, setFlagsEdited] = useState(false);
+  const editFlags = (next: FlagsMap) => {
+    setFlags(next);
+    setFlagsEdited(true);
+  };
   const [saving, setSaving] = useState(false);
 
   useEscapeToClose(onClose, { canClose: !saving, priority: 10 });
@@ -83,7 +88,13 @@ export function PresetEditorModal({
         await api.createPreset({ name: name.trim(), description: description.trim() || undefined, flags });
         toast.success('Preset created');
       } else {
-        await api.updatePreset(preset!.id, { name: name.trim(), description: description.trim() || undefined, flags });
+        await api.updatePreset(preset!.id, {
+          name: name.trim(),
+          description: description.trim() || undefined,
+          // Metadata edits must not submit a projected flag tree as a new
+          // policy decision or silently clear a pending migration review.
+          ...(flagsEdited ? { flags } : {}),
+        });
         toast.success('Preset updated');
       }
       onSaved();
@@ -184,15 +195,15 @@ export function PresetEditorModal({
               </div>
             </div>
             <div className="flex gap-2">
-              <button disabled={!canModifyPreset} onClick={() => setFlags(setAllFlags(flags, true))} className="text-[10px] px-2 py-1 rounded bg-green-100 text-green-700 hover:bg-green-200 disabled:opacity-40 dark:bg-green-900/30 dark:text-green-300">
+              <button disabled={!canModifyPreset} onClick={() => editFlags(setAllFlags(flags, true))} className="text-[10px] px-2 py-1 rounded bg-green-100 text-green-700 hover:bg-green-200 disabled:opacity-40 dark:bg-green-900/30 dark:text-green-300">
                 Enable All
               </button>
-              <button disabled={!canModifyPreset} onClick={() => setFlags(setAllFlags(flags, false))} className="text-[10px] px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200 disabled:opacity-40 dark:bg-red-900/30 dark:text-red-300">
+              <button disabled={!canModifyPreset} onClick={() => editFlags(setAllFlags(flags, false))} className="text-[10px] px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200 disabled:opacity-40 dark:bg-red-900/30 dark:text-red-300">
                 Disable All
               </button>
               {baseFlags && (
                 <button
-                  onClick={() => setFlags(JSON.parse(JSON.stringify(baseFlags)))}
+                  onClick={() => editFlags(JSON.parse(JSON.stringify(baseFlags)))}
                   disabled={!canModifyPreset}
                   className="text-[10px] px-2 py-1 rounded bg-blue-100 text-blue-700 hover:bg-blue-200 dark:bg-blue-900/30 dark:text-blue-300"
                   title={`Restore flags from ${lineage?.baseLabel ?? 'base preset'}`}
@@ -208,7 +219,7 @@ export function PresetEditorModal({
         <div className="flex-1 overflow-y-auto">
           <PermissionFlagsEditor
             flags={flags}
-            onChange={isBuiltIn || !canModifyPreset ? undefined : setFlags}
+            onChange={isBuiltIn || !canModifyPreset ? undefined : editFlags}
             readOnly={isBuiltIn || !canModifyPreset}
           />
         </div>

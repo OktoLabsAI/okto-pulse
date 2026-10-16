@@ -2,6 +2,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { KGNode } from '@/types/knowledge-graph';
 import { NodeDetailPanel } from '../NodeDetailPanel';
+import * as kgApi from '@/services/kg-api';
 
 const authority = vi.hoisted(() => ({ canReadProjection: true, isLoading: false }));
 
@@ -53,6 +54,12 @@ afterEach(() => {
 });
 
 describe('NodeDetailPanel Code Traceability inspector', () => {
+  it('shows node context without manual relevance tuning or a client export', () => {
+    render(<NodeDetailPanel node={{ ...TARGET_NODE, kind_of: 'concept' }} boardId="board-1" onClose={vi.fn()} />);
+    expect(screen.getByText(TARGET_NODE.title)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /boost/i })).not.toBeInTheDocument();
+    expect(kgApi).not.toHaveProperty('boostNode');
+  });
   it.each([true, false])('waits for authority before rendering or closing (allowed=%s)', async (allowed) => {
     authority.canReadProjection = false;
     authority.isLoading = true;

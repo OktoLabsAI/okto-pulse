@@ -28,8 +28,10 @@ function requireRevisionPin(
 export function canonicalDefaultGuidelineRef(
   ref: DefaultBoardConfigGuidelineRef,
 ): DefaultBoardConfigGuidelineRef {
+  const fields = new Set(['guideline_id', 'priority', 'revision_id', 'revision_number', 'semantic_version', 'revision_digest']);
   if (
-    !ref.guideline_id?.trim()
+    Object.keys(ref).some((key) => !fields.has(key))
+    || !ref.guideline_id?.trim()
     || !Number.isInteger(ref.priority)
     || ref.priority < 0
   ) {

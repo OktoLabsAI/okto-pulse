@@ -2,6 +2,12 @@
 
 # ruff: noqa: E402
 
+from okto_pulse.community.adapters.distribution_compatibility import require_compatible_core
+
+# Check before imports that expect the current Core API, and again at startup
+# when this module may already have been loaded by tooling.
+require_compatible_core()
+
 import warnings
 
 warnings.filterwarnings(
@@ -29,15 +35,11 @@ from fastapi.staticfiles import StaticFiles
 from okto_pulse.community.app import (
     create_app,
     register_kg_daily_tick_job,
-    run_startup_schema_sweep,
 )
 from okto_pulse.community.adapters.sqlalchemy_database import (
     close_db,
     get_session_factory,
     init_db,
-)
-from okto_pulse.community.adapters.startup_graph_routes import (
-    adopt_existing_board_routes_before_schema_sweep,
 )
 from okto_pulse.core.services.application_kg import get_current_provider_registry
 
@@ -826,12 +828,19 @@ def _compose_global_discovery_recovery_runtime(settings: CommunitySettings):
     prepared_revoker = CommunityPreparedRecoveryRevoker(
         artifact_store=artifact_store,
     )
+    from okto_pulse.community.adapters.materialization_health import (
+        CommunityMaterializationEvidenceProbe,
+    )
+
+    materialization_probe = get_materialization_evidence_port()
+    if not isinstance(materialization_probe, CommunityMaterializationEvidenceProbe):
+        raise RuntimeError('community_recovery_materialization_probe_unavailable')
     preparation_operation = CommunityGlobalDiscoveryRecoveryPreparationOperation(
         recovery=recovery,
         artifact_store=artifact_store,
         db_path_provider=recovery_database_path,
         unit_of_work_factory=resolve_unit_of_work_factory(),
-        materialization_evidence_port=get_materialization_evidence_port(),
+        materialization_evidence_port=materialization_probe.for_internal_recovery(),
         relational_fingerprint=relational_fingerprint,
         overlay_snapshot_service=overlay_snapshot,
         snapshot_fingerprint=snapshot_fingerprint,
@@ -873,6 +882,10 @@ async def _drain_global_discovery_recovery_runtime(
 
 def create_community_app():
     """Create the community FastAPI application with embedded frontend."""
+    require_compatible_core()
+    from okto_pulse.community.adapters.frontend_distribution import require_compatible_frontend
+
+    require_compatible_frontend(FRONTEND_DIR)
     settings = CommunitySettings()
 
     # Read ports from environment (set by CLI) or use defaults
@@ -939,11 +952,7 @@ def create_community_app():
 
         register_community_kg_events_reader(get_session_factory())
 
-        primary_commit_delivered = False
-
         def _on_primary_committed(board, agent, api_key) -> None:
-            nonlocal primary_commit_delivered
-            primary_commit_delivered = True
             print(f"\n{'=' * 60}")
             print("  Okto Pulse Community — First Boot Setup")
             print(f"{'=' * 60}")
@@ -954,88 +963,10 @@ def create_community_app():
             print(f"{'=' * 60}\n")
 
         async with database_runtime.cancel_safe_session_scope() as db:
-            result = await seed_community_defaults(
+            await seed_community_defaults(
                 db,
                 on_primary_committed=_on_primary_committed,
             )
-            if result and not primary_commit_delivered:
-                # Compatibility with an older external seed implementation.
-                board, agent, api_key = result
-                _on_primary_committed(board, agent, api_key)
-
-        # Self-heal: Q&A respondidas herdadas sem answered_at viravam
-        # falso-abertas no badge open_qa_count (a herança não copiava o
-        # timestamp). O combined_lifespan SUBSTITUI o _default_lifespan do
-        # core, então o backfill precisa rodar aqui também. Idempotente.
-        try:
-            from okto_pulse.core.services.application_startup import (
-                backfill_qa_answered_at,
-            )
-
-            async with database_runtime.cancel_safe_session_scope() as _qa_db:
-                _qa_fixed = await backfill_qa_answered_at(_qa_db)
-            if _qa_fixed:
-                _STARTUP_LOGGER.info(
-                    "qa.answered_at.backfilled %s",
-                    _qa_fixed,
-                )
-        except Exception as _qa_exc:
-            _STARTUP_LOGGER.warning(
-                "qa.answered_at.backfill_failed err=%s",
-                _qa_exc,
-            )
-
-        # NC-10 parity with create_app's default lifespan.  The productive
-        # combined lifespan replaces that default completely, so it must run
-        # the idempotent per-board KG schema sweep itself.  Keep this before
-        # every worker and the decay scheduler so they never observe a
-        # pre-migration board graph.
-        try:
-            await adopt_existing_board_routes_before_schema_sweep(
-                uow_factory=app_instance.state.runtime_composition.uow_factory,
-                logger=_STARTUP_LOGGER,
-            )
-            await run_startup_schema_sweep(
-                uow_factory=app_instance.state.runtime_composition.uow_factory,
-                logger=_STARTUP_LOGGER,
-            )
-        except Exception as _schema_exc:
-            _STARTUP_LOGGER.debug(
-                "kg.schema.migration_skipped err=%s",
-                _schema_exc,
-                extra={"event": "kg.schema.migration_skipped"},
-            )
-
-        # Self-heal AFG (investigacao 2026-06-10): materializa finding runs
-        # de arquitetura para designs nunca avaliados (gate avaliava tabela
-        # vazia). Em background para nao atrasar o boot; o combined_lifespan
-        # substitui o lifespan default do core, entao o wiring vive aqui.
-        async def _afg_backfill_task() -> None:
-            try:
-                from okto_pulse.core.services.architecture import (
-                    backfill_architecture_finding_runs,
-                )
-
-                async with database_runtime.cancel_safe_session_scope() as _afg_db:
-                    _afg_stats = await backfill_architecture_finding_runs(
-                        _afg_db,
-                        only_missing=True,
-                    )
-                _STARTUP_LOGGER.info(
-                    "architecture.finding_backfill.completed %s",
-                    _afg_stats,
-                )
-            except Exception as _afg_exc:
-                _STARTUP_LOGGER.warning(
-                    "architecture.finding_backfill.failed err=%s",
-                    _afg_exc,
-                )
-
-        afg_backfill_task = asyncio.create_task(
-            _afg_backfill_task(),
-            name="community.startup.architecture_backfill",
-        )
-
         # Preload the embedding model before serving requests so the first
         # KG search doesn't pay the multi-second model-load cost synchronously.
         await _preload_embedding_model(settings)
@@ -1076,10 +1007,6 @@ def create_community_app():
             metrics_beacon_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await metrics_beacon_task
-        if not afg_backfill_task.done():
-            afg_backfill_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await afg_backfill_task
         await scheduler_control.shutdown(wait=False)
         worker_stop_failures = ()
         if worker_registry is not None:

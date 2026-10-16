@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, select, update
 
 from okto_pulse.community.adapters.sqlalchemy_models import CanonicalDebt
 from okto_pulse.community.adapters.code_traceability_kg_sql import (
@@ -195,6 +195,16 @@ class CommunitySqlAlchemyCanonicalDebtStore:
             )
         ).scalars().all()
         return tuple(_record(row) for row in rows)
+
+    async def replace_if_current(self, context, *, expected, replacement) -> bool:
+        if expected.id != replacement.id or expected.board_id != replacement.board_id:
+            raise ValueError('canonical_debt_identity_changed')
+        fields = CanonicalDebtRecord.__dataclass_fields__
+        result = await context.execute(update(CanonicalDebt).where(*(
+            getattr(CanonicalDebt, name) == getattr(expected, name) for name in fields
+        )).values(**{name: getattr(replacement, name) for name in fields if name != 'id'})
+            .execution_options(synchronize_session="fetch"))
+        return result.rowcount == 1
 
     async def save(
         self,

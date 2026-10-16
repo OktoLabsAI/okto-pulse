@@ -37,7 +37,7 @@ def _reset_catalog():
 # ts_4a74634e (TS03) — Community catalog via core contracts; URIs preserved.
 # ===========================================================================
 def test_ts_4a74634e_community_catalog_built_via_core_contracts():
-    catalog = build_community_resource_catalog()
+    catalog = build_community_resource_catalog(core_srv.effective_resource_catalog())
     # It satisfies the CORE McpResourceCatalog contract (no community-defined
     # parallel contract).
     assert isinstance(catalog, McpResourceCatalog)

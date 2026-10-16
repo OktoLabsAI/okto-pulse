@@ -1,0 +1,381 @@
+"""Fresh format, restart, and refusal before persistent SQLite effects."""
+
+import sqlite3
+import json
+from contextlib import closing
+from unittest.mock import AsyncMock
+
+import pytest
+from sqlalchemy import event
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import create_async_engine
+
+from okto_pulse.community.adapters.current_relational_schema import (
+    APPLICATION_ID, SCHEMA_VERSION, StorageFormatError,
+    current_schema_contract, initialize_current_schema, require_current_database_file,
+)
+from okto_pulse.community.adapters.relational_schema_lifecycle import (
+    CommunityRelationalSchemaLifecycleOrchestrator,
+)
+from okto_pulse.community.adapters.sqlalchemy_database import (
+    CommunityDatabaseRuntime, build_community_engine, build_community_session_factory, install_community_sqlite_pragmas,
+)
+from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, DiscoveryIntent, PermissionPreset
+
+
+@pytest.fixture(scope="module")
+def contract():
+    return current_schema_contract()
+
+
+def test_community_refuses_postgresql_before_engine_or_storage_access(contract):
+    url = "postgresql://localhost/unavailable"
+    with pytest.raises(StorageFormatError, match="backend"):
+        require_current_database_file(url, contract)
+    with pytest.raises(ValueError, match="community_database_requires_sqlite"):
+        build_community_engine(url)
+
+
+def snapshot(path):
+    return {item.name: item.read_bytes() for item in path.parent.glob(path.name + "*")
+            if item.is_file() and not item.name.endswith(".lock")}
+
+
+@pytest.mark.asyncio
+async def test_database_without_native_decision_review_kind_is_refused_unchanged(tmp_path, contract):
+    path = tmp_path / 'before-decision-review.db'
+    url = f'sqlite+aiosqlite:///{path}'
+    engine = create_async_engine(url)
+    try:
+        await initialize_current_schema(engine, contract)
+    finally:
+        await engine.dispose()
+    with closing(sqlite3.connect(path)) as connection:
+        ddl = connection.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='delivery_evidence_records'").fetchone()[0]
+        assert "'decision_review'" in ddl
+        indexes = [row[0] for row in connection.execute("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='delivery_evidence_records' AND sql IS NOT NULL")]
+        connection.execute('DROP TABLE delivery_evidence_records')
+        connection.execute(ddl.replace(", 'decision_review'", ''))
+        for index in indexes:
+            connection.execute(index)
+        connection.commit()
+    before = snapshot(path)
+    with pytest.raises(StorageFormatError):
+        require_current_database_file(url, contract)
+    assert snapshot(path) == before
+
+
+@pytest.mark.asyncio
+async def test_fresh_schema_restart_preserves_data_and_identity(tmp_path, contract):
+    path = tmp_path / "pulse.db"
+    url = f"sqlite+aiosqlite:///{path}"
+    engine = create_async_engine(url)
+    install_community_sqlite_pragmas(engine)
+    try:
+        await initialize_current_schema(engine, contract)
+        sessions = build_community_session_factory(engine)
+        async with sessions() as session:
+            session.add(Board(id="current", realm_id="local", name="Preserve", owner_id="owner"))
+            await session.commit()
+    finally:
+        await engine.dispose()
+    before = snapshot(path)
+    require_current_database_file(url, contract)
+    assert snapshot(path) == before
+    engine = create_async_engine(url)
+    install_community_sqlite_pragmas(engine)
+    try:
+        await initialize_current_schema(engine, contract)
+        async with engine.connect() as connection:
+            assert (await connection.exec_driver_sql("SELECT name FROM boards WHERE id='current'")).scalar() == "Preserve"
+            assert (await connection.exec_driver_sql("PRAGMA application_id")).scalar() == APPLICATION_ID
+            assert (await connection.exec_driver_sql("PRAGMA user_version")).scalar() == SCHEMA_VERSION
+            retired_tables = {
+                "policy_compliance_receipts", "policy_compliance_adopted_revisions",
+                "policy_compliance_findings", "policy_waivers", "policy_waiver_events",
+            }
+            actual_tables = set((await connection.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )).scalars())
+            assert retired_tables.isdisjoint(actual_tables)
+            assert not any("sprint" in name.lower() for name in actual_tables)
+            for table_name in actual_tables:
+                column_names = (await connection.exec_driver_sql(
+                    "SELECT name FROM pragma_table_info(?)", (table_name,)
+                )).scalars().all()
+                assert not any("sprint" in name.lower() for name in column_names), table_name
+            assert not any("sprint" in mapper.class_.__name__.lower()
+                           for mapper in Base.registry.mappers)
+            assert not any("sprint" in fk.target_fullname.lower()
+                           for table in Base.metadata.tables.values() for fk in table.foreign_keys)
+            assert {"semantic_guideline_assessments_v2", "semantic_guideline_findings_v2",
+                    "semantic_guideline_waivers", "semantic_guideline_waiver_events"} <= actual_tables
+            for table in (
+                "semantic_subject_versions", "semantic_subject_version_events",
+                "semantic_guideline_waivers", "semantic_guideline_skips",
+            ):
+                target_ddl = (await connection.exec_driver_sql(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                )).scalar_one()
+                assert "'sprint'" not in target_ddl
+                assert "'test_scenario'" in target_ddl
+            assert (await connection.exec_driver_sql(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' "
+                "AND name='quality_assessment_lifecycle_stale_transitions'"
+            )).scalar() == 0
+            columns = (await connection.exec_driver_sql(
+                "PRAGMA table_info(checklist_receipts)"
+            )).all()
+            assert "manual_checklist_ref" not in {row[1] for row in columns}
+            ddl = (await connection.exec_driver_sql(
+                "SELECT sql FROM sqlite_master WHERE name='checklist_receipts'"
+            )).scalar_one()
+            assert "source = 'native'" in ddl
+            assert "legacy_unverified" not in ddl
+            for table in ("checklist_receipts", "checklist_executions"):
+                fields = (await connection.exec_driver_sql(f"PRAGMA table_info({table})")).all()
+                edition = next(row for row in fields if row[1] == "spec_edition")
+                assert edition[3] == 1  # NOT NULL in the actual fresh/restarted database.
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", [
+    "DROP TABLE spec_validation_operation_receipts",
+    "DROP TABLE validation_source_revisions",
+    "DROP TRIGGER validation_revision_cards_update",
+    "DROP TRIGGER validation_revision_monotonic",
+    "PRAGMA user_version=399",
+    "PRAGMA application_id=0",
+    "ALTER TABLE cards ADD COLUMN sprint_id TEXT",
+    "ALTER TABLE agents ADD COLUMN permissions JSON",
+    "ALTER TABLE checklist_receipts ADD COLUMN manual_checklist_ref TEXT",
+    "ALTER TABLE cards ADD COLUMN knowledge_bases JSON",
+    "ALTER TABLE card_delivery_evidence_records ADD COLUMN migrated_from JSON",
+    "ALTER TABLE guideline_revisions ADD COLUMN rules JSON",
+    "ALTER TABLE semantic_guideline_revisions ADD COLUMN authority_state TEXT",
+    "ALTER TABLE semantic_guideline_revisions ADD COLUMN legacy_rules_digest TEXT",
+    "ALTER TABLE semantic_subject_versions ADD COLUMN editor_source TEXT",
+    "ALTER TABLE semantic_subject_version_events ADD COLUMN editor_source TEXT",
+    "CREATE TABLE semantic_guideline_legacy_migrations (migration_id TEXT PRIMARY KEY)",
+    "CREATE TABLE card_rejected_lifecycle_migrations (migration_id TEXT PRIMARY KEY)",
+    "CREATE TABLE spec_validation_pointer_repairs (migration_id TEXT PRIMARY KEY)",
+    "CREATE TABLE quality_assessment_lifecycle_stale_transitions (stale_transition_key TEXT PRIMARY KEY)",
+    "CREATE TABLE kg_cognitive_source_fingerprint_epoch_permits (revision_id TEXT PRIMARY KEY)",
+    "CREATE TABLE kg_cognitive_source_fingerprint_epoch_receipts (epoch TEXT PRIMARY KEY)",
+    "CREATE TABLE sprints (id TEXT PRIMARY KEY)",
+    "CREATE TABLE policy_compliance_receipts (receipt_id TEXT PRIMARY KEY)",
+    "CREATE TABLE policy_compliance_adopted_revisions (receipt_id TEXT PRIMARY KEY)",
+    "CREATE TABLE policy_compliance_findings (finding_id TEXT PRIMARY KEY)",
+    "CREATE TABLE policy_waivers (waiver_id TEXT PRIMARY KEY)",
+    "CREATE TABLE policy_waiver_events (event_id TEXT PRIMARY KEY)",
+    "DROP INDEX ix_boards_realm_id",
+    "DROP TRIGGER trg_global_discovery_source_revision_singleton_delete_guard",
+    "DROP TRIGGER trg_guideline_impact_v2_binding_insert",
+    "DROP TRIGGER trg_guideline_impact_v2_guideline_impact_adoptions_insert",
+    "DROP TRIGGER trg_guideline_impact_v2_guideline_impact_unlinks_insert",
+    "DROP TRIGGER trg_guideline_impact_v2_guideline_retirement_impacts_insert",
+    "ALTER TABLE quality_assessment_lifecycle_transitions ADD COLUMN legacy_edition INTEGER",
+    "DROP TRIGGER trg_quality_assessment_lifecycle_transitions_before_edition_positive",
+    "DROP TRIGGER trg_quality_assessment_lifecycle_transitions_after_edition_positive",
+])
+async def test_incompatible_schema_is_refused_without_wal_or_content_changes(tmp_path, contract, mutation):
+    path = tmp_path / "incompatible.db"
+    url = f"sqlite+aiosqlite:///{path}"
+    engine = create_async_engine(url)
+    try:
+        await initialize_current_schema(engine, contract)
+    finally:
+        await engine.dispose()
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute(mutation)
+        connection.commit()
+    before = snapshot(path)
+    engine = create_async_engine(url)
+    try:
+        with pytest.raises(StorageFormatError):
+            install_community_sqlite_pragmas(engine)
+        with pytest.raises(StorageFormatError):
+            await initialize_current_schema(engine, contract)
+    finally:
+        await engine.dispose()
+    assert snapshot(path) == before
+
+
+@pytest.mark.asyncio
+async def test_connection_rechecks_format_before_wal_if_file_changes_after_composition(tmp_path):
+    path = tmp_path / "race.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+    install_community_sqlite_pragmas(engine)
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("CREATE TABLE old_format (id INTEGER)")
+        connection.commit()
+    before = snapshot(path)
+    try:
+        with pytest.raises(StorageFormatError):
+            async with engine.connect():
+                pytest.fail("incompatible connection admitted")
+    finally:
+        await engine.dispose()
+    assert snapshot(path) == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change_schema", [False, True])
+async def test_pending_wal_is_inspected_without_touching_source_files(tmp_path, contract, change_schema):
+    path = tmp_path / "pending-wal.db"
+    url = f"sqlite+aiosqlite:///{path}"
+    engine = create_async_engine(url)
+    try:
+        await initialize_current_schema(engine, contract)
+    finally:
+        await engine.dispose()
+    with closing(sqlite3.connect(path)) as writer:
+        writer.execute("PRAGMA journal_mode=WAL")
+        if change_schema:
+            writer.execute("ALTER TABLE cards ADD COLUMN sprint_id TEXT")
+        else:
+            writer.execute("INSERT INTO boards(id, name, owner_id, realm_id) VALUES ('wal-row', 'Keep', 'owner', 'local')")
+        writer.commit()
+        before = snapshot(path)
+        assert before[path.name + "-wal"]
+        if change_schema:
+            with pytest.raises(StorageFormatError, match="schema_fingerprint"):
+                require_current_database_file(url, contract)
+        else:
+            require_current_database_file(url, contract)
+        assert snapshot(path) == before
+
+
+@pytest.mark.asyncio
+async def test_creation_failure_rolls_back_ddl_and_version_then_can_retry(tmp_path, contract):
+    path = tmp_path / "interrupted.db"
+    engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+    def interrupted(*args, **kwargs):
+        raise RuntimeError("interrupted creation")
+    event.listen(Base.metadata, "after_create", interrupted)
+    try:
+        with pytest.raises(RuntimeError, match="interrupted creation"):
+            await initialize_current_schema(engine, contract)
+    finally:
+        event.remove(Base.metadata, "after_create", interrupted)
+    try:
+        async with engine.connect() as connection:
+            assert (await connection.exec_driver_sql("SELECT count(*) FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'")).scalar() == 0
+            assert (await connection.exec_driver_sql("PRAGMA user_version")).scalar() == 0
+        await initialize_current_schema(engine, contract)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_never_seeds_incompatible_storage(tmp_path):
+    path = tmp_path / "old.db"
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("CREATE TABLE sprints (id TEXT)")
+        connection.commit()
+    before = snapshot(path)
+    engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
+    runtime = CommunityDatabaseRuntime(engine, build_community_session_factory(engine))
+    seed = AsyncMock()
+    lifecycle = CommunityRelationalSchemaLifecycleOrchestrator(runtime_provider=lambda: runtime, seed=seed)
+    try:
+        with pytest.raises(StorageFormatError):
+            await lifecycle.initialize_schema()
+        seed.assert_not_awaited()
+    finally:
+        await runtime.close()
+    assert snapshot(path) == before
+
+
+@pytest.mark.asyncio
+async def test_current_source_fence_advances_and_cannot_be_removed(tmp_path, contract):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'fence.db'}")
+    try:
+        await initialize_current_schema(engine, contract)
+        async with engine.begin() as connection:
+            before = (await connection.exec_driver_sql("SELECT revision FROM global_discovery_source_revision")).scalar_one()
+            await connection.exec_driver_sql("INSERT INTO boards(id,name,owner_id,realm_id) VALUES ('current', 'Board', 'owner', 'local')")
+            after = (await connection.exec_driver_sql("SELECT revision FROM global_discovery_source_revision")).scalar_one()
+            assert after > before
+        async with engine.begin() as connection:
+            with pytest.raises(IntegrityError):
+                await connection.exec_driver_sql("DELETE FROM global_discovery_source_revision")
+    finally:
+        await engine.dispose()
+
+
+def test_non_database_file_is_preserved(tmp_path, contract):
+    path = tmp_path / "not-a-database"
+    path.write_bytes(b"not SQLite, preserve this")
+    before = snapshot(path)
+    with pytest.raises(StorageFormatError, match="unreadable_database"):
+        require_current_database_file(f"sqlite+aiosqlite:///{path}", contract)
+    assert snapshot(path) == before
+
+
+@pytest.mark.asyncio
+async def test_current_catalog_seed_is_repeatable_and_preserves_user_choices(tmp_path, contract, monkeypatch):
+    from okto_pulse.community.adapters import current_data_seeds, permission_preset_reconciliation
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'catalogs.db'}")
+    sessions = build_community_session_factory(engine)
+    monkeypatch.setattr(current_data_seeds, "get_session_factory", lambda: sessions)
+    monkeypatch.setattr(permission_preset_reconciliation, "get_session_factory", lambda: sessions)
+    try:
+        await initialize_current_schema(engine, contract)
+        await current_data_seeds.seed_current_catalogs()
+        async with sessions() as session:
+            presets = (await session.scalars(select(PermissionPreset))).all()
+            assert presets
+            preset_snapshot = {row.id: (row.name, row.flags) for row in presets}
+            assert all("sprint" not in json.dumps([row.name, row.flags]).lower() for row in presets)
+            rows = list((await session.execute(select(DiscoveryIntent))).scalars())
+            ids = {row.name: row.id for row in rows}
+            assert ids
+            rows[0].active = False
+            rows[0].label = "My label"
+            changed_id = rows[0].id
+            session.add(DiscoveryIntent(name="custom", label="Custom", category="custom",
+                                        tool_binding="custom.tool", is_seed=False))
+            await session.commit()
+        await current_data_seeds.seed_current_catalogs()
+        async with sessions() as session:
+            presets = (await session.scalars(select(PermissionPreset))).all()
+            assert {row.id: (row.name, row.flags) for row in presets} == preset_snapshot
+            rows = list((await session.execute(select(DiscoveryIntent))).scalars())
+            assert {row.name: row.id for row in rows if row.is_seed} == ids
+            selected = next(row for row in rows if row.id == changed_id)
+            assert selected.active is False and selected.label == "My label"
+            assert next(row for row in rows if row.name == "custom").tool_binding == "custom.tool"
+    finally:
+        await engine.dispose()
+
+@pytest.mark.asyncio
+async def test_orphan_in_current_schema_is_refused_without_writes_or_repair(tmp_path, contract):
+    path = tmp_path / "orphan-current.db"
+    url = f"sqlite+aiosqlite:///{path}"
+    engine = create_async_engine(url)
+    try:
+        await initialize_current_schema(engine, contract)
+    finally:
+        await engine.dispose()
+    # Emulate an externally damaged native database, without changing its format.
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute("INSERT INTO card_dependencies(id, card_id, depends_on_id) VALUES ('orphan', 'missing-card', 'missing-prerequisite')")
+        connection.commit()
+        assert connection.execute("PRAGMA foreign_key_check").fetchone() is not None
+    before = snapshot(path)
+    with pytest.raises(StorageFormatError, match="foreign_key_integrity"):
+        require_current_database_file(url, contract)
+    assert snapshot(path) == before
+    engine = create_async_engine(url)
+    try:
+        with pytest.raises(StorageFormatError, match="foreign_key_integrity"):
+            await initialize_current_schema(engine, contract)
+    finally:
+        await engine.dispose()
+    assert snapshot(path) == before

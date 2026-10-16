@@ -45,6 +45,7 @@ vi.mock('@/hooks/usePermissions', () => ({
 }));
 
 import { GuidelineRevisionEditor } from '../GuidelineRevisionEditor';
+import { PolicyGovernanceApiError } from '@/services/policy-governance-api';
 import {
   newSemanticMetricDraft,
   validateSemanticMetricDraft,
@@ -172,10 +173,11 @@ describe('GuidelineRevisionEditor semantic authoring', () => {
       'guidelines.metrics.author',
     );
     policyApiMock.createGuidelineRevision.mockResolvedValue({
-      revision_id: 'revision-3',
-      revision: '1.2.0',
-      revision_digest: 'b'.repeat(64),
-      metrics: [],
+      status: 'applied',
+      revision: { ...authority(revision()).revision, semantic_version: '1.2.0' },
+      head: authority(revision()).head,
+      minimum_bump: 'minor',
+      rejection_code: null,
     });
   });
 
@@ -194,9 +196,45 @@ describe('GuidelineRevisionEditor semantic authoring', () => {
     expect(screen.queryByText('Deterministic predicates')).not.toBeInTheDocument();
     expect(screen.queryByText('Operator')).not.toBeInTheDocument();
     expect(screen.queryByText('Code')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add Sprint metric target' })).not.toBeInTheDocument();
   });
 
-  it('creates an ordered semantic revision with the current head fence', async () => {
+  it('refuses an unsupported wire target without offering conversion or writing', async () => {
+    const invalid = { ...metric, target_entity_types: ['sprint'] } as unknown as GuidelineMetric;
+    renderEditor(revision([invalid]));
+    await screen.findByText('Metric entity type is unsupported.');
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'New title' } });
+    expect(screen.getByTestId('create-guideline-revision')).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /historical Sprint/ })).not.toBeInTheDocument();
+    expect(policyApiMock.createGuidelineRevision).not.toHaveBeenCalled();
+  });
+
+  it('removes a native target with explicit version bump and preserves the loaded revision', async () => {
+    const historical = revision([{ ...metric, target_entity_types: ['spec', 'card'] }]);
+    const original = JSON.stringify(historical);
+    renderEditor(historical);
+    const remove = await screen.findByRole('button', { name: 'Remove Card metric target' });
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'New title' } });
+    expect(screen.getByTestId('create-guideline-revision')).toBeEnabled();
+    expect(policyApiMock.createGuidelineRevision).not.toHaveBeenCalled();
+    fireEvent.click(remove);
+    fireEvent.change(screen.getByLabelText('Version bump'), { target: { value: 'major' } });
+    expect(screen.getByTestId('create-guideline-revision')).toBeEnabled();
+    fireEvent.click(screen.getByTestId('create-guideline-revision'));
+    await waitFor(() => expect(policyApiMock.createGuidelineRevision).toHaveBeenCalledTimes(1));
+    expect(policyApiMock.createGuidelineRevision.mock.calls[0][2].patch.metrics[0].target_entity_types).toEqual(['spec']);
+    expect(JSON.stringify(historical)).toBe(original);
+  });
+
+  it('does not grant metric authoring authority to remove a native target', async () => {
+    grant('guidelines.revisions.read', 'guidelines.revisions.create');
+    renderEditor(revision([{ ...metric, target_entity_types: ['card'] }]));
+    expect(await screen.findByRole('button', { name: 'Remove Card metric target' })).toBeDisabled();
+    expect(screen.getByTestId('create-guideline-revision')).toBeDisabled();
+    expect(policyApiMock.createGuidelineRevision).not.toHaveBeenCalled();
+  });
+
+  it('creates a semantic revision using the native REST patch', async () => {
     renderEditor();
     await screen.findByText('Context-only guideline');
 
@@ -239,26 +277,11 @@ describe('GuidelineRevisionEditor semantic authoring', () => {
       .toBe(guideline.id);
     const request = policyApiMock.createGuidelineRevision.mock.calls[0][2];
     expect(request).toEqual({
-      expected_head_revision: 2,
-      version_bump: 'minor',
-      content: {
-        title: 'Delivery quality',
-        body: 'Ship only after evidence is attached.',
-      },
-      metrics: [
-        expect.objectContaining({
-          code: 'user_value_clarity',
-          title: 'User value clarity',
-          description: 'How clearly the user outcome is defined.',
-          evaluation_rubric:
-            '0 has no outcome; 70 has a measurable outcome; 100 has traceable evidence.',
-          target_entity_types: ['spec'],
-          direction: 'maximum',
-          default_threshold: 30,
-        }),
-      ],
+      idempotency_key: expect.any(String),
+      declared_semantic_version: '1.2.0',
+      patch: { metrics: expect.any(Array) },
     });
-    expect(request.metrics).toEqual([
+    expect(request.patch.metrics).toEqual([
       expect.objectContaining({
         code: 'user_value_clarity',
         title: 'User value clarity',
@@ -270,15 +293,15 @@ describe('GuidelineRevisionEditor semantic authoring', () => {
         default_threshold: 30,
       }),
     ]);
-    expect(request.metrics).not.toEqual(
+    expect(request.patch.metrics).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ code: 'confidence' }),
       ]),
     );
-    expect(request).not.toHaveProperty('patch');
-    expect(request).not.toHaveProperty('tags');
-    expect(request).not.toHaveProperty('declared_semantic_version');
-    expect(request).not.toHaveProperty('idempotency_key');
+    expect(request).not.toHaveProperty('expected_head_revision');
+    expect(request).not.toHaveProperty('version_bump');
+    expect(request.patch).not.toHaveProperty('tags');
+    expect(await screen.findByText('Created v1.2.0 · Minor bump.')).toBeInTheDocument();
   });
 
   it('publishes an empty metrics array when returning to context-only', async () => {
@@ -295,13 +318,9 @@ describe('GuidelineRevisionEditor semantic authoring', () => {
         'board-1',
         guideline.id,
         {
-          expected_head_revision: 2,
-          version_bump: 'patch',
-          content: {
-            title: 'Delivery quality',
-            body: 'Ship only after evidence is attached.',
-          },
-          metrics: [],
+          idempotency_key: expect.any(String),
+          declared_semantic_version: '1.1.1',
+          patch: { metrics: [] },
         },
       );
     });
@@ -329,6 +348,56 @@ describe('GuidelineRevisionEditor semantic authoring', () => {
     };
     expect(validateSemanticMetricDrafts([draft, duplicate]))
       .toMatch(/keys must be unique/i);
+  });
+
+  it('keeps edits and the idempotency key on retry, but changes the key for a new payload', async () => {
+    policyApiMock.createGuidelineRevision.mockRejectedValue(new Error('Connection lost'));
+    renderEditor();
+    await screen.findByText('Context-only guideline');
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Updated title' } });
+    const save = screen.getByTestId('create-guideline-revision');
+    fireEvent.click(save);
+    await screen.findByText('Connection lost');
+    const first = policyApiMock.createGuidelineRevision.mock.calls[0][2];
+    expect(screen.getByLabelText('Title')).toHaveValue('Updated title');
+    fireEvent.click(save);
+    await waitFor(() => expect(policyApiMock.createGuidelineRevision).toHaveBeenCalledTimes(2));
+    await screen.findByText('Connection lost');
+    expect(policyApiMock.createGuidelineRevision.mock.calls[1][2]).toEqual(first);
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Another title' } });
+    fireEvent.click(save);
+    await waitFor(() => expect(policyApiMock.createGuidelineRevision).toHaveBeenCalledTimes(3));
+    expect(policyApiMock.createGuidelineRevision.mock.calls[2][2].idempotency_key)
+      .not.toBe(first.idempotency_key);
+    await screen.findByText('Connection lost');
+  });
+
+  it('shows the required bump and preserves the draft after semantic rejection', async () => {
+    policyApiMock.createGuidelineRevision.mockRejectedValue(new PolicyGovernanceApiError({
+      status: 400, kind: 'under_bump', code: 'under_bump',
+      category: 'invalid_argument', message: 'Version too low', retryable: false,
+      nextAction: 'increase_semantic_version',
+      details: { minimum_bump: 'minor', minimum_semantic_version: '1.2.0' },
+    }));
+    renderEditor();
+    await screen.findByText('Context-only guideline');
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Unsaved title' } });
+    fireEvent.click(screen.getByTestId('create-guideline-revision'));
+    await screen.findByText('The selected version bump is too low. Minimum required: minor.');
+    expect(screen.getByLabelText('Title')).toHaveValue('Unsaved title');
+    expect(screen.getByLabelText('Version bump')).toHaveValue('patch');
+  });
+
+  it('reports a native noop without claiming that a revision was created', async () => {
+    policyApiMock.createGuidelineRevision.mockResolvedValue({
+      status: 'noop', revision: null, head: null, minimum_bump: null,
+    });
+    renderEditor();
+    await screen.findByText('Context-only guideline');
+    fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Canonical equivalent' } });
+    fireEvent.click(screen.getByTestId('create-guideline-revision'));
+    await screen.findByText('No changes to publish. The current revision was preserved.');
+    expect(screen.queryByText(/Created v/)).not.toBeInTheDocument();
   });
 
   it('rejects a threshold outside 0..100', async () => {
@@ -404,13 +473,9 @@ describe('GuidelineRevisionEditor semantic authoring', () => {
         'board-1',
         guideline.id,
         {
-          expected_head_revision: 2,
-          version_bump: 'patch',
-          content: {
-            title: 'Delivery quality',
-            body: 'Ship only after evidence is independently attached.',
-          },
-          metrics: [metric],
+          idempotency_key: expect.any(String),
+          declared_semantic_version: '1.1.1',
+          patch: { content: 'Ship only after evidence is independently attached.' },
         },
       );
     });

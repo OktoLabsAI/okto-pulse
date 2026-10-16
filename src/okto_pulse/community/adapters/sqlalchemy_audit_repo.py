@@ -10,6 +10,9 @@ from __future__ import annotations
 import sqlite3
 import uuid
 from typing import Any, Callable
+from okto_pulse.core.ports.projection_findings import (
+    ProjectionFindingSnapshot, validate_audit_finding_snapshot,
+)
 
 from okto_pulse.core.kg.interfaces.audit_dtos import (
     AuditRow,
@@ -77,6 +80,34 @@ class CommunityAuditRepository:
             content_hash=obj.content_hash,
             undo_status=obj.undo_status,
         )
+
+    async def get_latest_reference_findings(
+        self, board_id: str, artifact_id: str, *, artifact_type: str, namespace: str,
+    ) -> ProjectionFindingSnapshot | None:
+        from sqlalchemy import select
+        from okto_pulse.community.adapters.sqlalchemy_models import ConsolidationAudit
+
+        # NULL cognitive receipts do not supersede a source evaluation. Bound
+        # namespace discovery and report overflow rather than claiming absence.
+        async with self._sf() as session:
+            rows = (await session.execute(select(ConsolidationAudit).where(
+                ConsolidationAudit.board_id == board_id,
+                ConsolidationAudit.artifact_id == artifact_id,
+                ConsolidationAudit.artifact_type == artifact_type,
+                ConsolidationAudit.committed_at.is_not(None),
+                ConsolidationAudit.undo_status == 'none',
+                ConsolidationAudit.reference_findings.is_not(None),
+            ).order_by(ConsolidationAudit.committed_at.desc(),
+                       ConsolidationAudit.session_id.desc()).limit(101))).scalars().all()
+            for row in rows[:100]:
+                snapshot = ProjectionFindingSnapshot.from_payload(row.reference_findings)
+                validate_audit_finding_snapshot(snapshot, board_id=board_id,
+                    artifact_type=artifact_type, artifact_id=artifact_id, agent_id=row.agent_id)
+                if snapshot.namespace == namespace:
+                    return snapshot
+            if len(rows) > 100:
+                raise ValueError('projection_finding_audit_read_limit')
+            return None
 
     async def get_latest_for_artifact(
         self,
@@ -192,6 +223,8 @@ class CommunityAuditRepository:
         audit: ConsolidationAuditData,
         node_refs: list[NodeRefData],
         outbox_event: OutboxEventData,
+        *,
+        reference_findings: ProjectionFindingSnapshot | None = None,
     ) -> None:
         """Stage into the caller's UnitOfWork without commit or rollback."""
 
@@ -208,6 +241,7 @@ class CommunityAuditRepository:
                 audit,
                 node_refs,
                 outbox_event,
+                reference_findings=reference_findings,
             )
         except OperationalError as exc:
             if _is_sqlite_write_contention(exc):
@@ -255,6 +289,8 @@ class CommunityAuditRepository:
         audit: ConsolidationAuditData,
         node_refs: list[NodeRefData],
         outbox_event: OutboxEventData,
+        *,
+        reference_findings: ProjectionFindingSnapshot | None = None,
     ) -> Any:
         from okto_pulse.community.adapters.sqlalchemy_models import (
             ConsolidationAudit,
@@ -263,6 +299,8 @@ class CommunityAuditRepository:
             KuzuNodeRef,
         )
 
+        validate_audit_finding_snapshot(reference_findings, board_id=audit.board_id,
+            artifact_type=audit.artifact_type, artifact_id=audit.artifact_id, agent_id=audit.agent_id)
         generation_advance = (
             await self._materialization_generation_store.advance_in_session(
                 session,
@@ -286,6 +324,7 @@ class CommunityAuditRepository:
                 summary_text=audit.summary_text,
                 content_hash=audit.content_hash,
                 undo_status="none",
+                reference_findings=reference_findings.to_payload() if reference_findings is not None else None,
             )
         )
         for ref in node_refs:

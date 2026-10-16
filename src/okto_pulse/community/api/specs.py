@@ -1,6 +1,7 @@
 """Spec API endpoints."""
 
 from collections.abc import Awaitable, Callable
+from okto_pulse.core.ports.spec_planning_manifest import SpecPlanningManifestUnavailable
 from datetime import datetime
 from typing import Any, Literal
 
@@ -28,7 +29,6 @@ from okto_pulse.community.api.lookups import (
 )
 from okto_pulse.community.api.pagination import (
     board_scope,
-    pagination_requested,
     project_page,
     record_fields,
     resolve_window,
@@ -42,7 +42,6 @@ from okto_pulse.community.api.quality_summary_projection import (
 )
 from okto_pulse.community.api.qa_count_projection import (
     project_open_qa_count,
-    redact_open_qa_count_records,
     resolve_board_projection_permissions,
 )
 from okto_pulse.community.api.spec_dependency_errors import (
@@ -56,16 +55,36 @@ from okto_pulse.core.ports.application_persistence import (
     ApplicationFilter,
     PageRequest,
 )
+from okto_pulse.core.application.use_cases.architecture_candidates import (
+    GetArchitectureCandidatesCommand,
+    GetArchitectureCandidatesUseCase,
+)
+from okto_pulse.core.domain.architecture_candidates import ArchitectureCandidateReadError
+from okto_pulse.core.application.use_cases.architecture_classification_review import (
+    GetArchitectureClassificationsCommand, GetArchitectureClassificationsUseCase,
+)
+from okto_pulse.core.domain.architecture_classification_review import ArchitectureReviewState
+from okto_pulse.core.domain.architecture_classification import (
+    ArchitectureClassificationBatch, ArchitectureClassificationError, MAX_CLASSIFICATION_BYTES,
+)
+from okto_pulse.core.application.use_cases.architecture_classification import (
+    ClassifyArchitectureCandidatesCommand, ClassifyArchitectureCandidatesUseCase,
+)
+from okto_pulse.core.inbound.architecture_classification import (
+    CLASSIFICATION_REQUEST_ERRORS, classification_error,
+)
 from okto_pulse.core.ports.knowledge_propagation import (
     KnowledgePropagationPortError,
 )
-from okto_pulse.core.domain.guideline_policy_transition import (
+from okto_pulse.core.domain.guideline_semantic_transition import (
     PolicyTransitionRejected,
 )
 from okto_pulse.core.domain.code_traceability import CodeTraceabilityContractError
 from okto_pulse.core.domain.spec_validation import (
     SpecValidationConflictError,
 )
+from okto_pulse.core.domain.spec_content_lock import SpecLockedError
+from okto_pulse.core.domain.verification_report import VerificationReport
 from okto_pulse.core.domain.human_validation_cycle import (
     LifecycleTransitionConflictError,
     SubjectEditRequiresDraftError,
@@ -144,9 +163,6 @@ from okto_pulse.core.application.use_cases import (
     UpdateSpecUseCase,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
-from okto_pulse.community.adapters.test_evidence import (
-    normalize_test_scenario_evidence,
-)
 from okto_pulse.core.repositories import PulseUnitOfWork
 from okto_pulse.core.models.schemas import (
     PageEnvelope,
@@ -158,7 +174,6 @@ from okto_pulse.core.models.schemas import (
     SpecMove,
     SpecPageItem,
     SpecResponse,
-    SpecSummary,
     SpecUpdate,
     SpecValidationResponse,
     SpecValidationSubmit,
@@ -192,7 +207,6 @@ from okto_pulse.core.application.errors import (
     ResourceGateError,
     ResourceLineageResolutionError,
     SpecLineagePreflightError,
-    SprintOperationError,
 )
 from okto_pulse.core.services.gate_contracts import (
     GateContractError,
@@ -629,9 +643,15 @@ class _PrevalidatedSpecWriteRoute(APIRoute):
         async def prevalidated_route_handler(request: Request) -> Response:
             if model is not None:
                 raw_body = await request.body()
+                if model is ArchitectureClassificationBatch and len(raw_body) > MAX_CLASSIFICATION_BYTES:
+                    projected = classification_error(ArchitectureClassificationError("architecture_classification_payload_too_large"))
+                    return JSONResponse(status_code=projected.status_code, content={"detail": projected.payload()})
                 try:
                     model.model_validate_json(raw_body)
                 except ValidationError as exc:
+                    if model is ArchitectureClassificationBatch:
+                        projected = classification_error(exc)
+                        return JSONResponse(status_code=projected.status_code, content={"detail": projected.payload()})
                     if model is ProjectStructureBatchMutationRequest:
                         return JSONResponse(
                             status_code=status.HTTP_400_BAD_REQUEST,
@@ -708,11 +728,51 @@ class ScenarioStatusUpdate(BaseModel):
     evidence: TestScenarioEvidence | None = None
 
 
+class ScenarioVerificationMethodUpdate(BaseModel):
+    """One semantic field through the existing governed scenario body writer."""
+
+    model_config = {"extra": "forbid"}
+    verification_method: Literal["automated_test", "static_analysis", "inspection", "demonstration"] | None
+    expected_spec_version: int = Field(..., strict=True, ge=1)
+
+
+@router.patch("/boards/{board_id}/specs/{spec_id}/scenarios/{scenario_id}/verification-method")
+async def update_scenario_verification_method(
+    board_id: str, spec_id: str, scenario_id: str, body: ScenarioVerificationMethodUpdate,
+    user_id: str = Depends(require_user), uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    from okto_pulse.core.application.use_cases.mcp_spec_crud import McpUpdateTestScenarioCommand, McpUpdateTestScenarioUseCase
+
+    try:
+        result = await McpUpdateTestScenarioUseCase().execute(
+            McpUpdateTestScenarioCommand(spec_id, scenario_id, title="", given="", when="", then="",
+                scenario_type=None, linked_criteria_tokens=None, notes="",
+                clear_fields=["verification_method"] if body.verification_method is None else None,
+                verification_method=body.verification_method, expected_spec_version=body.expected_spec_version),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id), uow=uow,
+        )
+        return result.result
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Spec or scenario not found") from exc
+    except PermissionDeniedError as exc:
+        raise HTTPException(status_code=403, detail=exc.message) from exc
+    except (SpecLockedError, SubjectEditRequiresDraftError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        code = str(exc)
+        raise HTTPException(status_code=409 if code == "spec_version_conflict" else 404 if code.startswith("scenario_not_found") else 422, detail=code) from exc
+
+
 class ScenarioEvidenceExecutionRequest(BaseModel):
     """Run a server-owned replay; this endpoint does not mutate the scenario."""
 
     status: Literal["automated", "passed", "failed"]
     manifest_ref: str = Field(..., min_length=1)
+
+
+class ScenarioVerificationReportRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    report: VerificationReport
 
 
 STRUCTURED_SPEC_ENTITY_DEPRECATION_WARNING = (
@@ -731,34 +791,6 @@ _STRUCTURED_SPEC_ENTITY_UPDATE_FIELDS = {
     "decisions",
     "project_structure",
 }
-
-
-def _prepare_spec_update_evidence(data: SpecUpdate) -> SpecUpdate:
-    """Normalize/verify canonical V2 evidence on the whole-spec REST path."""
-
-    fields_set = set(getattr(data, "model_fields_set", set()))
-    if "test_scenarios" not in fields_set or data.test_scenarios is None:
-        return data
-    payload = data.model_dump(mode="python", exclude_unset=True)
-    scenarios: list[dict[str, Any]] = []
-    for raw_scenario in payload.get("test_scenarios") or []:
-        scenario = dict(raw_scenario)
-        raw_evidence = scenario.get("evidence") or scenario.get("latest_evidence")
-        if raw_evidence is not None:
-            evidence = normalize_test_scenario_evidence(
-                raw_evidence,
-                scenario_id=str(scenario.get("id") or ""),
-                status=str(scenario.get("status") or "draft"),
-            )
-            target = (
-                "evidence"
-                if scenario.get("evidence") is not None
-                else "latest_evidence"
-            )
-            scenario[target] = evidence
-        scenarios.append(scenario)
-    payload["test_scenarios"] = scenarios
-    return SpecUpdate.model_validate(payload)
 
 
 class StructuredSpecEntityMutationRequest(BaseModel):
@@ -1021,7 +1053,7 @@ async def _run_structured_spec_entity_command(
     """Spec R01A REST-FU3b-S1: thin REST mapping over
     ``RunStructuredSpecEntityUseCase``. The transport-free logic (spec lookup,
     permission resolution, ``StructuredSpecEntityService.apply``, commit/rollback)
-    lives in the use case; this adapter only maps the result to HTTP — a missing
+    lives in the use case; this adapter only maps the result to HTTP â€” a missing
     spec to 404 and a service failure to the legacy ``error_code`` status."""
     try:
         result = await RunStructuredSpecEntityUseCase().execute(
@@ -1105,7 +1137,7 @@ async def create_spec(
 
 @router.get(
     "/boards/{board_id}/specs",
-    response_model=list[SpecSummary] | PageEnvelope[SpecPageItem],
+    response_model=PageEnvelope[SpecPageItem],
     dependencies=[Depends(validate_pagination_query)],
 )
 async def list_specs(
@@ -1118,116 +1150,87 @@ async def list_specs(
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """List specs for a board, optionally filtered by status.
-
-    With ``offset``/``limit``: paginated envelope (spec 8b33f9a8); without:
-    legacy shape unchanged (DR9).
-    """
+    """List specs with one paginated envelope and defaults offset=0, limit=25."""
     actor = RESTAdapterContract.actor(user_id, board_id=board_id)
-    if pagination_requested(offset, limit):
-        command = ListSpecsCommand(
-            board_id,
-            status_filter=status_filter,
-            include_archived=include_archived,
-        )
-        use_case = ListSpecsUseCase()
-        try:
-            resolved_offset, resolved_limit = resolve_window(offset, limit)
-            filters: tuple[ApplicationFilter, ...] = ()
-            if status_filter:
-                filters = (ApplicationFilter("status", "eq", status_filter),)
-            page = await run_paginated_list(
-                uow,
-                PageRequest(
-                    surface="spec_list",
-                    scope=board_scope(board_id, include_archived=include_archived),
-                    offset=resolved_offset,
-                    limit=resolved_limit,
-                    filters=filters,
-                    any_groups=search_groups(search, ("title", "description")),
-                ),
-                preflight=lambda: use_case.preflight(command, actor=actor, uow=uow),
-            )
-        except EntityNotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
-            )
-        subject_ids = tuple(str(record.values["id"]) for record in page.items)
-        projection_permissions = (
-            await resolve_board_projection_permissions(
-                actor=actor,
-                uow=uow,
-                board_id=board_id,
-                permission_leaves=("spec.qa.read", "spec.quality.read"),
-            )
-            if subject_ids
-            else {}
-        )
-        quality_summaries = await load_quality_summaries_for_page(
-            uow=uow,
-            user_id=user_id,
-            board_id=board_id,
-            subject_type="spec",
-            subject_ids=subject_ids,
-            can_read_quality=projection_permissions.get("spec.quality.read"),
-        )
-        return project_page(
-            page,
-            lambda record: SpecPageItem(
-                **project_open_qa_count(
-                    record_fields(
-                        record,
-                        (
-                            "id",
-                            "board_id",
-                            "ideation_id",
-                            "refinement_id",
-                            "title",
-                            "description",
-                            "status",
-                            "edition",
-                            "version",
-                            "assignee_id",
-                            "created_by",
-                            "created_at",
-                            "updated_at",
-                            "labels",
-                            "archived",
-                            "open_qa_count",
-                        ),
-                    ),
-                    can_read_qa=projection_permissions.get("spec.qa.read", False),
-                ),
-                **quality_summary_field(
-                    str(record.values["id"]),
-                    quality_summaries,
-                ),
-            ),
-        )
+    command = ListSpecsCommand(
+        board_id,
+        status_filter=status_filter,
+        include_archived=include_archived,
+    )
+    use_case = ListSpecsUseCase()
     try:
-        result = await ListSpecsUseCase().execute(
-            ListSpecsCommand(
-                board_id, status_filter=status_filter, include_archived=include_archived
+        resolved_offset, resolved_limit = resolve_window(offset, limit)
+        filters: tuple[ApplicationFilter, ...] = ()
+        if status_filter:
+            filters = (ApplicationFilter("status", "eq", status_filter),)
+        page = await run_paginated_list(
+            uow,
+            PageRequest(
+                surface="spec_list",
+                scope=board_scope(board_id, include_archived=include_archived),
+                offset=resolved_offset,
+                limit=resolved_limit,
+                filters=filters,
+                any_groups=search_groups(search, ("title", "description")),
             ),
-            actor=actor,
-            uow=uow,
+            preflight=lambda: use_case.preflight(command, actor=actor, uow=uow),
         )
     except EntityNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
         )
-    if result.specs:
-        projection_permissions = await resolve_board_projection_permissions(
+    subject_ids = tuple(str(record.values["id"]) for record in page.items)
+    projection_permissions = (
+        await resolve_board_projection_permissions(
             actor=actor,
             uow=uow,
             board_id=board_id,
-            permission_leaves=("spec.qa.read",),
+            permission_leaves=("spec.qa.read", "spec.quality.read"),
         )
-        redact_open_qa_count_records(
-            result.specs,
-            can_read_qa=projection_permissions["spec.qa.read"],
-        )
-    return result.specs
+        if subject_ids
+        else {}
+    )
+    quality_summaries = await load_quality_summaries_for_page(
+        uow=uow,
+        user_id=user_id,
+        board_id=board_id,
+        subject_type="spec",
+        subject_ids=subject_ids,
+        can_read_quality=projection_permissions.get("spec.quality.read"),
+    )
+    return project_page(
+        page,
+        lambda record: SpecPageItem(
+            **project_open_qa_count(
+                record_fields(
+                    record,
+                    (
+                        "id",
+                        "board_id",
+                        "ideation_id",
+                        "refinement_id",
+                        "title",
+                        "description",
+                        "status",
+                        "edition",
+                        "version",
+                        "assignee_id",
+                        "created_by",
+                        "created_at",
+                        "updated_at",
+                        "labels",
+                        "archived",
+                        "open_qa_count",
+                    ),
+                ),
+                can_read_qa=projection_permissions.get("spec.qa.read", False),
+            ),
+            **quality_summary_field(
+                str(record.values["id"]),
+                quality_summaries,
+            ),
+        ),
+    )
 
 
 @router.get(
@@ -1302,6 +1305,97 @@ async def get_spec(
     ) as exc:
         return await _spec_knowledge_error_response(uow, exc)
     return result.spec
+
+
+@router.get("/boards/{board_id}/specs/{spec_id}/requirement-verification")
+async def get_requirement_verification(
+    board_id: str, spec_id: str,
+    offset: int = Query(0, ge=0, le=2**63 - 1), limit: int = Query(25, ge=1, le=100),
+    requirement_type: str | None = Query(None), requirement_id: str | None = Query(None),
+    paths_offset: int = Query(0, ge=0, le=2**63 - 1),
+    user_id: str = Depends(require_user), uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Resolve authored qualification paths; no admission or historical backfill."""
+    from okto_pulse.core.application.use_cases.requirement_verification import (
+        GetRequirementVerificationCommand, GetRequirementVerificationUseCase, RequirementVerificationReadError,
+    )
+    try:
+        command = GetRequirementVerificationCommand(board_id, spec_id, offset, limit, requirement_type, requirement_id, paths_offset)
+        return await GetRequirementVerificationUseCase().execute(command, actor=RESTAdapterContract.actor(user_id, board_id=board_id), uow=uow)
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Spec not found") from exc
+    except PermissionDeniedError as exc:
+        raise HTTPException(status_code=403, detail=exc.message) from exc
+    except RequirementVerificationReadError as exc:
+        raise HTTPException(status_code=503 if str(exc) == "verification_snapshot_unavailable" else 422, detail=str(exc)) from exc
+
+
+@router.get("/boards/{board_id}/specs/{spec_id}/architecture-candidates")
+async def get_architecture_candidates(
+    board_id: str,
+    spec_id: str,
+    offset: int = Query(0, ge=0, le=2**63 - 1),
+    limit: int = Query(25, ge=1, le=100),
+    candidate_id: str | None = Query(None),
+    source_digest: str | None = Query(None),
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Read adopted contracts without classification, promotion or source fetch."""
+    try:
+        return await GetArchitectureCandidatesUseCase().execute(
+            GetArchitectureCandidatesCommand(board_id, spec_id, offset, limit, candidate_id, source_digest),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id), uow=uow,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Spec not found") from exc
+    except PermissionDeniedError as exc:
+        raise HTTPException(status_code=403, detail=exc.message) from exc
+    except ArchitectureCandidateReadError as exc:
+        code = str(exc)
+        raise HTTPException(
+            status_code=409 if code == "architecture_candidate_source_changed" else 422,
+            detail=code,
+        ) from exc
+
+
+@router.get("/boards/{board_id}/specs/{spec_id}/architecture-classifications")
+async def get_architecture_classifications(
+    board_id: str, spec_id: str,
+    offset: int = Query(0, ge=0, le=2**63 - 1), limit: int = Query(25, ge=1, le=100),
+    candidate_id: str | None = Query(None), source_digest: str | None = Query(None),
+    state: ArchitectureReviewState | None = Query(None),
+    user_id: str = Depends(require_user), uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Read classification currentness/history; requires Spec, architecture and IR reads."""
+    try:
+        return await GetArchitectureClassificationsUseCase().execute(
+            GetArchitectureClassificationsCommand(board_id, spec_id, offset, limit, candidate_id, source_digest, state),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id), uow=uow,
+        )
+    except CLASSIFICATION_REQUEST_ERRORS as exc:
+        projected = classification_error(exc)
+        raise HTTPException(status_code=projected.status_code, detail=projected.payload()) from exc
+
+
+@router.post("/boards/{board_id}/specs/{spec_id}/architecture-classifications")
+@_validate_spec_write_before_dependencies(ArchitectureClassificationBatch)
+async def classify_architecture_candidates(
+    board_id: str,
+    spec_id: str,
+    data: ArchitectureClassificationBatch,
+    user_id: str = Depends(require_user),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Classify adopted contracts and authored IRs in one authorized write UoW."""
+    try:
+        return await ClassifyArchitectureCandidatesUseCase().execute(
+            ClassifyArchitectureCandidatesCommand(board_id, spec_id, data),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id), uow=uow,
+        )
+    except CLASSIFICATION_REQUEST_ERRORS as exc:
+        projected = classification_error(exc)
+        raise HTTPException(status_code=projected.status_code, detail=projected.payload()) from exc
 
 
 @router.get("/boards/{board_id}/specs/{spec_id}/project-structure")
@@ -1460,7 +1554,7 @@ async def update_spec(
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     """Update a spec. Bumps version when content fields change.
-    Rejects orphan `linked_*` references with 422 — see
+    Rejects orphan `linked_*` references with 422 â€” see
     `_validate_spec_linked_refs` in services/main.py for the exact rules.
     """
     fields_set = set(
@@ -1472,9 +1566,8 @@ async def update_spec(
             STRUCTURED_SPEC_ENTITY_DEPRECATION_WARNING
         )
     try:
-        prepared_data = _prepare_spec_update_evidence(data)
         result = await UpdateSpecUseCase().execute(
-            UpdateSpecCommand(spec_id, prepared_data),
+            UpdateSpecCommand(spec_id, data),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
@@ -1495,7 +1588,10 @@ async def update_spec(
         raise RESTAdapterContract.http_error(e) from e
     except ValueError as e:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            status_code=(
+                status.HTTP_409_CONFLICT if str(e) in {"spec_version_conflict", "scenario_snapshot_conflict", "mockup_snapshot_conflict"}
+                else status.HTTP_422_UNPROCESSABLE_CONTENT
+            ),
             detail=str(e),
         )
     except (
@@ -1660,8 +1756,6 @@ async def move_spec(
         )
     except CancellationReasonRequiredError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e.to_dict())
-    except SprintOperationError as e:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e.to_dict())
     except PolicyTransitionRejected as e:
         raise RESTAdapterContract.http_error(e) from e
     except SubjectEditRequiresDraftError as e:
@@ -1670,7 +1764,15 @@ async def move_spec(
         raise RESTAdapterContract.http_error(e) from e
     except SpecDependencyOperationError as exc:
         raise _spec_dependency_error(exc) from exc
+    except CodeTraceabilityContractError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.to_error_dict(),
+        ) from exc
     except ValueError as e:
+        from okto_pulse.core.application.delivery_errors import DeliveryGateBlocked
+        if isinstance(e, DeliveryGateBlocked):
+            raise RESTAdapterContract.http_error(e) from e
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError:
         raise HTTPException(
@@ -2079,6 +2181,28 @@ async def execute_test_scenario_evidence(
     return {"evidence": result.evidence}
 
 
+@router.post("/specs/{spec_id}/scenarios/{scenario_id}/evidence/reports", status_code=200)
+async def admit_test_verification_report(
+    spec_id: str, scenario_id: str, body: ScenarioVerificationReportRequest,
+    user_id: str = Depends(require_user), uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Authenticate a supplied observation; does not execute or change scenario state."""
+    from okto_pulse.core.application.use_cases.spec_crud import AdmitTestVerificationReportCommand, AdmitTestVerificationReportUseCase
+    try:
+        result = await AdmitTestVerificationReportUseCase().execute(
+            AdmitTestVerificationReportCommand(spec_id, scenario_id, body.report.model_dump(mode="json")),
+            actor=RESTAdapterContract.actor(user_id), uow=uow)
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Spec not found" if exc.entity_type == "spec" else "Scenario not found") from exc
+    except PermissionDeniedError as exc:
+        raise HTTPException(status_code=403, detail=exc.message) from exc
+    except SubjectEditRequiresDraftError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"evidence": result.evidence, "scenario_persisted": False}
+
+
 @router.patch(
     "/specs/{spec_id}/scenarios/{scenario_id}/status",
     status_code=status.HTTP_200_OK,
@@ -2094,7 +2218,7 @@ async def update_test_scenario_status(
 
     Applies the same leaf helpers as the MCP status tool
     (require_test_scenario_status_mutable + validate_test_scenario_evidence via
-    SpecService.set_test_scenario_status) and mutates ONLY the target scenario —
+    SpecService.set_test_scenario_status) and mutates ONLY the target scenario â€”
     it does NOT use the full-list update_spec path and does NOT trigger the
     content-lock, so the other scenarios are preserved. Rejects gated status
     without evidence (422) and arbitrary status changes on validated/done specs
@@ -2104,11 +2228,7 @@ async def update_test_scenario_status(
     """
     try:
         evidence = (
-            normalize_test_scenario_evidence(
-                body.evidence.model_dump(mode="python", exclude_none=True),
-                scenario_id=scenario_id,
-                status=body.status,
-            )
+            body.evidence.model_dump(mode="python", exclude_none=True)
             if body.evidence is not None
             else None
         )
@@ -2448,18 +2568,11 @@ async def delete_spec_question(
 # ---- Spec Validation Gate Endpoints ----
 
 
-class SpecValidationAcceptedResponse(BaseModel):
-    """Minimal human-facing acknowledgement; audit data lives elsewhere."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    validation_id: str
-    validation_edition: int
-    is_current: bool
+from okto_pulse.core.models.schemas import SpecValidationConclusionResponse
 
 
 class SpecValidationListResponse(BaseModel):
-    """Typed lifecycle-aware history without inventing fields on legacy rows."""
+    """Typed history for native edition-bound validation attempts."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -2471,7 +2584,7 @@ class SpecValidationListResponse(BaseModel):
     total: int = Field(ge=0)
     limit: int = Field(ge=1, le=100)
     offset: int = Field(ge=0)
-    lifecycle_state: Literal["all", "current", "previous", "history_only"]
+    lifecycle_state: Literal["all", "current", "previous"]
     has_more: bool
     validations: list[SpecValidationResponse]
 
@@ -2490,7 +2603,7 @@ class CurrentSpecValidationResponse(BaseModel):
 
 @router.post(
     "/specs/{spec_id}/validation",
-    response_model=SpecValidationAcceptedResponse,
+    response_model=SpecValidationConclusionResponse,
     status_code=status.HTTP_201_CREATED,
 )
 async def submit_spec_validation(
@@ -2504,13 +2617,14 @@ async def submit_spec_validation(
     Runs deterministic coverage gates as pre-requisite. If they pass, computes
     outcome from thresholds + recommendation: failed if any threshold violated
     or recommendation=reject; success only if all thresholds OK and approve.
-    On success, atomically promotes spec.status to validated.
+    Promotion also requires the Current decomposition judgment. Both native
+    assessments retain their own results, including a valid negative opinion.
     """
     # Thin REST adapter (spec #09): the field-shape validation moved into the
     # command, get_spec/not-found and the coverage-gate errors are surfaced as
     # transport-neutral errors and mapped to the SAME HTTP status/detail as before
-    # (CommandValidationError→400, EntityNotFoundError→404, ResourceGateError→409
-    # with {error,message,details}, ValueError→409). Spec R01A REST-FU3b-S1 fixes
+    # (CommandValidationErrorâ†’400, EntityNotFoundErrorâ†’404, ResourceGateErrorâ†’409
+    # with {error,message,details}, ValueErrorâ†’409). Spec R01A REST-FU3b-S1 fixes
     # the hybrid wiring: the gate now flows through the PulseUnitOfWork instead of
     # a raw AsyncSession passed as the uow.
     try:
@@ -2533,11 +2647,15 @@ async def submit_spec_validation(
         ) from e
     except PolicyTransitionRejected as e:
         raise RESTAdapterContract.http_error(e) from e
+    except SpecPlanningManifestUnavailable as e:
+        raise HTTPException(status_code=503, detail=e.to_error_dict()) from e
     except SpecValidationConflictError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=e.to_error_dict(),
         ) from e
+    except PermissionDeniedError as e:
+        raise RESTAdapterContract.http_error(e) from e
     except (
         CommandValidationError,
         EntityNotFoundError,
@@ -2548,9 +2666,8 @@ async def submit_spec_validation(
             e, not_found_detail="Spec not found"
         ) from e
     return {
-        "validation_id": result.payload["validation_id"],
-        "validation_edition": result.payload["validation_edition"],
-        "is_current": result.payload["is_current"],
+        key: result.payload[key]
+        for key in SpecValidationConclusionResponse.model_fields
     }
 
 
@@ -2561,7 +2678,7 @@ async def submit_spec_validation(
 )
 async def list_spec_validations(
     spec_id: str,
-    lifecycle_state: Literal["all", "current", "previous", "history_only"] = Query(
+    lifecycle_state: Literal["all", "current", "previous"] = Query(
         default="all"
     ),
     offset: int = Query(default=0, ge=0),
@@ -2632,21 +2749,11 @@ async def get_current_spec_validation(
     }
 
 
-class SpecEvaluationSubmit(BaseModel):
-    """Avaliação qualitativa de uma spec validated — gêmeo REST do MCP tool
-    ``okto_pulse_submit_spec_evaluation`` (paridade de superfícies)."""
+from okto_pulse.core.domain.spec_evaluation import SpecEvaluationInput
 
-    breakdown_completeness: int = Field(..., ge=0, le=100)
-    breakdown_justification: str = Field(..., min_length=10)
-    granularity: int = Field(..., ge=0, le=100)
-    granularity_justification: str = Field(..., min_length=10)
-    dependency_coherence: int = Field(..., ge=0, le=100)
-    dependency_justification: str = Field(..., min_length=10)
-    test_coverage_quality: int = Field(..., ge=0, le=100)
-    test_coverage_justification: str = Field(..., min_length=10)
-    overall_score: int = Field(..., ge=0, le=100)
-    overall_justification: str = Field(..., min_length=10)
-    recommendation: Literal["approve", "request_changes", "reject"]
+
+class SpecEvaluationSubmit(SpecEvaluationInput):
+    """REST shape for the shared, strictly typed decomposition review."""
 
 
 @router.post("/specs/{spec_id}/evaluations", status_code=status.HTTP_201_CREATED)
@@ -2658,10 +2765,10 @@ async def submit_spec_evaluation(
 ):
     """Submit a qualitative evaluation for a spec in 'validated' status.
 
-    Gap fechado (paridade REST/MCP): este gate é pré-requisito de
-    ``move_spec(validated→in_progress)``, mas só existia como MCP tool —
-    usuários UI/REST ficavam presos em ``validated`` sem caminho de escrita.
-    Mesma semântica do tool: múltiplos avaliadores, append-only, spec
+    Gap fechado (paridade REST/MCP): este gate Ã© prÃ©-requisito de
+    ``move_spec(validatedâ†’in_progress)``, mas sÃ³ existia como MCP tool â€”
+    usuÃ¡rios UI/REST ficavam presos em ``validated`` sem caminho de escrita.
+    Mesma semÃ¢ntica do tool: mÃºltiplos avaliadores, append-only, spec
     precisa estar em 'validated'.
     """
     try:
@@ -2670,6 +2777,8 @@ async def submit_spec_evaluation(
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except EntityNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Spec not found"
@@ -2684,17 +2793,22 @@ async def submit_spec_evaluation(
 @router.get("/specs/{spec_id}/evaluations")
 async def list_spec_evaluations(
     spec_id: str,
+    view: Literal["all", "current", "previous"] = Query("all"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(25, ge=1, le=100),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """List spec evaluations (newest first) — gêmeo REST de
+    """List spec evaluations (newest first) â€” gÃªmeo REST de
     ``okto_pulse_list_spec_evaluations``."""
     try:
         result = await ListSpecEvaluationsUseCase().execute(
-            ListSpecEvaluationsCommand(spec_id),
+            ListSpecEvaluationsCommand(spec_id, view=view, offset=offset, limit=limit),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     return result.data

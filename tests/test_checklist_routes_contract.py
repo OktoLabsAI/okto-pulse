@@ -27,18 +27,44 @@ from okto_pulse.core.domain.checklist import (
     ChecklistCommitResult,
     ChecklistExecution,
     ChecklistExecutionStartResult,
-    ChecklistReceipt,
     ChecklistReceiptSource,
     ChecklistMode,
 )
 from okto_pulse.core.services.gate_contracts import GateContractError
-from okto_pulse.core.services.checklist import ChecklistConflictError
+from okto_pulse.core.services.checklist import ChecklistConflictError, ChecklistPortContractError
 from okto_pulse.core.domain.spec_validation import (
     RequirementLintRequired,
     SpecValidationEditionConflict,
     SpecValidationGateNotReady,
     SpecValidationVersionConflict,
 )
+from okto_pulse.core.domain.spec_planning import SpecPlanningManifest
+
+
+def _submission_basis(*, edition=1, version=1):
+    """Synthetic basis only for these transport tests with a stubbed use case."""
+    return {
+        "idempotency_key": "transport-validation",
+        "expected_planning_manifest": SpecPlanningManifest(
+            board_id="board-1", spec_id="spec-1", edition=edition, spec_version=version,
+            subject_incarnation="a" * 32, subject_revision=1,
+            authority_incarnation="b" * 32, authority_revision=1,
+        ),
+    }
+
+
+@pytest.mark.asyncio
+async def test_missing_board_binding_is_an_actionable_read_error(monkeypatch):
+    async def missing(self, command, *, actor, uow):
+        raise ChecklistPortContractError("checklist_board_binding_missing")
+
+    monkeypatch.setattr(checklists.GetChecklistBindingUseCase, "execute", missing)
+    result = await checklists.get_checklist_binding(
+        board_id="board-1", target_type="spec", phase="spec_validation",
+        user_id="human-1", realm_id=None, uow=object(),
+    )
+    assert result.status_code == 422
+    assert json.loads(result.body)["details"]["reason_code"] == "checklist_board_binding_missing"
 
 
 @pytest.mark.asyncio
@@ -200,6 +226,27 @@ async def test_api09_success_is_exact_and_any_failed_item_fails_outcome(
     }
 
 
+@pytest.mark.parametrize("field", ["expected_spec_edition", "binding_digest", "idempotency_key"])
+def test_start_request_refuses_retired_aliases(field):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        checklists.ChecklistExecutionStartRequest.model_validate({
+            "spec_edition": 3, "expected_spec_version": 4, "binding_version": 2,
+            field: "old-input",
+        })
+
+
+@pytest.mark.parametrize("field", ["items", "expected_execution_revision", "idempotency_key"])
+def test_submit_request_refuses_retired_aliases(field):
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        checklists.ChecklistExecutionSubmitRequest.model_validate({
+            "spec_edition": 3, "expected_spec_version": 4, "execution_id": "execution-1",
+            "item_results": [
+                {"item_id": item, "outcome": "pass", "anchor": f"spec://spec-1/{item}"}
+                for item in SPECIFY_CHECKLIST_ITEM_IDS
+            ], field: "old-input",
+        })
+
+
 def test_checklist_write_requests_are_closed() -> None:
     with pytest.raises(ValidationError):
         checklists.ChecklistBindingUpdateRequest.model_validate(
@@ -213,17 +260,22 @@ def test_checklist_write_requests_are_closed() -> None:
 
 
 def test_spec_validation_acknowledgement_is_exact_and_audit_free() -> None:
-    assert set(specs.SpecValidationAcceptedResponse.model_fields) == {
+    assert set(specs.SpecValidationConclusionResponse.model_fields) == {
         "validation_id",
         "validation_edition",
         "is_current",
+        "outcome",
+        "spec_status",
+        "planning_result",
+        "decomposition_ids",
+        "planning_blockers",
     }
     route = next(
         route
         for route in specs.router.routes
         if getattr(route, "path", None) == "/specs/{spec_id}/validation"
     )
-    assert route.response_model is specs.SpecValidationAcceptedResponse
+    assert route.response_model is specs.SpecValidationConclusionResponse
 
 
 @pytest.mark.parametrize(
@@ -340,29 +392,9 @@ def test_checklist_state_distinguishes_not_started_from_failed() -> None:
     )
 
 
-def test_legacy_unverified_receipt_never_projects_a_vacuous_pass() -> None:
-    receipt = ChecklistReceipt(
-        id="receipt-legacy",
-        board_id="board-1",
-        spec_id="spec-1",
-        spec_version=4,
-        content_digest="c" * 64,
-        input_digest="d" * 64,
-        template_version="/specify/v1",
-        template_digest=SPECIFY_CHECKLIST_TEMPLATE_V1.digest,
-        binding_version=1,
-        binding_digest="b" * 64,
-        binding_mode=ChecklistMode.BLOCKING,
-        items=(),
-        source=ChecklistReceiptSource.LEGACY_UNVERIFIED,
-        request_digest="f" * 64,
-        created_by="legacy-import",
-        created_at=datetime(2026, 7, 27, tzinfo=timezone.utc),
-        head_revision=1,
-        manual_checklist_ref="legacy://manual-checklist",
-    )
-
-    assert checklists._receipt_payload(receipt)["outcome"] == "fail"
+def test_removed_receipt_source_is_rejected() -> None:
+    with pytest.raises(ValueError):
+        ChecklistReceiptSource("legacy_unverified")
 
 
 @pytest.mark.parametrize(
@@ -389,6 +421,20 @@ def test_checklist_history_invalid_pagination_is_typed_400(query: str) -> None:
     assert response.status_code == 400
     assert response.json()["detail"]["error_code"] == "invalid_pagination"
     assert response.json()["detail"]["retryable"] is False
+
+
+def test_checklist_history_refuses_removed_history_only_filter() -> None:
+    app = FastAPI()
+    app.include_router(checklists.router, prefix="/api/v1")
+    app.dependency_overrides[checklists.require_user] = lambda: "human-1"
+    app.dependency_overrides[checklists.get_realm_id] = lambda: None
+    app.dependency_overrides[checklists.get_unit_of_work] = lambda: object()
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/v1/boards/board-1/specs/spec-1/checklist-executions"
+            "?lifecycle_state=history_only"
+        )
+    assert response.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -444,6 +490,7 @@ async def test_submit_spec_validation_maps_gate_contract_like_move_spec(
         await specs.submit_spec_validation(
             spec_id="spec-1",
             data=specs.SpecValidationSubmit(
+                **_submission_basis(),
                 expected_validation_edition=1,
                 expected_spec_version=1,
                 expected_head_revision=0,
@@ -481,6 +528,11 @@ async def test_submit_spec_validation_rest_forwards_only_canonical_fields(
                 "validation_id": "validation-1",
                 "validation_edition": 1,
                 "is_current": True,
+                "outcome": "success",
+                "spec_status": "approved",
+                "planning_result": "blocked",
+                "decomposition_ids": [],
+                "planning_blockers": ["decomposition_approval_missing"],
             }
         )
 
@@ -488,6 +540,7 @@ async def test_submit_spec_validation_rest_forwards_only_canonical_fields(
     response = await specs.submit_spec_validation(
         spec_id="spec-1",
         data=specs.SpecValidationSubmit(
+            **_submission_basis(version=3),
             expected_validation_edition=1,
             expected_spec_version=3,
             expected_head_revision=0,
@@ -508,6 +561,12 @@ async def test_submit_spec_validation_rest_forwards_only_canonical_fields(
     )
 
     assert response["validation_id"] == "validation-1"
+    assert response["outcome"] == "success"
+    assert response["spec_status"] == "approved"
+    assert response["planning_result"] == "blocked"
+    assert response["planning_blockers"] == ["decomposition_approval_missing"]
+    assert observed["idempotency_key"] == "transport-validation"
+    assert observed["expected_planning_manifest"] == _submission_basis(version=3)["expected_planning_manifest"].model_dump(mode="json")
     assert "score" not in observed
     assert "summary" not in observed
     assert "completeness" not in observed
@@ -538,6 +597,7 @@ async def test_submit_spec_validation_preserves_typed_conflict_codes(
         await specs.submit_spec_validation(
             spec_id="spec-1",
             data=specs.SpecValidationSubmit(
+                **_submission_basis(edition=2, version=4),
                 expected_validation_edition=2,
                 expected_spec_version=4,
                 expected_head_revision=0,

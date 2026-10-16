@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { FileUp, X, AlertTriangle, Info } from 'lucide-react';
 import type { ArchitectureDiagramType } from '@/types';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
@@ -28,6 +28,8 @@ interface ExcalidrawImportDialogProps {
    */
   onValidate?: (payload: Record<string, unknown>) => Promise<ExcalidrawImportPreflight>;
   replaceOptions?: { id: string; title: string }[];
+  blockedReason?: string;
+  baseReview?: ReactNode;
 }
 
 export function ExcalidrawImportDialog({
@@ -36,6 +38,8 @@ export function ExcalidrawImportDialog({
   onImport,
   onValidate,
   replaceOptions = [],
+  blockedReason,
+  baseReview,
 }: ExcalidrawImportDialogProps) {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [title, setTitle] = useState('Imported architecture');
@@ -48,7 +52,7 @@ export function ExcalidrawImportDialog({
   const [suggestedFixes, setSuggestedFixes] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
 
-  useEscapeToClose(onClose, { enabled: open, priority: 10 });
+  useEscapeToClose(onClose, { enabled: open, canClose: !saving, priority: 10 });
 
   if (!open) return null;
 
@@ -69,6 +73,11 @@ export function ExcalidrawImportDialog({
   };
 
   const handleImport = async () => {
+    if (saving || blockedReason) return;
+    if (replaceDiagramId && !replaceOptions.some(item => item.id === replaceDiagramId)) {
+      setError('The selected diagram is no longer available. Choose a current destination.');
+      return;
+    }
     resetFeedback();
     let parsed: unknown;
     try {
@@ -190,7 +199,7 @@ export function ExcalidrawImportDialog({
             <p className="text-xs uppercase tracking-wide text-gray-500">Architecture Import</p>
             <h3 className="text-base font-semibold text-gray-900 dark:text-white">Import Excalidraw</h3>
           </div>
-          <button type="button" onClick={onClose} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded" title="Close">
+          <button type="button" disabled={saving} onClick={onClose} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 rounded" title="Close">
             <X size={18} />
           </button>
         </div>
@@ -246,7 +255,11 @@ export function ExcalidrawImportDialog({
           </aside>
 
           <main className="p-4 space-y-3">
+            {blockedReason && <div role="status" className="rounded border border-amber-300 p-3 text-sm dark:border-amber-800">
+              <p>{blockedReason}</p>{baseReview}
+            </div>}
             <textarea
+              aria-label="Excalidraw JSON"
               value={payloadText}
               onChange={(event) => {
                 setPayloadText(event.target.value);
@@ -259,11 +272,11 @@ export function ExcalidrawImportDialog({
         </div>
 
         <div className="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex items-center justify-end gap-2">
-          <button type="button" onClick={onClose} className="btn btn-secondary text-sm">Cancel</button>
+          <button type="button" disabled={saving} onClick={onClose} className="btn btn-secondary text-sm">Cancel</button>
           <button
             type="button"
             onClick={handleImport}
-            disabled={saving || issues.length > 0}
+            disabled={saving || Boolean(blockedReason) || issues.length > 0}
             className="btn btn-primary text-sm disabled:opacity-50"
           >
             {saving ? 'Importing...' : issues.length > 0 ? 'Fix issues first' : 'Import'}

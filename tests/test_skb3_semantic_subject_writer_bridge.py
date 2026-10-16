@@ -8,8 +8,10 @@ import uuid
 
 import httpx
 import pytest
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+from okto_pulse.core.domain.execution_contract import new_execution_contract
 from fastapi import Depends, FastAPI
-from sqlalchemy import event, func, select, text
+from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -17,29 +19,13 @@ from sqlalchemy.ext.asyncio import (
 )
 
 import okto_pulse.community.app as _community_app  # noqa: F401
-from okto_pulse.community.adapters.relational_schema_steps import (
-    semantic_guideline_sqlite_trigger_manifest,
+from okto_pulse.community.adapters.current_relational_schema import (
+    current_schema_contract, initialize_current_schema,
 )
 from okto_pulse.community.adapters.sqlalchemy_architecture_persistence import (
     CommunitySqlAlchemyArchitecturePersistence,
 )
-from okto_pulse.community.adapters.sqlalchemy_models import (
-    ArchitectureDesign,
-    Base,
-    Board,
-    Card,
-    Guideline,
-    GuidelineBoardBindingRow,
-    GuidelineRevisionRow,
-    Ideation,
-    Refinement,
-    SemanticGuidelineBindingConfigurationRow,
-    SemanticGuidelineRevisionRow,
-    SemanticSubjectVersionEventRow,
-    SemanticSubjectVersionRow,
-    Spec,
-    Sprint,
-)
+from okto_pulse.community.adapters.sqlalchemy_models import ArchitectureDesign, Board, Card, Ideation, Refinement, SemanticSubjectVersionEventRow, SemanticSubjectVersionRow, Spec
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import (
     CommunitySemanticSession,
 )
@@ -69,13 +55,14 @@ from okto_pulse.core.domain.guideline_policy import (
     GuidelineRevision,
     PolicyEntityType,
 )
+from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_v2 import CommunitySqlAlchemySemanticGuidelineAssessmentV2
+from okto_pulse.core.domain.guideline_semantic_v2 import (
+    SemanticAssessmentRequestV2, SemanticMetricAssessmentV2,
+    SemanticPinpointV2, SemanticPinpointKind, AnchorSnapshot,
+    SemanticAnchorAvailability,
+)
 from okto_pulse.core.domain.guideline_semantic_assessment import (
     SemanticAssessmentAssessor,
-    SemanticAssessmentState,
-    SemanticGuidelineAssessmentContext,
-    SemanticGuidelineAssessmentSubmission,
-    SemanticMetricAssessment,
-    record_semantic_guideline_assessment,
 )
 from okto_pulse.core.domain.enums import RefinementStatus
 from okto_pulse.core.domain.quality_assessment import (
@@ -83,7 +70,6 @@ from okto_pulse.core.domain.quality_assessment import (
     FindingAnchorType,
     UnboundFindingAnchor,
 )
-from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
 from okto_pulse.core.domain.research_decision_ledger import (
     RefinementLedgerContext,
     ResearchDecisionAnchor,
@@ -116,7 +102,6 @@ class _Seed:
     ideation_id: str
     refinement_id: str
     spec_id: str
-    sprint_id: str
     card_id: str
     scenario_id: str
     design_id: str
@@ -134,16 +119,9 @@ def _sqlite_engine(path):
     return engine
 
 
-async def _database(path, *, semantic_triggers: bool = False):
+async def _database(path):
     engine = _sqlite_engine(path)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-        if semantic_triggers:
-            for _name, (
-                _table,
-                ddl,
-            ) in semantic_guideline_sqlite_trigger_manifest().items():
-                await connection.execute(text(ddl))
+    await initialize_current_schema(engine, current_schema_contract())
     return engine, async_sessionmaker(
         engine,
         class_=AsyncSession,
@@ -152,13 +130,50 @@ async def _database(path, *, semantic_triggers: bool = False):
     )
 
 
+@pytest.mark.asyncio
+async def test_subject_snapshot_refuses_missing_or_stale_authority_without_writes(tmp_path):
+    from okto_pulse.core.ports.guideline_policy import GuidelinePolicySubjectConflict
+
+    engine, factory = await _database(tmp_path / "authority.db")
+    try:
+        async with factory() as session:
+            session.add(Board(id="board", realm_id="local", name="Authority", owner_id="owner"))
+            await session.flush()
+            subject = Ideation(id="subject", board_id="board", title="Original",
+                               status="draft", version=1, created_by="author")
+            session.add(subject)
+            await session.flush()
+            adapter = CommunitySqlAlchemySemanticGuidelineAssessment(session)
+            scope = dict(board_id="board", entity_type=PolicyEntityType.IDEATION,
+                         subject_id="subject")
+            with pytest.raises(GuidelinePolicySubjectConflict, match="semantic_subject_authority_missing_or_stale"):
+                await adapter.resolve_policy_subject_snapshot(**scope)
+            assert (await session.scalar(select(func.count()).select_from(SemanticSubjectVersionEventRow))) == 0
+
+            await adapter.record_semantic_subject_mutation(
+                **scope, actor_id="author", idempotency_key="created", request_digest="a" * 64,
+                changed_at=_now(),
+            )
+            snapshot = await adapter.resolve_policy_subject_snapshot(**scope)
+            assert snapshot.last_semantic_editor_id == "author"
+            assert snapshot.subject.subject_version == 1
+
+            subject.title = "Unattributed change"
+            subject.version = 2
+            await session.flush()
+            with pytest.raises(GuidelinePolicySubjectConflict, match="semantic_subject_authority_missing_or_stale"):
+                await adapter.resolve_policy_subject_snapshot(**scope)
+            assert (await session.scalar(select(func.count()).select_from(SemanticSubjectVersionEventRow))) == 1
+    finally:
+        await engine.dispose()
+
+
 async def _seed_subjects(session: AsyncSession) -> _Seed:
     seed = _Seed(
         board_id=_id(),
         ideation_id=_id(),
         refinement_id=_id(),
         spec_id=_id(),
-        sprint_id=_id(),
         card_id=_id(),
         scenario_id=_id(),
         design_id=_id(),
@@ -199,6 +214,14 @@ async def _seed_subjects(session: AsyncSession) -> _Seed:
     await session.flush()
     session.add(
         Spec(
+            architecture_adoption=ArchitectureAdoptionScope(
+                board_id=seed.board_id, spec_id=seed.spec_id, adopted_in_edition=1,
+                actor_id="seed", inherited_resource_ids=(),
+            ).model_dump(mode="json"),
+            execution_contract=new_execution_contract(
+                board_id=seed.board_id, spec_id=seed.spec_id, edition=1,
+                actor_id="seed", origin="new_spec",
+            ),
             id=seed.spec_id,
             board_id=seed.board_id,
             ideation_id=seed.ideation_id,
@@ -224,25 +247,10 @@ async def _seed_subjects(session: AsyncSession) -> _Seed:
     )
     await session.flush()
     session.add(
-        Sprint(
-            id=seed.sprint_id,
-            board_id=seed.board_id,
-            spec_id=seed.spec_id,
-            title="Semantic delivery",
-            description="Initial sprint",
-            spec_version=1,
-            status="draft",
-            version=1,
-            created_by="seed",
-        )
-    )
-    await session.flush()
-    session.add(
         Card(
             id=seed.card_id,
             board_id=seed.board_id,
             spec_id=seed.spec_id,
-            sprint_id=seed.sprint_id,
             title="Implement port",
             description="Initial card",
             status="not_started",
@@ -294,7 +302,6 @@ async def _seed_authority(
             PolicyEntityType.IDEATION,
             PolicyEntityType.REFINEMENT,
             PolicyEntityType.SPEC,
-            PolicyEntityType.SPRINT,
             PolicyEntityType.CARD,
             PolicyEntityType.TEST_SCENARIO,
         ),
@@ -311,12 +318,6 @@ async def _seed_authority(
         metrics=(metric,),
         created_by="guideline-author",
         created_at=timestamp,
-    )
-    source_digest = canonical_sha256(
-        {
-            "contract": "semantic-writer-bridge-source/v1",
-            "revision_id": revision_id,
-        }
     )
     binding = BoardGuidelineBinding(
         binding_id=binding_id,
@@ -335,91 +336,22 @@ async def _seed_authority(
         state=GuidelineBindingState.ACTIVE,
         source_kind=GuidelineBindingProvenance.NATIVE,
     )
-    session.add(
-        Guideline(
-            id=guideline_id,
-            title=revision.title,
-            content=revision.content,
-            tags=[],
-            scope="global",
-            board_id=None,
-            owner_id="guideline-author",
-            version=1,
-        )
+    from okto_pulse.core.domain.guideline_policy import Guideline as GuidelineIdentity, GuidelineScope, GuidelineHead
+    from okto_pulse.community.adapters.sqlalchemy_guideline_policy import CommunitySqlAlchemyGuidelinePolicy
+
+    adapter = CommunitySqlAlchemyGuidelinePolicy(session)
+    await adapter.create_guideline(
+        guideline=GuidelineIdentity(guideline_id=guideline_id, owner_id="guideline-author",
+            scope=GuidelineScope.INLINE, board_id=board_id, created_at=timestamp),
+        initial_revision=revision,
+        initial_head=GuidelineHead(guideline_id=guideline_id, revision_id=revision_id,
+            revision_number=1, semantic_version="1.0.0", head_revision=1, updated_at=timestamp),
+        idempotency_key="create:" + guideline_id, request_digest="1" * 64,
     )
-    await session.flush()
-    session.add(
-        GuidelineRevisionRow(
-            revision_id=revision_id,
-            guideline_id=guideline_id,
-            revision_number=1,
-            semantic_version="1.0.0",
-            title=revision.title,
-            content=revision.content,
-            content_digest=source_digest,
-            tags=[],
-            rules=[],
-            created_by="guideline-author",
-            created_at=timestamp,
-            published_head_revision=1,
-            published_head_updated_at=timestamp,
-            parent_revision_id=None,
-            legacy_version=None,
-            legacy_version_unresolvable=False,
-            legacy_tags=None,
-            idempotency_key=None,
-            request_digest=None,
-            legacy_version_text=None,
-        )
-    )
-    await session.flush()
-    session.add_all(
-        [
-            GuidelineBoardBindingRow(
-                binding_id=binding_id,
-                binding_revision=1,
-                board_id=board_id,
-                guideline_id=guideline_id,
-                revision_id=revision_id,
-                semantic_version="1.0.0",
-                revision_digest=source_digest,
-                priority=0,
-                adopted_by="owner",
-                adopted_at=timestamp,
-                enforcement="blocking",
-                source_kind="native",
-                binding_origin="native",
-                state="active",
-            ),
-            SemanticGuidelineRevisionRow(
-                revision_id=revision_id,
-                guideline_id=guideline_id,
-                metrics=[metric.digest_payload()],
-                revision_digest=revision.revision_digest,
-                source_revision_digest=source_digest,
-                authority_state="native",
-                legacy_rules_digest=None,
-                created_by="guideline-author",
-                created_at=timestamp,
-            ),
-        ]
-    )
-    await session.flush()
-    session.add(
-        SemanticGuidelineBindingConfigurationRow(
-            binding_id=binding_id,
-            binding_revision=1,
-            board_id=board_id,
-            guideline_id=guideline_id,
-            revision_id=revision_id,
-            revision_digest=revision.revision_digest,
-            enforcement="blocking",
-            minimum_confidence=80,
-            metric_threshold_overrides={},
-            configuration_digest=binding.configuration_digest,
-            configured_by="owner",
-            configured_at=timestamp,
-        )
+    await adapter.append_binding_cas(
+        binding=binding, expected_binding_revision=None,
+        idempotency_key="bind:" + binding_id, request_digest="2" * 64,
+        actor_type="user",
     )
     await session.flush()
     return revision, binding
@@ -443,17 +375,7 @@ async def _assert_blocking_assessment_can_be_saved(
     )
     assert snapshot is not None
     assert snapshot.last_semantic_editor_id == expected_editor
-    policy_set_digest, binding_head_digest = await adapter.semantic_current_fences(
-        board_id=seed.board_id
-    )
-    context = SemanticGuidelineAssessmentContext(
-        subject_snapshot=snapshot,
-        binding=binding,
-        revision=revision,
-        policy_set_digest=policy_set_digest,
-        binding_head_digest=binding_head_digest,
-    )
-    submission = SemanticGuidelineAssessmentSubmission(
+    submission = SemanticAssessmentRequestV2(
         subject=snapshot.subject,
         binding_id=binding.binding_id,
         expected_binding_revision=binding.binding_revision,
@@ -465,7 +387,7 @@ async def _assert_blocking_assessment_can_be_saved(
             model_id="test-model",
         ),
         metric_results=(
-            SemanticMetricAssessment(
+            SemanticMetricAssessmentV2(
                 metric_id=revision.metrics[0].metric_id,
                 score=90,
                 rationale="The authored evidence demonstrates segregation.",
@@ -478,33 +400,36 @@ async def _assert_blocking_assessment_can_be_saved(
                     ),
                 ),
                 pinpoints=(
-                    UnboundFindingAnchor(
-                        anchor_type=FindingAnchorType.WHOLE_ARTIFACT,
+                    SemanticPinpointV2(
+                        pinpoint_key="authored-boundary",
+                        kind=SemanticPinpointKind.EVIDENCE,
+                        title="Authored boundary",
+                        detail="The authored subject provides the assessment evidence.",
+                        severity=None,
+                        remediation=None,
+                        anchor=UnboundFindingAnchor(anchor_type=FindingAnchorType.WHOLE_ARTIFACT),
+                        anchor_snapshot=AnchorSnapshot(
+                            label="Subject",
+                            excerpt=None,
+                            source_version=f"{entity_type.value}:{snapshot.subject.subject_version}",
+                            availability_at_seal=SemanticAnchorAvailability.AVAILABLE,
+                        ),
                     ),
                 ),
             ),
         ),
     )
-    result = record_semantic_guideline_assessment(
-        submission,
-        context,
-        receipt_id=_id(),
-        recorded_at=_now(),
-    )
-    saved = await adapter.save_semantic_assessment_result(
-        result=result,
-        request_digest=result.request_digest,
-    )
-    assert saved.receipt.state is SemanticAssessmentState.PASSED
+    saved = await CommunitySqlAlchemySemanticGuidelineAssessmentV2(session).save_semantic_assessment_v2(submission)
+    assert all(result.outcome.value == "pass" for result in saved.receipt.metric_results)
+
 
 
 @pytest.mark.asyncio
-async def test_factory_writers_bridge_all_six_subjects_and_assessment(
+async def test_factory_writers_bridge_all_five_live_subjects_and_assessment(
     tmp_path,
 ):
     engine, sessions = await _database(
         tmp_path / "semantic-writers.db",
-        semantic_triggers=True,
     )
     async with sessions() as session, session.begin():
         seed = await _seed_subjects(session)
@@ -531,13 +456,6 @@ async def test_factory_writers_bridge_all_six_subjects_and_assessment(
             "Changed refinement",
         ),
         (PolicyEntityType.SPEC, seed.spec_id, "spec", "context", "Changed spec"),
-        (
-            PolicyEntityType.SPRINT,
-            seed.sprint_id,
-            "sprint",
-            "objective",
-            "Changed sprint",
-        ),
         (PolicyEntityType.CARD, seed.card_id, "card", "details", "Changed card"),
     )
     for _entity_type, subject_id, entity, field, value in mutations:
@@ -566,7 +484,6 @@ async def test_factory_writers_bridge_all_six_subjects_and_assessment(
             (PolicyEntityType.IDEATION, seed.ideation_id),
             (PolicyEntityType.REFINEMENT, seed.refinement_id),
             (PolicyEntityType.SPEC, seed.spec_id),
-            (PolicyEntityType.SPRINT, seed.sprint_id),
             (PolicyEntityType.CARD, seed.card_id),
             (PolicyEntityType.TEST_SCENARIO, seed.scenario_id),
         ):
@@ -583,60 +500,6 @@ async def test_factory_writers_bridge_all_six_subjects_and_assessment(
     await engine.dispose()
 
 
-@pytest.mark.asyncio
-async def test_sprint_lane_and_origin_fields_change_digest_and_head(tmp_path):
-    engine, sessions = await _database(tmp_path / "sprint-lane-origin.db")
-    origin_sprint_id = _id()
-    async with sessions() as session, session.begin():
-        seed = await _seed_subjects(session)
-        session.add(
-            Sprint(
-                id=origin_sprint_id,
-                board_id=seed.board_id,
-                spec_id=seed.spec_id,
-                title="Origin sprint",
-                spec_version=1,
-                status="closed",
-                lane_type="normal",
-                version=1,
-                created_by="seed",
-            )
-        )
-        await session.flush()
-        adapter = CommunitySqlAlchemySemanticGuidelineAssessment(session)
-        baseline = await adapter.resolve_policy_subject_snapshot(
-            board_id=seed.board_id,
-            entity_type=PolicyEntityType.SPRINT,
-            subject_id=seed.sprint_id,
-        )
-        assert baseline is not None
-
-    factory = CommunityUnitOfWorkFactory(sessions)
-    actor = ActorContext("hotfix-author", "mcp", board_id=seed.board_id)
-    async with factory(actor=actor) as uow:
-        sprint = await uow.services.get_application_record(
-            entity="sprint",
-            record_id=seed.sprint_id,
-        )
-        assert sprint is not None
-        sprint.lane_type = "hotfix"
-        sprint.origin_sprint_id = origin_sprint_id
-        sprint.origin_bug_id = seed.card_id
-        await uow.commit()
-
-    async with sessions() as session:
-        current = await CommunitySqlAlchemySemanticGuidelineAssessment(
-            session
-        ).resolve_policy_subject_snapshot(
-            board_id=seed.board_id,
-            entity_type=PolicyEntityType.SPRINT,
-            subject_id=seed.sprint_id,
-        )
-        assert current is not None
-        assert current.content_digest != baseline.content_digest
-        assert current.last_semantic_editor_id == actor.actor_id
-
-    await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -925,12 +788,6 @@ async def test_research_decision_bulk_version_writer_queues_refinement_head(
             "qa_item",
             "card_id",
         ),
-        (
-            PolicyEntityType.SPRINT,
-            "sprint_id",
-            "sprint_qa_item",
-            "sprint_id",
-        ),
     ),
 )
 async def test_q_and_a_writer_updates_owner_head(
@@ -950,7 +807,6 @@ async def test_q_and_a_writer_updates_owner_head(
         PolicyEntityType.IDEATION: Ideation,
         PolicyEntityType.REFINEMENT: Refinement,
         PolicyEntityType.SPEC: Spec,
-        PolicyEntityType.SPRINT: Sprint,
         PolicyEntityType.CARD: Card,
     }[entity_type]
     async with sessions() as session:
@@ -1058,7 +914,7 @@ async def test_real_mcp_update_handler_propagates_actor_to_subject_head(
             agent_id="mcp-handler-writer",
             agent_name="Writer",
             board_id=seed.board_id,
-            permissions=[server.Permissions.SPECS_UPDATE],
+            permissions=["ideation.entity.edit_fields"],
             realm_id="local",
         )
 

@@ -20,6 +20,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, act, fireEvent } from '@testing-library/react';
 import { GraphCanvas, type GraphCanvasFilters } from '../GraphCanvas';
 import type { KGNode } from '@/types/knowledge-graph';
+import { kgEdgeDisplayLabel, type KGEdge } from '@/types/knowledge-graph';
 
 const FILTERS: GraphCanvasFilters = {
   types: [],
@@ -50,6 +51,93 @@ function renderCanvas(props: Partial<React.ComponentProps<typeof GraphCanvas>> =
 }
 
 describe('GraphCanvas — selection wiring (S4.1 / AC-4)', () => {
+  it('labels origin associations without claiming common cause and clears the note after removal', () => {
+    const bug: KGNode = { ...NODE, id: 'bug', node_type: 'Bug' };
+    const constraint: KGNode = { ...NODE, id: 'constraint', node_type: 'Constraint' };
+    const edge: KGEdge = { id: 'proxy', source: bug.id, target: constraint.id,
+      edge_type: 'violates', confidence: 0.8, assertion_basis: 'origin_proxy',
+      causal_conclusion: 'not_established' };
+    const { getByRole, queryByRole, rerender } = renderCanvas({ nodes: [bug, constraint], edges: [edge] });
+    expect(getByRole('note')).toHaveTextContent('Origin association (inferred). Shared cause not established.');
+    expect(kgEdgeDisplayLabel(edge)).toBe('violates · inferred association');
+    rerender(<GraphCanvas nodes={[bug, constraint]} edges={[]} filters={FILTERS} />);
+    expect(queryByRole('note')).toBeNull();
+  });
+
+  it('does not infer origin provenance from a confidence of 0.8', () => {
+    const edge: KGEdge = { id: 'unclassified', source: 'bug', target: 'constraint',
+      edge_type: 'violates', confidence: 0.8 };
+    const { queryByRole } = renderCanvas({
+      nodes: [{ ...NODE, id: 'bug', node_type: 'Bug' }, { ...NODE, id: 'constraint', node_type: 'Constraint' }],
+      edges: [edge],
+    });
+    expect(queryByRole('note')).toBeNull();
+    expect(kgEdgeDisplayLabel(edge)).toBe('violates');
+  });
+
+  it.each(['Entity', 'Bug'] as const)('keeps the selected %s navigable after its parent edge is removed', (kind) => {
+    const card: KGNode = { ...NODE, id: 'card-root', title: 'Card', node_type: kind,
+      source_artifact_ref: 'card:owner' };
+    const spec: KGNode = { ...NODE, id: 'spec-root', title: 'Spec', node_type: 'Entity',
+      source_artifact_ref: 'spec:parent' };
+    const onSelect = vi.fn();
+    const { container, rerender } = renderCanvas({ nodes: [card, spec], onSelect,
+      initialSelectedNodeId: card.id,
+      edges: [{ id: 'parent', source: card.id, target: spec.id, edge_type: 'belongs_to', confidence: 1 }] });
+    rerender(<GraphCanvas nodes={[card, spec]} edges={[]} filters={FILTERS}
+      initialSelectedNodeId={card.id} onSelect={onSelect} />);
+    expect(container.querySelector('[data-testid="kg-canvas"]')).toHaveAttribute('data-selected-id', card.id);
+    for (const node of [card, spec]) {
+      const button = container.querySelector(`[data-node-id="${node.id}"]`);
+      expect(button).not.toBeNull();
+      fireEvent.doubleClick(button!);
+      expect(onSelect).toHaveBeenLastCalledWith(expect.objectContaining({
+        id: node.id, source_artifact_ref: node.source_artifact_ref, node_type: node.node_type,
+      }));
+    }
+  });
+
+  it('preserves both Target endpoints and selection after an obsolete overlap is removed', () => {
+    const first: KGNode = { ...NODE, id: 'target-a', node_type: 'Entity',
+      source_artifact_ref: 'implementation_target:a', kind_of: 'implementation_target' };
+    const second: KGNode = { ...first, id: 'target-b', source_artifact_ref: 'implementation_target:b' };
+    const onSelect = vi.fn();
+    const { container, rerender } = renderCanvas({ nodes: [first, second], onSelect,
+      initialSelectedNodeId: second.id,
+      edges: [{ id: 'overlap', source: first.id, target: second.id, edge_type: 'overlaps', confidence: 1 }] });
+    rerender(<GraphCanvas nodes={[first, second]} edges={[]} filters={FILTERS}
+      initialSelectedNodeId={second.id} onSelect={onSelect} />);
+    expect(container.querySelector('[data-testid="kg-canvas"]')).toHaveAttribute('data-selected-id', second.id);
+    for (const node of [first, second]) {
+      const button = container.querySelector('[data-node-id="' + node.id + '"]');
+      expect(button).not.toBeNull();
+      fireEvent.doubleClick(button!);
+      expect(onSelect).toHaveBeenLastCalledWith(expect.objectContaining({
+        id: node.id, source_artifact_ref: node.source_artifact_ref, kind_of: 'implementation_target',
+      }));
+    }
+  });
+
+  it.each(['Entity', 'Bug'] as const)('keeps observed %s-to-scenario endpoints independently navigable', (kind) => {
+    const card: KGNode = { ...NODE, id: 'card-root', title: 'Card', node_type: kind,
+      source_artifact_ref: 'card:owner', graph_layer: 'working', maturity_status: 'working' };
+    const scenario: KGNode = { ...NODE, id: 'scenario', title: 'Scenario', node_type: 'TestScenario',
+      source_artifact_ref: 'spec:parent:test_scenario:ts_one', graph_layer: 'canonical' };
+    const onSelect = vi.fn();
+    const { container } = renderCanvas({ nodes: [card, scenario], onSelect,
+      edges: [{ id: 'observed', source: card.id, target: scenario.id, edge_type: 'supports', confidence: 1 }],
+      filters: { ...FILTERS, edgeTypes: ['supports'] } });
+    for (const node of [card, scenario]) {
+      const button = container.querySelector(`[data-node-id="${node.id}"]`);
+      expect(button).not.toBeNull();
+      fireEvent.doubleClick(button!);
+      expect(onSelect).toHaveBeenLastCalledWith(expect.objectContaining({
+        id: node.id, node_type: node.node_type, source_artifact_ref: node.source_artifact_ref,
+        graph_layer: node.graph_layer,
+      }));
+    }
+  });
+
   it('starts with no selection when initialSelectedNodeId is null', () => {
     const { container } = renderCanvas();
     const canvas = container.querySelector('[data-testid="kg-canvas"]');

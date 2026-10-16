@@ -20,6 +20,7 @@ import type {
   ScreenMockup,
   Story,
   TechnicalRequirement,
+  SpecTextRequirement,
   ConclusionEntry,
   ValidationEntry,
   ArchitectureWarningRecord,
@@ -401,7 +402,7 @@ function section(heading: string, body: unknown, level = 2): string {
 }
 
 /** Render a string[] as a numbered list. */
-function numberedList(items: (string | TechnicalRequirement)[]): string {
+function numberedList(items: (string | SpecTextRequirement | TechnicalRequirement)[]): string {
   return items
     .map((item, i) => {
       const text = typeof item === 'string' ? item : criterionText(item);
@@ -457,18 +458,6 @@ function criterionLabel(index: number, text: string): string {
   return `AC${index}: ${text}`;
 }
 
-function parseCriterionIndex(value: string | number): number | undefined {
-  if (typeof value === 'number' && Number.isInteger(value)) {
-    if (value === 0) return 1;
-    return value > 0 ? value : undefined;
-  }
-  const text = String(value).trim();
-  const match = text.match(/^AC[-\s_]*(\d+)$/i) || text.match(/^(\d+)$/);
-  if (!match) return undefined;
-  const parsed = Number.parseInt(match[1], 10);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
-}
-
 export function resolveLinkedCriteriaForExport(
   linkedCriteria: Array<string | number> | null | undefined,
   acceptanceCriteria: unknown[] | null | undefined,
@@ -483,11 +472,8 @@ export function resolveLinkedCriteriaForExport(
 
   return linkedCriteria.map((input) => {
     const raw = String(input).trim();
-    const parsedIndex = parseCriterionIndex(input);
-    const byIndex = parsedIndex ? criteriaRefs[parsedIndex - 1] : undefined;
-    const byId = criteriaRefs.find((item) => item.id && item.id === raw);
-    const byText = criteriaRefs.find((item) => item.text === raw || criterionLabel(item.index, item.text) === raw);
-    const resolved = byIndex || byId || byText;
+    const matches = typeof input === 'string' ? criteriaRefs.filter((item) => item.id === input) : [];
+    const resolved = matches.length === 1 ? matches[0] : undefined;
     if (resolved) {
       return {
         input,
@@ -531,14 +517,6 @@ function addMarkdownReference(
   }
 }
 
-function itemRecord(item: unknown): Record<string, unknown> | null {
-  return item && typeof item === 'object' ? item as Record<string, unknown> : null;
-}
-
-function itemId(item: unknown): string | undefined {
-  return cleanString(itemRecord(item)?.id);
-}
-
 function firstText(values: unknown[], fallback: string): string {
   for (const value of values) {
     const text = cleanString(value);
@@ -569,19 +547,6 @@ function renderLinkedReferences(
   return `**${label}:**\n${rows.map((row) => `- ${row}`).join('\n')}\n\n`;
 }
 
-function addIndexedReference(
-  map: Map<string, MarkdownReference>,
-  item: unknown,
-  index: number,
-  label: string,
-  id?: string,
-): void {
-  const keys: unknown[] = [id, index, String(index), label];
-  const text = criterionText(item);
-  if (text !== label) keys.push(text);
-  addMarkdownReference(map, keys, label, id);
-}
-
 function buildSpecReferenceIndex(spec: Spec): SpecReferenceIndex {
   const refs: SpecReferenceIndex = {
     requirements: new Map(),
@@ -596,28 +561,15 @@ function buildSpecReferenceIndex(spec: Spec): SpecReferenceIndex {
     tasks: new Map(),
   };
 
-  (spec.functional_requirements || []).forEach((item: unknown, index: number) => {
-    const id = itemId(item);
-    const text = criterionText(item);
-    addIndexedReference(refs.requirements, item, index, text, id);
-    addMarkdownReference(refs.requirements, [`FR${index + 1}`, `FR ${index + 1}`, `FR${index + 1}: ${text}`], text, id);
-  });
-
-  (spec.acceptance_criteria || []).forEach((item: unknown, index: number) => {
-    const id = itemId(item);
-    const text = criterionText(item);
-    addIndexedReference(refs.acceptanceCriteria, item, index, text, id);
-    addMarkdownReference(refs.acceptanceCriteria, [`AC${index + 1}`, `AC ${index + 1}`, criterionLabel(index + 1, text)], text, id);
-  });
-
-  (spec.technical_requirements || []).forEach((item: unknown, index: number) => {
-    const record = itemRecord(item);
-    const id = itemId(item);
-    const label = typeof item === 'string'
-      ? item
-      : firstText([record?.title, record?.text, record?.description, id], `TR #${index + 1}`);
-    addIndexedReference(refs.technicalRequirements, item, index, label, id);
-  });
+  for (const [items, map] of [
+    [spec.functional_requirements, refs.requirements],
+    [spec.acceptance_criteria, refs.acceptanceCriteria],
+    [spec.technical_requirements, refs.technicalRequirements],
+  ] as const) {
+    for (const item of items || []) {
+      addMarkdownReference(map, [item.id], item.text, item.id);
+    }
+  }
 
   (spec.test_scenarios || []).forEach((item: any, index: number) => {
     addMarkdownReference(
@@ -1038,7 +990,6 @@ function linkedInterfaceFromElement(element: Record<string, unknown>): string | 
     'architecture_interface_id',
     'architectureInterfaceId',
     'linked_interface_id',
-    'linkedInterfaceId',
   ])
     || firstRecordArrayString(element, ['interface_ids', 'interfaceIds', 'linked_interface_ids', 'linkedInterfaceIds'])
     || nestedRecordString(element, ['customData', 'data', 'metadata'], [
@@ -1047,7 +998,6 @@ function linkedInterfaceFromElement(element: Record<string, unknown>): string | 
       'architecture_interface_id',
       'architectureInterfaceId',
       'linked_interface_id',
-      'linkedInterfaceId',
     ]);
 }
 
@@ -1287,10 +1237,12 @@ function renderArchitectureDesigns(
           `- **${entity.name || entity.title || entity.id || 'Unnamed entity'}**`,
           entity.entity_type ? `type=${entity.entity_type}` : '',
           entity.responsibility ? `responsibility=${entity.responsibility}` : '',
-          entity.boundaries ? `boundaries=${entity.boundaries}` : '',
           entity.technologies?.length ? `technologies=${entity.technologies.join(', ')}` : '',
         ].filter(Boolean);
-        return parts.join(' — ');
+        const boundaries = (entity.boundaries || []).map((boundary: string) =>
+          `    - ${boundary.replace(/\n/g, '\n      ')}`,
+        );
+        return parts.join(' — ') + (boundaries.length ? `\n  - **Boundaries:**\n${boundaries.join('\n')}` : '');
       }).join('\n');
       entry += `\n\n`;
     }
@@ -1385,7 +1337,7 @@ function renderQA(items: MarkdownQAItem[]): string {
 
 function renderTestScenarios(
   scenarios: TestScenario[] | null | undefined,
-  criteria?: string[] | null,
+  criteria?: SpecTextRequirement[] | null,
   warningCollector?: ExportWarningCollector,
   refs?: SpecReferenceIndex,
 ): string {
@@ -1421,10 +1373,9 @@ function renderTestScenarios(
 // Technical Requirements
 // ---------------------------------------------------------------------------
 
-function renderTechnicalRequirements(requirements: (string | TechnicalRequirement)[] | null | undefined, refs?: SpecReferenceIndex): string {
+function renderTechnicalRequirements(requirements: TechnicalRequirement[] | null | undefined, refs?: SpecReferenceIndex): string {
   if (!requirements?.length) return '';
   const items = requirements.map((item, i) => {
-    if (typeof item === 'string') return `${i + 1}. ${item}`;
     let entry = `${i + 1}. ${criterionText(item)}`;
     const details = renderKeyValues([
       ['ID', item.id],
@@ -2033,85 +1984,6 @@ export function exportRefinement(refinement: Refinement): string {
   return md;
 }
 
-/** Generate Markdown for a Sprint with parent spec context. */
-export function exportSprint(sprint: any, parentSpec: any): string {
-  let md = `# Sprint: ${sprint.title}\n\n`;
-
-  md += metaTable([
-    ['Status', sprint.status],
-    ['Version', `v${sprint.version}`],
-    ['Spec technical revision', `r${sprint.spec_version}`],
-    ['Spec', parentSpec?.title || sprint.spec_id || 'N/A'],
-    ...(sprint.start_date ? [['Start Date', sprint.start_date] as [string, string]] : []),
-    ...(sprint.end_date ? [['End Date', sprint.end_date] as [string, string]] : []),
-  ]);
-
-  if (sprint.objective) md += `## Objective\n\n${sprint.objective}\n\n`;
-  if (sprint.expected_outcome) md += `## Expected Outcome\n\n${sprint.expected_outcome}\n\n`;
-  if (sprint.description) md += `## Description\n\n${sprint.description}\n\n`;
-
-  // Progress
-  const cards = sprint.cards || [];
-  const done = cards.filter((c: any) => c.status === 'done').length;
-  const total = cards.length;
-  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-  md += `## Progress\n\n**${pct}%** complete (${done}/${total} cards done)\n\n`;
-
-  // Cards
-  if (cards.length > 0) {
-    md += `## Cards\n\n| Title | Status | Type |\n|-------|--------|------|\n`;
-    for (const c of cards) {
-      md += `| ${c.title} | ${c.status} | ${c.card_type || 'normal'} |\n`;
-    }
-    md += '\n';
-  }
-
-  // Scoped Test Scenarios
-  if (sprint.test_scenario_ids?.length && parentSpec?.test_scenarios?.length) {
-    const scoped = parentSpec.test_scenarios.filter((ts: any) =>
-      sprint.test_scenario_ids.includes(ts.id) ||
-      ts.linked_task_ids?.some((id: string) => cards.some((c: any) => c.id === id))
-    );
-    if (scoped.length > 0) {
-      md += `## Scoped Test Scenarios\n\n`;
-      for (const ts of scoped) {
-        md += `### ${ts.title}\n- **Given:** ${ts.given}\n- **When:** ${ts.when}\n- **Then:** ${ts.then}\n- **Status:** ${ts.status}\n\n`;
-      }
-    }
-  }
-
-  // Scoped Business Rules
-  if (sprint.business_rule_ids?.length && parentSpec?.business_rules?.length) {
-    const scoped = parentSpec.business_rules.filter((br: any) =>
-      sprint.business_rule_ids.includes(br.id) ||
-      br.linked_task_ids?.some((id: string) => cards.some((c: any) => c.id === id))
-    );
-    if (scoped.length > 0) {
-      md += `## Scoped Business Rules\n\n`;
-      for (const br of scoped) {
-        md += `### ${br.title}\n- **When:** ${br.when}\n- **Then:** ${br.then}\n\n`;
-      }
-    }
-  }
-
-  // Evaluations
-  if (sprint.evaluations?.length) {
-    md += `## Evaluations\n\n`;
-    for (const ev of sprint.evaluations) {
-      md += `### ${ev.evaluator_name} — ${ev.recommendation} (${ev.overall_score}/100)\n`;
-      if (ev.overall_justification) md += `${ev.overall_justification}\n`;
-      md += '\n';
-    }
-  }
-
-  // Labels
-  if (sprint.labels?.length) {
-    md += `## Labels\n\n${sprint.labels.join(', ')}\n\n`;
-  }
-
-  return md;
-}
-
 /** Generate Markdown for a Spec. */
 export function exportSpec(spec: Spec): string {
   const warningCollector = createExportWarningCollector();
@@ -2210,14 +2082,12 @@ export function exportCard(card: Card, spec?: Spec | null): string {
         .find((validation) => (
           validation.card_status === 'rejected'
           || validation.completion_outcome === 'rejected'
-          || validation.verdict === 'fail'
           || validation.outcome === 'failed'
           || validation.recommendation === 'reject'
         ));
     body += '## Rework Required\n\n';
     body += card.current_rejection_summary
       || currentAttempt?.rejection_cause?.summary
-      || currentAttempt?.summary
       || currentAttempt?.general_justification
       || 'The latest governed completion attempt did not pass.';
     if (currentAttempt?.completion_gate_failures?.length) {
@@ -2261,7 +2131,6 @@ export function exportCard(card: Card, spec?: Spec | null): string {
       if (c.completeness != null) e += `**Completeness:** ${c.completeness}%${c.completeness_justification ? ` — ${c.completeness_justification}` : ''}\n\n`;
       if (c.drift != null) e += `**Drift:** ${c.drift}%${c.drift_justification ? ` — ${c.drift_justification}` : ''}\n\n`;
       if (c.source) e += `**Source:** ${c.source}\n\n`;
-      if (c.validation_id) e += `**Validation ID:** ${c.validation_id}\n\n`;
       return e;
     }).join('');
     body += `## Conclusions\n\n${entries}`;
@@ -2270,13 +2139,11 @@ export function exportCard(card: Card, spec?: Spec | null): string {
   // Validations
   if (card.validations?.length) {
     const entries = card.validations.map((v: ValidationEntry, i: number) => {
-      const passed = v.verdict === 'pass'
-        || v.outcome === 'success'
-        || v.recommendation === 'approve';
+      const passed = v.outcome === 'success';
       const completionRejected = v.completion_outcome === 'rejected';
-      const completeness = v.completeness ?? v.estimated_completeness;
-      const drift = v.drift ?? v.estimated_drift;
-      const reviewerName = v.evaluator_name || v.reviewer_name;
+      const completeness = v.estimated_completeness;
+      const drift = v.estimated_drift;
+      const reviewerName = v.reviewer_name;
       const resultLabel = completionRejected && passed
         ? 'ASSESSMENT PASSED — COMPLETION REJECTED'
         : passed ? 'PASSED' : 'FAILED';
@@ -2285,7 +2152,7 @@ export function exportCard(card: Card, spec?: Spec | null): string {
       e += `| Confidence | ${v.confidence} |\n`;
       e += `| Completeness | ${completeness ?? 'Not reported'} |\n`;
       e += `| Drift | ${drift ?? 'Not reported'} |\n\n`;
-      const summary = v.summary || v.general_justification;
+      const summary = v.general_justification;
       if (summary) e += `**Summary:** ${summary}\n\n`;
       if (v.completion_gate_failures?.length) {
         e += '**Completion gates requiring action:**\n\n';

@@ -26,7 +26,6 @@ import { StoryModal } from '@/components/stories';
 import { SpecModal } from '@/components/specs/SpecModal';
 import { IdeationModal } from '@/components/ideations/IdeationModal';
 import { RefinementModal } from '@/components/refinements/RefinementModal';
-import { SprintModal } from '@/components/sprints/SprintModal';
 import { NodeDetailModal } from '@/components/knowledge/NodeDetailModal';
 import { useDashboardApi } from '@/services/api';
 import { useDashboardStore } from '@/store/dashboard';
@@ -44,8 +43,19 @@ export function ModalStackRenderer({ boardId: currentBoardId }: Props) {
   const closeCardInStore = useDashboardStore((s) => s.closeCardModal);
   const [storyTopics, setStoryTopics] = useState<TopicSummary[]>([]);
   const top = stack[stack.length - 1];
+  const cardTarget = top?.type === 'card' ? top.target : undefined;
   // Discovery can open an artifact from an accessible board other than the active one.
   const boardId = top?.boardId ?? currentBoardId;
+
+  // Every card reference must initialize the store consumed by CardModal.
+  // Callers that only push a stack entry (e.g. Spec references) otherwise
+  // render a closed modal or reopen the previously selected card.
+  useEffect(() => {
+    if (top?.type === 'card') {
+      if (cardTarget) openCardInStore(top.id, cardTarget);
+      else openCardInStore(top.id);
+    }
+  }, [boardId, top?.type, top?.id, cardTarget, openCardInStore]);
 
   useEffect(() => {
     if (top?.type !== 'story') return;
@@ -81,7 +91,8 @@ export function ModalStackRenderer({ boardId: currentBoardId }: Props) {
     // CardModal re-opens for that id.
     const next = stack[stack.length - 2];
     if (next && next.type === 'card') {
-      openCardInStore(next.id);
+      if (next.target) openCardInStore(next.id, next.target);
+      else openCardInStore(next.id);
     }
   };
 
@@ -131,11 +142,12 @@ export function ModalStackRenderer({ boardId: currentBoardId }: Props) {
       )}
       {top.type === 'spec' && (
         <SpecModal
-          key={`spec-${boardId}-${top.id}-${top.initialTab ?? 'default'}-${top.focusProjectNodeId ?? 'root'}`}
+          key={`spec-${boardId}-${top.id}-${top.initialTab ?? 'default'}-${top.focusProjectNodeId ?? 'root'}-${top.focusReadinessRef ?? ''}`}
           specId={top.id}
           boardId={boardId}
           initialTab={top.initialTab}
           focusProjectNodeId={top.focusProjectNodeId}
+          focusReadinessRef={top.focusReadinessRef}
           onClose={handleClose}
           onEscape={stack.length > 1 ? handleBack : handleClose}
           onChanged={() => {
@@ -165,14 +177,6 @@ export function ModalStackRenderer({ boardId: currentBoardId }: Props) {
           onChanged={() => {
             /* drill-down is read-only from here */
           }}
-        />
-      )}
-      {top.type === 'sprint' && (
-        <SprintModal
-          key={`sprint-${boardId}-${top.id}`}
-          sprintId={top.id}
-          onClose={handleClose}
-          onEscape={stack.length > 1 ? handleBack : handleClose}
         />
       )}
       {top.type === 'kg_node' && (

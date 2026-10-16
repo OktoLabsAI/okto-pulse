@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shlex
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -95,6 +96,14 @@ def test_af42_boundary_oracle_matches_executable_report() -> None:
         documented_path = entry["file_path"].replace("src/okto_pulse/", "")
         assert documented_path in architecture
 
-    assert "105 passed" in architecture
+    command_line = next(
+        line for line in architecture.splitlines()
+        if line.startswith("| Community release command |")
+    )
+    command = command_line.split("`")[1]
+    paths = [token for token in shlex.split(command) if token.startswith("tests/")]
+    assert paths
+    assert "tests/test_retired_public_rebuild.py" in paths
+    assert all((ROOT / path).is_file() for path in paths)
     assert "67 passed" in architecture
     assert "62 passed, 5 failed" not in architecture

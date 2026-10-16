@@ -13,7 +13,7 @@ from okto_pulse.core.domain.guideline_policy import (
     PolicyCurrentness,
     PolicyEntityType,
 )
-from okto_pulse.core.domain.guideline_policy_transition import (
+from okto_pulse.core.domain.guideline_semantic_transition import (
     PolicyTransitionDecision,
     PolicyTransitionDiagnosticCode,
     PolicyTransitionReasonCode,
@@ -35,7 +35,6 @@ REST_MUTATION_HANDLERS = (
     ("ideations.py", "move_ideation"),
     ("refinements.py", "move_refinement"),
     ("specs.py", "move_spec"),
-    ("sprints.py", "move_sprint"),
     ("cards.py", "move_card"),
     ("cards.py", "submit_task_validation"),
     ("specs.py", "submit_spec_validation"),
@@ -54,7 +53,7 @@ def _rejection() -> PolicyTransitionRejected:
         receipt_id="receipt-1",
         currentness=PolicyCurrentness.STALE,
         currentness_reasons=(
-            SemanticAssessmentCurrentnessReason.POLICY_SET_CHANGED,
+            SemanticAssessmentCurrentnessReason.BINDING_CONFIGURATION_CHANGED,
         ),
         inadmissibility_cause=None,
         failed_metric_count=0,

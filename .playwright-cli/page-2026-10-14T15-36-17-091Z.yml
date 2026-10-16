@@ -1,0 +1,240 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - button "Hide sidebar" [ref=e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=e12]
+        - generic [ref=e357]: / My Board
+      - generic [ref=e358]:
+        - button "Refresh board" [ref=e359] [cursor=pointer]
+        - button [ref=e366] [cursor=pointer]
+  - generic [ref=e13]:
+    - complementary [ref=e14]:
+      - generic [ref=e15]:
+        - generic [ref=e17]:
+          - heading "Boards" [level=2] [ref=e18]
+          - button "New board" [ref=e19] [cursor=pointer]
+        - navigation [ref=e21]:
+          - generic [ref=e22]:
+            - heading "My Boards" [level=3] [ref=e23]
+            - list [ref=e370]:
+              - listitem [ref=e371]:
+                - button "My Board" [ref=e372] [cursor=pointer]
+    - main [ref=e26]:
+      - group "Board views" [ref=e379]:
+        - button "Stories" [ref=e380] [cursor=pointer]
+        - button "Ideations" [ref=e384] [cursor=pointer]
+        - button "Refinements" [ref=e387] [cursor=pointer]
+        - button "Specs" [pressed] [ref=e392] [cursor=pointer]
+        - button "Tasks" [ref=e397] [cursor=pointer]
+      - generic [ref=e1055]:
+        - generic [ref=e1056]:
+          - generic [ref=e1057]:
+            - heading "Specifications" [level=2] [ref=e1058]
+            - generic [ref=e1059]: (2 of 2)
+          - generic [ref=e1060]:
+            - textbox "Search specs…" [ref=e1062]
+            - group "View mode" [ref=e1063]:
+              - button "List view" [pressed] [ref=e1064] [cursor=pointer]
+              - button "Grid view" [ref=e1066] [cursor=pointer]
+            - generic [ref=e1072]: Group specs
+            - combobox "Group specs" [ref=e1078]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=e1079] [cursor=pointer]
+        - generic [ref=e1081]:
+          - button "All" [ref=e1082] [cursor=pointer]
+          - button "Draft" [ref=e1083] [cursor=pointer]
+          - button "Review" [ref=e1084] [cursor=pointer]
+          - button "Approved" [ref=e1085] [cursor=pointer]
+          - button "Validated" [ref=e1086] [cursor=pointer]
+          - button "In Progress" [ref=e1087] [cursor=pointer]
+          - button "Done" [ref=e1088] [cursor=pointer]
+          - button "Show archived" [ref=e1089] [cursor=pointer]
+        - generic [ref=e1435]:
+          - generic [ref=e1436]:
+            - generic [ref=e1437] [cursor=pointer]:
+              - 'heading "Refinement: E2E mock — contrato das funções de estoque" [level=3] [ref=e1444]'
+              - generic [ref=e1445]: (1)
+            - generic [ref=e1449] [cursor=pointer]:
+              - generic [ref=e1450]:
+                - generic [ref=e1451]:
+                  - generic [ref=e1452]: Review
+                  - generic "Edition 1" [ref=e1456]
+                - heading "E2E mock — estoque local completo" [level=3] [ref=e1457]
+                - paragraph [ref=e1458]: Duas funções locais e quatro cenários sintéticos para testar o fluxo completo do Pulse. A prova atual, e não o status ou uma porcentagem narrada, deve produzir 100% de implementação e verificação ao final.
+                - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=e1460]':
+                  - generic [ref=e1461]: Requirement lint
+                  - strong [ref=e1462]: Not assessed
+                - generic [ref=e1463]:
+                  - generic [ref=e1464]: mock
+                  - generic [ref=e1465]: e2e
+                  - generic [ref=e1466]: completude
+              - generic [ref=e1467]:
+                - button "Open lineage graph" [ref=e1468]
+                - button "Archive tree" [ref=e1473]
+          - generic [ref=e1479]:
+            - generic [ref=e1480] [cursor=pointer]:
+              - 'heading "Ideation: Mock — Completude de cards: implementação e entrega verificada" [level=3] [ref=e1487]'
+              - generic [ref=e1488]: (1)
+            - generic [ref=e1492] [cursor=pointer]:
+              - generic [ref=e1493]:
+                - generic [ref=e1494]:
+                  - generic [ref=e1495]: In Progress
+                  - generic "Edition 3" [ref=e1499]
+                - heading "Mock de completude — lista de compras local" [level=3] [ref=e1500]
+                - paragraph [ref=e1501]: Quatro comportamentos locais para testar as barras de implementação e entrega verificada do Pulse. Dados sintéticos; sem produto real ou integrações. As obrigações efetivas (FR, BR e AC) serão enumeradas por Card antes da prova; os dois comportamentos por história não implicam du…
+                - 'generic "Requirement lint: 0 (0–96) · Edition 3" [ref=e1503]':
+                  - generic [ref=e1504]: Requirement lint
+                  - strong [ref=e1505]: "0"
+                - generic [ref=e1506]:
+                  - generic [ref=e1507]: completude
+                  - generic [ref=e1508]: mock
+              - generic [ref=e1509]:
+                - button "Open lineage graph" [ref=e1510]
+                - button "Archive tree" [ref=e1515]
+        - generic [ref=e1177]:
+          - status [ref=e1178]: Showing 1–2 of 2 matching. 2 overall. Page 1 of 1.
+          - generic [ref=e1179]:
+            - generic [ref=e1180]:
+              - generic [ref=e1181]: Items per page
+              - combobox "Items per page" [ref=e1182]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=e1183]:
+              - generic [ref=e1184]:
+                - button "Previous page" [disabled] [ref=e1185]: Previous
+                - button "Page 1" [disabled] [ref=e1186]: "1"
+                - button "Next page" [disabled] [ref=e1187]: Next
+        - dialog [ref=e1219]:
+          - generic [ref=e1220]:
+            - generic [ref=e2695]:
+              - generic [ref=e2696]: Done
+              - heading "E2E mock — estoque local completo" [level=2] [ref=e2700]
+              - generic "Edition 4" [ref=e2701]
+            - generic [ref=e2702]:
+              - button "Open lineage graph" [ref=e2703] [cursor=pointer]
+              - button "Export report" [ref=e2708] [cursor=pointer]
+              - button "Refresh" [ref=e2712] [cursor=pointer]
+              - button "Expand" [ref=e2718] [cursor=pointer]
+              - button "Close spec" [ref=e2724] [cursor=pointer]
+          - generic [ref=e2728]:
+            - generic [ref=e2729]: "Move to:"
+            - button "Draft" [ref=e2730] [cursor=pointer]
+          - generic [ref=e2733]:
+            - generic [ref=e2734]: "From:"
+            - button "E2E mock — etiquetas e resumo de estoque (14/10) v6" [ref=e2735] [cursor=pointer]:
+              - text: E2E mock — etiquetas e resumo de estoque (14/10)
+              - generic [ref=e2738]: v6
+            - button "E2E mock — contrato das funções de estoque v5" [ref=e2741] [cursor=pointer]:
+              - text: E2E mock — contrato das funções de estoque
+              - generic [ref=e2746]: v5
+          - generic [ref=e2748]:
+            - tablist "Spec sections" [ref=e2749]:
+              - tab "Details" [ref=e2750] [cursor=pointer]
+              - tab "Coverage" [ref=e2755] [cursor=pointer]
+              - tab "Project Structure 2" [ref=e2761] [cursor=pointer]:
+                - generic [ref=e2767]: Project Structure
+                - generic [ref=e2768]: "2"
+              - tab "Code Evidence Matrix" [ref=e2769] [cursor=pointer]
+              - tab "Resources" [ref=e2773] [cursor=pointer]
+              - tab "Requirements & Decisions" [ref=e2777] [cursor=pointer]
+              - tab "Tests & Verifications" [ref=e2782] [cursor=pointer]
+              - tab "Q&A" [ref=e2786] [cursor=pointer]
+              - tab "Dependencies" [ref=e2791] [cursor=pointer]
+              - tab "References 4" [selected] [ref=e2797] [cursor=pointer]:
+                - generic [ref=e2801]: References
+                - generic [ref=e2802]: "4"
+              - tab "KG Graph" [ref=e2803] [cursor=pointer]
+              - tab "Validation" [ref=e2810] [cursor=pointer]
+              - tab "Activity" [ref=e2815] [cursor=pointer]
+            - button "Scroll Spec sections left" [ref=e2911] [cursor=pointer]
+            - button "Scroll Spec sections right" [ref=e2821] [cursor=pointer]
+          - tabpanel "References 4" [ref=e2914]:
+            - tabpanel [ref=e2826]:
+              - generic [ref=e2915]:
+                - tablist "Spec references" [ref=e2917]:
+                  - tab "Origin" [ref=e2918] [cursor=pointer]
+                  - tab "Derived cards 4" [selected] [ref=e2920] [cursor=pointer]:
+                    - generic [ref=e2921]: Derived cards
+                    - generic [ref=e2922]: "4"
+                - tabpanel "Derived cards 4" [ref=e2923]:
+                  - button "[TEST] E2E H01 — Normalizar rótulo done" [active] [ref=e2924] [cursor=pointer]:
+                    - generic [ref=e2925]: "[TEST] E2E H01 — Normalizar rótulo"
+                    - generic [ref=e2926]: done
+                  - button "[TEST] E2E H02 — Somar quantidades done" [ref=e2927] [cursor=pointer]:
+                    - generic [ref=e2928]: "[TEST] E2E H02 — Somar quantidades"
+                    - generic [ref=e2929]: done
+                  - button "E2E H01 — Normalizar rótulo done" [ref=e2930] [cursor=pointer]:
+                    - generic [ref=e2931]: E2E H01 — Normalizar rótulo
+                    - generic [ref=e2932]: done
+                  - button "E2E H02 — Somar quantidades done" [ref=e2933] [cursor=pointer]:
+                    - generic [ref=e2934]: E2E H02 — Somar quantidades
+                    - generic [ref=e2935]: done
+          - generic [ref=e2848]:
+            - button "Delete spec" [ref=e2849] [cursor=pointer]
+            - button "Close" [ref=e2851] [cursor=pointer]
+  - generic [ref=e2937]:
+    - generic [ref=e2938]:
+      - generic [ref=e2939]:
+        - combobox "Card status" [ref=e2940]:
+          - option "Done" [selected]
+          - option "In Progress"
+        - generic [ref=e2941]: TEST
+        - heading "[TEST] E2E H01 — Normalizar rótulo" [level=2] [ref=e2944]
+      - button "E2E mock — estoque local co..." [ref=e2945] [cursor=pointer]
+      - generic [ref=e2949]:
+        - button "Open lineage graph" [ref=e2950] [cursor=pointer]
+        - button "Export report" [ref=e2955] [cursor=pointer]
+        - button "Refresh card" [ref=e2959] [cursor=pointer]
+        - button "Expand" [ref=e2965] [cursor=pointer]
+        - button "Close card dialog" [ref=e2971] [cursor=pointer]
+    - generic [ref=e2975]:
+      - tablist "Card sections" [ref=e2976]:
+        - tab "Details" [selected] [ref=e2977] [cursor=pointer]
+        - tab "Delivery" [ref=e2982] [cursor=pointer]
+        - tab "Tests 2" [ref=e2987] [cursor=pointer]:
+          - generic [ref=e2990]: Tests
+          - generic [ref=e2991]: "2"
+        - tab "Resources" [ref=e2992] [cursor=pointer]
+        - tab "Q&A" [ref=e2998] [cursor=pointer]
+        - tab "Comments" [ref=e3003] [cursor=pointer]
+        - tab "References" [ref=e3007] [cursor=pointer]
+        - tab "Validation 1" [ref=e3012] [cursor=pointer]:
+          - generic [ref=e3015]: Validation
+          - generic [ref=e3016]: "1"
+        - tab "Activity" [ref=e3017] [cursor=pointer]
+      - button "Scroll Card sections right" [ref=e3023] [cursor=pointer]
+    - tabpanel "Details" [ref=e3027]:
+      - generic [ref=e3028]:
+        - generic [ref=e3029]:
+          - heading "Description" [level=3] [ref=e3030]
+          - paragraph [ref=e3033] [cursor=pointer]: "normalizar_rotulo(texto: str) retorna texto.strip().upper(); vazio após strip gera ValueError(\"rotulo_obrigatorio\"). Nenhum I/O. Implementar e executar os dois cenários vinculados em test_estoque.py via unittest autenticado. FR fr_e2e_01; BR br_dad34bbd; ACs ac_e2e_01_1 e ac_e2e_01_2. Python padrão, entradas isoladas, sem I/O/rede/persistência; sem contrato externo. Evidências observadas no commit real, sem percentual autodeclarado como prova."
+        - generic [ref=e3037]:
+          - heading "Assignee" [level=3] [ref=e3038]
+          - combobox "Card assignee" [ref=e3039]:
+            - option "None"
+            - option "Codex (creator)" [selected]
+            - option "Local Agent"
+        - generic [ref=e3040]:
+          - heading "Priority" [level=3] [ref=e3041]
+          - combobox "Card priority" [ref=e3042]:
+            - option "Critical"
+            - option "Very High"
+            - option "High"
+            - option "Medium"
+            - option "Low"
+            - option "None" [selected]
+        - generic [ref=e3043]:
+          - heading "Details" [level=3] [ref=e3044]
+          - paragraph [ref=e3047] [cursor=pointer]: "normalizar_rotulo(texto: str) retorna texto.strip().upper(); vazio após strip gera ValueError(\"rotulo_obrigatorio\"). Nenhum I/O. Implementar e executar os dois cenários vinculados em test_estoque.py via unittest autenticado. FR fr_e2e_01; BR br_dad34bbd; ACs ac_e2e_01_1 e ac_e2e_01_2. Python padrão, entradas isoladas, sem I/O/rede/persistência; sem contrato externo. Evidências observadas no commit real, sem percentual autodeclarado como prova."
+        - generic [ref=e3051]:
+          - heading "Labels" [level=3] [ref=e3052]
+          - generic [ref=e3053]:
+            - generic [ref=e3054]: mock
+            - generic [ref=e3055]: e2e
+            - generic [ref=e3056]: completude
+    - button "Delete" [ref=e3058] [cursor=pointer]

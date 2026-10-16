@@ -6,8 +6,7 @@ reconciles stable physical ``Entity`` subtypes into the graph.  At-least-once
 delivery is safe because every node uses a stable public identity and every
 replay derives the full board state again.
 
-The adapter never creates historical rule ``Constraint`` nodes and terminates
-any that are still active.
+The adapter reconciles only its native semantic ``Entity`` projections.
 """
 
 from __future__ import annotations
@@ -33,9 +32,9 @@ from .sqlalchemy_models import (
     GuidelineBoardBindingRow,
     GuidelineRetirementRow,
     GuidelineRevisionRow,
-    SemanticGuidelineAssessmentReceiptRow,
+    SemanticGuidelineAssessmentV2Row,
     SemanticGuidelineBindingConfigurationRow,
-    SemanticGuidelineMetricResultRow,
+    SemanticGuidelineMetricResultV2Row,
     SemanticGuidelineRevisionRow,
     SemanticGuidelineSkipRow,
     SemanticGuidelineWaiverEventRow,
@@ -77,7 +76,10 @@ async def _run_blocking_graph_io(
         raise
 
 
-POLICY_CONSTRAINT_ACTOR = "policy-constraint-projector"
+POLICY_BOARD_ROOT_ACTOR = "policy-board-root-projector"
+
+
+from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_v2 import native_semantic_receipt_from_rows
 
 
 class PolicyConstraintProjectionConflict(RuntimeError):
@@ -133,7 +135,7 @@ def _root_node_id(scope: Any, *, board_id: str, source_session_id: str) -> str:
             "graph_layer": "canonical",
             "maturity_status": "canonical_eligible",
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "created_by_agent": POLICY_CONSTRAINT_ACTOR,
+            "created_by_agent": POLICY_BOARD_ROOT_ACTOR,
             "source_confidence": 1.0,
             "relevance_score": 0.5,
             "priority_boost": 0.0,
@@ -153,9 +155,6 @@ SEMANTIC_GUIDELINE_KG_ROOT_RULE = (
 )
 SEMANTIC_GUIDELINE_KG_LINEAGE_RULE = (
     "supersedes/semantic_guideline_lineage@semantic-guideline-kg/v1"
-)
-SEMANTIC_GUIDELINE_LEGACY_TERMINATED_REASON = (
-    "semantic_guideline_legacy_rule_projection_retired"
 )
 SEMANTIC_GUIDELINE_SOURCE_REMOVED_REASON = (
     "semantic_guideline_relational_source_removed"
@@ -223,19 +222,6 @@ class _SemanticGraphNode:
         return not self.superseded_by and not self.revocation_reason
 
 
-@dataclass(frozen=True, slots=True)
-class _LegacyRuleNode:
-    node_id: str
-    source_artifact_ref: str
-    created_by_agent: str
-    revocation_reason: str
-    superseded_by: str
-
-    @property
-    def active(self) -> bool:
-        return not self.revocation_reason and not self.superseded_by
-
-
 def _db_utc(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         return value.replace(tzinfo=timezone.utc)
@@ -272,14 +258,7 @@ def _semantic_context(
     *,
     authority_digest: str,
 ) -> str:
-    """Encode semantic authority without Ladybug/Kuzu STRUCT coercion.
-
-    A bound string whose first byte is ``{`` is inferred by the Python driver
-    as a STRUCT before it reaches a STRING property. Its round-trip value is a
-    pseudo-map (``{contract: ..., kind: ...}``) that is not JSON. The stable
-    text envelope prevents that coercion while keeping the payload strict and
-    independently decodable.
-    """
+    """Encode semantic authority in the current explicit JSON envelope."""
 
     try:
         canonical_json = json.dumps(
@@ -304,22 +283,13 @@ def _semantic_context(
 
 
 def _decode_semantic_context(value: object) -> dict[str, Any]:
-    """Decode the current envelope and valid pre-envelope JSON providers.
+    """Decode only the current envelope; prior graph formats are rejected."""
 
-    Raw JSON is a narrow compatibility path for graph providers that persisted
-    the original v1 string byte-for-byte. Ladybug's lossy pseudo-map is not
-    parsed: it cannot prove quoted values or nested payload boundaries.
-    """
-
-    if not isinstance(value, str) or not value:
+    if not isinstance(value, str) or not value.startswith(_SEMANTIC_CONTEXT_PREFIX):
         raise PolicyConstraintProjectionConflict(
             "semantic_guideline_graph_context_invalid"
         )
-    serialized = (
-        value[len(_SEMANTIC_CONTEXT_PREFIX) :]
-        if value.startswith(_SEMANTIC_CONTEXT_PREFIX)
-        else value
-    )
+    serialized = value[len(_SEMANTIC_CONTEXT_PREFIX) :]
     try:
         context = json.loads(
             serialized,
@@ -485,34 +455,6 @@ def _semantic_graph_nodes(scope: Any) -> tuple[_SemanticGraphNode, ...]:
     return tuple(sorted(nodes, key=lambda item: item.node_id))
 
 
-def _legacy_rule_nodes(scope: Any) -> tuple[_LegacyRuleNode, ...]:
-    result = scope.execute(
-        "MATCH (n:Constraint) RETURN n.id, n.source_artifact_ref, "
-        "n.created_by_agent, n.revocation_reason, n.superseded_by"
-    )
-    nodes = []
-    for row in result.rows:
-        node_id = str(row[0] or "")
-        source_ref = str(row[1] or "")
-        actor = str(row[2] or "")
-        if not (
-            actor == POLICY_CONSTRAINT_ACTOR
-            or source_ref.startswith("guideline-revision:")
-            or node_id.startswith("guideline-revision:")
-        ):
-            continue
-        nodes.append(
-            _LegacyRuleNode(
-                node_id=node_id,
-                source_artifact_ref=source_ref,
-                created_by_agent=actor,
-                revocation_reason=str(row[3] or ""),
-                superseded_by=str(row[4] or ""),
-            )
-        )
-    return tuple(nodes)
-
-
 def _prefetch_semantic_edges(
     scope: Any,
     *,
@@ -633,12 +575,11 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
         elif kind == "assessment_receipt":
             row = (
                 await context.execute(
-                    select(SemanticGuidelineAssessmentReceiptRow).where(
-                        SemanticGuidelineAssessmentReceiptRow.board_id
+                    select(SemanticGuidelineAssessmentV2Row).where(
+                        SemanticGuidelineAssessmentV2Row.board_id
                         == event.board_id,
-                        SemanticGuidelineAssessmentReceiptRow.receipt_id
+                        SemanticGuidelineAssessmentV2Row.receipt_id
                         == event.entity_id,
-                        SemanticGuidelineAssessmentReceiptRow.sealed.is_(True),
                     )
                 )
             ).scalar_one_or_none()
@@ -646,9 +587,9 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
         elif kind == "metric_result":
             row = (
                 await context.execute(
-                    select(SemanticGuidelineMetricResultRow).where(
-                        SemanticGuidelineMetricResultRow.board_id == event.board_id,
-                        SemanticGuidelineMetricResultRow.result_id == event.entity_id,
+                    select(SemanticGuidelineMetricResultV2Row).where(
+                        SemanticGuidelineMetricResultV2Row.board_id == event.board_id,
+                        SemanticGuidelineMetricResultV2Row.result_id == event.entity_id,
                     )
                 )
             ).scalar_one_or_none()
@@ -889,10 +830,6 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                 )
         for semantic, legacy in revision_pairs:
             active = semantic.revision_id in active_revision_ids
-            if semantic.authority_state == "legacy_incompatible" and active:
-                raise PolicyConstraintProjectionConflict(
-                    "semantic_guideline_legacy_revision_active"
-                )
             successor = revision_successor.get(semantic.revision_id)
             desired.append(
                 _desired_semantic_node(
@@ -904,8 +841,6 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                     reason=(
                         None
                         if active
-                        else "semantic_guideline_revision_legacy_incompatible"
-                        if semantic.authority_state == "legacy_incompatible"
                         else "semantic_guideline_revision_superseded"
                         if successor
                         else "semantic_guideline_revision_unbound"
@@ -919,14 +854,11 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                         "revision_number": legacy.revision_number,
                         "semantic_version": legacy.semantic_version,
                         "revision_digest": semantic.revision_digest,
-                        "authority_state": semantic.authority_state,
                     },
                     created_at=semantic.created_at,
                     projected_at=projected_at,
                 )
             )
-            if semantic.authority_state == "legacy_incompatible":
-                continue
             if not isinstance(semantic.metrics, list):
                 raise PolicyConstraintProjectionConflict(
                     "semantic_guideline_metrics_invalid"
@@ -1000,18 +932,40 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
         receipts = tuple(
             (
                 await context.execute(
-                    select(SemanticGuidelineAssessmentReceiptRow)
+                    select(SemanticGuidelineAssessmentV2Row)
                     .where(
-                        SemanticGuidelineAssessmentReceiptRow.board_id == board_id,
-                        SemanticGuidelineAssessmentReceiptRow.sealed.is_(True),
+                        SemanticGuidelineAssessmentV2Row.board_id == board_id,
                     )
                     .order_by(
-                        SemanticGuidelineAssessmentReceiptRow.assessed_at.asc(),
-                        SemanticGuidelineAssessmentReceiptRow.receipt_id.asc(),
+                        SemanticGuidelineAssessmentV2Row.recorded_at.asc(),
+                        SemanticGuidelineAssessmentV2Row.receipt_id.asc(),
                     )
                 )
             ).scalars()
         )
+        metric_results = tuple(
+            (
+                await context.execute(
+                    select(SemanticGuidelineMetricResultV2Row)
+                    .where(SemanticGuidelineMetricResultV2Row.board_id == board_id)
+                    .order_by(
+                        SemanticGuidelineMetricResultV2Row.created_at.asc(),
+                        SemanticGuidelineMetricResultV2Row.result_id.asc(),
+                    )
+                )
+            ).scalars()
+        )
+        results_by_receipt = {}
+        for result in metric_results:
+            results_by_receipt.setdefault(result.receipt_id, []).append(result)
+        native_receipts = {
+            row.receipt_id: native_semantic_receipt_from_rows(
+                row, tuple(results_by_receipt.get(row.receipt_id, ())))
+            for row in receipts
+        }
+        native_metrics = {metric.metric_result_id: metric
+                          for receipt in native_receipts.values()
+                          for metric in receipt.metric_results}
         latest_receipt: dict[tuple[str, str, str], Any] = {}
         for receipt in receipts:
             latest_receipt[
@@ -1034,6 +988,9 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                     "assessment_receipt", group[index + 1].receipt_id
                 )
         for receipt in receipts:
+            evidence = native_receipts[receipt.receipt_id]
+            failed_count = sum(metric.outcome.value == "fail" for metric in evidence.metric_results)
+            state = "metric_threshold_failed" if failed_count else "passed"
             active = receipt.receipt_id in active_receipt_ids
             successor = receipt_successors.get(receipt.receipt_id)
             desired.append(
@@ -1060,8 +1017,8 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                     ),
                     title=f"{receipt.subject_type} guideline assessment",
                     content=(
-                        f"{receipt.state}; confidence {receipt.confidence}; "
-                        f"failed metrics {receipt.failed_metric_count}"
+                        f"{state}; confidence {receipt.confidence}; "
+                        f"failed metrics {failed_count}"
                     ),
                     payload={
                         "receipt_id": receipt.receipt_id,
@@ -1074,26 +1031,14 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                         "binding_id": receipt.binding_id,
                         "binding_revision": receipt.binding_revision,
                         "configuration_digest": receipt.configuration_digest,
-                        "state": receipt.state,
+                        "state": state,
                         "confidence": receipt.confidence,
                     },
-                    created_at=receipt.assessed_at,
+                    created_at=receipt.recorded_at,
                     projected_at=projected_at,
                 )
             )
 
-        metric_results = tuple(
-            (
-                await context.execute(
-                    select(SemanticGuidelineMetricResultRow)
-                    .where(SemanticGuidelineMetricResultRow.board_id == board_id)
-                    .order_by(
-                        SemanticGuidelineMetricResultRow.created_at.asc(),
-                        SemanticGuidelineMetricResultRow.result_id.asc(),
-                    )
-                )
-            ).scalars()
-        )
         receipt_by_id = {receipt.receipt_id: receipt for receipt in receipts}
         for result in metric_results:
             receipt = receipt_by_id.get(result.receipt_id)
@@ -1101,13 +1046,14 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                 raise PolicyConstraintProjectionConflict(
                     "semantic_guideline_metric_receipt_missing"
                 )
+            metric = native_metrics[result.result_id]
             active = result.receipt_id in active_receipt_ids
             desired.append(
                 _desired_semantic_node(
                     kind="metric_result",
                     identity=result.result_id,
                     digest=result.result_digest,
-                    generation=result.subject_version,
+                    generation=receipt.subject_version,
                     active=active,
                     reason=(
                         None
@@ -1119,21 +1065,21 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                         _semantic_node_id("assessment_receipt", result.receipt_id),
                         _semantic_node_id(
                             "metric_definition",
-                            f"{result.revision_id}:{result.metric_id}",
+                            f"{receipt.revision_id}:{result.metric_id}",
                         ),
                     ),
                     title=f"{result.metric_code} result",
-                    content=f"score {result.score}; outcome {result.outcome}",
+                    content=f"score {metric.score}; outcome {result.outcome}",
                     payload={
                         "result_id": result.result_id,
                         "receipt_id": result.receipt_id,
                         "result_digest": result.result_digest,
                         "metric_id": result.metric_id,
                         "metric_code": result.metric_code,
-                        "metric_definition_digest": result.metric_definition_digest,
-                        "score": result.score,
+                        "metric_definition_digest": metric.metric_definition_digest,
+                        "score": metric.score,
                         "outcome": result.outcome,
-                        "rationale": result.rationale,
+                        "rationale": metric.rationale,
                     },
                     created_at=result.created_at,
                     projected_at=projected_at,
@@ -1266,7 +1212,7 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
 
         ``desired`` is a detached immutable projection assembled through the
         async relational session.  From this boundary onward every operation
-        is Community-owned synchronous Ladybug/Kuzu work.  Running the whole
+        is Community-owned synchronous graph work. Running the whole
         graph scope -- resolver, open, statements, verification and close --
         on one worker thread prevents a projection drain from starving the
         API/UI event loop while preserving the single-writer lease.
@@ -1373,23 +1319,6 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                             "node_id": existing.node_id,
                             "ended_at": projected_at.isoformat(),
                             "reason": SEMANTIC_GUIDELINE_SOURCE_REMOVED_REASON,
-                        },
-                    )
-                    ended += 1
-
-                legacy = _legacy_rule_nodes(scope)
-                for node in legacy:
-                    if not node.active:
-                        continue
-                    scope.execute(
-                        "MATCH (n:Constraint {id: $node_id}) SET "
-                        "n.superseded_by = NULL, "
-                        "n.superseded_at = timestamp($ended_at), "
-                        "n.revocation_reason = $reason",
-                        {
-                            "node_id": node.node_id,
-                            "ended_at": projected_at.isoformat(),
-                            "reason": SEMANTIC_GUIDELINE_LEGACY_TERMINATED_REASON,
                         },
                     )
                     ended += 1
@@ -1503,10 +1432,6 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
                     raise PolicyConstraintProjectionConflict(
                         "semantic_guideline_reconciliation_unconfirmed"
                     )
-                if any(node.active for node in _legacy_rule_nodes(scope)):
-                    raise PolicyConstraintProjectionConflict(
-                        "semantic_guideline_legacy_constraint_active"
-                    )
                 scope.execute("COMMIT")
                 transaction_open = False
             except BaseException:
@@ -1598,12 +1523,11 @@ class CommunitySqlAlchemyPolicyConstraintProjection:
 
 __all__ = [
     "CommunitySqlAlchemyPolicyConstraintProjection",
-    "POLICY_CONSTRAINT_ACTOR",
+    "POLICY_BOARD_ROOT_ACTOR",
     "PolicyConstraintProjectionConflict",
     "SEMANTIC_GUIDELINE_KG_ACTOR",
     "SEMANTIC_GUIDELINE_KG_CONTRACT",
     "SEMANTIC_GUIDELINE_KG_LINEAGE_RULE",
     "SEMANTIC_GUIDELINE_KG_NODE_TYPE",
     "SEMANTIC_GUIDELINE_KG_ROOT_RULE",
-    "SEMANTIC_GUIDELINE_LEGACY_TERMINATED_REASON",
 ]

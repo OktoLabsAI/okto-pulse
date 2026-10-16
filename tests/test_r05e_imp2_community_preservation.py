@@ -19,6 +19,20 @@ if str(_SCRIPTS) not in sys.path:
 import r05e_community_preservation_smoke as smoke  # noqa: E402
 
 
+def test_json_evidence_defaults_to_loaded_release_versions(monkeypatch, capsys):
+    import json
+    from okto_pulse.core import __version__ as core_version
+    from okto_pulse.community import __version__ as community_version
+
+    monkeypatch.delenv("R15B_CORE_VERSION", raising=False)
+    monkeypatch.delenv("R15B_COMMUNITY_VERSION", raising=False)
+    monkeypatch.setattr(smoke, "run_runtime_smoke_evidence", lambda **values: values)
+    assert smoke.main(["--json-evidence"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["core_version"] == core_version
+    assert payload["community_version"] == community_version
+
+
 def test_community_functional_preservation_offline() -> None:
     evidence = smoke.run_preservation_smoke()
 
@@ -45,6 +59,7 @@ def test_community_functional_preservation_offline() -> None:
     assert evidence["has_create_ideation_tool"] is True
 
     # CLI sub-commands preserved.
-    assert {"init", "serve", "status", "reset"} <= set(evidence["cli_commands_present"])
+    assert {"init", "serve", "status", "api-key"} <= set(evidence["cli_commands_present"])
+    assert "reset" not in evidence["cli_commands_present"]
 
     assert evidence["ok"] is True

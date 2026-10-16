@@ -13,6 +13,7 @@ import type { CardSummary, CardStatus, CardType } from '@/types';
 import { STATUS_LABELS } from '@/types';
 import type { KGCognitivePendingBadgeView } from '@/services/kg-health-api';
 import { KanbanCard } from './KanbanCard';
+import type { DeliveryReadinessState } from '@/components/code-traceability/DeliveryReadinessView';
 
 const columnColors: Record<CardStatus, string> = {
   not_started: 'border-t-gray-400',
@@ -78,6 +79,7 @@ const CARD_TYPE_TOGGLES = [
 ] as const;
 
 export interface KanbanColumnProps {
+  deliveryReadiness?: Record<string, DeliveryReadinessState>;
   status: CardStatus;
   cards: CardSummary[];
   countCards?: CardSummary[];
@@ -123,6 +125,7 @@ export function KanbanColumn({
   nameMap,
   footer,
   cognitiveBadges,
+  deliveryReadiness,
 }: KanbanColumnProps) {
   const { setNodeRef, isOver } = useDroppable({
     id: status,
@@ -235,6 +238,7 @@ export function KanbanColumn({
                 card={card}
                 onClick={onCardClick}
                 nameMap={nameMap}
+                deliveryReadiness={deliveryReadiness?.[card.id]}
                 canDrag={canDragCard?.(card) ?? true}
                 cognitiveBadge={
                   sourceRef ? cognitiveBadges?.[sourceRef] : undefined

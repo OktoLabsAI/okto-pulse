@@ -19,7 +19,6 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import toast from 'react-hot-toast';
 
 import {
   AccessibleTabList,
@@ -37,6 +36,9 @@ import {
   type SpecStatus,
 } from '@/types';
 import type {
+  AddSpecDependencyRequest,
+  RemoveSpecDependencyRequest,
+  SpecDependencyMutationResponse,
   SpecDependencyDirection,
   SpecDependencyActiveStateFilter,
   SpecDependencyItem,
@@ -85,7 +87,87 @@ export interface SpecDependenciesTabProps {
   directionRequestToken?: number;
   onRetryReadiness: () => void;
   onOpenSpec: (specId: string) => void;
-  onMutated: () => Promise<void>;
+  onMutated: (minimumVersion?: number) => Promise<void>;
+  refreshKey?: number;
+  readCurrent?: boolean;
+  onAccessLost?: () => void;
+}
+
+/** Local dialog recovery over the existing dependency receipt contract. */
+function useDependencySubmission<T extends AddSpecDependencyRequest | RemoveSpecDependencyRequest>({
+  version, edition, readCurrent, send, refresh, close, onAccessLost,
+}: {
+  version: number; edition: number; readCurrent: boolean;
+  send: (request: T) => Promise<SpecDependencyMutationResponse>;
+  refresh: (minimumVersion?: number) => Promise<void>;
+  close: () => void; onAccessLost?: () => void;
+}) {
+  const [base, setBase] = useState({ version, edition });
+  const [attempt, setAttempt] = useState<{ request: T; confirmed: boolean; minimumVersion?: number } | null>(null);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const busy = useRef(false);
+  const live = useRef(true);
+  useEffect(() => { live.current = true; return () => { live.current = false; }; }, []);
+  const changed = base.version !== version || base.edition !== edition;
+  const reload = async () => {
+    await refresh(attempt?.minimumVersion);
+    if (live.current) setError(null);
+  };
+  const submit = async (request: T) => {
+    if (busy.current || (!attempt?.confirmed && !readCurrent) || (!attempt && changed)) return;
+    const original = attempt?.request ?? request;
+    busy.current = true; setPending(true); setError(null);
+    let confirmed = attempt?.confirmed ?? false;
+    let minimumVersion = attempt?.minimumVersion;
+    try {
+      if (!confirmed) {
+        const receipt = await send(original);
+        if (!live.current) return;
+        confirmed = true;
+        minimumVersion = receipt.spec_version;
+        setAttempt({ request: original, confirmed: true, minimumVersion });
+      }
+      await refresh(minimumVersion);
+      if (live.current) close();
+    } catch (caught) {
+      if (!live.current) return;
+      const denied = caught instanceof AuthenticatedFetchError && [401, 403, 404].includes(caught.status);
+      if (denied) { onAccessLost?.(); return; }
+      const rejected = caught instanceof AuthenticatedFetchError && caught.status >= 400 && caught.status < 500 && caught.status !== 408;
+      setAttempt(confirmed || !rejected ? { request: original, confirmed, minimumVersion } : null);
+      setError(confirmed ? 'Dependency change was saved. Reload its current state; the write will not be repeated.' : dependencyErrorMessage(caught));
+      if (!confirmed && caught instanceof AuthenticatedFetchError && caught.status === 409) {
+        try { await refresh(); } catch { /* Keep the original refusal and authored base. */ }
+      }
+    } finally {
+      busy.current = false;
+      if (live.current) setPending(false);
+    }
+  };
+  return { base, changed, attempt, pending, error, setError, submit,
+    review: () => { if (readCurrent && !attempt && !pending) setBase({ version, edition }); },
+    reload: () => { void reload().catch(caught => {
+      if (!live.current) return;
+      if (caught instanceof AuthenticatedFetchError && [401, 403, 404].includes(caught.status)) onAccessLost?.();
+      else setError(dependencyErrorMessage(caught));
+    }); },
+  };
+}
+
+function DependencyRecovery({ changed, uncertain, confirmed, pending, readCurrent, onReview, onReload }: {
+  changed: boolean; uncertain: boolean; confirmed: boolean; pending: boolean; readCurrent: boolean;
+  onReview: () => void; onReload: () => void;
+}) {
+  if (!changed && !uncertain && !confirmed && readCurrent) return null;
+  return <div role="status" className="rounded-lg border border-amber-300 p-3 text-xs text-amber-700 dark:text-amber-300">
+    <p>{confirmed ? 'The change is saved; finish by reloading the current state.' : uncertain
+      ? 'The result is uncertain. Retry the original request to recover its receipt; its payload and base are preserved.'
+      : changed ? 'The Spec changed. Your input is preserved; review the current dependency state before submitting.'
+      : 'Current dependency state is unavailable. Reload before submitting.'}</p>
+    {!readCurrent && <button type="button" className="btn btn-secondary mt-2 text-xs" disabled={pending} onClick={onReload}>Reload dependency state</button>}
+    {changed && !uncertain && !confirmed && <button type="button" className="btn btn-secondary mt-2 text-xs" disabled={!readCurrent || pending} onClick={onReview}>Review dependency base</button>}
+  </div>;
 }
 
 function removalBlockedMessage(reasonCode: string | null | undefined): string {
@@ -211,7 +293,10 @@ interface AddDependencyDialogProps {
   sourceStatus: SpecStatus;
   currentEditionStarted: boolean;
   onClose: () => void;
-  onAdded: () => Promise<void>;
+  onAdded: (minimumVersion?: number) => Promise<void>;
+  readCurrent: boolean;
+  refreshKey: number;
+  onAccessLost?: () => void;
 }
 
 function AddDependencyDialog({
@@ -223,6 +308,9 @@ function AddDependencyDialog({
   currentEditionStarted,
   onClose,
   onAdded,
+  readCurrent,
+  refreshKey,
+  onAccessLost,
 }: AddDependencyDialogProps) {
   const api = useDashboardApi();
   const { dialogRef, onKeyDown } = useDialogFocusTrap(
@@ -235,9 +323,11 @@ function AddDependencyDialog({
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selected, setSelected] = useState<LookupOption | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const idempotencyKeys = useRef(new Map<string, string>());
+  const accessLostRef = useRef(onAccessLost);
+  accessLostRef.current = onAccessLost;
+  const submission = useDependencySubmission<AddSpecDependencyRequest>({ version: sourceSpecVersion, edition: sourceSpecEdition,
+    readCurrent, send: request => api.addSpecDependency(boardId, sourceSpecId, request), refresh: onAdded, close: onClose, onAccessLost });
+  const { pending: submitting, error: submitError, setError: setSubmitError } = submission;
   const postStart = currentEditionStarted
     || ['in_progress', 'done', 'cancelled'].includes(sourceStatus);
 
@@ -262,49 +352,28 @@ function AddDependencyDialog({
       limit: 50,
       signal: controller.signal,
     }).then((page) => {
+      if (controller.signal.aborted) return;
       setCandidates(page.items.filter((candidate) => candidate.id !== sourceSpecId));
     }).catch((error) => {
-      if (!controller.signal.aborted) setLoadError(dependencyErrorMessage(error));
+      if (!controller.signal.aborted) {
+        setCandidates([]);
+        setLoadError(dependencyErrorMessage(error));
+        if (error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status)) {
+          setSelected(null);
+          accessLostRef.current?.();
+        }
+      }
     }).finally(() => {
       if (!controller.signal.aborted) setLoading(false);
     });
     return () => controller.abort();
-  }, [api, boardId, debouncedSearch, postStart, sourceSpecId]);
+  }, [api, boardId, debouncedSearch, postStart, sourceSpecId, refreshKey]);
 
   const submit = async () => {
-    if (!selected || submitting) return;
-    const fingerprint = selected.id;
-    let idempotencyKey = idempotencyKeys.current.get(fingerprint);
-    if (!idempotencyKey) {
-      idempotencyKey = createClientKey('spec-dependency-add');
-      idempotencyKeys.current.set(fingerprint, idempotencyKey);
-    }
-    setSubmitting(true);
-    setSubmitError(null);
-    try {
-      await api.addSpecDependency(boardId, sourceSpecId, {
-        prerequisite_spec_id: selected.id,
-        expected_spec_version: sourceSpecVersion,
-        expected_spec_edition: sourceSpecEdition,
-        idempotency_key: idempotencyKey,
-      });
-      idempotencyKeys.current.clear();
-      toast.success('Dependency added');
-      await onAdded();
-      onClose();
-    } catch (error) {
-      if (error instanceof AuthenticatedFetchError && error.status === 409) {
-        try {
-          await onAdded();
-        } catch {
-          // Preserve the authoritative operation error. The existing panel
-          // retry remains available if the background refresh also fails.
-        }
-      }
-      setSubmitError(dependencyErrorMessage(error));
-    } finally {
-      setSubmitting(false);
-    }
+    if (!selected || submitting || (!submission.attempt && !candidates.some(candidate => candidate.id === selected.id))) return;
+    await submission.submit({ prerequisite_spec_id: selected.id,
+      expected_spec_version: submission.base.version, expected_spec_edition: submission.base.edition,
+      idempotency_key: createClientKey('spec-dependency-add') });
   };
 
   return (
@@ -345,6 +414,9 @@ function AddDependencyDialog({
         </header>
 
         <div className="flex-1 space-y-3 overflow-y-auto px-5 py-4">
+          <DependencyRecovery changed={submission.changed} uncertain={Boolean(submission.attempt && !submission.attempt.confirmed)}
+            confirmed={Boolean(submission.attempt?.confirmed)} pending={submitting} readCurrent={readCurrent}
+            onReview={submission.review} onReload={submission.reload} />
           {postStart && (
             <div role="note" className="flex gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
               <AlertTriangle size={15} className="mt-0.5 shrink-0" />
@@ -357,6 +429,7 @@ function AddDependencyDialog({
             Search Specs
             <input
               type="search"
+              disabled={submitting || Boolean(submission.attempt)}
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Search by title or ID"
@@ -380,7 +453,7 @@ function AddDependencyDialog({
             </p>
           )}
           {!loading && candidates.length > 0 && (
-            <fieldset className="space-y-2">
+            <fieldset className="space-y-2" disabled={submitting || Boolean(submission.attempt)}>
               <legend className="sr-only">Eligible dependency targets</legend>
               {candidates.map((candidate) => {
                 const chosen = selected?.id === candidate.id;
@@ -437,11 +510,11 @@ function AddDependencyDialog({
             <button
               type="button"
               onClick={() => void submit()}
-              disabled={!selected || submitting}
+              disabled={!selected || submitting || (!submission.attempt?.confirmed && (!readCurrent || (!submission.attempt && (submission.changed || loading || Boolean(loadError) || !candidates.some(candidate => candidate.id === selected.id)))))}
               className="btn btn-primary inline-flex items-center gap-1.5 text-xs disabled:opacity-50"
             >
               {submitting && <Loader2 size={13} className="animate-spin" />}
-              {submitting ? 'Adding…' : 'Add dependency'}
+              {submitting ? 'Saving…' : submission.attempt?.confirmed ? 'Reload saved dependency' : submission.attempt ? 'Retry original dependency request' : 'Add dependency'}
             </button>
           </div>
         </footer>
@@ -458,8 +531,10 @@ interface RemoveDependencyDialogProps {
   item: SpecDependencyItem;
   related: SpecDependencySpecSummary;
   onClose: () => void;
-  onRemoved: () => Promise<void>;
+  onRemoved: (minimumVersion?: number) => Promise<void>;
   onSuccessfulClose: () => void;
+  readCurrent: boolean;
+  onAccessLost?: () => void;
 }
 
 function RemoveDependencyDialog({
@@ -472,6 +547,8 @@ function RemoveDependencyDialog({
   onClose,
   onRemoved,
   onSuccessfulClose,
+  readCurrent,
+  onAccessLost,
 }: RemoveDependencyDialogProps) {
   const api = useDashboardApi();
   const { dialogRef, onKeyDown } = useDialogFocusTrap(
@@ -479,9 +556,10 @@ function RemoveDependencyDialog({
     '[data-dependency-remove-focus]',
   );
   const [reason, setReason] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const keys = useRef(new Map<string, string>());
+  const submission = useDependencySubmission<RemoveSpecDependencyRequest>({ version: sourceSpecVersion, edition: sourceSpecEdition,
+    readCurrent, send: request => api.removeSpecDependency(boardId, sourceSpecId, item.id, request), refresh: onRemoved,
+    close: () => { onClose(); onSuccessfulClose(); }, onAccessLost });
+  const { pending: submitting, error, setError } = submission;
 
   useEscapeToClose(onClose, {
     enabled: true,
@@ -492,39 +570,8 @@ function RemoveDependencyDialog({
   const submit = async () => {
     const normalizedReason = reason.trim();
     if (!normalizedReason || submitting) return;
-    const fingerprint = [item.id, normalizedReason].join(':');
-    let idempotencyKey = keys.current.get(fingerprint);
-    if (!idempotencyKey) {
-      idempotencyKey = createClientKey('spec-dependency-remove');
-      keys.current.set(fingerprint, idempotencyKey);
-    }
-    setSubmitting(true);
-    setError(null);
-    try {
-      await api.removeSpecDependency(boardId, sourceSpecId, item.id, {
-        expected_spec_version: sourceSpecVersion,
-        expected_spec_edition: sourceSpecEdition,
-        idempotency_key: idempotencyKey,
-        reason: normalizedReason,
-      });
-      keys.current.clear();
-      toast.success('Dependency removed');
-      await onRemoved();
-      onClose();
-      onSuccessfulClose();
-    } catch (caught) {
-      if (caught instanceof AuthenticatedFetchError && caught.status === 409) {
-        try {
-          await onRemoved();
-        } catch {
-          // Preserve the authoritative operation error. The existing panel
-          // retry remains available if the background refresh also fails.
-        }
-      }
-      setError(dependencyErrorMessage(caught));
-    } finally {
-      setSubmitting(false);
-    }
+    await submission.submit({ expected_spec_version: submission.base.version, expected_spec_edition: submission.base.edition,
+      idempotency_key: createClientKey('spec-dependency-remove'), reason: normalizedReason });
   };
 
   return (
@@ -560,12 +607,16 @@ function RemoveDependencyDialog({
           </button>
         </header>
         <div className="space-y-3 px-5 py-4">
+          <DependencyRecovery changed={submission.changed} uncertain={Boolean(submission.attempt && !submission.attempt.confirmed)}
+            confirmed={Boolean(submission.attempt?.confirmed)} pending={submitting} readCurrent={readCurrent}
+            onReview={submission.review} onReload={submission.reload} />
           <div role="note" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300">
             Removing this dependency creates a tombstone and advances the authoritative Spec version.
           </div>
           <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">
             Removal reason <span aria-hidden="true" className="text-red-500">*</span>
             <textarea
+              disabled={submitting || Boolean(submission.attempt)}
               value={reason}
               onChange={(event) => {
                 setReason(event.target.value);
@@ -591,11 +642,11 @@ function RemoveDependencyDialog({
           <button
             type="button"
             onClick={() => void submit()}
-            disabled={!reason.trim() || submitting}
+            disabled={!reason.trim() || submitting || (!submission.attempt?.confirmed && (!readCurrent || (!submission.attempt && submission.changed)))}
             className="btn btn-danger inline-flex items-center gap-1.5 text-xs disabled:opacity-50"
           >
             {submitting && <Loader2 size={13} className="animate-spin" />}
-            {submitting ? 'Removing…' : 'Remove dependency'}
+            {submitting ? 'Saving…' : submission.attempt?.confirmed ? 'Reload saved dependency' : submission.attempt ? 'Retry original dependency request' : 'Remove dependency'}
           </button>
         </footer>
       </div>
@@ -754,7 +805,11 @@ function DependencyRow({
   );
 }
 
-export function SpecDependenciesTab({
+export function SpecDependenciesTab(props: SpecDependenciesTabProps) {
+  return <SpecDependenciesWorkspace key={`${props.boardId}:${props.spec.id}`} {...props} />;
+}
+
+function SpecDependenciesWorkspace({
   boardId,
   spec,
   readiness,
@@ -768,9 +823,25 @@ export function SpecDependenciesTab({
   onRetryReadiness,
   onOpenSpec,
   onMutated,
+  refreshKey = 0,
+  readCurrent = true,
+  onAccessLost,
 }: SpecDependenciesTabProps) {
   const api = useDashboardApi();
   const workspaceHeadingRef = useRef<HTMLHeadingElement>(null);
+  const [accessDenied, setAccessDenied] = useState(false);
+  const accessLostRef = useRef(onAccessLost);
+  accessLostRef.current = onAccessLost;
+  const loseAccess = useCallback(() => {
+    setAccessDenied(true);
+    setAddOpen(false);
+    setRemoving(null);
+    accessLostRef.current?.();
+  }, []);
+  const handleReadError = useCallback((error: unknown, signal: AbortSignal): never => {
+    if (!signal.aborted && error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status)) loseAccess();
+    throw error;
+  }, [loseAccess]);
   const [direction, setDirection] = useState<SpecDependencyDirection>(
     requestedDirection ?? 'depends_on',
   );
@@ -787,6 +858,7 @@ export function SpecDependenciesTab({
   useEffect(() => {
     if (requestedDirection) setDirection(requestedDirection);
   }, [directionRequestToken, requestedDirection]);
+  useEffect(() => { if (!canAdd) setAddOpen(false); if (!canRemove) setRemoving(null); }, [canAdd, canRemove]);
 
   const outgoingFilters = filters.depends_on;
   const incomingFilters = filters.required_by;
@@ -805,8 +877,8 @@ export function SpecDependenciesTab({
       cursor,
       limit: PAGE_LIMIT,
       signal,
-    })
-  ), [api, boardId, outgoingFilters, spec.id]);
+    }).catch(error => handleReadError(error, signal))
+  ), [api, boardId, outgoingFilters, spec.id, handleReadError]);
   const loadIncoming = useCallback((cursor: string | undefined, signal: AbortSignal) => (
     api.listSpecDependencies(boardId, spec.id, {
       direction: 'required_by',
@@ -822,19 +894,19 @@ export function SpecDependenciesTab({
       cursor,
       limit: PAGE_LIMIT,
       signal,
-    })
-  ), [api, boardId, incomingFilters, spec.id]);
+    }).catch(error => handleReadError(error, signal))
+  ), [api, boardId, incomingFilters, spec.id, handleReadError]);
 
   const outgoing = useOpaqueCursorPager<SpecDependencyItem, SpecDependencyPage>({
-    enabled: direction === 'depends_on',
-    resetKey: `${boardId}:${spec.id}:depends_on:${filterKey(outgoingFilters)}`,
+    enabled: !accessDenied && direction === 'depends_on',
+    resetKey: `${boardId}:${spec.id}:depends_on:${filterKey(outgoingFilters)}:${refreshKey}`,
     loadPage: loadOutgoing,
     getItemKey: (item) => item.id,
     classifyError: classifyCursorError,
   });
   const incoming = useOpaqueCursorPager<SpecDependencyItem, SpecDependencyPage>({
-    enabled: direction === 'required_by',
-    resetKey: `${boardId}:${spec.id}:required_by:${filterKey(incomingFilters)}`,
+    enabled: !accessDenied && direction === 'required_by',
+    resetKey: `${boardId}:${spec.id}:required_by:${filterKey(incomingFilters)}:${refreshKey}`,
     loadPage: loadIncoming,
     getItemKey: (item) => item.id,
     classifyError: classifyCursorError,
@@ -846,7 +918,8 @@ export function SpecDependenciesTab({
     effectiveReadiness?.unfinished_blocking_count ?? 0
   );
   const activeFilters = filters[direction];
-  const canAddAuthoritatively = canAdd;
+  const dependencyReadCurrent = readCurrent && pager.loaded && !pager.loading && !pager.error;
+  const canAddAuthoritatively = canAdd && dependencyReadCurrent;
   const addBlockedReasonId = `spec-${spec.id}-dependency-add-disabled-reason`;
 
   const setFilter = <K extends keyof DirectionFilters>(
@@ -859,13 +932,15 @@ export function SpecDependenciesTab({
     }));
   };
 
-  const refreshAfterMutation = async () => {
-    await onMutated();
+  const refreshAfterMutation = async (minimumVersion?: number) => {
+    await onMutated(minimumVersion);
     outgoing.restart();
     incoming.restart();
   };
 
   const total = pager.page?.total ?? pager.items.length;
+
+  if (accessDenied) return <p role="alert">Dependency access is unavailable. Reopen the Spec after access is restored.</p>;
 
   return (
     <div className="space-y-4" data-testid="spec-dependencies-panel">
@@ -1059,7 +1134,7 @@ export function SpecDependenciesTab({
             <DependencyRow
               key={item.id}
               item={item}
-              canRemove={canRemove}
+              canRemove={canRemove && dependencyReadCurrent}
               onOpenSpec={onOpenSpec}
               onRemove={(dependency, related) => setRemoving({ item: dependency, related })}
             />
@@ -1088,6 +1163,9 @@ export function SpecDependenciesTab({
           currentEditionStarted={effectiveReadiness?.current_edition_started ?? false}
           onClose={() => setAddOpen(false)}
           onAdded={refreshAfterMutation}
+          readCurrent={dependencyReadCurrent}
+          refreshKey={refreshKey}
+          onAccessLost={loseAccess}
         />
       )}
       {removing && (
@@ -1100,6 +1178,8 @@ export function SpecDependenciesTab({
           related={removing.related}
           onClose={() => setRemoving(null)}
           onRemoved={refreshAfterMutation}
+          readCurrent={dependencyReadCurrent}
+          onAccessLost={loseAccess}
           onSuccessfulClose={() => {
             window.setTimeout(() => workspaceHeadingRef.current?.focus(), 0);
           }}

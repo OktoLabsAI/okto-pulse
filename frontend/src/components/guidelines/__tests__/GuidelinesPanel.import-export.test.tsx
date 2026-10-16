@@ -93,9 +93,6 @@ function envelopeWithMetrics(
         tags: [],
         published_head_revision: 1,
         published_head_updated_at: '2026-07-29T00:00:00Z',
-        legacy_version: null,
-        legacy_version_unresolvable: false,
-        legacy_tags: null,
       }],
       head: {
         guideline_id: 'g1',
@@ -108,7 +105,7 @@ function envelopeWithMetrics(
       retirement: null,
       bindings: [],
       history_status: 'complete',
-      migration_notes: [],
+      import_notes: [],
     }],
   };
 }
@@ -144,11 +141,9 @@ function envelopeWithBinding(): GuidelineExportEnvelopeV3 {
         physical_source_kind: 'native',
         binding_origin: 'native',
         materialization: 'live',
-        legacy_source_id: null,
-        legacy_guideline_version: null,
-        legacy_template_id: null,
-        legacy_template_version: null,
-        legacy_version_unresolvable: false,
+        materialized_revision_number: null,
+        materialized_template_id: null,
+        materialized_template_version: null,
         evidence_refs: [['source', 'kb:architecture']],
         binding_digest: 'd'.repeat(64),
       }],
@@ -759,6 +754,40 @@ describe('GuidelinesPanel immutable policy import/export', () => {
     expectedPath,
   ) => {
     await expectEnvelopeRejected(buildEnvelope(), expectedPath);
+  });
+
+  it.each(['legacy_version', 'legacy_version_unresolvable', 'legacy_tags'])(
+    'rejects removed revision metadata %s before API access', async (field) => {
+      const envelope = envelopeWithMetrics([]);
+      const aggregate = envelope.guidelines[0];
+      await expectEnvelopeRejected({
+        ...envelope,
+        guidelines: [{
+          ...aggregate,
+          revisions: [{ ...aggregate.revisions[0], [field]: null }],
+        }],
+      }, 'guidelines[0].revisions[0]');
+    },
+  );
+
+  it.each(['legacy_source_id', 'legacy_guideline_version', 'legacy_template_id',
+    'legacy_template_version', 'legacy_version_unresolvable'])(
+    'rejects removed binding metadata %s before API access', async (field) => {
+      const envelope = envelopeWithBinding();
+      const aggregate = envelope.guidelines[0];
+      await expectEnvelopeRejected({
+        ...envelope,
+        guidelines: [{ ...aggregate, bindings: [{ ...aggregate.bindings[0], [field]: null }] }],
+      }, 'guidelines[0].bindings[0]');
+    },
+  );
+
+  it('rejects baseline-only history before API access', async () => {
+    const envelope = envelopeWithMetrics([]);
+    await expectEnvelopeRejected({
+      ...envelope,
+      guidelines: [{ ...envelope.guidelines[0], history_status: 'baseline_only' }],
+    }, 'guidelines[0].history_status');
   });
 
   it('rejects legacy and malformed envelopes before any API mutation', async () => {

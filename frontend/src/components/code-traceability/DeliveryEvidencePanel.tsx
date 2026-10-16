@@ -1,107 +1,243 @@
-import { useEffect, useRef, useState } from 'react';
+import { resolveDeliveryGateMode } from '@/components/board/deliveryGateSettings';
+import { DeliveryReadinessPanel } from './DeliveryReadinessPanel';
+import { DeliveryExceptionDetails } from './DeliveryExceptionDetails';
+import type { ReadinessSpecLocation } from './readinessNavigation';
+import { useEffect, useState } from 'react';
+import { RefreshCw } from 'lucide-react';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 import { useDashboardApi } from '@/services/api';
-import type { DeliveryEvidenceInput, DeliveryEvidenceProjection } from '@/types/delivery-evidence';
+import { ObligationRefText } from './obligationPresentation';
+import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
+import { decisionStatusLabel } from '@/components/specs/DecisionReviewSection';
 
 interface Props {
   boardId: string;
   specId: string;
-  canRecord?: boolean;
-  canTest?: boolean;
-  canCreateWaiver?: boolean;
-  canClearWaiver?: boolean;
-  onChanged?: () => void;
+  revision?: string;
+  skipDeliveryEvidence?: boolean;
+  onSkipDeliveryEvidenceChange?: (value: boolean) => void;
+  onOpenDecisions?: () => void;
+  onOpenReadinessSpec?: (location: ReadinessSpecLocation) => void;
+  focusExceptionId?: string | null;
 }
-const field = 'w-full rounded border border-slate-300 bg-white p-2 text-sm dark:border-slate-600 dark:bg-slate-900';
 
-export function DeliveryEvidencePanel({ boardId, specId, canRecord = false, canTest = false, canCreateWaiver = false, canClearWaiver = false, onChanged }: Props) {
+function ObligationEvidenceDetails({ data, row }: {
+  data: DeliveryEvidenceProjection; row: DeliveryEvidenceProjection['rows'][number];
+}) {
+  const ids = new Set([...row.implementation_ids, ...row.test_ids,
+    ...row.implementation_waiver_ids, ...row.test_waiver_ids]);
+  return <div className="space-y-4 break-words">
+    <section aria-label="Implementation evidence" className="space-y-2">
+      <h4 className="font-semibold">Implementation evidence</h4>
+      {row.implementation_ids.length === 0 && <p>No admitted implementation evidence.</p>}
+      {row.implementation_ids.map(id => {
+        const proof = data.implementations.find(item => item.id === id);
+        return <div key={id} className="space-y-1 rounded border border-gray-200 p-2 dark:border-gray-700">
+          <p className="break-all">Record: {id}</p>
+          {proof ? <>
+            <p>Card: {proof.card_id}</p><p>Implementation author: {proof.actor_id || 'Not available'}</p><p>{proof.explanation}</p>
+            {proof.executions.map(execution => <p key={execution.execution_id} className="break-all">
+              {execution.relative_path} · {execution.source_ref} @ {execution.result_revision} · {execution.symbol || execution.execution_id}
+              {' · '}{execution.current_accepted_execution ? 'Current accepted execution' : 'Not a current accepted execution'}
+            </p>)}
+          </> : <p>Record details unavailable in this projection.</p>}
+        </div>;
+      })}
+      {row.implementation_waiver_ids.length > 0 && <p className="break-all">Implementation waivers (not proof): {row.implementation_waiver_ids.join(', ')}</p>}
+    </section>
+    <section aria-label="Verification evidence" className="space-y-2">
+      <h4 className="font-semibold">Verification evidence</h4>
+      {row.test_ids.length === 0 && <p>No admitted verification evidence.</p>}
+      {row.test_ids.map(id => {
+        const proof = data.tests?.find(item => item.id === id);
+        return <div key={id} className="space-y-1 rounded border border-gray-200 p-2 dark:border-gray-700">
+          <p className="break-all">Record: {id}</p>
+          {proof ? <><p>Card: {proof.card_id} · Scenario: {proof.scenario_id}</p>
+            <p>Verification author: {proof.actor_id || 'Not available'}</p>
+            <p>Result: {proof.result} · {proof.current_verified_run ? 'Current verified run' : 'Current verification not established'}</p></>
+            : <p>Record details unavailable in this projection.</p>}
+        </div>;
+      })}
+      {row.test_waiver_ids.length > 0 && <p className="break-all">Verification waivers (not proof): {row.test_waiver_ids.join(', ')}</p>}
+    </section>
+    {data.records.filter(record => ids.has(record.id)).map(record => <p key={record.id} className="break-all">
+      {record.id} · {record.created_at} · Actor: {record.actor_id}{record.revoked ? ' · Revoked' : ''}
+      {' · '}{record.payload.justification}
+    </p>)}
+  </div>;
+}
+
+// Spec "Delivery" tab — informational rollup over the linked cards' ledgers
+// (mockup sm_5ebd7063). Read-only by design: recording is card-scoped
+// (task DoD) and waivers are rollup-level, human-only — this surface only
+// presents the aggregated verdict, never mutates it.
+export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryEvidence = false, onSkipDeliveryEvidenceChange, onOpenDecisions, onOpenReadinessSpec, focusExceptionId }: Props) {
   const api = useDashboardApi();
   const [data, setData] = useState<DeliveryEvidenceProjection | null>(null);
+  const [gateMode, setGateMode] = useState<'advisory' | 'blocking' | null>(null);
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
   const [reload, setReload] = useState(0);
-  const [refs, setRefs] = useState<string[]>([]);
-  const [kind, setKind] = useState<'implementation' | 'test' | 'waiver'>(canRecord ? 'implementation' : canTest ? 'test' : 'waiver');
-  const [choice, setChoice] = useState('');
-  const [testedIds, setTestedIds] = useState<string[]>([]);
-  const [phase, setPhase] = useState<'implementation' | 'test'>('implementation');
-  const [reason, setReason] = useState('');
-  const [revocationReason, setRevocationReason] = useState('');
-  const identity = `${boardId}:${specId}`;
-  const identityRef = useRef(identity);
-  const replayRef = useRef<{ payload: string; key: string } | null>(null);
-  identityRef.current = identity;
-  const canCreateAnyRecord = canRecord || canTest || canCreateWaiver;
+
   useEffect(() => {
     const controller = new AbortController();
-    setData(null); setError(''); setRefs([]); setChoice(''); setTestedIds([]);
+    setData(null); setGateMode(null); setError('');
     api.getDeliveryEvidence(boardId, specId, controller.signal).then(value => {
+      if (value.board_id !== boardId || value.spec_id !== specId) throw new Error('Delivery evidence scope changed. Refresh the Spec.');
       if (!controller.signal.aborted) setData(value);
     }).catch(err => { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : 'Delivery proof could not be loaded.'); });
+    api.getBoard(boardId).then(board => {
+      if (!controller.signal.aborted) setGateMode(resolveDeliveryGateMode(board.settings?.delivery_evidence_gate));
+    }).catch(() => { if (!controller.signal.aborted) setGateMode(null); });
     return () => controller.abort();
-  }, [api, boardId, specId, reload]);
+  }, [api, boardId, specId, revision, reload, focusExceptionId]);
 
-  async function submit(recordId?: string) {
-    const justification = (recordId ? revocationReason : reason).trim();
-    if (!data || busy || !justification) return;
-    if ((recordId && !canClearWaiver) || (!recordId && kind === 'waiver' && !canCreateWaiver) || (!recordId && kind === 'test' && !canTest) || (!recordId && kind === 'implementation' && !canRecord)) return;
-    const originalIdentity = identity;
-    const selected = data.candidates.find(item => `${item.card_id}:${item.id}` === choice);
-    const input: DeliveryEvidenceInput = {
-      expected_edition: data.edition, expected_version: data.version,
-      idempotency_key: crypto.randomUUID(), kind: recordId ? 'revoke' : kind,
-      obligation_refs: recordId ? [] : refs, justification,
-      ...(recordId ? { record_id: recordId } : kind === 'waiver' ? { phase } : {
-        card_id: selected?.card_id,
-        ...(kind === 'implementation' ? { execution_id: selected?.id } : { scenario_id: selected?.id, implementation_ids: testedIds }),
-      }),
-    };
-    const payload = JSON.stringify({ ...input, idempotency_key: '', board_id: boardId, spec_id: specId });
-    if (replayRef.current?.payload === payload) input.idempotency_key = replayRef.current.key;
-    else replayRef.current = { payload, key: input.idempotency_key };
-    setBusy(true); setError('');
-    try {
-      await api.recordDeliveryEvidence(boardId, specId, input);
-      if (identityRef.current !== originalIdentity) return;
-      replayRef.current = null;
-      if (recordId) setRevocationReason(''); else setReason('');
-      setReload(v => v + 1); onChanged?.();
-    } catch (err) { if (identityRef.current === originalIdentity) setError(err instanceof Error ? err.message : 'Delivery evidence was not recorded.'); }
-    finally { setBusy(false); }
-  }
-  return <section className="space-y-4" aria-label="Delivery evidence">
-    <div className="flex items-start justify-between gap-4"><div>
-      <h3 className="font-semibold">Delivery evidence</h3>
-      <p className="text-sm text-slate-500 dark:text-slate-400">What was implemented, and which test verified it? This is separate from the planning Code Evidence Matrix.</p>
-    </div><button type="button" onClick={() => setReload(v => v + 1)} disabled={busy} className="rounded border px-3 py-1">Refresh</button></div>
-    <details className="rounded border p-3 text-sm"><summary className="cursor-pointer font-medium">How to complete delivery proof</summary>
-      <ol className="mt-2 list-decimal space-y-2 pl-5"><li>On a task or bug card, submit an accepted execution receipt for the committed files and complete the card. Then associate it with the obligations below.</li><li>Execute a scenario linked to a <strong>test card</strong>, record its authenticated passing result and complete the test card. Associate that run with the implementation records actually tested.</li><li>Refresh this matrix before completing the Spec. Changed requirements, a new implementation, failed reruns or revoked receipts can invalidate proof.</li></ol>
-      <p className="mt-2">Skip flags do not waive delivery. An authorized human can justify a separate implementation or verification exemption. Exemption is not a passing test. For a non-code obligation with no implementation, explicitly decide both phases.</p>
-    </details>
-    {error && <p role="alert" className="rounded border border-red-500 p-3 text-red-500">{error}</p>}
-    {!data && !error && <p role="status">Loading delivery proof…</p>}
-    {data && <>
-      <p role="status" className={`rounded border p-3 ${data.allowed ? 'border-emerald-500' : 'border-amber-500'}`}>
-        {data.allowed ? 'Delivery proof complete' : 'Delivery proof incomplete'} · Edition {data.edition}. {data.status === 'done' ? 'This completed Spec has not been reopened. Missing proof may be recorded retrospectively.' : 'Both columns must be satisfied before this Spec can move to Done.'}
+  const missingImplementation = data?.rows.filter(row => !row.implementation_satisfied).length ?? 0;
+  const missingTest = data?.rows.filter(row => !row.test_satisfied && !row.decision_verification_status).length ?? 0;
+  const pendingDecisions = data?.rows.filter(row => row.decision_verification_status && !row.test_satisfied).length ?? 0;
+  const summary = !data ? '' : data.allowed
+    ? `All ${data.rows.length} obligations satisfied (proof or authorized waiver)`
+    : [missingImplementation ? `implementation missing on ${missingImplementation}` : '',
+       missingTest ? `test coverage missing on ${missingTest}` : '',
+       pendingDecisions ? `${pendingDecisions} decision verification(s) pending` : '']
+      .filter(Boolean).join(' · ') + ' obligation' + ((missingImplementation + missingTest) === 1 ? '' : 's');
+
+  return <section className="space-y-5" aria-label="Implementation and verification">
+    {focusExceptionId && data?.board_id === boardId && data.spec_id === specId
+      && <DeliveryExceptionDetails data={data} recordId={focusExceptionId} />}
+    <DeliveryReadinessPanel boardId={boardId} specId={specId} revision={`${revision ?? ''}:${reload}`} onOpenReadinessSpec={onOpenReadinessSpec} />
+    <p className="text-sm text-gray-500 dark:text-gray-400">Track implementation and verification for each obligation. Expand an item to inspect its evidence.</p>
+    <div className="flex flex-wrap items-center justify-between gap-4">
+      <div className="flex min-w-0 items-center gap-2">
+        {data && (data.allowed
+          ? <span className="shrink-0 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">Complete</span>
+          : <span className="shrink-0 rounded-full bg-red-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-red-700 dark:bg-red-900/40 dark:text-red-300">Blocked</span>)}
+        {(error || data) && <span className="text-xs text-gray-500 dark:text-gray-400" role="status">
+          {error || `${summary} · Edition ${data!.edition}`}
+        </span>}
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
+        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-gray-600 dark:bg-gray-800 dark:text-gray-300" data-testid="delivery-gate-mode">
+          Gate: {gateMode === null ? 'Unknown' : gateMode === 'advisory' ? 'Advisory' : 'Blocking'} (Board)
+        </span>
+        <button type="button" onClick={() => setReload(v => v + 1)} aria-label="Refresh delivery rollup"
+          className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-xs font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700">
+          <RefreshCw size={14} /> Refresh
+        </button>
+      </div>
+    </div>
+
+      {!data && !error && <PulseLoader label="Loading delivery rollup…" size="sm" className="py-6" />}
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50/50 px-3 py-2 dark:border-gray-700 dark:bg-gray-700/20">
+        <div className="min-w-0">
+          <span className="text-xs font-medium text-gray-700 dark:text-gray-300">Skip delivery evidence requirement</span>
+          <p className="text-[10px] text-gray-400">Allow moving spec to Done without complete delivery proof — the coverage verdict stays visible. Waivers (per obligation) remain human-only.</p>
+        </div>
+        {onSkipDeliveryEvidenceChange ? (
+          <button
+            type="button"
+            role="switch"
+            aria-checked={skipDeliveryEvidence}
+            aria-label="Skip delivery evidence requirement"
+            data-testid="delivery-skip-toggle"
+            onClick={() => onSkipDeliveryEvidenceChange(!skipDeliveryEvidence)}
+            className={`relative h-5 w-10 shrink-0 rounded-full transition-colors ${skipDeliveryEvidence ? 'bg-amber-500' : 'bg-gray-300 dark:bg-gray-600'}`}
+          >
+            <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${skipDeliveryEvidence ? 'translate-x-5' : ''}`} />
+          </button>
+        ) : (
+          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide ${skipDeliveryEvidence ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'}`}>
+            {skipDeliveryEvidence ? 'Skipped' : 'Active'}
+          </span>
+        )}
+      </div>
+
+    {data && data.status === 'done' && !data.allowed && (
+      <p className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-500 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-400">
+        This completed Spec has not been reopened. Missing proof may have been recorded retrospectively or waived by an authorized human.
       </p>
-      <div className="overflow-x-auto"><table className="w-full text-left text-sm"><thead><tr><th scope="col">Obligation</th><th scope="col">Implementation · task/bug</th><th scope="col">Verification · test card</th></tr></thead><tbody>
-        {data.rows.map(row => { const ref = row.obligation.binding.obligation_ref; return <tr key={ref} className="border-t align-top">
-          <td className="p-2"><label className="flex gap-2">{canCreateAnyRecord && <input type="checkbox" aria-label={`Select ${ref}`} checked={refs.includes(ref)} onChange={e => setRefs(e.target.checked ? [...refs, ref] : refs.filter(v => v !== ref))} />}<span>{row.obligation.title}<code className="block text-xs text-slate-500">{ref}</code></span></label></td>
-          <td className="p-2">{row.implementation_ids.length ? <details><summary className="cursor-pointer">Recorded ({row.implementation_ids.length})</summary>{row.implementation_ids.map(id => { const proof = data.implementations.find(i => i.id === id); return <div key={id} className="mt-2 max-w-sm break-words text-xs"><code className="break-all">{proof?.relative_path}{proof?.symbol ? ` · ${proof.symbol}` : ''}</code><p>{proof?.source_ref}</p><code className="break-all">{proof?.result_revision}</code><p>Task/bug: {proof?.card_id}</p><p>{proof?.explanation}</p><code className="break-all">{id}</code></div>; })}</details> : row.implementation_waiver_ids.length ? 'Explicitly waived — not implemented' : 'Missing / stale'}</td>
-          <td className="p-2">{row.test_ids.length ? <details><summary className="cursor-pointer">Verified passing run ({row.test_ids.length})</summary>{row.test_ids.map(id => { const proof = data.tests?.find(t => t.id === id); return <div key={id} className="mt-2 max-w-sm break-words text-xs"><p>Test card: {proof?.card_id || 'See audit record'}</p><p>Scenario: {proof?.scenario_id || 'See audit record'}</p><code className="break-all">{id}</code></div>; })}</details> : row.test_waiver_ids.length ? 'Explicitly waived — not tested' : 'Missing / stale'}</td>
-        </tr>; })}
-      </tbody></table></div>
-      {canCreateAnyRecord && <form onSubmit={e => { e.preventDefault(); void submit(); }} className="space-y-3 rounded border p-3">
-        <h4 className="font-medium">Associate proof with selected obligations</h4>
-        <label className="block text-sm">Record type<select className={field} value={kind} onChange={e => { setKind(e.target.value as typeof kind); setChoice(''); }}>
-          {canRecord && <option value="implementation">Code delivered by task / bug</option>}{canTest && <option value="test">Passing result from test card</option>}{canCreateWaiver && <option value="waiver">Audited exemption (human authorization)</option>}
-        </select></label>
-        {kind !== 'waiver' ? <label className="block text-sm">Accepted current proof<select required value={choice} onChange={e => setChoice(e.target.value)} className={field}><option value="">Select a completed card's receipt…</option>{data.candidates.filter(c => c.kind === kind).map(c => <option key={`${c.card_id}:${c.id}`} value={`${c.card_id}:${c.id}`}>{c.label} · {c.card_id}</option>)}</select><span className="text-xs text-slate-500">Only eligible, completed cards appear. If empty, complete the receipt and card workflow described above.</span></label>
-          : <label className="block text-sm">Exempt only this phase<select className={field} value={phase} onChange={e => setPhase(e.target.value as typeof phase)}><option value="implementation">Implementation</option><option value="test">Verification</option></select></label>}
-        {kind === 'test' && <fieldset><legend className="text-sm font-medium">Which implementation records did this run test?</legend>{data.implementations.filter(i => i.current_accepted_execution && !data.rejected_record_ids.includes(i.id)).map(i => <label key={i.id} className="flex gap-2 text-sm"><input type="checkbox" checked={testedIds.includes(i.id)} onChange={e => setTestedIds(e.target.checked ? [...testedIds, i.id] : testedIds.filter(id => id !== i.id))} />{i.relative_path} @ {i.result_revision} · {i.id}</label>)}</fieldset>}
-        <label className="block text-sm">Explanation / audit reason<textarea required maxLength={20000} className={field} value={reason} onChange={e => setReason(e.target.value)} placeholder="Explain how this proof covers the selected obligations, or why the exemption is appropriate." /></label>
-        <button type="submit" disabled={busy || !refs.length || !reason.trim() || (kind !== 'waiver' && !choice) || (kind === 'test' && !testedIds.length)} className="rounded bg-cyan-700 px-3 py-2 text-white disabled:opacity-50">{busy ? 'Saving…' : 'Record association'}</button>
-      </form>}
-      <details className="rounded border p-3"><summary className="cursor-pointer">Audit history ({data.records.length})</summary>{canClearWaiver && <label className="mt-3 block text-sm">Revocation audit reason<textarea required maxLength={20000} className={field} value={revocationReason} onChange={e => setRevocationReason(e.target.value)} placeholder="Explain why this record must be revoked. The historical record is preserved." /></label>}{data.records.map(r => <article key={r.id} className="mt-2 break-words border-t pt-2 text-sm"><strong>{r.kind}{r.revoked ? ' · revoked' : ''}</strong> · {r.actor_id} · {r.created_at}<p>{r.payload.justification}</p><code className="text-xs">{r.id}</code>{canClearWaiver && !r.revoked && r.kind !== 'revoke' && <button type="button" disabled={busy || !revocationReason.trim()} title="Enter a revocation audit reason above. Revocation preserves the historical record." onClick={() => void submit(r.id)} className="ml-2 text-red-500">Revoke</button>}</article>)}</details>
+    )}
+
+    {data && <>
+      <div>
+        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Coverage by obligation</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm" data-testid="delivery-coverage-table">
+            <thead>
+              <tr className="border-b border-gray-100 text-left text-xs text-gray-400 dark:border-gray-800">
+                <th scope="col" className="py-1 pr-4">Obligation</th>
+                <th scope="col" className="px-2">Implementation</th>
+                <th scope="col" className="px-2">Verification</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
+              {data.rows.map(row => {
+                const ref = row.obligation.binding.obligation_ref;
+                const waivedImpl = row.implementation_waiver_ids.length > 0;
+                const waivedTest = row.test_waiver_ids.length > 0;
+                const decision = !!row.decision_verification_status;
+                return <tr key={ref}>
+                  <td className="min-w-0 py-1.5 pr-4 text-gray-700 dark:text-gray-200">
+                    <details className="group py-2">
+                    <summary className="cursor-pointer rounded font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500">{row.obligation.title}</summary>
+                    <div className="mt-3 space-y-3 rounded-lg bg-gray-50 p-3 text-xs dark:bg-gray-800/50">
+                    <ObligationRefText value={ref} />
+                    {!decision && row.required_card_ids && <p className="text-xs">{row.required_card_ids.length} planned implementation Card(s)</p>}
+                    {Boolean(row.missing_card_ids?.length) && <p className="text-xs text-amber-600 dark:text-amber-400">Pending implementation Cards: {row.missing_card_ids!.slice(0, 20).join(', ')}{row.missing_card_ids!.length > 20 ? ' (additional Cards omitted)' : ''}</p>}
+                    {row.missing_criteria?.slice(0, 20).map(([implementation, criterion]) => <p key={JSON.stringify([implementation, criterion])} className="text-xs text-amber-600 dark:text-amber-400">Implementation {implementation}: missing verification of {criterion}</p>)}
+                    {(row.missing_criteria?.length ?? 0) > 20 && <p className="text-xs">Additional criterion gaps are omitted from this summary.</p>}
+                    <p className="break-all text-gray-500">Semantic revision: {row.obligation.binding.semantic_sha256}</p>
+                    {decision ? <div className="space-y-2"><p>{decisionStatusLabel(row.decision_verification_status!)}</p>
+                      <p>Adherence reuses selected obligation evidence and any required inspection. No separate implementation Card is required.</p>
+                      {onOpenDecisions && <button type="button" className="btn btn-secondary text-xs" onClick={onOpenDecisions}>Review in Decisions</button>}
+                    </div> : <ObligationEvidenceDetails data={data} row={row} />}
+                    </div>
+                    </details>
+                  </td>
+                  <td className="px-2 text-green-600 dark:text-green-400" title={decision ? 'Decisions do not require their own implementation' : waivedImpl ? 'Explicitly waived — human authorization' : row.implementation_satisfied ? 'Accepted proof recorded' : 'No accepted proof'}>
+                    {decision ? <span className="text-xs text-gray-500">Not applicable</span> : waivedImpl ? <span className="text-xs text-amber-600 dark:text-amber-400">Waived</span> : row.implementation_satisfied ? '✓' : <span className="text-amber-500">◌</span>}
+                  </td>
+                  <td className="px-2 text-green-600 dark:text-green-400" title={waivedTest ? 'Explicitly waived — human authorization' : row.test_satisfied ? 'Current passing evidence for this obligation' : 'Missing / stale'}>
+                    {decision ? <span className="text-xs">{decisionStatusLabel(row.decision_verification_status!)}</span> : waivedTest ? <span className="text-xs text-amber-600 dark:text-amber-400">Waived</span> : row.test_satisfied ? '✓' : <span className="text-amber-500">◌</span>}
+                  </td>
+                </tr>;
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {data.per_card && data.per_card.length > 0 && (
+        <div>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Per card</h3>
+          <div className="space-y-2">
+            {data.per_card.map(card => {
+              const proven = card.obligations.filter(o => o.implementation_satisfied).length;
+              const isTest = card.card_type === 'test';
+              return <div key={card.card_id} className="flex items-center justify-between rounded-md border border-gray-200 p-3 dark:border-gray-800" data-testid={`delivery-card-${card.card_id}`}>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium text-gray-700 dark:text-gray-200">{card.title}</div>
+                  <div className="text-xs text-gray-400 dark:text-gray-500">
+                    {isTest
+                      ? 'Test card · records authenticated outcomes; delivery requires current passing evidence for every required criterion'
+                      : card.obligations.length === 0
+                        ? 'No derived obligations'
+                        : proven === card.obligations.length
+                          ? `${proven} obligation${proven === 1 ? '' : 's'} with accepted proof`
+                          : `${proven}/${card.obligations.length} obligations with proof · ${card.obligations.length - proven} unproven`}
+                  </div>
+                </div>
+                <span className={`shrink-0 text-xs font-medium ${isTest ? 'text-gray-400 dark:text-gray-500' : card.satisfied ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'}`}>
+                  {isTest ? 'Excluded from DoD gate' : card.satisfied ? 'Satisfied' : 'In progress'}
+                </span>
+              </div>;
+            })}
+          </div>
+        </div>
+      )}
+
+      <p className="text-xs text-gray-400 dark:text-gray-500">
+        Waivers are recorded at rollup level and require human authorization. Proof is recorded on each task or test card.
+      </p>
     </>}
   </section>;
 }

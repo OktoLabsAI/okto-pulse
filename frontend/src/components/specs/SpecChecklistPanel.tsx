@@ -13,6 +13,7 @@ import {
 import toast from 'react-hot-toast';
 
 import { PreviousResultsSection } from '@/components/validation-cycle/ValidationCyclePrimitives';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { useDashboardApi } from '@/services/api';
 import type {
   ChecklistExecutionStartResult,
@@ -27,15 +28,16 @@ interface SpecChecklistPanelProps {
   boardId: string;
   specId: string;
   expectedSpecVersion: number;
-  expectedSpecEdition?: number;
+  expectedSpecEdition: number;
   canRead?: boolean;
   canExecute?: boolean;
   /** Checklist writes are allowed only while the Spec is in Validation. */
   validationStageActive?: boolean;
   showHistory?: boolean;
-  presentationMode?: 'legacy' | 'lifecycle-edition';
   /** Suppresses the repeated title inside the unified Spec workspace. */
   embedded?: boolean;
+  refreshKey?: number;
+  active?: boolean;
   onStateChange?: (state: ChecklistSpecState | null) => void;
 }
 
@@ -70,11 +72,11 @@ export function SpecChecklistPanel({
   canExecute = true,
   validationStageActive = true,
   showHistory = false,
-  presentationMode = 'legacy',
   embedded = false,
+  refreshKey = 0,
+  active = true,
   onStateChange,
 }: SpecChecklistPanelProps) {
-  const lifecycleMode = presentationMode === 'lifecycle-edition';
   const api = useDashboardApi();
   const apiRef = useRef(api);
   apiRef.current = api;
@@ -97,44 +99,114 @@ export function SpecChecklistPanel({
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [readError, setReadError] = useState<string | null>(null);
+  const [pendingState, setPendingState] = useState<ChecklistSpecState | null>(null);
+  const executionBasis = useRef<ChecklistSpecState | null>(null);
+  const accessGeneration = useRef(0);
+  const readGeneration = useRef(0);
+  const scope = `${boardId}:${specId}`;
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
+  const writeScope = `${scope}:${expectedSpecVersion}:${expectedSpecEdition}:${canRead}:${canExecute}`;
+  const writeScopeRef = useRef(writeScope);
+  writeScopeRef.current = writeScope;
+  const basisKey = (value: ChecklistSpecState) => JSON.stringify([
+    value.subject, value.binding, value.current_receipt?.id ?? null,
+  ]);
 
   const loadState = useCallback(async () => {
+    const generation = ++readGeneration.current;
+    const requestedScope = `${boardId}:${specId}`;
+    const current = () => generation === readGeneration.current && scopeRef.current === requestedScope;
     if (!canRead) {
+      accessGeneration.current += 1;
       setState(null);
+      setTemplate(null);
+      setExecution(null);
+      executionBasis.current = null;
+      setDrafts({});
+      setHistory(null);
+      setPendingState(null);
       onStateChangeRef.current?.(null);
       setLoading(false);
       return;
     }
     setLoading(true);
+    setReadError(null);
     try {
+      if (!Number.isInteger(expectedSpecEdition) || expectedSpecEdition < 1) {
+        throw new Error('A positive validation edition is required.');
+      }
       const [resolvedState, templates] = await Promise.all([
         apiRef.current.getSpecChecklistState(boardId, specId),
         apiRef.current.listChecklistTemplates(),
       ]);
+      if (!current()) return;
+      if (
+        resolvedState.subject.board_id !== boardId
+        || resolvedState.subject.spec_id !== specId
+        || resolvedState.subject.spec_edition !== expectedSpecEdition
+        || (resolvedState.current_receipt !== null && (
+          !Number.isInteger(resolvedState.current_receipt.spec_edition)
+          || resolvedState.current_receipt.spec_edition < 1
+          || resolvedState.current_receipt.spec_edition > expectedSpecEdition
+          || resolvedState.current_receipt.source !== 'native'
+          || resolvedState.current_receipt.board_id !== boardId
+          || resolvedState.current_receipt.spec_id !== specId
+        ))
+      ) {
+        throw new Error('The checklist state does not match this subject edition.');
+      }
       const resolvedTemplate =
         templates.items.find(
           (item) =>
             item.version === resolvedState.binding.template_version_id,
         ) ?? null;
+      if (executionBasis.current) {
+        setPendingState(basisKey(executionBasis.current) !== basisKey(resolvedState) ? resolvedState : null);
+        onStateChangeRef.current?.(resolvedState);
+        return;
+      }
       setState(resolvedState);
       setTemplate(resolvedTemplate);
       onStateChangeRef.current?.(resolvedState);
     } catch (error: any) {
-      setState(null);
+      if (!current()) return;
+      const accessLost = error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status);
+      if (!executionBasis.current || accessLost) setState(null);
+      if (accessLost) {
+        accessGeneration.current += 1;
+        executionBasis.current = null;
+        setExecution(null);
+        setDrafts({});
+        setTemplate(null);
+        setHistory(null);
+        setPendingState(null);
+      }
+      setReadError(error?.message || 'Failed to load the curated checklist');
       onStateChangeRef.current?.(null);
       toast.error(error?.message || 'Failed to load the curated checklist');
     } finally {
-      setLoading(false);
+      if (current()) setLoading(false);
     }
   }, [
     boardId,
     canRead,
+    expectedSpecEdition,
     specId,
   ]);
 
   useEffect(() => {
-    void loadState();
-  }, [loadState]);
+    if (active || !canRead) void loadState();
+    return () => { readGeneration.current += 1; };
+  }, [loadState, active, refreshKey, expectedSpecVersion]);
+
+  useEffect(() => {
+    setExecution(null);
+    executionBasis.current = null;
+    setDrafts({});
+    setPendingState(null);
+  }, [boardId, specId]);
 
   useEffect(() => {
     setHistory(null);
@@ -142,12 +214,12 @@ export function SpecChecklistPanel({
     setHistoryExpanded(false);
     setOffset(0);
     historyLoadKeyRef.current = null;
-  }, [boardId, lifecycleMode, showHistory, specId]);
+  }, [boardId, expectedSpecEdition, showHistory, specId]);
 
   useEffect(() => {
-    const shouldLoad = showHistory && (!lifecycleMode || historyExpanded);
+    const shouldLoad = active && showHistory && historyExpanded;
     if (!canRead || !shouldLoad) return undefined;
-    const loadKey = [boardId, specId, offset, limit, historyRefreshKey].join(':');
+    const loadKey = [boardId, specId, expectedSpecEdition, offset, limit, historyRefreshKey, refreshKey].join(':');
     if (historyLoadKeyRef.current === loadKey) return undefined;
     let cancelled = false;
     setHistoryLoading(true);
@@ -155,6 +227,16 @@ export function SpecChecklistPanel({
     apiRef.current.listChecklistExecutions(boardId, specId, offset, limit)
       .then((resolvedHistory) => {
         if (cancelled) return;
+        if (resolvedHistory.items.some(({ receipt }) => (
+          !Number.isInteger(receipt.spec_edition)
+          || receipt.spec_edition < 1
+          || receipt.spec_edition > expectedSpecEdition
+          || receipt.source !== 'native'
+          || receipt.board_id !== boardId
+          || receipt.spec_id !== specId
+        ))) {
+          throw new Error('The previous checklist results do not match this subject edition.');
+        }
         historyLoadKeyRef.current = loadKey;
         setHistory(resolvedHistory);
       })
@@ -172,10 +254,12 @@ export function SpecChecklistPanel({
     return () => { cancelled = true; };
   }, [
     boardId,
+    active,
     canRead,
+    expectedSpecEdition,
     historyExpanded,
     historyRefreshKey,
-    lifecycleMode,
+    refreshKey,
     limit,
     offset,
     showHistory,
@@ -188,27 +272,40 @@ export function SpecChecklistPanel({
     await loadState();
   }, [loadState]);
 
-  const start = async () => {
+  const start = async (reviewedState?: ChecklistSpecState) => {
+    const basis = reviewedState ?? state;
     if (
-      !state
-      || state.binding.mode === 'off'
+      !basis
+      || basis.binding.mode === 'off'
       || !validationStageActive
       || !canExecute
       || starting
     ) return;
+    const requestedScope = writeScope;
+    const requestedAccess = accessGeneration.current;
+    const requestedVersion = expectedSpecVersion;
+    const requestedEdition = expectedSpecEdition;
     setStarting(true);
     try {
       const started = await apiRef.current.startChecklistExecution(
         boardId,
         specId,
         {
-          spec_edition: expectedSpecEdition ?? state.subject.spec_edition ?? 1,
+          spec_edition: expectedSpecEdition,
           expected_spec_version: expectedSpecVersion,
-          binding_version: state.binding.version,
+          binding_version: basis.binding.version,
         },
       );
+      if (writeScopeRef.current !== requestedScope || accessGeneration.current !== requestedAccess) return;
+      if (started.spec_edition !== requestedEdition || basis.subject.spec_version !== requestedVersion) {
+        throw new Error('The checklist execution does not match this subject edition.');
+      }
       setExecution(started);
-      setDrafts(
+      executionBasis.current = basis;
+      setState(basis);
+      setPendingState(null);
+      setReadError(null);
+      if (!reviewedState) setDrafts(
         Object.fromEntries(
           (template?.items ?? []).map((item) => [
             item.item_id,
@@ -217,6 +314,7 @@ export function SpecChecklistPanel({
         ),
       );
     } catch (error: any) {
+      if (writeScopeRef.current !== requestedScope || accessGeneration.current !== requestedAccess) return;
       toast.error(error?.message || 'Failed to start checklist execution');
       await loadState();
     } finally {
@@ -253,8 +351,16 @@ export function SpecChecklistPanel({
   );
 
   const submit = async () => {
-    if (!state || !execution || !template || !allItemsComplete || submitting) return;
+    if (
+      !state || !execution || !template || !allItemsComplete || submitting
+      || pendingState || readError || loading || starting
+      || !canExecute || !validationStageActive
+      || execution.spec_edition !== expectedSpecEdition
+      || executionBasis.current?.subject.spec_version !== expectedSpecVersion
+    ) return;
     setSubmitting(true);
+    const requestedScope = writeScope;
+    const requestedAccess = accessGeneration.current;
     try {
       const results: ChecklistItemResult[] = template.items.map((item) => {
         const draft = drafts[item.item_id];
@@ -269,17 +375,20 @@ export function SpecChecklistPanel({
         boardId,
         specId,
         {
-          spec_edition: expectedSpecEdition ?? state.subject.spec_edition ?? 1,
+          spec_edition: expectedSpecEdition,
           expected_spec_version: expectedSpecVersion,
           execution_id: execution.execution_id,
           item_results: results,
         },
       );
+      if (writeScopeRef.current !== requestedScope || accessGeneration.current !== requestedAccess) return;
       toast.success('Checklist result recorded');
       setExecution(null);
+      executionBasis.current = null;
       setDrafts({});
       await refreshAfterMutation();
     } catch (error: any) {
+      if (writeScopeRef.current !== requestedScope || accessGeneration.current !== requestedAccess) return;
       toast.error(error?.message || 'Failed to submit checklist');
       await loadState();
     } finally {
@@ -295,7 +404,7 @@ export function SpecChecklistPanel({
     );
   }
 
-  if (loading && !state) {
+  if ((loading && !state) || (state && (state.subject.board_id !== boardId || state.subject.spec_id !== specId))) {
     return (
       <section className="flex items-center gap-2 rounded-lg border border-gray-200 p-4 text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
         <Loader2 size={13} className="animate-spin" />
@@ -308,31 +417,26 @@ export function SpecChecklistPanel({
     return (
       <section className="rounded-lg border border-red-200 bg-red-50 p-4 text-xs text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
         Checklist readiness is unavailable. Validation remains fail-closed.
+        <button type="button" className="btn btn-secondary mt-2 text-xs" onClick={() => void loadState()}>Retry checklist refresh</button>
       </section>
     );
   }
 
-  const lifecycleEdition = expectedSpecEdition ?? state.subject.spec_edition ?? 1;
-  const currentReceipt = lifecycleMode
-    ? state.subject.spec_edition === lifecycleEdition
-      && state.current_receipt?.spec_edition === lifecycleEdition
-      && state.currentness?.current === true
-      && state.status !== 'stale'
-      ? state.current_receipt
-      : null
-    : state.current_receipt;
-  const displayStatus = lifecycleMode
-    ? state.binding.mode === 'off'
-      ? 'off'
-      : !currentReceipt
-        ? 'not_started'
-        : state.status === 'failed'
-          ? 'failed'
-          : 'current'
-    : state.status;
-  const gateAllowed = lifecycleMode
-    ? Boolean(currentReceipt && state.gate.allowed)
-    : state.gate.allowed;
+  const lifecycleEdition = expectedSpecEdition;
+  const currentReceipt = state.subject.spec_edition === lifecycleEdition
+    && state.current_receipt?.spec_edition === lifecycleEdition
+    && state.currentness?.current === true
+    && state.status !== 'stale'
+    ? state.current_receipt
+    : null;
+  const displayStatus = state.binding.mode === 'off'
+    ? 'off'
+    : !currentReceipt
+      ? 'not_started'
+      : state.status === 'failed'
+        ? 'failed'
+        : 'current';
+  const gateAllowed = Boolean(currentReceipt && state.gate.allowed);
   const currentResultByItemId = new Map(
     (currentReceipt?.results ?? []).map((result) => [
       result.item_id,
@@ -345,6 +449,17 @@ export function SpecChecklistPanel({
       className="space-y-4 rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900/40"
       data-testid="spec-checklist-panel"
     >
+      {(readError || pendingState) && <div role="alert" className="space-y-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-xs text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
+        <p>{readError || 'Planning inputs changed. Your checklist draft is preserved; review the current Spec before recording a result.'}</p>
+        {readError && <button type="button" className="btn btn-secondary text-xs" onClick={() => void loadState()}>Retry checklist refresh</button>}
+        {pendingState && !readError && pendingState.subject.spec_edition === execution?.spec_edition
+          && pendingState.binding.template_version_id === template.version
+          && canExecute && validationStageActive && <button type="button" className="btn btn-secondary text-xs" disabled={loading || starting || submitting}
+            onClick={() => void start(pendingState)}>I reviewed the current plan — keep my checklist draft</button>}
+        {execution && <button type="button" className="btn btn-secondary text-xs" disabled={starting || submitting} onClick={() => {
+          executionBasis.current = null; setExecution(null); setDrafts({}); setPendingState(null); void loadState();
+        }}>Discard checklist draft</button>}
+      </div>}
       {!embedded && (
       <div className="flex items-start justify-between gap-3">
         <div>
@@ -353,9 +468,7 @@ export function SpecChecklistPanel({
             Curated Spec Checklist
           </h4>
           <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-            {lifecycleMode
-              ? `Current result for Edition ${lifecycleEdition}`
-              : `Immutable ${template.version} · Spec revision r${state.subject.spec_version} · binding v${state.binding.version}`}
+            {`Current result for Edition ${lifecycleEdition}`}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -363,7 +476,7 @@ export function SpecChecklistPanel({
             className={`rounded px-2 py-1 text-[10px] font-bold uppercase ${STATUS_STYLES[displayStatus]}`}
             data-testid="checklist-state-status"
           >
-            {lifecycleMode ? displayStatus.replace('_', ' ') : displayStatus}
+            {displayStatus.replace('_', ' ')}
           </span>
           <button
             type="button"
@@ -401,25 +514,11 @@ export function SpecChecklistPanel({
                   ? 'Advisory evidence'
                   : 'Checklist policy is off'}
             </p>
-            <p className={`mt-0.5 text-[10px] text-gray-500 dark:text-gray-400 ${lifecycleMode ? '' : 'font-mono'}`}>
-              {lifecycleMode
-                ? gateAllowed
-                  ? 'The checklist result is available for this edition.'
-                  : 'Complete the checklist for this edition before submitting validation.'
-                : state.gate.reason}
+            <p className="mt-0.5 text-[10px] text-gray-500 dark:text-gray-400">
+              {gateAllowed
+                ? 'The checklist result is available for this edition.'
+                : 'Complete the checklist for this edition before submitting validation.'}
             </p>
-            {!lifecycleMode && (state.currentness?.stale_reasons.length ?? 0) > 0 && (
-              <div className="mt-1 flex flex-wrap gap-1">
-                {state.currentness!.stale_reasons.map((reason) => (
-                  <span
-                    key={reason}
-                    className="rounded bg-amber-100 px-1.5 py-0.5 font-mono text-[9px] text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
-                  >
-                    {reason}
-                  </span>
-                ))}
-              </div>
-            )}
           </div>
         </div>
       </div>
@@ -428,13 +527,8 @@ export function SpecChecklistPanel({
         <div className="rounded border border-gray-100 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-800/60">
           <div className="flex items-center justify-between gap-2">
             <p className="text-[11px] font-semibold text-gray-700 dark:text-gray-200">
-              {lifecycleMode ? 'Current result' : 'Current receipt'}
+              Current result
             </p>
-            {!lifecycleMode && (
-              <span className="font-mono text-[9px] text-gray-400">
-                {currentReceipt.id}
-              </span>
-            )}
           </div>
           <div className="mt-2 grid grid-cols-3 gap-2 text-center text-[10px]">
             {(['pass', 'fail', 'not_applicable'] as ChecklistOutcome[]).map(
@@ -475,9 +569,7 @@ export function SpecChecklistPanel({
             </h5>
             <p className="mt-0.5 text-[10px] text-gray-400">
               {currentReceipt
-                ? lifecycleMode
-                  ? 'Recorded outcomes and evidence for the current edition.'
-                  : 'Persisted outcomes and evidence from the current receipt.'
+                ? 'Recorded outcomes and evidence for the current edition.'
                 : 'Immutable template preview. Start the checklist to record outcomes and evidence.'}
             </p>
           </div>
@@ -568,9 +660,7 @@ export function SpecChecklistPanel({
       {execution && (
         <div className="space-y-3" data-testid="checklist-execution-form">
           <div className="rounded bg-violet-50 px-3 py-2 text-[10px] text-violet-700 dark:bg-violet-900/20 dark:text-violet-200">
-            {lifecycleMode
-              ? `Checklist in progress for Edition ${lifecycleEdition}. Submit all 10 ordered results together.`
-              : `Execution ${execution.execution_id} is frozen to Spec revision r${state.subject.spec_version}. Submit all 10 ordered results together.`}
+            {`Checklist in progress for Edition ${execution.spec_edition}. Submit all 10 ordered results together.`}
           </div>
           {template.items.map((item, index) => {
             const draft = drafts[item.item_id] ?? {
@@ -658,7 +748,10 @@ export function SpecChecklistPanel({
             <button
               type="button"
               onClick={() => void submit()}
-              disabled={!allItemsComplete || submitting}
+              disabled={!allItemsComplete || submitting || starting || loading || Boolean(pendingState || readError)
+                || execution.spec_edition !== expectedSpecEdition
+                || executionBasis.current?.subject.spec_version !== expectedSpecVersion
+                || !canExecute || !validationStageActive}
               className="inline-flex items-center gap-1.5 rounded bg-violet-600 px-3 py-2 text-xs font-medium text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:bg-gray-400"
             >
               {submitting ? (
@@ -672,92 +765,7 @@ export function SpecChecklistPanel({
         </div>
       )}
 
-      {showHistory && !lifecycleMode && history && (
-        <div className="border-t border-gray-200 pt-3 dark:border-gray-700">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <h5 className="text-[11px] font-semibold uppercase text-gray-600 dark:text-gray-300">
-              Receipt history ({history.total_filtered})
-            </h5>
-            <select
-              aria-label="Checklist history page size"
-              value={limit}
-              onChange={(event) => {
-                setLimit(Number(event.target.value) as 25 | 50 | 100);
-                setOffset(0);
-              }}
-              className="rounded border border-gray-300 bg-white px-1.5 py-1 text-[10px] dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
-            >
-              <option value={25}>25</option>
-              <option value={50}>50</option>
-              <option value={100}>100</option>
-            </select>
-          </div>
-          {history.items.length === 0 ? (
-            <p className="text-[11px] italic text-gray-400">
-              No checklist receipts yet.
-            </p>
-          ) : (
-            <div className="space-y-1.5">
-              {history.items.map((view) => (
-                <div
-                  key={view.receipt.id}
-                  className="flex items-center justify-between gap-2 rounded bg-gray-50 px-2.5 py-2 text-[10px] dark:bg-gray-800/70"
-                >
-                  <div className="min-w-0">
-                    <span className="font-mono text-gray-700 dark:text-gray-200">
-                      {view.receipt.id}
-                    </span>
-                    {view.is_head && (
-                      <span className="ml-1 rounded bg-violet-100 px-1 py-0.5 text-[8px] font-bold text-violet-700 dark:bg-violet-900/40 dark:text-violet-200">
-                        HEAD
-                      </span>
-                    )}
-                    <p className="mt-0.5 text-gray-400">
-                      {new Date(view.receipt.created_at).toLocaleString()} ·{' '}
-                      {view.gate.reason}
-                    </p>
-                  </div>
-                  <span
-                    className={
-                      view.currentness.current
-                        ? 'text-green-600'
-                        : 'text-amber-600'
-                    }
-                  >
-                    {view.currentness.current ? 'current' : 'stale'}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-          <div className="mt-2 flex items-center justify-end gap-2">
-            <button
-              type="button"
-              aria-label="Previous checklist history page"
-              onClick={() => setOffset(Math.max(0, offset - limit))}
-              disabled={offset === 0}
-              className="rounded p-1 text-gray-500 hover:bg-gray-100 disabled:opacity-30 dark:hover:bg-gray-800"
-            >
-              <ChevronLeft size={13} />
-            </button>
-            <span className="text-[10px] text-gray-400">
-              {history.total_filtered === 0 ? 0 : offset + 1}–
-              {Math.min(offset + limit, history.total_filtered)}
-            </span>
-            <button
-              type="button"
-              aria-label="Next checklist history page"
-              onClick={() => setOffset(offset + limit)}
-              disabled={offset + limit >= history.total_filtered}
-              className="rounded p-1 text-gray-500 hover:bg-gray-100 disabled:opacity-30 dark:hover:bg-gray-800"
-            >
-              <ChevronRight size={13} />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {showHistory && lifecycleMode && (
+      {showHistory && (
         <PreviousResultsSection
           expanded={historyExpanded}
           onToggle={() => setHistoryExpanded((value) => !value)}
@@ -803,9 +811,7 @@ export function SpecChecklistPanel({
                   >
                     <span>
                       <span className="font-semibold text-surface-800 dark:text-surface-100">
-                        {view.receipt.spec_edition == null
-                          ? 'Legacy'
-                          : `Edition ${view.receipt.spec_edition}`}
+                        {`Edition ${view.receipt.spec_edition}`}
                       </span>
                       <span className="ml-2 text-surface-500 dark:text-surface-400">
                         {new Date(view.receipt.created_at).toLocaleString()}
@@ -823,6 +829,19 @@ export function SpecChecklistPanel({
           )}
           {history && (
             <div className="flex items-center justify-end gap-2">
+            <select
+              aria-label="Checklist history page size"
+              value={limit}
+              onChange={(event) => {
+                setLimit(Number(event.target.value) as 25 | 50 | 100);
+                setOffset(0);
+              }}
+              className="rounded border border-gray-300 bg-white px-1.5 py-1 text-[10px] dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100"
+            >
+              <option value={25}>25</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+            </select>
               <button
                 type="button"
                 aria-label="Previous checklist results page"

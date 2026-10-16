@@ -1,6 +1,6 @@
 """Relational adapter for actionable semantic guideline assessments v2.
 
-The v2 ledger is additive and deliberately does not reuse the v1 JSON shape.
+The native ledger seals immutable assessments and resolves current authority.
 Every row carries an explicit bounded contract namespace, while the complete
 Core projection is retained losslessly in a closed JSON payload.
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,10 +18,18 @@ from okto_pulse.core.domain.guideline_policy import (
     GuidelineMetricDirection,
     PolicyEntityType,
     PolicySubjectRef,
+    PolicySubjectSnapshot,
 )
 from okto_pulse.core.domain.guideline_semantic_assessment import (
+    validate_semantic_assessment_admissibility,
+    validate_semantic_assessment_authority,
+    SemanticAssessmentState,
     SemanticMetricOutcome,
     SemanticThresholdSource,
+)
+from okto_pulse.core.domain.guideline_semantic_currentness import (
+    SemanticAssessmentCurrentness,
+    assess_native_semantic_assessment_currentness,
 )
 from okto_pulse.core.domain.guideline_semantic_findings_v2 import (
     SemanticAssessmentReceiptProjectionV2,
@@ -61,7 +69,6 @@ from .semantic_guideline_kg_events import (
     stage_semantic_guideline_projection_events,
 )
 from .sqlalchemy_models import (
-    SemanticGuidelineAssessmentReceiptRow,
     SemanticGuidelineAssessmentV2Row,
     SemanticGuidelineFindingV2Row,
     SemanticGuidelineMetricResultV2Row,
@@ -298,6 +305,47 @@ def _receipt_digest_payload(
     }
 
 
+def native_semantic_receipt_from_rows(
+    row: SemanticGuidelineAssessmentV2Row,
+    result_rows: tuple[SemanticGuidelineMetricResultV2Row, ...],
+) -> SemanticAssessmentReceiptProjectionV2:
+    """Decode sealed native evidence for singular reads and bounded bulk rebuilds."""
+    metrics = tuple(_metric_from_payload(item.payload) for item in result_rows)
+    for item, metric in zip(result_rows, metrics, strict=True):
+        if semantic_metric_result_digest_v2(metric) != item.result_digest:
+            raise GuidelinePolicyDigestConflict(
+                "semantic_metric_result_v2_digest_mismatch"
+            )
+    digest_payload = dict(row.payload)
+    if semantic_receipt_digest_v2(digest_payload) != row.receipt_digest:
+        raise GuidelinePolicyDigestConflict(
+            "semantic_assessment_v2_receipt_digest_mismatch"
+        )
+    return SemanticAssessmentReceiptProjectionV2(
+        receipt_id=row.receipt_id,
+        receipt_digest=row.receipt_digest,
+        request_digest=row.request_digest,
+        idempotency_key=row.idempotency_key,
+        subject=PolicySubjectRef(
+            board_id=row.board_id,
+            entity_type=PolicyEntityType(row.subject_type),
+            subject_id=row.subject_id,
+            subject_version=row.subject_version,
+            subject_edition=row.validation_edition,
+        ),
+        subject_content_digest=row.subject_content_digest,
+        guideline_id=row.guideline_id,
+        guideline_revision_id=row.revision_id,
+        guideline_revision_digest=row.revision_digest,
+        binding_id=row.binding_id,
+        binding_revision=row.binding_revision,
+        binding_configuration_digest=row.configuration_digest,
+        assessment_assessor_id=row.assessor_agent_id,
+        confidence=row.confidence,
+        metric_results=metrics,
+        recorded_at=row.recorded_at,
+    )
+
 class CommunitySqlAlchemySemanticGuidelineAssessmentV2:
     """Transaction-bound v2 persistence port and lossless reader."""
 
@@ -339,21 +387,6 @@ class CommunitySqlAlchemySemanticGuidelineAssessmentV2:
                     receipt_id=replay.receipt_id,
                 ),
             )
-        legacy_replay = (
-            await self._session.execute(
-                select(SemanticGuidelineAssessmentReceiptRow.receipt_id).where(
-                    SemanticGuidelineAssessmentReceiptRow.board_id
-                    == request.subject.board_id,
-                    SemanticGuidelineAssessmentReceiptRow.idempotency_key
-                    == request.idempotency_key,
-                )
-            )
-        ).first()
-        if legacy_replay is not None:
-            raise GuidelinePolicyIdempotencyConflict(
-                "semantic_assessment_idempotency_contract_conflict"
-            )
-
         snapshot = await self._v1.resolve_policy_subject_snapshot(
             board_id=request.subject.board_id,
             entity_type=request.subject.entity_type,
@@ -398,8 +431,16 @@ class CommunitySqlAlchemySemanticGuidelineAssessmentV2:
             ),
             None,
         )
-        if revision is None or request.confidence < binding.minimum_confidence:
+        if revision is None:
             raise GuidelinePolicyDigestConflict("semantic_assessment_authority_stale")
+
+        validate_semantic_assessment_authority(
+            subject_snapshot=snapshot, binding=binding, revision=revision,
+        )
+        validate_semantic_assessment_admissibility(
+            assessor=request.assessor, confidence=request.confidence,
+            binding=binding, subject_snapshot=snapshot,
+        )
 
         applicable = tuple(
             metric
@@ -511,6 +552,8 @@ class CommunitySqlAlchemySemanticGuidelineAssessmentV2:
         receipt = SemanticAssessmentReceiptProjectionV2(
             receipt_id=receipt_id,
             receipt_digest=receipt_digest,
+            request_digest=request_digest,
+            idempotency_key=request.idempotency_key,
             subject=request.subject,
             subject_content_digest=snapshot.content_digest,
             guideline_id=revision.guideline_id,
@@ -653,39 +696,114 @@ class CommunitySqlAlchemySemanticGuidelineAssessmentV2:
             .scalars()
             .all()
         )
-        metrics = tuple(_metric_from_payload(item.payload) for item in result_rows)
-        for item, metric in zip(result_rows, metrics, strict=True):
-            if semantic_metric_result_digest_v2(metric) != item.result_digest:
-                raise GuidelinePolicyDigestConflict(
-                    "semantic_metric_result_v2_digest_mismatch"
-                )
-        digest_payload = dict(row.payload)
-        if semantic_receipt_digest_v2(digest_payload) != row.receipt_digest:
-            raise GuidelinePolicyDigestConflict(
-                "semantic_assessment_v2_receipt_digest_mismatch"
+        return native_semantic_receipt_from_rows(row, result_rows)
+
+    async def list_semantic_findings_v2(
+        self, *, board_id: str,
+        entity_type: PolicyEntityType | None = None,
+        subject_id: str | None = None,
+        subject_edition: int | None = None,
+        receipt_id: str | None = None,
+        guideline_id: str | None = None,
+        binding_id: str | None = None,
+        metric_id: str | None = None,
+        outcome: SemanticMetricOutcome | None = None,
+        after: tuple[datetime, str] | None = None,
+        limit: int = 50,
+    ) -> tuple[tuple[SemanticMetricFindingV2, ...], tuple[datetime, str] | None]:
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
+            raise ValueError("semantic_finding_limit_invalid")
+        if outcome is not None and not isinstance(outcome, SemanticMetricOutcome):
+            raise ValueError("semantic_finding_outcome_invalid")
+        row = SemanticGuidelineFindingV2Row
+        receipt = SemanticGuidelineAssessmentV2Row
+        metric = SemanticGuidelineMetricResultV2Row
+        statement = select(row).join(receipt, (receipt.receipt_id == row.receipt_id) & (
+            receipt.board_id == row.board_id
+        )).join(metric, (metric.result_id == row.metric_result_id) & (
+            metric.board_id == row.board_id
+        )).where(row.board_id == board_id)
+        for column, value in (
+            (row.subject_type, None if entity_type is None else entity_type.value),
+            (row.subject_id, subject_id), (receipt.validation_edition, subject_edition),
+            (row.receipt_id, receipt_id), (receipt.guideline_id, guideline_id),
+            (receipt.binding_id, binding_id), (metric.metric_id, metric_id),
+            (metric.outcome, None if outcome is None else outcome.value),
+        ):
+            if value is not None:
+                statement = statement.where(column == value)
+        if after is not None:
+            at, finding_id = after
+            if not isinstance(at, datetime) or at.utcoffset() is None:
+                raise ValueError("semantic_finding_cursor_time_invalid")
+            at = at.astimezone(timezone.utc)
+            statement = statement.where(or_(row.created_at < at,
+                (row.created_at == at) & (row.finding_id < finding_id)))
+        rows = tuple((await self._session.execute(statement.order_by(
+            row.created_at.desc(), row.finding_id.desc(),
+        ).limit(limit + 1))).scalars().all())
+        page = rows[:limit]
+        findings = []
+        for item in page:
+            finding = await self.get_semantic_finding_v2(board_id=board_id, finding_id=item.finding_id)
+            if finding is None:
+                raise GuidelinePolicyDigestConflict("semantic_finding_v2_history_missing")
+            findings.append(finding)
+        cursor = (page[-1].created_at, page[-1].finding_id) if len(rows) > limit else None
+        return tuple(findings), cursor
+
+    async def get_semantic_metric_result_v2(
+        self, *, board_id: str, metric_result_id: str,
+    ) -> SemanticMetricResultV2 | None:
+        row = (await self._session.execute(
+            select(SemanticGuidelineMetricResultV2Row).where(
+                SemanticGuidelineMetricResultV2Row.board_id == board_id,
+                SemanticGuidelineMetricResultV2Row.result_id == metric_result_id,
             )
-        return SemanticAssessmentReceiptProjectionV2(
-            receipt_id=row.receipt_id,
-            receipt_digest=row.receipt_digest,
-            subject=PolicySubjectRef(
-                board_id=row.board_id,
-                entity_type=PolicyEntityType(row.subject_type),
-                subject_id=row.subject_id,
-                subject_version=row.subject_version,
-                subject_edition=row.validation_edition,
-            ),
-            subject_content_digest=row.subject_content_digest,
-            guideline_id=row.guideline_id,
-            guideline_revision_id=row.revision_id,
-            guideline_revision_digest=row.revision_digest,
-            binding_id=row.binding_id,
-            binding_revision=row.binding_revision,
-            binding_configuration_digest=row.configuration_digest,
-            assessment_assessor_id=row.assessor_agent_id,
-            confidence=row.confidence,
-            metric_results=metrics,
-            recorded_at=row.recorded_at,
+        )).scalar_one_or_none()
+        if row is None:
+            return None
+        receipt = await self.get_semantic_assessment_v2(
+            board_id=board_id, receipt_id=row.receipt_id,
         )
+        metric = None if receipt is None else next((
+            item for item in receipt.metric_results if item.metric_result_id == metric_result_id
+        ), None)
+        if metric is None:
+            raise GuidelinePolicyDigestConflict("semantic_metric_result_v2_receipt_mismatch")
+        return metric
+
+    async def get_semantic_finding_v2(
+        self, *, board_id: str, finding_id: str,
+    ) -> SemanticMetricFindingV2 | None:
+        row = (await self._session.execute(
+            select(SemanticGuidelineFindingV2Row).where(
+                SemanticGuidelineFindingV2Row.board_id == board_id,
+                SemanticGuidelineFindingV2Row.finding_id == finding_id,
+            )
+        )).scalar_one_or_none()
+        if row is None:
+            return None
+        receipt = await self.get_semantic_assessment_v2(
+            board_id=board_id, receipt_id=row.receipt_id,
+        )
+        finding = None if receipt is None else next((
+            item for item in project_semantic_metric_findings_v2(receipt)
+            if item.finding_id == finding_id
+        ), None)
+        if (
+            finding is None
+            or row.contract_version != FINDING_CONTRACT_V2
+            or finding.finding_digest != row.finding_digest
+            or finding.metric_result_id != row.metric_result_id
+            or finding.metric_result_digest != row.metric_result_digest
+            or finding.subject.entity_type.value != row.subject_type
+            or finding.subject.subject_id != row.subject_id
+            or finding.metric_code != row.metric_code
+            or _finding_payload(finding) != row.payload
+        ):
+            raise GuidelinePolicyDigestConflict("semantic_finding_v2_receipt_mismatch")
+        return finding
 
     async def get_current_semantic_assessment_v2(
         self,
@@ -742,50 +860,100 @@ class CommunitySqlAlchemySemanticGuidelineAssessmentV2:
         ).scalar_one_or_none()
         if row is None:
             return None
-        # Edition-aware human evidence remains current for the lifecycle
-        # edition; technical digest drift stays available as audit metadata.
-        if live_subject_edition is not None:
-            return await self.get_semantic_assessment_v2(
-                board_id=board_id,
-                receipt_id=row.receipt_id,
+        receipt = await self.get_semantic_assessment_v2(
+            board_id=board_id, receipt_id=row.receipt_id,
+        )
+        if receipt is None:
+            return None
+        currentness = await self._native_currentness(receipt, subject)
+        return receipt if currentness.is_current else None
+
+    async def get_semantic_assessment_v2_currentness(
+        self, receipt: SemanticAssessmentReceiptProjectionV2, *, lock: bool = False,
+    ) -> SemanticAssessmentCurrentness:
+        subject = await self._v1.resolve_policy_subject_snapshot(
+            board_id=receipt.subject.board_id,
+            entity_type=receipt.subject.entity_type,
+            subject_id=receipt.subject.subject_id,
+            lock=lock,
+        )
+        return await self._native_currentness(receipt, subject, lock=lock)
+
+    async def _native_currentness(
+        self, receipt: SemanticAssessmentReceiptProjectionV2,
+        subject: PolicySubjectSnapshot | None,
+        *, lock: bool = False,
+    ) -> SemanticAssessmentCurrentness:
+        binding = revision = None
+        if subject is not None and subject.subject.subject_edition is None:
+            bindings, revisions = await self._v1._authority_bundle(
+                board_id=receipt.subject.board_id, lock=lock,
             )
-        if (
-            subject.subject.subject_version != row.subject_version
-            or subject.content_digest != row.subject_content_digest
+            binding = next((item for item in bindings
+                            if item.binding_id == receipt.binding_id), None)
+            revision = next((item for item in revisions
+                             if item.revision_id == receipt.guideline_revision_id), None)
+        return assess_native_semantic_assessment_currentness(
+            receipt, subject=subject, binding=binding, revision=revision,
+        )
+
+    async def list_semantic_assessment_v2_receipts(
+        self, *, board_id: str,
+        entity_type: PolicyEntityType | None = None,
+        subject_id: str | None = None,
+        subject_edition: int | None = None,
+        guideline_id: str | None = None,
+        binding_id: str | None = None,
+        outcome: SemanticAssessmentState | None = None,
+        after: tuple[datetime, str] | None = None,
+        limit: int = 50,
+    ) -> tuple[tuple[SemanticAssessmentReceiptProjectionV2, ...], tuple[datetime, str] | None]:
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 200:
+            raise ValueError("semantic_assessment_receipt_limit_invalid")
+        row = SemanticGuidelineAssessmentV2Row
+        statement = select(row).where(row.board_id == board_id)
+        for column, value in (
+            (row.subject_type, None if entity_type is None else entity_type.value),
+            (row.subject_id, subject_id), (row.validation_edition, subject_edition),
+            (row.guideline_id, guideline_id), (row.binding_id, binding_id),
         ):
-            return None
-        bindings, revisions = await self._v1._authority_bundle(
-            board_id=board_id,
-            lock=False,
-        )
-        binding = next(
-            (
-                item
-                for item in bindings
-                if item.binding_id == binding_id
-                and item.binding_revision == row.binding_revision
-                and item.configuration_digest == row.configuration_digest
-                and item.state is GuidelineBindingState.ACTIVE
-            ),
-            None,
-        )
-        if binding is None:
-            return None
-        revision = next(
-            (
-                item
-                for item in revisions
-                if item.revision_id == row.revision_id
-                and item.revision_digest == row.revision_digest
-            ),
-            None,
-        )
-        if revision is None:
-            return None
-        return await self.get_semantic_assessment_v2(
-            board_id=board_id,
-            receipt_id=row.receipt_id,
-        )
+            if value is not None:
+                statement = statement.where(column == value)
+        if outcome is not None:
+            if not isinstance(outcome, SemanticAssessmentState):
+                raise ValueError("semantic_assessment_outcome_invalid")
+            metric = SemanticGuidelineMetricResultV2Row
+            failed = select(metric.result_id).where(
+                metric.board_id == row.board_id, metric.receipt_id == row.receipt_id,
+                metric.outcome == SemanticMetricOutcome.FAIL.value,
+            ).exists()
+            statement = statement.where(
+                failed if outcome is SemanticAssessmentState.METRIC_THRESHOLD_FAILED else ~failed
+            )
+        if after is not None:
+            at, receipt_id = after
+            if not isinstance(at, datetime) or at.utcoffset() is None:
+                raise ValueError("semantic_assessment_cursor_time_invalid")
+            at = at.astimezone(timezone.utc)
+            statement = statement.where(or_(
+                row.recorded_at < at,
+                (row.recorded_at == at) & (row.receipt_id < receipt_id),
+            ))
+        rows = tuple((await self._session.execute(
+            statement.order_by(row.recorded_at.desc(), row.receipt_id.desc()).limit(limit + 1)
+        )).scalars().all())
+        page = rows[:limit]
+        receipts = []
+        for item in page:
+            receipt = await self.get_semantic_assessment_v2(
+                board_id=board_id, receipt_id=item.receipt_id,
+            )
+            if receipt is None:
+                raise GuidelinePolicyDigestConflict("semantic_assessment_v2_history_receipt_missing")
+            receipts.append(receipt)
+        next_cursor = (page[-1].recorded_at, page[-1].receipt_id) if len(rows) > limit else None
+        return tuple(receipts), next_cursor
+
 
 
 __all__ = [

@@ -189,6 +189,7 @@ function qualityReceipt(): QualityAssessmentReceipt {
     subject_type: 'refinement',
     subject_id: 'refinement-1',
     subject_version: 7,
+    subject_edition: 1,
     assessment_kind: 'ambiguity',
     origin: 'human_or_agent',
     source: 'native',
@@ -240,7 +241,7 @@ function currentAssessment(
     receipt: qualityReceipt(),
     head_revision: 4,
     currentness: stale ? 'previous' : 'current',
-    stale_reasons: stale ? ['content_changed'] : [],
+    stale_reasons: stale ? ['subject_edition_changed'] : [],
     gate_preview: {
       applicable: true,
       enabled: true,

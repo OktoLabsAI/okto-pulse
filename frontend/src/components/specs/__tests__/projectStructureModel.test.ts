@@ -36,12 +36,9 @@ function node(
 }
 
 describe('projectStructureModel', () => {
-  it('keeps the optional tab quiet for read-only absent state, but visible to authors or once authored', () => {
-    expect(shouldShowProjectStructureTab(true, false, undefined)).toBe(false);
-    expect(shouldShowProjectStructureTab(true, false, null)).toBe(false);
-    expect(shouldShowProjectStructureTab(true, true, undefined)).toBe(true);
-    expect(shouldShowProjectStructureTab(true, false, [])).toBe(true);
-    expect(shouldShowProjectStructureTab(false, true, [])).toBe(false);
+  it('keeps the tab visible to readers independently of content and preserves mutation gates', () => {
+    expect(shouldShowProjectStructureTab(true)).toBe(true);
+    expect(shouldShowProjectStructureTab(false)).toBe(false);
     expect(canMutateProjectStructureInStatus(true, 'draft')).toBe(true);
     expect(canMutateProjectStructureInStatus(true, 'approved')).toBe(false);
     expect(canMutateProjectStructureInStatus(true, 'in_progress')).toBe(false);

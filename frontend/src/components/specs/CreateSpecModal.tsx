@@ -87,6 +87,7 @@ function ListEditor({
 export function CreateSpecModal({ boardId, onClose, onCreated }: CreateSpecModalProps) {
   const api = useDashboardApi();
   const [title, setTitle] = useState('');
+  const [deliveryContext, setDeliveryContext] = useState<'' | 'brownfield' | 'greenfield' | 'hybrid'>('');
   const [description, setDescription] = useState('');
   const [context, setContext] = useState('');
   const [funcReqs, setFuncReqs] = useState<string[]>([]);
@@ -100,7 +101,7 @@ export function CreateSpecModal({ boardId, onClose, onCreated }: CreateSpecModal
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim()) return;
+    if (!title.trim() || !deliveryContext) return;
 
     setSaving(true);
     try {
@@ -120,11 +121,12 @@ export function CreateSpecModal({ boardId, onClose, onCreated }: CreateSpecModal
         : undefined;
       const spec = await api.createSpec(boardId, {
         title: title.trim(),
+        delivery_context: deliveryContext,
         description: description.trim() || undefined,
         context: context.trim() || undefined,
-        functional_requirements: funcReqs.length > 0 ? funcReqs : undefined,
-        technical_requirements: techReqs.length > 0 ? techReqs : undefined,
-        acceptance_criteria: acceptCriteria.length > 0 ? acceptCriteria : undefined,
+        functional_requirements: funcReqs.length > 0 ? funcReqs.map((text) => ({ text })) : undefined,
+        technical_requirements: techReqs.length > 0 ? techReqs.map((text) => ({ text })) : undefined,
+        acceptance_criteria: acceptCriteria.length > 0 ? acceptCriteria.map((text) => ({ text })) : undefined,
         decisions,
         labels: labels ? labels.split(',').map((l) => l.trim()).filter(Boolean) : undefined,
       });
@@ -151,6 +153,17 @@ export function CreateSpecModal({ boardId, onClose, onCreated }: CreateSpecModal
 
         {/* Body */}
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+          <div>
+            <label htmlFor="spec-delivery-context" className="block text-sm font-medium mb-1">Delivery context *</label>
+            <select id="spec-delivery-context" required className="input w-full"
+              value={deliveryContext}
+              onChange={(event) => setDeliveryContext(event.target.value as typeof deliveryContext)}>
+              <option value="">Select delivery context</option>
+              <option value="brownfield">Existing system (brownfield)</option>
+              <option value="greenfield">New system (greenfield)</option>
+              <option value="hybrid">New and existing system (hybrid)</option>
+            </select>
+          </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Title *</label>
             <input

@@ -6,6 +6,9 @@ advance the durable generation inside their audit/outbox transaction.
 """
 
 from __future__ import annotations
+from okto_pulse.community.adapters.materialization_health_observability import (
+    FilesystemMetadataSnapshot, FilesystemMutationGuardResult,
+)
 
 import asyncio
 import hashlib
@@ -17,7 +20,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Awaitable, Callable
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import LargeBinary, case, cast, func, or_, select
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     AmendmentHotfixRevision,
@@ -29,7 +32,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Ideation,
     Refinement,
     Spec,
-    Sprint,
     Story,
 )
 from okto_pulse.core.kg.board_source_store import decision_sources_from_spec
@@ -37,6 +39,7 @@ from okto_pulse.core.kg.interfaces.graph_runtime_store import (
     GraphRuntimeObservationState,
     GraphRuntimeState,
 )
+from okto_pulse.core.kg.interfaces.graph_health_observation import GraphHealthObservation
 from okto_pulse.core.kg.interfaces.storage_ref import StorageRef
 from okto_pulse.core.ports.materialization_health import (
     BoardHealthCensus,
@@ -60,6 +63,8 @@ _BOARD_STAT_PROBE = "materialization_board_stat"
 _DISCOVERY_STAT_PROBE = "materialization_discovery_stat"
 _CENSUS_SESSION_CLEANUP_TIMEOUT_SECONDS = 2.0
 _CENSUS_SESSION_CLEANUP_CANCEL_DRAIN_TIMEOUT_SECONDS = 1.0
+_CENSUS_MAX_SPEC_ROWS = 1000
+_CENSUS_MAX_SPEC_BYTES = 4 * 1024 * 1024
 
 
 def _utcnow() -> datetime:
@@ -347,6 +352,50 @@ def _unavailable_census(
     )
 
 
+@asynccontextmanager
+async def _native_census_deadline(session: Any, deadline: HealthProbeDeadline):
+    """Bound SQLite VM work and lock waits on this exclusively borrowed session.
+
+    Coroutine cancellation alone waits for aiosqlite's worker to finish SQL.
+    Restore connection-local settings before returning a surviving connection
+    to the pool; an invalidated connection has already been discarded.
+    """
+    connection = await session.connection()
+    if connection.dialect.name != "sqlite" or connection.dialect.driver != "aiosqlite":
+        raise RuntimeError("census_native_deadline_unsupported")
+    raw = await connection.get_raw_connection()
+    driver = raw.driver_connection
+    previous_busy_timeout = None
+    try:
+        await driver.set_progress_handler(
+            lambda: int(deadline.expired(now=time.monotonic())), 1000
+        )
+        async with driver.execute("PRAGMA busy_timeout") as cursor:
+            previous_busy_timeout = int((await cursor.fetchone())[0])
+        remaining = deadline.remaining_seconds(now=time.monotonic())
+        if remaining <= 0:
+            raise TimeoutError
+        async with driver.execute(f"PRAGMA busy_timeout={max(0, int(remaining * 1000))}"):
+            pass
+        try:
+            yield
+        except Exception as exc:
+            if deadline.expired(now=time.monotonic()):
+                raise TimeoutError from exc
+            raise
+    finally:
+        if not connection.invalidated and not connection.closed:
+            try:
+                await driver.set_progress_handler(None, 0)
+                if previous_busy_timeout is not None:
+                    async with driver.execute(f"PRAGMA busy_timeout={previous_busy_timeout}"):
+                        pass
+            except BaseException:
+                # Never return a partially restored observer to the shared pool.
+                await connection.invalidate()
+                raise
+
+
 class CommunitySqlAlchemyMaterializationCensus:
     """Authoritative board-scoped source/queue/DLQ read model."""
 
@@ -354,13 +403,53 @@ class CommunitySqlAlchemyMaterializationCensus:
         Story,
         Ideation,
         Refinement,
-        Sprint,
         Card,
         AmendmentHotfixRevision,
     )
 
     def __init__(self, session_factory: Callable[..., Any]) -> None:
         self._sf = session_factory
+
+    @staticmethod
+    def _bounded_specs(board_id: str) -> Any:
+        # Keep only IDs and byte lengths in the window. Do not materialize JSON
+        # to count it, and do not check a budget after the driver has decoded it.
+        # One extra candidate distinguishes a complete observation from a prefix.
+        payload_bytes = sum(
+            func.coalesce(func.length(cast(column, LargeBinary)), 0)
+            for column in (Spec.id, Spec.title, Spec.decisions)
+        ) + 64  # Fixed allowance for version and timestamp.
+        candidates = (
+            select(Spec.id, payload_bytes.label("payload_bytes"))
+            .where(Spec.board_id == board_id)
+            .order_by(Spec.id)
+            .limit(_CENSUS_MAX_SPEC_ROWS + 1)
+            .subquery()
+        )
+        budget = select(
+            candidates.c.id,
+            func.count().over().label("observed_rows"),
+            func.sum(candidates.c.payload_bytes).over().label("observed_bytes"),
+        ).subquery()
+        admitted = (budget.c.observed_rows <= _CENSUS_MAX_SPEC_ROWS) & (
+            budget.c.observed_bytes <= _CENSUS_MAX_SPEC_BYTES
+        )
+        # Budget and payload share one SQL snapshot: a concurrent edit cannot
+        # slip an oversized value between a size preflight and a later fetch.
+        return (
+            select(
+                *(
+                    case((admitted, column), else_=None).label(column.key)
+                    for column in (
+                        Spec.id, Spec.version, Spec.title, Spec.created_at, Spec.decisions
+                    )
+                ),
+                budget.c.observed_rows,
+                budget.c.observed_bytes,
+            )
+            .select_from(budget)
+            .join(Spec, Spec.id == budget.c.id)
+        )
 
     async def snapshot(
         self,
@@ -444,23 +533,26 @@ class CommunitySqlAlchemyMaterializationCensus:
             count(GlobalUpdateOutbox, *terminal_outbox_filter).label("outbox_terminal"),
         )
 
-        async with _cancel_safe_census_session_scope(self._sf) as session:
+        async with (
+            _cancel_safe_census_session_scope(self._sf) as session,
+            _native_census_deadline(session, deadline),
+        ):
             row = (await session.execute(statement)).one()._mapping
             if deadline.expired(now=time.monotonic()):
                 raise TimeoutError
             specs = (
-                await session.execute(
-                    select(
-                        Spec.id,
-                        Spec.version,
-                        Spec.title,
-                        Spec.created_at,
-                        Spec.decisions,
-                    ).where(Spec.board_id == board_id)
-                )
+                await session.execute(self._bounded_specs(board_id))
             ).all()
             if deadline.expired(now=time.monotonic()):
                 raise TimeoutError
+            if specs and (
+                specs[0].observed_rows > _CENSUS_MAX_SPEC_ROWS
+                or specs[0].observed_bytes > _CENSUS_MAX_SPEC_BYTES
+            ):
+                return _unavailable_census(
+                    generation=generation,
+                    reason_code="board_census_volume_exceeded",
+                )
 
         source_count = sum(
             int(row[model.__tablename__] or 0) for model in self._SOURCE_MODELS
@@ -515,15 +607,69 @@ class CommunityMaterializationEvidenceProbe:
         discovery_store: Any,
         generation_store: Any,
         mutation_guard: Any | None = None,
+        graph_health_observation: GraphHealthObservation | None = None,
+        internal_recovery_observation: bool = False,
     ) -> None:
+        if type(internal_recovery_observation) is not bool:
+            raise ValueError('internal_recovery_observation must be bool')
         self._board_store = board_store
         self._census = census
         self._discovery_store = discovery_store
         self._generation_store = generation_store
         self._mutation_guard = mutation_guard
+        self._graph_health_observation = graph_health_observation
+        self._internal_recovery_observation = internal_recovery_observation
+
+    def for_internal_recovery(self) -> CommunityMaterializationEvidenceProbe:
+        """Observe under recovery's existing deadline without changing Health.
+
+        This is composition only, never a public request option. The internal
+        preparer still owns its absolute per-Board/attempt deadlines and gates.
+        Separate cache keys prevent either caller borrowing the other's result.
+        """
+        return type(self)(
+            board_store=self._board_store, census=self._census,
+            discovery_store=self._discovery_store, generation_store=self._generation_store,
+            mutation_guard=self._mutation_guard,
+            graph_health_observation=self._graph_health_observation,
+            internal_recovery_observation=True,
+        )
+
+    def _probe_name(self, name: str) -> str:
+        return f'internal_recovery_{name}' if self._internal_recovery_observation else name
+
+    def _observe_graph(self, request, build, fallback):
+        # Enter inside the worker: no caller is required to provide a scope,
+        # and a queued worker cannot renew the request's absolute deadline.
+        if self._graph_health_observation is None:
+            return replace(fallback, reason_code="graph_health_observation_unavailable",
+                           unavailable_reason="graph_health_observation_unavailable")
+        remaining = request.deadline.remaining_seconds(now=time.monotonic())
+        if remaining <= 0:
+            return fallback
+        with self._graph_health_observation.scope(
+            request.board_id, timeout_seconds=min(
+                5.0 if self._internal_recovery_observation else 0.35, remaining,
+            ),
+        ):
+            return build()
 
     async def current_generation(self, board_id: str) -> str:
         return await self._generation_store.current(board_id)
+
+    async def _observe_guard(self, request, *, phase, build, fallback):
+        # The fixed Core pool bounds blocked OS calls. A snapshot belongs only
+        # to this invocation: cached/coalesced results from another request
+        # cannot establish that this request did not mutate storage.
+        observation_id = uuid.uuid4().hex
+        result = await run_bounded_health_probe(
+            name=self._probe_name(f"materialization_guard_{phase}"), board_id=request.board_id,
+            generation_id=request.generation, build=lambda: (observation_id, build()),
+            fallback=(observation_id, fallback), deadline_at=request.deadline.deadline_at,
+            ttl_s=0.0,
+        )
+        identity, value = result.value
+        return value if identity == observation_id else fallback
 
     async def probe(
         self,
@@ -532,19 +678,27 @@ class CommunityMaterializationEvidenceProbe:
         if self._mutation_guard is None:
             return await self._collect_evidence(request)
 
-        before = self._mutation_guard.capture(request.board_id)
+        before = await self._observe_guard(
+            request, phase="before",
+            build=lambda: self._mutation_guard.capture(request.board_id, deadline_at=request.deadline.deadline_at),
+            fallback=FilesystemMetadataSnapshot(None, (), "mutation_guard_observation_unavailable"),
+        )
+
+        async def finish_guard():
+            return await self._observe_guard(
+                request, phase="after",
+                build=lambda: self._mutation_guard.complete(
+                    board_id=request.board_id, before=before, deadline_at=request.deadline.deadline_at,
+                ),
+                fallback=FilesystemMutationGuardResult("unavailable", before.sha256, None, ()),
+            )
+
         try:
             evidence = await self._collect_evidence(request)
         except BaseException:
-            self._mutation_guard.complete(
-                board_id=request.board_id,
-                before=before,
-            )
+            await finish_guard()
             raise
-        guard_result = self._mutation_guard.complete(
-            board_id=request.board_id,
-            before=before,
-        )
+        guard_result = await finish_guard()
         if guard_result.outcome == "violation":
             evidence = replace(
                 evidence,
@@ -583,12 +737,13 @@ class CommunityMaterializationEvidenceProbe:
 
         async def board_probe() -> Any:
             return await run_bounded_health_probe(
-                name=_BOARD_STAT_PROBE,
+                name=self._probe_name(_BOARD_STAT_PROBE),
                 board_id=request.board_id,
                 generation_id=generation,
-                build=lambda: self._board_store.graph_state(
-                    request.board_id,
-                    generation=generation,
+                build=lambda: self._observe_graph(
+                    request, lambda: self._board_store.graph_state(
+                        request.board_id, generation=generation,
+                    ), board_fallback,
                 ),
                 fallback=board_fallback,
                 deadline_at=request.deadline.deadline_at,
@@ -596,10 +751,13 @@ class CommunityMaterializationEvidenceProbe:
 
         async def discovery_probe() -> Any:
             return await run_bounded_health_probe(
-                name=_DISCOVERY_STAT_PROBE,
+                name=self._probe_name(_DISCOVERY_STAT_PROBE),
                 board_id=request.board_id,
                 generation_id=generation,
-                build=lambda: self._discovery_store.state(generation=generation),
+                build=lambda: self._observe_graph(
+                    request, lambda: self._discovery_store.state(generation=generation),
+                    discovery_fallback,
+                ),
                 fallback=discovery_fallback,
                 deadline_at=request.deadline.deadline_at,
             )

@@ -107,18 +107,15 @@ interface SelectorUiState {
   selectedChildRef: string;
 }
 
-function normalizeParamMeta(meta: DiscoveryParamSchema | undefined): DiscoveryParamSchema {
-  return {
-    ...(meta || {}),
-    type: meta?.type || 'text',
-  };
-}
-
 function getParamsSchema(intent: DiscoveryIntent): DiscoveryParamsSchema {
-  const schema = intent.params_schema || {};
-  return Object.fromEntries(
-    Object.entries(schema).map(([key, meta]) => [key, normalizeParamMeta(meta)]),
-  );
+  const schema = intent.params_schema ?? {};
+  if (typeof schema !== 'object' || Array.isArray(schema) ||
+      Object.values(schema).some((meta) =>
+        !meta || !['text', 'entity_selector', 'spec_child_selector'].includes(meta.type ?? ''),
+      )) {
+    throw new Error('This saved query has an incompatible parameter schema.');
+  }
+  return schema;
 }
 
 function specChildTypeLabel(value: string): string {
@@ -178,6 +175,12 @@ function humanizeCategory(category: string): string {
 }
 
 export function GlobalSearchView({ boardId }: Props) {
+  // Query results, inputs and selectors belong to one Board. Remounting also
+  // keeps late promises from publishing into a different Board's state.
+  return <BoardDiscoveryView key={boardId} boardId={boardId} />;
+}
+
+function BoardDiscoveryView({ boardId }: Props) {
   const [intents, setIntents] = useState<DiscoveryIntent[]>([]);
   const [loadingIntents, setLoadingIntents] = useState(true);
   const [activeIntent, setActiveIntent] = useState<DiscoveryIntent | null>(null);
@@ -213,16 +216,16 @@ export function GlobalSearchView({ boardId }: Props) {
     const meta = (row.meta || {}) as Record<string, unknown>;
     const entityType = typeof meta.entity_type === 'string' ? meta.entity_type : null;
     const entityId = typeof meta.entity_id === 'string' ? meta.entity_id : null;
-    if (!entityType || !entityId) return;
+    if (!entityType || !entityId || entityType === 'sprint') return;
 
-    const valid = ['card', 'spec', 'ideation', 'refinement', 'sprint', 'kg_node'];
+    const valid = ['card', 'spec', 'ideation', 'refinement', 'kg_node'];
     const type = valid.includes(entityType) ? entityType : 'kg_node';
 
     if (type === 'card') {
       // CardModal reads the id from the dashboard store, not props.
       openCardInStore(entityId);
     }
-    pushModal({ type: type as 'card' | 'spec' | 'ideation' | 'refinement' | 'sprint' | 'kg_node', id: entityId,
+    pushModal({ type: type as 'card' | 'spec' | 'ideation' | 'refinement' | 'kg_node', id: entityId,
       boardId: typeof meta.board_id === 'string' ? meta.board_id : boardId });
   };
   const [intentsOpen, setIntentsOpen] = useState<boolean>(() => {
@@ -500,8 +503,9 @@ export function GlobalSearchView({ boardId }: Props) {
     try {
       const data = await kgApi.globalSearch(trimmed, 20, 0.3, layer);
       setResults(data.results || []);
-    } catch {
+    } catch (error) {
       setResults([]);
+      setIntentError(error instanceof Error ? error.message : 'Failed to search');
     } finally {
       setLoading(false);
       // Scroll the results panel into view after the state settles.
@@ -560,7 +564,17 @@ export function GlobalSearchView({ boardId }: Props) {
   }
 
   async function handleIntentClick(intent: DiscoveryIntent): Promise<void> {
-    const schema = getParamsSchema(intent);
+    let schema: DiscoveryParamsSchema;
+    try {
+      schema = getParamsSchema(intent);
+    } catch {
+      setPendingIntent(null);
+      setIntentResult(null);
+      setActiveIntent(null);
+      setIntentError('This saved query has an incompatible parameter schema.');
+      return;
+    }
+    setIntentError(null);
     const requiredKeys = Object.entries(schema)
       .filter(([, meta]) => meta.required)
       .map(([k]) => k);
@@ -1163,6 +1177,7 @@ export function GlobalSearchView({ boardId }: Props) {
                       const meta = (r.meta || {}) as Record<string, unknown>;
                       const canOpen =
                         typeof meta.entity_type === 'string' &&
+                        meta.entity_type !== 'sprint' &&
                         typeof meta.entity_id === 'string' &&
                         (meta.entity_type as string).length > 0 &&
                         (meta.entity_id as string).length > 0;
@@ -1264,7 +1279,7 @@ export function GlobalSearchView({ boardId }: Props) {
             ? activeIntent.label.replace(/\?$/, '').slice(0, 28)
             : (query.trim().slice(0, 28) || 'Query');
           const activeFilterLabels = Array.from(typeFilter);
-          const availableDimensions = ['status', 'sprint', 'assignee'].filter(
+          const availableDimensions = ['status', 'assignee'].filter(
             (d) => !activeFilterLabels.includes(d),
           );
           const headingTitle = activeIntent

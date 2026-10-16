@@ -11,13 +11,16 @@ the Community adapter reads the scheduler singleton lazily at call time.
 from __future__ import annotations
 
 
-def test_community_app_exposes_composition_owned_scheduler_control():
+def test_community_app_exposes_composition_owned_scheduler_control(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("KG_BASE_DIR", str(tmp_path / "kg"))
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'native.db'}")
     import okto_pulse.community.main as m
     from okto_pulse.community.adapters.scheduler import SingletonSchedulerControl
     from okto_pulse.core.composition import RuntimeComposition
     from okto_pulse.core.ports.scheduler import SchedulerControl
 
-    composition = m.app.state.runtime_composition
+    composition = m.create_community_app().state.runtime_composition
     assert isinstance(composition, RuntimeComposition)
     # The whole point of 06B: a real composition-owned SchedulerControl, NOT the
     # core's removed implicit singleton fallback.

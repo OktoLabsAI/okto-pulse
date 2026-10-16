@@ -53,7 +53,9 @@ def test_registry_provider_set_is_one_complete_routed_bundle(tmp_path: Path) -> 
         "graph_history",
         "graph_analytics",
         "graph_store",
+        "graph_query_execution",
         "cypher_executor",
+        "graph_health_observation",
         "graph_transaction",
         "graph_schema_manager",
         "graph_lifecycle",
@@ -64,6 +66,7 @@ def test_registry_provider_set_is_one_complete_routed_bundle(tmp_path: Path) -> 
         "quarantine_restore",
     }
     assert providers["graph_schema_manager"] is bundle.graph_schema_manager
+    assert providers["graph_health_observation"] is bundle.board.graph_health_observation
     assert providers["global_discovery_runtime"] is bundle.global_graph.runtime
     assert providers["global_discovery_recovery"] is bundle.global_graph.recovery
     assert providers["quarantine_restore"] is bundle.quarantine_restore
@@ -75,10 +78,6 @@ def test_schema_materialization_initializes_immediately_before_delegate() -> Non
     class _Delegate:
         async def ensure_bootstrapped(self, board_id: str) -> None:
             events.append(("ensure", board_id))
-
-        async def migrate(self, board_id: str):
-            events.append(("migrate", board_id))
-            return {"ok": True}
 
         async def current_version(self, board_id: str) -> str:
             events.append(("version", board_id))
@@ -95,14 +94,12 @@ def test_schema_materialization_initializes_immediately_before_delegate() -> Non
     manager = CommunityInitializingGraphSchemaManager(board)
 
     asyncio.run(manager.ensure_bootstrapped("a"))
-    assert asyncio.run(manager.migrate("b")) == {"ok": True}
+    assert not hasattr(manager, "migrate")
     assert asyncio.run(manager.current_version("c")) == "1"
     assert asyncio.run(manager.validate("d")) == "valid"
     assert events == [
         ("init", "a"),
         ("ensure", "a"),
-        ("init", "b"),
-        ("migrate", "b"),
         ("version", "c"),
         ("validate", "d"),
     ]

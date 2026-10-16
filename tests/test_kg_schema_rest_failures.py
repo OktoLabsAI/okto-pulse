@@ -43,7 +43,7 @@ async def test_schema_provider_errors_are_problem_details(
 
     monkeypatch.setattr(kg_routes, "get_schema_info", refused)
     response = await kg_routes.schema_info(
-        board_id=board_id, include_internal=True,
+        board_id=board_id, include_internal=None,
         actor=ActorContext("test-user", "rest"), uow=SimpleNamespace(),
     )
     assert response.status_code == status
@@ -52,9 +52,30 @@ async def test_schema_provider_errors_are_problem_details(
     assert body["type"] == f"/errors/{error_type.code}"
     assert body["title"] == error_type.code
     assert body["status"] == status
-    assert calls == [(board_id or "default", True)]
-    assert authorized.await_count == 2
+    assert calls == [(board_id, False)]
+    assert authorized.await_count == 1
     assert board_access.await_count == int(bool(board_id))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retired_value", ["true", "false", ""])
+async def test_internal_schema_argument_is_refused_without_provider_io(monkeypatch, retired_value):
+    from fastapi import HTTPException
+    from unittest.mock import Mock
+
+    authorized = AsyncMock()
+    provider = Mock()
+    monkeypatch.setattr(kg_routes, "_require_kg_operation", authorized)
+    monkeypatch.setattr(kg_routes, "get_schema_info", provider)
+    with pytest.raises(HTTPException) as caught:
+        await kg_routes.schema_info(
+            board_id="test-board", include_internal=retired_value,
+            actor=ActorContext("test-user", "rest"), uow=SimpleNamespace(),
+        )
+    assert caught.value.status_code == 400
+    assert caught.value.detail == {"error": "kg_internal_schema_view_retired"}
+    authorized.assert_awaited_once()
+    provider.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -141,7 +162,7 @@ async def test_schema_introspection_runs_off_loop_and_preserves_result(monkeypat
 
     monkeypatch.setattr(kg_routes, "get_schema_info", introspect)
     assert await kg_routes.schema_info(
-        board_id="test-board", include_internal=False,
+        board_id="test-board", include_internal=None,
         actor=ActorContext("test-user", "rest"), uow=SimpleNamespace(),
     ) is payload
 

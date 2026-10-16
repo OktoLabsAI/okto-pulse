@@ -482,6 +482,34 @@ class CommunityGrafxDatabasePool:
             entry.used_at = self._tick()
             return GrafxDatabaseLease(self, key, database)
 
+    def acquire_existing(
+        self, path: str | os.PathLike[str], *, page_size: int
+    ) -> GrafxDatabaseLease:
+        """Pin a live participant without opening, finalizing or evicting one.
+
+        Diagnostics may observe a participant already admitted by normal work.
+        A cold/terminal participant requires ordinary recovery and is unavailable
+        here. Selection and pinning are atomic with close/eviction.
+        """
+        configured = validate_grafx_page_size(page_size)
+        contained = self._require_contained(Path(os.fspath(path)))
+        key = _canonical(contained)
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None or getattr(entry.database, "closed", False) is True:
+                raise GrafxDatabasePoolError(
+                    "No live Grafx participant is available for observation.",
+                    reason="pool_observation_participant_unavailable",
+                )
+            if entry.page_size != configured:
+                raise GrafxDatabasePoolError(
+                    "The observed Grafx participant has a different page size.",
+                    reason="pool_page_size_mismatch",
+                )
+            entry.pins += 1
+            entry.used_at = self._tick()
+            return GrafxDatabaseLease(self, key, entry.database)
+
     def pin_count(self, path: str | os.PathLike[str]) -> int:
         """How many leases are outstanding on one database."""
 

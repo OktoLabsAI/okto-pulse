@@ -3,8 +3,7 @@
  *
  * The adapter is INJECTED into GuidedHelpProvider via the `telemetryAdapter`
  * prop. It is intentionally minimal:
- *   - Honours three modes resolved at emit time: `disabled` (no-op),
- *     `local_only` (POST to the local events endpoint) and
+ *   - Honours two modes resolved at emit time: `disabled` (no-op) and
  *     `anonymous_beacon` (same payload reaches the beacon path via the
  *     same endpoint; backend decides aggregation).
  *   - Only sends a categorical, allowlisted payload — never IDs, paths,
@@ -19,7 +18,7 @@ import type {
   GuidedHelpTelemetryEvent,
 } from './types';
 
-export type GuidedHelpTelemetryMode = 'disabled' | 'local_only' | 'anonymous_beacon';
+export type GuidedHelpTelemetryMode = 'disabled' | 'anonymous_beacon';
 
 /** Categorical fields allowed to leave the browser. Anything else is dropped. */
 export const GUIDED_HELP_TELEMETRY_PAYLOAD_KEYS = [
@@ -93,7 +92,7 @@ export function createConsentAwareTelemetryAdapter(
       } catch {
         return; // Treat mode resolution failures as disabled.
       }
-      if (mode === 'disabled') {
+      if (mode !== 'anonymous_beacon') {
         return;
       }
       const sanitized = sanitizeGuidedHelpEvent(event);

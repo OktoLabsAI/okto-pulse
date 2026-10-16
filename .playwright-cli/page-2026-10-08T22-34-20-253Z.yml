@@ -1,0 +1,90 @@
+- generic [ref=f6e3]:
+  - banner [ref=f6e4]:
+    - generic [ref=f6e5]:
+      - generic [ref=f6e6]:
+        - button "Hide sidebar" [ref=f6e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f6e12]
+        - generic [ref=f6e31]: / My Board
+      - generic [ref=f6e32]:
+        - button "Refresh board" [ref=f6e33] [cursor=pointer]
+        - button [ref=f6e40] [cursor=pointer]
+  - generic [ref=f6e13]:
+    - complementary [ref=f6e14]:
+      - generic [ref=f6e15]:
+        - generic [ref=f6e17]:
+          - heading "Boards" [level=2] [ref=f6e18]
+          - button "New board" [ref=f6e19] [cursor=pointer]
+        - navigation [ref=f6e21]:
+          - generic [ref=f6e22]:
+            - heading "My Boards" [level=3] [ref=f6e23]
+            - list [ref=f6e44]:
+              - listitem [ref=f6e45]:
+                - button "My Board" [ref=f6e46] [cursor=pointer]
+    - main [ref=f6e26]:
+      - group "Board views" [ref=f6e53]:
+        - button "Stories" [ref=f6e54] [cursor=pointer]
+        - button "Ideations" [ref=f6e58] [cursor=pointer]
+        - button "Refinements" [ref=f6e61] [cursor=pointer]
+        - button "Specs" [active] [pressed] [ref=f6e66] [cursor=pointer]
+        - button "Tasks" [ref=f6e71] [cursor=pointer]
+      - generic [ref=f6e213]:
+        - generic [ref=f6e214]:
+          - generic [ref=f6e215]:
+            - heading "Specifications" [level=2] [ref=f6e216]
+            - generic [ref=f6e217]: (1 of 1)
+          - generic [ref=f6e218]:
+            - textbox "Search specs…" [ref=f6e220]
+            - group "View mode" [ref=f6e221]:
+              - button "List view" [pressed] [ref=f6e222] [cursor=pointer]
+              - button "Grid view" [ref=f6e224] [cursor=pointer]
+            - generic [ref=f6e230]: Group specs
+            - combobox "Group specs" [ref=f6e236]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=f6e237] [cursor=pointer]
+        - generic [ref=f6e239]:
+          - button "All" [ref=f6e240] [cursor=pointer]
+          - button "Draft" [ref=f6e241] [cursor=pointer]
+          - button "Review" [ref=f6e242] [cursor=pointer]
+          - button "Approved" [ref=f6e243] [cursor=pointer]
+          - button "Validated" [ref=f6e244] [cursor=pointer]
+          - button "In Progress" [ref=f6e245] [cursor=pointer]
+          - button "Done" [ref=f6e246] [cursor=pointer]
+          - button "Show archived" [ref=f6e247] [cursor=pointer]
+        - generic [ref=f6e250]:
+          - generic [ref=f6e251] [cursor=pointer]:
+            - 'heading "Refinement: Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f6e258]'
+            - generic [ref=f6e259]: (1)
+          - generic [ref=f6e263] [cursor=pointer]:
+            - generic [ref=f6e264]:
+              - generic [ref=f6e265]:
+                - generic [ref=f6e266]: Draft
+                - generic "Edition 1" [ref=f6e270]
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f6e271]
+              - paragraph [ref=f6e272]: "Especificação conceitual H01–H04: consultar, criar, alterar e cancelar reservas próprias com consistência, idempotência, histórico e arquitetura hexagonal. Exercício de testes do Pulse; nenhuma implementação real solicitada."
+              - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=f6e274]':
+                - generic [ref=f6e275]: Requirement lint
+                - strong [ref=f6e276]: Not assessed
+              - generic [ref=f6e277]:
+                - generic [ref=f6e278]: mock
+                - generic [ref=f6e279]: reserva-de-salas
+                - generic [ref=f6e280]: teste-sdlc
+            - generic [ref=f6e281]:
+              - button "Open lineage graph" [ref=f6e282]
+              - button "Archive tree" [ref=f6e287]
+        - generic [ref=f6e293]:
+          - status [ref=f6e294]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f6e295]:
+            - generic [ref=f6e296]:
+              - generic [ref=f6e297]: Items per page
+              - combobox "Items per page" [ref=f6e298]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=f6e299]:
+              - generic [ref=f6e300]:
+                - button "Previous page" [disabled] [ref=f6e301]: Previous
+                - button "Page 1" [disabled] [ref=f6e302]: "1"
+                - button "Next page" [disabled] [ref=f6e303]: Next

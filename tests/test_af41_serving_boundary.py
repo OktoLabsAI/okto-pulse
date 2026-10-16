@@ -50,7 +50,7 @@ def test_af41_cmd_serve_sets_api_and_mcp_ports_before_runtime_import(
 
 @pytest.mark.asyncio
 async def test_af41_serve_dual_builds_two_uvicorn_servers_with_community_trace(
-    monkeypatch,
+    monkeypatch, tmp_path,
 ) -> None:
     import okto_pulse.community.adapters.mcp_trace as trace_mod
     import okto_pulse.community.adapters.mcp_host as host_mod
@@ -104,10 +104,14 @@ async def test_af41_serve_dual_builds_two_uvicorn_servers_with_community_trace(
     async def fake_heartbeat_loop() -> None:
         await asyncio.Event().wait()
 
-    # Build the module app under the REAL settings first; the FakeSettings
-    # patch below must only affect _serve_dual's serve-config read, not the
-    # lazy get_module_app() composition build (PEP 562 module app).
-    main_mod.get_module_app()
+    # Compose only disposable fresh storage. FakeSettings below controls the
+    # listener configuration after the real composition has been built.
+    from okto_pulse.community.config import CommunitySettings
+    settings = CommunitySettings(data_dir=str(tmp_path / "native-runtime"),
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'native-runtime.db'}")
+    monkeypatch.setattr(main_mod, "CommunitySettings", lambda: settings)
+    module_app = AccessLogQueryRedactionMiddleware(main_mod.create_community_app())
+    monkeypatch.setattr(main_mod, "_MODULE_APP", module_app)
 
     monkeypatch.setattr(main_mod, "CommunitySettings", FakeSettings)
     monkeypatch.setattr(main_mod.uvicorn, "Config", FakeConfig)

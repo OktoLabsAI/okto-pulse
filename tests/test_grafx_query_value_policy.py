@@ -10,7 +10,6 @@ from okto_pulse.community.adapters import sqlalchemy_runtime_settings_service as
 from okto_pulse.community.adapters.grafx_database_pool import CommunityGrafxDatabasePool
 from okto_pulse.community.adapters.grafx_settings_catalog import settings_catalog, validate_options
 from okto_pulse.community.adapters.sqlalchemy_models import AppSetting
-from okto_pulse.community.api.settings import RuntimeSettingsPayload
 from okto_pulse.community.config import CommunitySettings
 
 
@@ -31,7 +30,7 @@ def test_default_and_catalog_bounds_match_effective_native_default():
 def test_valid_limits_across_admission_paths(limit, monkeypatch, tmp_path):
     options = {KEY: limit}
     assert validate_options(options) == options
-    assert RuntimeSettingsPayload(kg_grafx_options=options).kg_grafx_options == options
+    assert CommunitySettings(_env_file=None, kg_grafx_options=options).kg_grafx_options == options
     assert service._validate_runtime_setting_value("kg_grafx_options", json.dumps(options)) == options
     monkeypatch.setenv("KG_GRAFX_OPTIONS", json.dumps(options))
     assert CommunitySettings(_env_file=None).kg_grafx_options == options
@@ -40,11 +39,11 @@ def test_valid_limits_across_admission_paths(limit, monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("limit", [65537, 1048576, 0, -1, True, 65536.0, "65536", None])
-def test_invalid_limits_cannot_bypass_ui_via_api_env_persistence_or_pool(limit, monkeypatch, tmp_path):
+def test_invalid_limits_cannot_bypass_deployment_persistence_or_pool(limit, monkeypatch, tmp_path):
     options = {KEY: limit}
     for admit in (
         validate_options,
-        lambda value: RuntimeSettingsPayload(kg_grafx_options=value),
+        lambda value: CommunitySettings(_env_file=None, kg_grafx_options=value),
         lambda value: service._validate_runtime_setting_value("kg_grafx_options", json.dumps(value)),
         lambda value: CommunityGrafxDatabasePool(tmp_path, constructor_options=value),
     ):

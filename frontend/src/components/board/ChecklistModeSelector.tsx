@@ -28,7 +28,7 @@ export function ChecklistModeSelector({
   disabled = false,
   testIdPrefix = 'checklist-mode',
 }: {
-  value: ChecklistMode;
+  value: ChecklistMode | null;
   onChange: (mode: ChecklistMode) => void;
   disabled?: boolean;
   testIdPrefix?: string;

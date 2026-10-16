@@ -5,17 +5,25 @@
 import { useState, useMemo } from 'react';
 import { Plus, Trash2, ChevronDown, ChevronUp, Scale, Pencil, CheckCircle, XCircle } from 'lucide-react';
 import type { Spec, BusinessRule } from '@/types';
+import { useSpecCollectionEditor } from './useSpecCollectionEditor';
+import { SpecCollectionDraftNotice } from './SpecCollectionDraftNotice';
 
 interface RulesTabProps {
   spec: Spec;
-  onUpdate: (rules: BusinessRule[]) => void;
+  onUpdate: (rules: BusinessRule[], expectedVersion: number) => void | Promise<void>;
+  readCurrent?: boolean;
   onSpecUpdate?: (patch: Record<string, any>) => void;
   canCreate?: boolean;
   canEdit?: boolean;
   canDelete?: boolean;
 }
 
-export function RulesTab({ spec, onUpdate, onSpecUpdate, canCreate = true, canEdit = true, canDelete = true }: RulesTabProps) {
+export function RulesTab(props: RulesTabProps) {
+  return <RulesTabEditor key={`${props.spec.board_id}:${props.spec.id}:${props.canCreate}:${props.canEdit}`} {...props} />;
+}
+
+function RulesTabEditor({ spec, onUpdate, onSpecUpdate, readCurrent = true, canCreate = true, canEdit = true, canDelete = true }: RulesTabProps) {
+  const editor = useSpecCollectionEditor(spec, readCurrent);
   const [adding, setAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -29,10 +37,10 @@ export function RulesTab({ spec, onUpdate, onSpecUpdate, canCreate = true, canEd
   const [formLinkedFRs, setFormLinkedFRs] = useState<string[]>([]);
 
   const rules = (spec.business_rules || []).filter((rule) => (rule.status || 'active') === 'active');
-  const frOptions = (spec.functional_requirements || []).map((fr: any, index: number) => ({
-    key: typeof fr === 'object' && fr?.id ? String(fr.id) : String(index),
+  const frOptions = (spec.functional_requirements || []).map((fr, index) => ({
+    key: fr.id,
     index,
-    text: typeof fr === 'string' ? fr : String(fr?.text || fr?.title || ''),
+    text: fr.text,
   }));
   const frs = frOptions.map((fr) => fr.text);
 
@@ -45,7 +53,7 @@ export function RulesTab({ spec, onUpdate, onSpecUpdate, canCreate = true, canEd
     setFormLinkedFRs([]);
   };
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!formTitle.trim() || !formRule.trim() || !formWhen.trim() || !formThen.trim()) return;
     const id = `br_${Date.now()}`;
     const rule: BusinessRule = {
@@ -58,12 +66,13 @@ export function RulesTab({ spec, onUpdate, onSpecUpdate, canCreate = true, canEd
       linked_task_ids: null,
       notes: formNotes.trim() || null,
     };
-    onUpdate([...rules, rule]);
+    if (missing.length || !canCreate || !await editor.save(version => onUpdate([...rules, rule], version))) return;
     setAdding(false);
     resetForm();
   };
 
   const handleEdit = (rule: BusinessRule) => {
+    if (!canEdit || !editor.begin()) return;
     setEditingId(rule.id);
     setFormTitle(rule.title);
     setFormRule(rule.rule);
@@ -73,9 +82,9 @@ export function RulesTab({ spec, onUpdate, onSpecUpdate, canCreate = true, canEd
     setFormLinkedFRs(rule.linked_requirements || []);
   };
 
-  const handleSaveEdit = () => {
+  const handleSaveEdit = async () => {
     if (!editingId || !formTitle.trim() || !formRule.trim() || !formWhen.trim() || !formThen.trim()) return;
-    onUpdate(rules.map((r) =>
+    if (removed || missing.length || !canEdit || !await editor.save(version => onUpdate(rules.map((r) =>
       r.id === editingId
         ? {
             ...r,
@@ -87,14 +96,14 @@ export function RulesTab({ spec, onUpdate, onSpecUpdate, canCreate = true, canEd
             notes: formNotes.trim() || null,
           }
         : r
-    ));
+    ), version))) return;
     setEditingId(null);
     resetForm();
   };
 
-  const handleRemove = (id: string) => {
+  const handleRemove = async (id: string) => {
     if (!confirm('Remove this business rule?')) return;
-    onUpdate(rules.filter((r) => r.id !== id));
+    if (canDelete) await editor.save(version => onUpdate(rules.filter((r) => r.id !== id), version), true);
   };
 
   const toggleFR = (fr: string) => {
@@ -104,9 +113,12 @@ export function RulesTab({ spec, onUpdate, onSpecUpdate, canCreate = true, canEd
   };
 
   const isFormValid = formTitle.trim() && formRule.trim() && formWhen.trim() && formThen.trim();
+  const removed = !!editingId && !rules.some(item => item.id === editingId);
+  const missing = formLinkedFRs.filter(id => !(spec.functional_requirements || []).some(fr => fr.id === id && (fr.status || 'active') === 'active'));
+  const currentRule = rules.find(item => item.id === editingId);
 
   const renderForm = (onSubmit: () => void, submitLabel: string, onCancel: () => void) => (
-    <div className="border border-indigo-200 dark:border-indigo-700 rounded-lg p-3 space-y-2 bg-indigo-50/50 dark:bg-indigo-900/10">
+    <fieldset disabled={editor.saving} className="border border-indigo-200 dark:border-indigo-700 rounded-lg p-3 space-y-2 bg-indigo-50/50 dark:bg-indigo-900/10">
       <input
         type="text"
         value={formTitle}
@@ -170,45 +182,28 @@ export function RulesTab({ spec, onUpdate, onSpecUpdate, canCreate = true, canEd
         </div>
       )}
       <div className="flex justify-end gap-2">
-        <button onClick={onCancel} className="btn btn-secondary text-xs">Cancel</button>
-        <button onClick={onSubmit} disabled={!isFormValid} className="btn btn-primary text-xs">{submitLabel}</button>
+        <button onClick={() => { editor.cancel(); onCancel(); }} className="btn btn-secondary text-xs">Cancel</button>
+        <button onClick={onSubmit} disabled={!isFormValid || editor.blocked || removed || missing.length > 0} className="btn btn-primary text-xs">{submitLabel}</button>
       </div>
-    </div>
+    </fieldset>
   );
 
-  // Compute FR coverage — linked_requirements can be stable ids, indices ("0") or full FR text
+  // Coverage uses current identities; text and positions are presentation only.
   const frCoverage = useMemo(() => {
-    const coveredIndices = new Set<number>();
-    for (const br of rules) {
-      for (const ref of (br.linked_requirements || [])) {
-        const refStr = String(ref);
-        const byId = frOptions.find((fr) => fr.key === refStr);
-        if (byId) {
-          coveredIndices.add(byId.index);
-          continue;
-        }
-        // Try as numeric index first
-        const asNum = parseInt(refStr, 10);
-        if (!isNaN(asNum) && asNum >= 0 && asNum < frs.length) {
-          coveredIndices.add(asNum);
-        } else {
-          // Try matching by FR text content
-          const idx = frs.findIndex((fr) => refStr.includes(fr) || fr.includes(refStr));
-          if (idx >= 0) coveredIndices.add(idx);
-        }
-      }
-    }
-    return frs.map((fr, i) => ({
-      index: i,
-      text: fr,
-      covered: coveredIndices.has(i),
+    const coveredIds = new Set(rules.flatMap((rule) => rule.linked_requirements || []));
+    return frOptions.map((fr) => ({
+      index: fr.index, text: fr.text, covered: coveredIds.has(fr.key),
     }));
-  }, [rules, frOptions, frs]);
+  }, [rules, frOptions]);
 
   const coveredCount = frCoverage.filter(f => f.covered).length;
 
   return (
     <div className="space-y-4">
+      <SpecCollectionDraftNotice editor={editor} active={adding || !!editingId} removed={removed} missing={missing}
+        currentText={currentRule && [currentRule.title, currentRule.rule, currentRule.when, currentRule.then, currentRule.notes].filter(Boolean).join('\n')}
+        onRemoveMissing={() => setFormLinkedFRs(formLinkedFRs.filter(id => !missing.includes(id)))} />
+      {removed && renderForm(handleSaveEdit, 'Save', () => { setEditingId(null); resetForm(); })}
       {/* FR Coverage summary */}
       {frs.length > 0 && (
         <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3">
@@ -289,10 +284,11 @@ export function RulesTab({ spec, onUpdate, onSpecUpdate, canCreate = true, canEd
         }
 
         return (
-          <div key={rule.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+          <div key={rule.id} data-readiness-ref={`br:${rule.id}`} tabIndex={-1} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500">
             <div
               className="flex items-center gap-2 px-3 py-2 cursor-pointer bg-gray-50 dark:bg-gray-700/50"
               onClick={() => setExpandedId(isExpanded ? null : rule.id)}
+              data-readiness-expand aria-expanded={isExpanded}
             >
               <Scale size={14} className="text-indigo-500 shrink-0" />
               <span className="text-sm font-medium text-gray-900 dark:text-white truncate flex-1">{rule.title}</span>
@@ -312,7 +308,7 @@ export function RulesTab({ spec, onUpdate, onSpecUpdate, canCreate = true, canEd
               )}
               <button
                 onClick={(e) => { e.stopPropagation(); handleEdit(rule); }}
-                disabled={!canEdit}
+                disabled={!canEdit || editor.saving || !readCurrent}
                 className={`p-0.5 ${canEdit ? 'text-gray-400 hover:text-blue-500' : 'text-gray-300 cursor-not-allowed'}`}
                 title={canEdit ? 'Edit' : 'Requires spec.structured_entity.business_rule.update'}
               >
@@ -320,7 +316,7 @@ export function RulesTab({ spec, onUpdate, onSpecUpdate, canCreate = true, canEd
               </button>
               <button
                 onClick={(e) => { e.stopPropagation(); handleRemove(rule.id); }}
-                disabled={!canDelete}
+                disabled={!canDelete || editor.saving || !readCurrent || adding || !!editingId}
                 className={`p-0.5 ${canDelete ? 'text-gray-400 hover:text-red-500' : 'text-gray-300 cursor-not-allowed'}`}
                 title={canDelete ? 'Remove' : 'Requires spec.structured_entity.business_rule.revoke'}
               >
@@ -348,13 +344,12 @@ export function RulesTab({ spec, onUpdate, onSpecUpdate, canCreate = true, canEd
                   <div className="flex flex-wrap gap-1">
                     <span className="text-[10px] text-gray-400 mr-1">Linked FRs:</span>
                     {rule.linked_requirements.map((idx, i) => {
-                      const ref = String(idx);
+                      const ref = idx;
                       const byId = frOptions.find((fr) => fr.key === ref);
-                      const frIdx = byId ? byId.index : parseInt(ref, 10);
-                      const frText = byId ? byId.text : frs[frIdx];
+                      const frText = byId?.text;
                       return (
                         <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 dark:bg-indigo-900/20 dark:text-indigo-300">
-                          FR{Number.isFinite(frIdx) ? frIdx : ref}{frText ? `: ${frText.length > 40 ? frText.slice(0, 37) + '...' : frText}` : ''}
+                          {ref}{frText ? `: ${frText.length > 40 ? frText.slice(0, 37) + '...' : frText}` : ''}
                         </span>
                       );
                     })}
@@ -382,8 +377,8 @@ export function RulesTab({ spec, onUpdate, onSpecUpdate, canCreate = true, canEd
       ) : (
         !editingId && (
           <button
-            onClick={() => setAdding(true)}
-            disabled={!canCreate}
+            onClick={() => { if (editor.begin()) setAdding(true); }}
+            disabled={!canCreate || editor.saving || !readCurrent}
             title={canCreate ? 'Add Business Rule' : 'Requires spec.structured_entity.business_rule.create'}
             className={`flex items-center gap-1 text-sm ${canCreate ? 'text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300' : 'text-gray-300 cursor-not-allowed'}`}
           >

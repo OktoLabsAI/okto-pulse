@@ -20,7 +20,7 @@ def _request(items: list[tuple[str, str]] = []) -> Request:  # noqa: B006
 @pytest.mark.parametrize(
     ("items", "code"),
     [
-        ([('offset', '1')], "params_require_per_column_limit"),
+        ([('offset', '1')], "offset_requires_column"),
         ([('per_column_limit', 'x')], "per_column_limit_invalid"),
         ([('per_column_limit', '0')], "per_column_limit_out_of_bounds"),
         ([('per_column_limit', '101')], "per_column_limit_out_of_bounds"),
@@ -42,8 +42,11 @@ def test_columns_query_typed_400(items: list[tuple[str, str]], code: str) -> Non
     assert caught.value.detail["error"] == code
 
 
-def test_include_archived_alone_stays_on_literal_legacy_branch() -> None:
-    assert parse_columns_parameters(_request([("include_archived", "true")])) is None
+def test_include_archived_alone_uses_native_default_window() -> None:
+    parsed = parse_columns_parameters(_request([("include_archived", "true")]))
+    assert parsed.per_column_limit == 25
+    assert parsed.include_archived is True
+    assert parsed.column is None
 
 
 def test_repeated_card_types_are_status_scoped_and_last_value_wins() -> None:

@@ -25,7 +25,7 @@ describe('selective Knowledge propagation API surface', () => {
     mockApiClient.fetch.mockReset();
   });
 
-  it('normalizes the additive v2 create receipt back to Card', async () => {
+  it('returns the Card from its native creation receipt', async () => {
     const card = { id: 'card-1', title: 'Governed card' } as Card;
     mockApiClient.fetchJson.mockResolvedValue({
       contract_version: 2,
@@ -74,17 +74,20 @@ describe('selective Knowledge propagation API surface', () => {
     );
   });
 
-  it('keeps the legacy create and body-less derive paths unchanged', async () => {
-    const card = { id: 'card-legacy' } as Card;
-    const spec = { id: 'spec-legacy' };
+  it('rejects a bare legacy Card and uses the native receipt for body-less derive', async () => {
+    const card = { id: 'card-old' } as Card;
+    const spec = {
+      contract_version: 2, spec_id: 'spec-native', selection_state: 'omitted',
+      assignments: [], operation_id: 'op-derive', revision: 1, replayed: false,
+    };
     mockApiClient.fetchJson
       .mockResolvedValueOnce(card)
       .mockResolvedValueOnce(spec);
     const { result } = renderHook(() => useDashboardApi());
 
-    expect(
-      await result.current.createCard('board-1', { title: 'Legacy card' }),
-    ).toBe(card);
+    await expect(
+      result.current.createCard('board-1', { title: 'Native card' }),
+    ).rejects.toThrow('Invalid card creation receipt');
     expect(
       await result.current.deriveSpecFromRefinement('refinement-1'),
     ).toBe(spec);
@@ -92,6 +95,22 @@ describe('selective Knowledge propagation API surface', () => {
       2,
       '/refinements/refinement-1/derive-spec',
       { method: 'POST' },
+    );
+  });
+
+  it('derives an Ideation Spec with delivery context and the native selection envelope', async () => {
+    const response = { spec_id: 'spec-ideation', contract_version: 2 };
+    const data = {
+      delivery_context: 'greenfield' as const,
+      knowledge_propagation: {
+        selection_state: 'omitted' as const, idempotency_key: 'derive-ideation',
+      },
+    };
+    mockApiClient.fetchJson.mockResolvedValue(response);
+    const { result } = renderHook(() => useDashboardApi());
+    expect(await result.current.deriveSpecFromIdeation('ideation-1', data)).toBe(response);
+    expect(mockApiClient.fetchJson).toHaveBeenCalledWith(
+      '/ideations/ideation-1/derive-spec', { method: 'POST', body: JSON.stringify(data) },
     );
   });
 

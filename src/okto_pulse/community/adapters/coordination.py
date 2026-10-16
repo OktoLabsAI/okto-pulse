@@ -29,11 +29,9 @@ from okto_pulse.core.kg.interfaces import (
 )
 from okto_pulse.core.ports.coordination import (
     ClaimRepository,
-    ConfigValidationPort,
     CoordinationProviderMissing,
     LeaseHandle,
     LeaseProvider,
-    RuntimeSettingsProvider,
     WriteLockHandle,
     WriteLockPort,
     get_write_lock_port,
@@ -1081,22 +1079,6 @@ class CommunitySqlAlchemyClaimRepository(ClaimRepository):
         return list(result.scalars().all())
 
 
-class CommunityRuntimeSettingsProvider(RuntimeSettingsProvider, ConfigValidationPort):
-    """Community runtime settings reader/validator."""
-
-    async def read_runtime_settings(self, scope: str = "global") -> Mapping[str, Any]:
-        from okto_pulse.core import get_settings
-
-        settings = get_settings()
-        return settings.model_dump()
-
-    def validate_runtime_settings(self, values: Mapping[str, Any]) -> None:
-        from okto_pulse.core import get_settings
-
-        configured = get_settings()
-        current = configured.model_dump()
-        current.update(dict(values))
-        type(configured)(**current)
 
 
 def build_root_bound_community_write_lock_port(
@@ -1115,7 +1097,6 @@ def build_root_bound_community_write_lock_port(
 _lease_provider = CommunityLocalLeaseProvider()
 _write_lock_port = CommunityLocalWriteLockPort()
 _claim_repository = CommunitySqlAlchemyClaimRepository()
-_runtime_settings_provider = CommunityRuntimeSettingsProvider()
 
 
 @contextmanager
@@ -1171,15 +1152,12 @@ def register_community_coordination_providers() -> None:
         lease_provider=_lease_provider,
         write_lock_port=_write_lock_port,
         claim_repository=_claim_repository,
-        runtime_settings_provider=_runtime_settings_provider,
-        config_validation_port=_runtime_settings_provider,
     )
 
 
 __all__ = [
     "CommunityLocalLeaseProvider",
     "CommunityLocalWriteLockPort",
-    "CommunityRuntimeSettingsProvider",
     "CommunitySqlAlchemyClaimRepository",
     "build_root_bound_community_write_lock_port",
     "community_global_discovery_writer_fence",

@@ -22,6 +22,7 @@ function flattenFlags(
 ): FlatFlags {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return target;
   for (const [key, child] of Object.entries(value)) {
+    if (!prefix && key === 'sprint') continue;
     const path = prefix ? `${prefix}.${key}` : key;
     if (typeof child === 'boolean') target.set(path, child);
     else flattenFlags(child, path, target);

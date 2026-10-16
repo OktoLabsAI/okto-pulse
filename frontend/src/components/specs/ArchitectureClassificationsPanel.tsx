@@ -1,0 +1,180 @@
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useDashboardApi } from '@/services/api';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
+import type { ArchitectureClassificationReviewItem, ArchitectureClassificationsResponse, ArchitectureReviewState } from '@/types/architecture-classifications';
+import { ArchitectureClassificationAuthoring, type ArchitectureAuthoringAuthority } from './ArchitectureClassificationAuthoring';
+import { ArchitectureContractContent } from './ArchitectureContractContent';
+
+const labels: Record<ArchitectureReviewState, string> = {
+  pending: 'Pending', current: 'Current', review_required: 'Review required',
+  unresolved: 'Unresolved', retired: 'Retired', unavailable: 'Unavailable',
+};
+const dispositions = { promote_to_ir: 'Promoted to IR', associate_existing_ir: 'Associated with IR', context_only: 'Context only' };
+
+function failure(error: unknown) {
+  if (error instanceof AuthenticatedFetchError && [401, 403].includes(error.status)) return 'Permission to read classifications is no longer available.';
+  if (error instanceof AuthenticatedFetchError && error.status === 409) return 'The classification or source changed. Refresh the review before continuing.';
+  return 'Classification review could not be loaded. Its completeness is unknown.';
+}
+
+function ReviewDetails({ boardId, specId, specVersion, specEdition, item, children, readScope, readCurrent = true }: {
+  boardId: string; specId: string; specVersion: number; specEdition: number; item: ArchitectureClassificationReviewItem;
+  children?: ReactNode;
+  readScope?: string; readCurrent?: boolean;
+}) {
+  const api = useDashboardApi();
+  const [digest, setDigest] = useState<string | null>(null);
+  const detailScope = JSON.stringify([boardId, specId, specVersion, specEdition, readScope, readCurrent, digest]);
+  const [result, setResult] = useState<{ scope: string; detail?: ArchitectureClassificationReviewItem; error?: string } | null>(null);
+  useEffect(() => {
+    if (!digest || !readCurrent) { setResult(null); return; }
+    const controller = new AbortController();
+    let active = true;
+    void (async () => {
+      try {
+        const response = await api.getArchitectureClassifications(boardId, specId, controller.signal, { candidateId: item.candidate_id, sourceDigest: digest });
+        const detail = response.items.find(row => row.candidate_id === item.candidate_id);
+        if (response.board_id !== boardId || response.spec_id !== specId || response.spec_edition !== specEdition || response.spec_version !== specVersion || response.profile !== 'detail' || !detail || !('current_contract' in detail)
+          || !(detail.source_digests.includes(digest) || (!detail.source_variant_count && detail.analyzed_source_digest === digest))) throw new Error('scope changed');
+        if (active) setResult({ scope: detailScope, detail });
+      } catch (error) {
+        if (active) setResult({ scope: detailScope, error: failure(error) });
+      }
+    })();
+    return () => { active = false; controller.abort(); };
+  }, [api, boardId, specId, specVersion, specEdition, item.candidate_id, digest, detailScope, readCurrent]);
+  const current = result?.scope === detailScope ? result : null;
+  const variants = item.source_digests.length ? item.source_digests : item.analyzed_source_digest ? [item.analyzed_source_digest] : [];
+  return <article className="mt-3 space-y-3 rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800/30">
+    <div className="flex flex-wrap items-center justify-between gap-2"><h4 className="text-sm font-semibold">{item.name || item.interface_id}</h4>
+      <span className="rounded-full bg-blue-50 px-2 py-1 text-xs text-blue-700 dark:bg-blue-900/30 dark:text-blue-200">{labels[item.state]}</span></div>
+    <details className="text-xs text-gray-500"><summary className="cursor-pointer">Source references</summary><p className="mt-2 break-all">Origin: {item.root_design_id} · Interface: {item.interface_id}</p></details>
+    {item.state === 'retired' && <p className="text-xs">The source left the current population. Existing IR obligations remain in scope.</p>}
+    {item.state === 'unresolved' && <p className="text-xs">Resolve the source or history conflict before classifying this contract.</p>}
+    {item.issues.includes('architecture_classification_ir_not_active_in_spec') && <p className="text-xs">A referenced IR is missing, inactive or ambiguous in this Spec.</p>}
+    {variants.map((value, index) => <button key={value} type="button" className="mr-3 text-xs text-blue-600 dark:text-blue-400" aria-expanded={digest === value} onClick={() => setDigest(digest === value ? null : value)}>
+      {variants.length > 1 ? `Review variant ${index + 1}` : 'Review decision and contract'}
+    </button>)}
+    {item.source_digests_truncated && <p className="text-xs">Additional conflicting variants exist. This contract is unresolved.</p>}
+    {digest && <div className="mt-2 text-xs">
+      {!current && <p role="status">Loading classification details…</p>}
+      {current?.error && <p role="alert">{current.error}</p>}
+      {current?.detail && <>
+        {current.detail.changed_paths?.length ? <p>Changed paths: {current.detail.changed_paths.join(', ')}</p> : null}
+        {current.detail.changed_paths_truncated && <p>The change list is truncated. Review the full contracts below.</p>}
+        {current.detail.remainder_state && <p>Remaining context: {labels[current.detail.remainder_state]}</p>}
+        {current.detail.decisions?.map(record => <div key={record.decision_id} className="mt-2">
+          <p>{dispositions[record.disposition]} · {labels[record.state]}</p>
+          <p>By {record.actor_id} at {record.classified_at} · Spec version {record.spec_version}</p>
+          <p>Scope: {record.scope_paths.map(path => path || 'Whole contract').join(', ')}</p>
+          {record.integration_requirement_refs.length > 0 && <p>IRs: {record.integration_requirement_refs.join(', ')}</p>}
+          {record.reason && <p>Reason: {record.reason}</p>}
+          {record.remainder_reason && <p>Remaining context reason: {record.remainder_reason}</p>}
+          <p>Analyzed revisions: {record.adopted_sources.map(source => `${source.design_id} v${source.revision}`).join(', ')}</p>
+        </div>)}
+        {(['analyzed_contract', 'current_contract'] as const).map(key => current.detail![key] && <div key={key} className="mt-2">
+          <p>{key === 'analyzed_contract' ? 'Analyzed contract' : 'Current contract'}</p>
+          <ArchitectureContractContent value={current.detail![key]} />
+        </div>)}
+      </>}
+    </div>}
+    {children}
+  </article>;
+}
+
+interface PanelProps {
+  boardId: string; specId: string; specVersion: number; canRead: boolean;
+  readCurrent?: boolean;
+  authoring?: ArchitectureAuthoringAuthority;
+  integrated?: boolean;
+}
+
+export function ArchitectureClassificationsPanel(props: PanelProps) {
+  return <ClassificationWorkspace key={JSON.stringify([props.boardId, props.specId])} {...props} />;
+}
+
+function ClassificationWorkspace({ boardId, specId, specVersion, canRead, authoring, integrated = false, readCurrent = true }: PanelProps) {
+  const api = useDashboardApi();
+  const [open, setOpen] = useState(integrated);
+  const [refresh, setRefresh] = useState(0);
+  const [filter, setFilter] = useState<ArchitectureReviewState | ''>('');
+  const baseScope = JSON.stringify([boardId, specId, specVersion, canRead, readCurrent, open, refresh, filter]);
+  const [page, setPage] = useState({ scope: baseScope, offset: 0 });
+  const offset = page.scope === baseScope ? page.offset : 0;
+  const scope = JSON.stringify([baseScope, offset]);
+  const [result, setResult] = useState<{ scope: string; data?: ArchitectureClassificationsResponse; error?: string; denied?: boolean } | null>(null);
+  const [retained, setRetained] = useState<Map<string, ArchitectureClassificationReviewItem>>(new Map());
+  const onDraftChange = useCallback((item: ArchitectureClassificationReviewItem, dirty: boolean) => {
+    setRetained(previous => {
+      if (dirty ? previous.get(item.candidate_id) === item : !previous.has(item.candidate_id)) return previous;
+      const next = new Map(previous);
+      if (dirty) next.set(item.candidate_id, item); else next.delete(item.candidate_id);
+      return next;
+    });
+  }, []);
+  useEffect(() => {
+    if (!canRead || !open) { setResult(null); setRetained(new Map()); return; }
+    if (!readCurrent) return;
+    const controller = new AbortController();
+    let active = true;
+    void (async () => {
+      try {
+        const data = await api.getArchitectureClassifications(boardId, specId, controller.signal, { offset, limit: 25, ...(filter ? { state: filter } : {}) });
+        if (data.board_id !== boardId || data.spec_id !== specId || data.profile !== 'summary') throw new Error('scope mismatch');
+        if (active) setResult({ scope, data });
+      } catch (error) {
+        if (active) {
+          const denied = error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status);
+          if (denied) setRetained(new Map());
+          setResult({ scope, error: failure(error), denied });
+        }
+      }
+    })();
+    return () => { active = false; controller.abort(); };
+  }, [api, boardId, specId, scope, offset, filter, canRead, readCurrent, open]);
+  const current = result?.scope === scope ? result : null;
+  const data = current?.data;
+  const rows = [...(data?.items ?? []), ...[...retained.values()].filter(row => !data?.items.some(item => item.candidate_id === row.candidate_id))];
+  return <section aria-label="Architecture classifications" className="mb-4 rounded border border-gray-200 p-3 dark:border-gray-700">
+    <h3 className="text-sm font-semibold">{integrated ? 'Architecture candidates' : 'Architecture classifications'}</h3>
+    {integrated && <p className="mt-1 text-xs text-gray-500">Interface contracts from the adopted architecture. Create or reuse an integration requirement, or keep the interface as context. API Contracts are separate definitions.</p>}
+    {!canRead ? <p className="mt-2 text-sm">Spec, architecture and IR read permissions are required.</p> : <>
+      <button type="button" aria-expanded={open} className="mt-2 text-xs text-blue-600 dark:text-blue-400" onClick={() => { setOpen(!open); setRefresh(value => value + 1); }}>Review classifications</button>
+      {open && <>
+        <p className="mt-2 text-xs">This review does not approve requirements or authorize starting the Spec. Context decisions do not waive existing IRs.</p>
+        <button type="button" className="mr-3 text-xs text-blue-600 dark:text-blue-400" onClick={() => setRefresh(value => value + 1)}>Refresh classifications</button>
+        <label className="text-xs">Classification state <select value={filter} onChange={event => setFilter(event.target.value as ArchitectureReviewState | '')}>
+          <option value="">All states</option>{Object.entries(labels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        </select></label>
+        {!current && <p role="status">Loading classification review…</p>}
+        {current?.error && <p role="alert">{current.error}</p>}
+        {data && <>
+          {(!data.enumeration_complete || data.total === null) && <p role="alert">Sources or history are incomplete. Totals are unknown; counts cover observed contracts only.</p>}
+          {data.enumeration_complete && !data.classification_complete && <p>Classification is incomplete across the adopted architecture.</p>}
+          {data.classification_complete && <p>Current contracts are classified. Execution gates and semantic review still apply.</p>}
+          <ul aria-label="Global classification counts" className="mt-2 text-xs">{Object.entries(labels).map(([value, label]) => <li key={value}>{label}: {data.state_counts[value as ArchitectureReviewState]}</li>)}</ul>
+          {data.items.length === 0 && <p>No classifications in this page or filter.</p>}
+        </>}
+          {!result?.denied && (!authoring?.canClassify || integrated) && rows.map(item => <ReviewDetails key={item.candidate_id} boardId={boardId} specId={specId} specVersion={specVersion} specEdition={authoring?.specEdition ?? data?.spec_edition ?? 0} item={item} readScope={scope} readCurrent={Boolean(data?.items.some(row => row.candidate_id === item.candidate_id))}>
+            {integrated && authoring?.canClassify && <ArchitectureClassificationAuthoring
+              key={JSON.stringify([item.candidate_id, authoring.canPromote, authoring.canAssociate])} {...authoring} boardId={boardId} specId={specId} specVersion={specVersion} onDraftChange={onDraftChange}
+              inlineItem={item} items={[]} renderItem={() => null}
+              sourceReady={Boolean(data?.source_complete && data.items.some(row => row.candidate_id === item.candidate_id) && data.spec_version === specVersion && data.spec_edition === authoring.specEdition
+                && item.current_source_digest && item.source_variant_count === 1 && ['pending', 'current', 'review_required'].includes(item.state))} />}
+          </ReviewDetails>)}
+          {data && (offset > 0 || data.has_more) && <nav aria-label="Classification pages" className="mt-2 flex gap-3 text-xs">
+            <button type="button" disabled={offset === 0} onClick={() => setPage({ scope: baseScope, offset: Math.max(0, offset - 25) })}>Previous classifications</button>
+            <button type="button" disabled={!data.has_more} onClick={() => setPage({ scope: baseScope, offset: offset + 25 })}>Next classifications</button>
+          </nav>}
+        {!result?.denied && !integrated && authoring?.canClassify && <ArchitectureClassificationAuthoring
+          key={JSON.stringify([boardId, specId, authoring.canPromote, authoring.canAssociate])}
+          {...authoring} boardId={boardId} specId={specId} specVersion={specVersion}
+          sourceReady={Boolean(data?.source_complete && data.spec_version === specVersion && data.spec_edition === authoring.specEdition)}
+          items={data?.items ?? []}
+          renderItem={(item, selection) => <ReviewDetails key={`${scope}:${item.candidate_id}`} boardId={boardId} specId={specId} specVersion={data!.spec_version} specEdition={data!.spec_edition} item={item}>{selection}</ReviewDetails>}
+        />}
+        {authoring && !authoring.canClassify && <p className="mt-2 text-xs">Classification authoring requires an unarchived Draft Spec and permission to edit its content.</p>}
+      </>}
+    </>}
+  </section>;
+}

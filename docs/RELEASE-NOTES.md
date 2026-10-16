@@ -3,7 +3,27 @@
 Changeset per version, newest first.
 
 
-### 0.3.3 - current
+### 0.4.0 — 2026-10-16
+
+> **BREAKING CHANGE: Pulse 0.4.0 is incompatible with all earlier Pulse versions.**
+> It requires new storage. Existing databases, graph stores and backups are not
+> migrated or converted; incompatible storage is refused without automatic deletion.
+
+The [0.4.0 changelog](../CHANGELOG.md#040---2026-10-16) contains the full release
+summary and instructions for starting fresh, including keeping the default
+`~/.okto-pulse` path after preserving the old home elsewhere. Keep old data with
+its original Pulse version. API/MCP integrations must use the native 0.4.0 contracts.
+
+Highlights: unified Spec planning validation with all assessments retained;
+evidence-derived implementation and verification progress; authenticated external
+test results; structured requirements and actionable pinpoints; redesigned
+Coverage/Delivery and previous-result views; consistent MCP instructions with
+shared Core contracts and Community-only operational notes.
+
+Git release: `v0.4.0`. Distribution publication is tracked by the release pipeline.
+
+
+### 0.3.3
 
 Version 0.3.3 aligns Community packaging and contributor workflows with the
 paired Core release and closes the remaining Delivery Intelligence semantics.

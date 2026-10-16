@@ -25,6 +25,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ConsolidationAudit,
     ConsolidationDeadLetter,
     ConsolidationQueue,
+    DomainEventRow,
     GlobalUpdateOutbox,
 )
 from okto_pulse.community.adapters.sqlalchemy_queue_health import (
@@ -47,6 +48,7 @@ async def _database(tmp_path):
             ConsolidationAudit,
             ConsolidationDeadLetter,
             ConsolidationQueue,
+            DomainEventRow,
             GlobalUpdateOutbox,
         ):
             await connection.run_sync(table.__table__.create)
@@ -85,7 +87,7 @@ async def test_restricted_operational_reads_filter_before_limit_and_count(
     engine, sessions = await _database(tmp_path)
     try:
         async with sessions() as session:
-            session.add(Board(id=BOARD_ID, name="Board", owner_id="owner"))
+            session.add(Board(realm_id="local", id=BOARD_ID, name="Board", owner_id="owner"))
             session.add_all(
                 [
                     ConsolidationAudit(
@@ -257,7 +259,7 @@ async def test_generic_reprocess_cannot_touch_ct_rows_selected_by_opaque_id(
     engine, sessions = await _database(tmp_path)
     try:
         async with sessions() as session:
-            session.add(Board(id=BOARD_ID, name="Board", owner_id="owner"))
+            session.add(Board(realm_id="local", id=BOARD_ID, name="Board", owner_id="owner"))
             session.add_all(
                 [
                     ConsolidationDeadLetter(

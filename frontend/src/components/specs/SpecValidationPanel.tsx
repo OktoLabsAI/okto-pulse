@@ -44,11 +44,14 @@ import type {
 } from '@/types';
 
 import { SpecChecklistPanel } from './SpecChecklistPanel';
+import { SpecPlanningSummary } from './SpecPlanningSummary';
+import { SpecDecompositionPanel } from './SpecDecompositionPanel';
 import { SpecValidationHistoryPanel } from './SpecValidationHistoryPanel';
 import { resolveSpecSemanticAnchor } from './specSemanticAnchors';
 
 type ValidationSubTab =
   | 'spec-validation'
+  | 'decomposition'
   | 'checklist'
   | 'requirement-lint'
   | 'policy-compliance';
@@ -75,6 +78,9 @@ interface SpecValidationPanelProps {
   onOpenRequirementLintHelp?: () => void;
   onSubmitValidation?: () => void;
   canSubmitValidation?: boolean;
+  canReadDecomposition?: boolean;
+  canSubmitDecomposition?: boolean;
+  onReviewPlanningComponent?: (key: string) => void;
 }
 
 interface CurrentValidationCardProps {
@@ -367,6 +373,9 @@ export function SpecValidationPanel({
   onOpenRequirementLintHelp,
   onSubmitValidation,
   canSubmitValidation = false,
+  canReadDecomposition = false,
+  canSubmitDecomposition = false,
+  onReviewPlanningComponent,
 }: SpecValidationPanelProps) {
   const api = useDashboardApi();
   const apiRef = useRef(api);
@@ -376,6 +385,7 @@ export function SpecValidationPanel({
     ...(canReadValidation
       ? [{ id: 'spec-validation' as const, label: 'Spec Validation' }]
       : []),
+    ...(canReadDecomposition ? [{ id: 'decomposition' as const, label: 'Task decomposition' }] : []),
     ...(canReadChecklist
       ? [{ id: 'checklist' as const, label: 'Checklist' }]
       : []),
@@ -386,6 +396,7 @@ export function SpecValidationPanel({
       ? [{ id: 'policy-compliance' as const, label: 'Policy Compliance' }]
       : []),
   ], [
+    canReadDecomposition,
     canReadChecklist,
     canReadPolicyCompliance,
     canReadQuality,
@@ -417,6 +428,7 @@ export function SpecValidationPanel({
   useEffect(() => {
     if (!(
       canReadChecklist
+      || canReadDecomposition
       || canReadValidation
       || canReadQuality
       || canReadPolicyCompliance
@@ -431,6 +443,7 @@ export function SpecValidationPanel({
     setCycleError(null);
     apiRef.current.getValidationCycle('spec', specId, {
       includePrevious: false,
+      includePlanning: true,
       signal: controller.signal,
     })
       .then((summary) => {
@@ -459,6 +472,7 @@ export function SpecValidationPanel({
       });
     return () => controller.abort();
   }, [
+    canReadDecomposition,
     canReadChecklist,
     canReadPolicyCompliance,
     canReadQuality,
@@ -501,7 +515,15 @@ export function SpecValidationPanel({
     cycleSummary?.cycle_state ?? null,
     cycleLoading,
   );
+  const [workspaceReloadKey, setWorkspaceReloadKey] = useState(0);
+  // Hidden sections retain their last read revision; reopening consumes the latest.
+  const sectionRevisions = useRef<Partial<Record<ValidationSubTab, number>>>({});
+  sectionRevisions.current[activeTab] = validationHistoryRefreshKey + workspaceReloadKey;
   const refreshCycle = () => setCycleReloadKey((value) => value + 1);
+  const refreshWorkspace = () => {
+    refreshCycle();
+    setWorkspaceReloadKey(value => value + 1);
+  };
   const currentHeadline = validationState === 'not_started'
     ? `No result for Edition ${specEdition}`
     : cycleLoading
@@ -576,13 +598,13 @@ export function SpecValidationPanel({
       <ValidationCycleHeader
         title="Validation"
         edition={specEdition}
-        description="Each section keeps one current result for this lifecycle edition and preserves earlier results as history."
+        description="One planning conclusion, with independent assessments, criteria and histories for this edition."
         icon={<FileCheck2 size={18} className="text-violet-600 dark:text-violet-300" aria-hidden="true" />}
         actions={(
           <span className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              onClick={refreshCycle}
+              onClick={refreshWorkspace}
               disabled={cycleLoading}
               aria-label="Refresh validation cycle"
               className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-surface-300 bg-white px-3 py-2 text-xs font-semibold text-surface-700 hover:bg-surface-50 disabled:opacity-50 dark:border-surface-600 dark:bg-surface-800 dark:text-surface-200"
@@ -597,7 +619,7 @@ export function SpecValidationPanel({
                 className="inline-flex min-h-9 items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-violet-700"
               >
                 <CheckCircle2 size={14} aria-hidden="true" />
-                Submit validation
+                Conclude planning validation
               </button>
             )}
           </span>
@@ -612,6 +634,20 @@ export function SpecValidationPanel({
           Validation-cycle state could not be verified. {cycleError}
         </p>
       )}
+
+      <SpecPlanningSummary readiness={cycleSummary?.planning_readiness} loading={cycleLoading}
+        onReview={{
+          ...(canReadValidation ? { spec_validation: () => setActiveTab('spec-validation') } : {}),
+          ...(canReadDecomposition ? { decomposition: () => setActiveTab('decomposition') } : {}),
+          ...(canReadChecklist ? { curated_checklist: () => setActiveTab('checklist') } : {}),
+          ...(canReadQuality ? { requirement_lint: () => setActiveTab('requirement-lint') } : {}),
+          ...(canReadPolicyCompliance ? { policy_compliance: () => setActiveTab('policy-compliance') } : {}),
+          ...Object.fromEntries(onReviewPlanningComponent ? [
+            'acceptance_coverage', 'test_card_coverage', 'business_coverage', 'technical_coverage',
+            'contract_coverage', 'integration_coverage', 'observability_coverage', 'task_requirement_links',
+            'decision_verification', 'code_evidence', 'architecture', 'resource_coverage',
+          ].map(key => [key, () => onReviewPlanningComponent(key)]) : []),
+        }} />
 
       <AccessibleTabList
         idBase={tabIdPrefix}
@@ -637,6 +673,7 @@ export function SpecValidationPanel({
             description={currentDescription}
           >
             <SpecValidationHistoryPanel
+              key={`current:${workspaceReloadKey}`}
               specId={specId}
               currentEdition={specEdition}
               refreshKey={validationHistoryRefreshKey}
@@ -670,6 +707,7 @@ export function SpecValidationPanel({
             testId="spec-validation-previous"
           >
             <SpecValidationHistoryPanel
+              key={`previous:${workspaceReloadKey}`}
               specId={specId}
               currentEdition={specEdition}
               refreshKey={validationHistoryRefreshKey}
@@ -718,6 +756,13 @@ export function SpecValidationPanel({
         </AccessibleTabPanel>
       )}
 
+      {canReadDecomposition && <AccessibleTabPanel idBase={tabIdPrefix} tabId="decomposition" value={activeTab} mount="lazy-keep" className="space-y-3">
+        <SpecDecompositionPanel specId={specId} edition={specEdition}
+          canSubmit={canSubmitDecomposition && ['approved', 'validated'].includes(specStatus) && !specArchived}
+          refreshKey={validationHistoryRefreshKey + workspaceReloadKey + cycleReloadKey}
+          onRecorded={() => { refreshCycle(); onAssessmentRecorded?.(); }} />
+      </AccessibleTabPanel>}
+
       {canReadChecklist && (
         <AccessibleTabPanel idBase={tabIdPrefix} tabId="checklist" value={activeTab} mount="lazy-keep" className="space-y-3">
           <div className="flex items-center justify-between gap-3 rounded-lg border border-surface-200 bg-surface-50 px-3 py-2 dark:border-surface-700 dark:bg-surface-900/40" data-testid="spec-validation-checklist-summary">
@@ -727,6 +772,8 @@ export function SpecValidationPanel({
             <ValidationCycleStatusBadge state={checklistState} label={checklistNotRequired ? 'Not required' : undefined} />
           </div>
           <SpecChecklistPanel
+            refreshKey={validationHistoryRefreshKey + workspaceReloadKey}
+            active={activeTab === 'checklist'}
             boardId={boardId}
             specId={specId}
             expectedSpecVersion={specVersion}
@@ -735,7 +782,6 @@ export function SpecValidationPanel({
             canExecute={canExecuteChecklist}
             validationStageActive={specStatus === 'approved'}
             showHistory
-            presentationMode="lifecycle-edition"
             embedded
             onStateChange={refreshCycle}
           />
@@ -749,6 +795,7 @@ export function SpecValidationPanel({
             <ValidationCycleStatusBadge state={lintState} />
           </div>
           <QualityPanel
+            refreshKey={sectionRevisions.current['requirement-lint'] ?? 0}
             subjectType="spec"
             subjectId={specId}
             subjectVersion={specVersion}
@@ -759,7 +806,6 @@ export function SpecValidationPanel({
             canAssess={false}
             canProposeQuestions={false}
             anchorTexts={anchorTexts}
-            presentationMode="lifecycle-edition"
             embedded
             onAssessmentRecorded={() => {
               refreshCycle();
@@ -801,7 +847,7 @@ export function SpecValidationPanel({
             embedded
             transitionPreview={policyTransitionPreview}
             lifecycleSnapshot={cycleLoading ? undefined : policySnapshot}
-            refreshKey={validationHistoryRefreshKey}
+            refreshKey={sectionRevisions.current['policy-compliance'] ?? 0}
             resolveSemanticAnchor={resolveSemanticAnchor}
             onEvaluated={() => {
               refreshCycle();

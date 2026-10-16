@@ -13,6 +13,7 @@ from sqlalchemy import Text, and_, case, cast, delete, exists, func, or_, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased, selectinload
+from okto_pulse.core.ports.projection_effects import validated_projection_effect_extension
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     AmendmentHotfixRevision,
@@ -21,6 +22,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Board,
     CanonicalDebt,
     Card,
+    CardDependency,
     CodeEvidenceRow,
     CodeEvidenceSpecLinkRow,
     CodeInvestigationHeadRow,
@@ -35,7 +37,6 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ExactRebuildConsolidationCompensation,
     GlobalUpdateOutbox,
     Ideation,
-    IdeationQAItem,
     KGTakedownStateEvent,
     KuzuNodeRef,
     ImplementationTargetEvidenceLinkRow,
@@ -44,22 +45,21 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     QualityAssessmentHeadRow,
     QualityAssessmentReceiptRow,
     Refinement,
-    RefinementQAItem,
     ResearchDecisionEntryRow,
     ResearchDecisionHeadRow,
     Spec,
     SpecDependency,
-    SpecQAItem,
-    Sprint,
     Story,
 )
 from okto_pulse.core.ports.consolidation import (
+    CardLifecycleTransition,
     ConsolidationPoisonRow,
     ConsolidationProjectionInputs,
     ConsolidationQueueRecord,
     CurrentQualityAssessmentSummary,
     CurrentResearchDecisionSummary,
     CurrentSpecDependencyProjection,
+    CurrentCardDependencyProjection,
     ExactConsolidationAckIntegrityError,
     ExactConsolidationAckReceipt,
     ExactConsolidationCompensationError,
@@ -110,20 +110,14 @@ _MODELS = {
     "ideation": Ideation,
     "refinement": Refinement,
     "spec": Spec,
-    "sprint": Sprint,
     "card": Card,
     "amendment_hotfix_revision": AmendmentHotfixRevision,
 }
 
-_QUALITY_QA_BINDINGS = {
-    "ideation": (IdeationQAItem, "ideation_id"),
-    "refinement": (RefinementQAItem, "refinement_id"),
-    "spec": (SpecQAItem, "spec_id"),
-}
 
 _DELETION_INTENT_SCHEMA_VERSION = 1
 _GOVERNED_DELETION_ARTIFACT_TYPES = frozenset(
-    {"card", "spec", "ideation", "refinement", "sprint"}
+    {"card", "spec", "ideation", "refinement"}
 )
 _EXACT_ACK_JOURNAL_MAX_ROWS = 50_000
 _EXACT_SQL_CHUNK_SIZE = 400
@@ -153,6 +147,21 @@ def _is_sha256(value: object) -> bool:
     )
 
 
+def _projection_effect_extension(outbox, audit, *, compensation=False):
+    try:
+        extension = validated_projection_effect_extension(
+            outbox.payload if outbox is not None else None,
+            board_id=audit.board_id, session_id=audit.session_id)
+        if extension and audit.agent_id != 'system:historical_consolidation':
+            raise ValueError('projection_effect_actor_invalid')
+        return extension
+    except (TypeError, ValueError) as failure:
+        if compensation:
+            raise ExactConsolidationCompensationError(
+                'exact_consolidation_compensation_integration_fact_changed') from failure
+        raise ExactConsolidationAckIntegrityError('exact_consolidation_ack_outbox_invalid') from failure
+
+
 def _canonical_json(value: object) -> str:
     return json.dumps(
         value,
@@ -177,8 +186,13 @@ def _canonical_node_refs_sha256(
     *,
     audit: ConsolidationAudit,
     refs: Sequence[KuzuNodeRef],
+    projection_effects_sha256: str | None = None,
 ) -> str:
-    """Bind an audit and its complete node-ref multiset to one digest domain."""
+    """Bind audit/created refs and optional property effects to the existing ACK.
+
+    The v1 payload is byte-identical when no extension exists. V2 adds the
+    effects digest without adding reused identities to compensating-delete refs.
+    """
 
     canonical_refs = sorted(
         (
@@ -216,6 +230,23 @@ def _canonical_node_refs_sha256(
         "started_at": _aware_utc(audit.started_at).isoformat(),
         "summary_text": audit.summary_text,
     }
+    if projection_effects_sha256 is not None:
+        if not _is_sha256(projection_effects_sha256):
+            raise ExactConsolidationAckIntegrityError('exact_consolidation_ack_outbox_invalid')
+        payload['schema'] = 'exact_consolidation_node_refs.v2'
+        payload['projection_property_effects_sha256'] = projection_effects_sha256
+    reference_findings = getattr(audit, 'reference_findings', None)
+    if reference_findings is not None:
+        from okto_pulse.core.ports.projection_findings import (
+            ProjectionFindingSnapshot, validate_audit_finding_snapshot,
+        )
+        if type(reference_findings) is str:
+            reference_findings = json.loads(reference_findings)
+        snapshot = ProjectionFindingSnapshot.from_payload(reference_findings)
+        validate_audit_finding_snapshot(snapshot, board_id=audit.board_id,
+            artifact_type=audit.artifact_type, artifact_id=audit.artifact_id, agent_id=audit.agent_id)
+        payload['schema'] = 'exact_consolidation_node_refs.v3'
+        payload['reference_findings'] = snapshot.to_payload()
     rendered = _canonical_json(payload).encode("utf-8")
     digest = hashlib.sha256()
     digest.update(_EXACT_NODE_REFS_DIGEST_DOMAIN)
@@ -536,6 +567,22 @@ def _apply_queue(row: Any, record: ConsolidationQueueRecord) -> None:
 
 
 class CommunitySqlAlchemyConsolidationPersistence:
+    async def latest_card_transitions(
+        self, context: Any, *, board_id: str, card_id: str,
+    ) -> tuple[CardLifecycleTransition, ...]:
+        rows = (await context.execute(
+            select(DomainEventRow).where(
+                DomainEventRow.board_id == board_id,
+                DomainEventRow.event_type == "card.moved",
+                DomainEventRow.payload_json["card_id"].as_string() == card_id,
+            ).order_by(DomainEventRow.occurred_at.desc(), DomainEventRow.id.desc()).limit(2)
+        )).scalars().all()
+        return tuple(CardLifecycleTransition(
+            event_id=row.id, occurred_at=row.occurred_at,
+            from_status=row.payload_json.get("from_status"),
+            to_status=row.payload_json.get("to_status"),
+        ) for row in rows)
+
     async def _load_code_investigation_receipt(
         self,
         context: Any,
@@ -587,7 +634,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
             "declared_revision": receipt.declared_revision,
             "workspace_state_id": receipt.workspace_state_id,
             "trust_level": receipt.trust_level,
-            "outcome": receipt.outcome,
+            "contextual_outcome": receipt.contextual_outcome,
             "generation": receipt.generation,
             "payload_sha256": receipt.payload_sha256,
             "content_hash": receipt.payload_sha256,
@@ -823,8 +870,6 @@ class CommunitySqlAlchemyConsolidationPersistence:
             statement = statement.options(selectinload(Ideation.story_links))
         elif artifact_type == "spec":
             statement = statement.options(selectinload(Spec.architecture_designs))
-        elif artifact_type == "sprint":
-            statement = statement.options(selectinload(Sprint.spec))
         elif artifact_type == "card":
             statement = statement.options(selectinload(Card.architecture_designs))
         return (await context.execute(statement)).scalars().first()
@@ -838,6 +883,25 @@ class CommunitySqlAlchemyConsolidationPersistence:
         artifact_id: str,
         artifact: Any | None = None,
     ) -> ConsolidationProjectionInputs:
+        if artifact_type == 'card':
+            if not board_id or not artifact_id:
+                raise ValueError('card_dependency_projection_scope_invalid')
+            owner = await context.get(Card, artifact_id)
+            if owner is None or owner.board_id != board_id:
+                raise ValueError('card_dependency_projection_owner_invalid')
+            rows = (await context.execute(select(CardDependency, Card)
+                .outerjoin(Card, Card.id == CardDependency.depends_on_id)
+                .where(CardDependency.card_id == artifact_id)
+                .order_by(CardDependency.id))).all()
+            dependencies = []
+            for dependency, prerequisite in rows:
+                if (prerequisite is None or prerequisite.board_id != board_id
+                        or prerequisite.card_type not in {'normal', 'test', 'bug'}
+                        or prerequisite.id == artifact_id):
+                    raise ValueError('card_dependency_projection_source_invalid')
+                dependencies.append(CurrentCardDependencyProjection(
+                    dependency.id, board_id, artifact_id, prerequisite.id, prerequisite.card_type))
+            return ConsolidationProjectionInputs(card_dependencies=tuple(dependencies))
         if artifact_type not in {"ideation", "refinement", "spec"}:
             return ConsolidationProjectionInputs()
         if not board_id or not artifact_id:
@@ -888,8 +952,6 @@ class CommunitySqlAlchemyConsolidationPersistence:
             ):
                 raise RuntimeError("quality_projection_scope_mismatch")
 
-        board_settings: dict[str, object] = {}
-        qa_items: list[object] = []
         if quality_rows:
             expected_model = _MODELS[artifact_type]
             if (
@@ -899,29 +961,8 @@ class CommunitySqlAlchemyConsolidationPersistence:
                 or str(getattr(artifact, "board_id", "")) != board_id
             ):
                 raise RuntimeError("quality_projection_subject_mismatch")
-            qa_model, subject_fk = _QUALITY_QA_BINDINGS[artifact_type]
-            context_rows = (
-                await context.execute(
-                    select(Board.settings, qa_model)
-                    .select_from(Board)
-                    .outerjoin(
-                        qa_model,
-                        getattr(qa_model, subject_fk) == artifact_id,
-                    )
-                    .where(Board.id == board_id)
-                    .order_by(qa_model.id.asc())
-                )
-            ).all()
-            if not context_rows:
+            if await context.scalar(select(Board.id).where(Board.id == board_id)) is None:
                 raise RuntimeError("quality_projection_board_missing")
-            settings_value = context_rows[0][0]
-            if settings_value is not None and not isinstance(
-                settings_value,
-                dict,
-            ):
-                raise RuntimeError("quality_projection_board_settings_invalid")
-            board_settings = dict(settings_value or {})
-            qa_items = [row[1] for row in context_rows if row[1] is not None]
 
         quality_assessments: list[CurrentQualityAssessmentSummary] = []
         for head, receipt in quality_rows:
@@ -946,8 +987,6 @@ class CommunitySqlAlchemyConsolidationPersistence:
                     origin=receipt.origin,
                     source=receipt.source,
                     current_subject=artifact,
-                    qa_items=qa_items,
-                    board_settings=board_settings,
                 )
             except (QualityProjectionCurrentnessError, ValueError) as exc:
                 raise RuntimeError(
@@ -1186,33 +1225,28 @@ class CommunitySqlAlchemyConsolidationPersistence:
         return tuple((await context.execute(statement)).scalars().all())
 
     async def list_stale_claims(
-        self, context: Any, *, now, legacy_cutoff
+        self, context, *, now
     ) -> tuple[ConsolidationQueueRecord, ...]:
-        rows = (
-            (
-                await context.execute(
-                    select(ConsolidationQueue).where(
-                        ConsolidationQueue.status == "claimed",
-                        or_(
-                            # Rows claimed before the claim-token migration cannot
-                            # prove ownership and must be recovered immediately.
-                            ConsolidationQueue.claim_token.is_(None),
-                            (
-                                ConsolidationQueue.claim_timeout_at.is_not(None)
-                                & (ConsolidationQueue.claim_timeout_at < now)
-                            ),
-                            (
-                                ConsolidationQueue.claim_timeout_at.is_(None)
-                                & ConsolidationQueue.claimed_at.is_not(None)
-                                & (ConsolidationQueue.claimed_at < legacy_cutoff)
-                            ),
-                        ),
-                    )
-                )
-            )
-            .scalars()
-            .all()
+        # A current claim always has an ownership token and an explicit expiry.
+        # Refuse incompatible rows without converting or re-pending them.
+        incompatible = await context.scalar(
+            select(ConsolidationQueue.id).where(
+                ConsolidationQueue.status == "claimed",
+                or_(
+                    ConsolidationQueue.claim_token.is_(None),
+                    ConsolidationQueue.claim_token == "",
+                    ConsolidationQueue.claim_timeout_at.is_(None),
+                ),
+            ).limit(1)
         )
+        if incompatible is not None:
+            raise ValueError("consolidation_claim_format_incompatible")
+        rows = (await context.execute(
+            select(ConsolidationQueue).where(
+                ConsolidationQueue.status == "claimed",
+                ConsolidationQueue.claim_timeout_at < now,
+            )
+        )).scalars().all()
         return tuple(_queue_record(row) for row in rows)
 
     async def count_pending(self, context: Any) -> int:
@@ -1911,6 +1945,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
             "nodes_superseded": audit.nodes_superseded,
             "nodes_updated": audit.nodes_updated,
             "session_id": consolidation_session_id,
+            **_projection_effect_extension(outbox, audit),
         }
         if (
             outbox.board_id != board_id
@@ -2009,7 +2044,8 @@ class CommunitySqlAlchemyConsolidationPersistence:
                 "exact_consolidation_ack_generation_head_invalid"
             )
 
-        node_refs_sha256 = _canonical_node_refs_sha256(audit=audit, refs=refs)
+        node_refs_sha256 = _canonical_node_refs_sha256(audit=audit, refs=refs,
+            projection_effects_sha256=expected_outbox_payload.get('projection_property_effects', {}).get('sha256'))
         receipt = ExactConsolidationAckReceipt.create(
             queue_id=entry_id,
             board_id=board_id,
@@ -2381,6 +2417,8 @@ class CommunitySqlAlchemyConsolidationPersistence:
             refs_must_exist: bool,
         ) -> tuple[dict[str, ConsolidationAudit], dict[str, tuple[KuzuNodeRef, ...]]]:
             audits, refs_by_session = await _load_audits_and_refs()
+            property_outboxes = ({row.session_id: row for row in await _load_target_outboxes()}
+                if refs_must_exist else {})
             if len(audits) != len(ordered):
                 raise ExactConsolidationCompensationError(
                     "exact_consolidation_compensation_audit_missing"
@@ -2432,7 +2470,10 @@ class CommunitySqlAlchemyConsolidationPersistence:
                             or not ref.kuzu_node_type
                             for ref in refs
                         )
-                        or _canonical_node_refs_sha256(audit=audit, refs=refs)
+                        or _canonical_node_refs_sha256(audit=audit, refs=refs,
+                            projection_effects_sha256=_projection_effect_extension(
+                                property_outboxes.get(item.consolidation_session_id), audit, compensation=True
+                            ).get('projection_property_effects', {}).get('sha256'))
                         != item.node_refs_sha256
                     ):
                         raise ExactConsolidationCompensationError(
@@ -2489,6 +2530,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
                 "nodes_superseded": audit.nodes_superseded,
                 "nodes_updated": audit.nodes_updated,
                 "session_id": item.consolidation_session_id,
+                **_projection_effect_extension(outbox, audit, compensation=True),
             }
             expected_event_payload = {
                 "correlation_id": item.consolidation_session_id,
@@ -2937,13 +2979,13 @@ class CommunitySqlAlchemyConsolidationPersistence:
         self, context: Any, entries: Sequence[ConsolidationQueueRecord]
     ) -> None:
         for entry in entries:
-            row = await context.get(ConsolidationQueue, entry.id)
+            row = await context.get(ConsolidationQueue, entry.id, populate_existing=True)
             if row is not None:
                 _apply_queue(row, entry)
         await context.flush()
 
     async def delete_queue_entry(self, context: Any, *, entry_id: str) -> None:
-        row = await context.get(ConsolidationQueue, entry_id)
+        row = await context.get(ConsolidationQueue, entry_id, populate_existing=True)
         if row is not None:
             await context.delete(row)
             await context.flush()
@@ -3039,7 +3081,6 @@ class CommunitySqlAlchemyConsolidationPersistence:
         request: ReconcileIntentCreate,
     ) -> ReconcileIntentReceipt:
         """Insert or replay the immutable stale-reconcile queue intent."""
-
         _validate_deletion_identity(
             board_id=request.board_id,
             artifact_type=request.artifact_type,

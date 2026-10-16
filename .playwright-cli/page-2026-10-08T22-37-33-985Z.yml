@@ -1,0 +1,457 @@
+- generic [ref=f6e3]:
+  - banner [ref=f6e4]:
+    - generic [ref=f6e5]:
+      - generic [ref=f6e6]:
+        - button "Hide sidebar" [ref=f6e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f6e12]
+        - generic [ref=f6e31]: / My Board
+      - generic [ref=f6e32]:
+        - button "Refresh board" [ref=f6e33] [cursor=pointer]
+        - button [ref=f6e40] [cursor=pointer]
+  - generic [ref=f6e13]:
+    - complementary [ref=f6e14]:
+      - generic [ref=f6e15]:
+        - generic [ref=f6e17]:
+          - heading "Boards" [level=2] [ref=f6e18]
+          - button "New board" [ref=f6e19] [cursor=pointer]
+        - navigation [ref=f6e21]:
+          - generic [ref=f6e22]:
+            - heading "My Boards" [level=3] [ref=f6e23]
+            - list [ref=f6e44]:
+              - listitem [ref=f6e45]:
+                - button "My Board" [ref=f6e46] [cursor=pointer]
+    - main [ref=f6e26]:
+      - group "Board views" [ref=f6e53]:
+        - button "Stories" [ref=f6e54] [cursor=pointer]
+        - button "Ideations" [ref=f6e58] [cursor=pointer]
+        - button "Refinements" [ref=f6e61] [cursor=pointer]
+        - button "Specs" [pressed] [ref=f6e66] [cursor=pointer]
+        - button "Tasks" [ref=f6e71] [cursor=pointer]
+      - generic [ref=f6e213]:
+        - generic [ref=f6e214]:
+          - generic [ref=f6e215]:
+            - heading "Specifications" [level=2] [ref=f6e216]
+            - generic [ref=f6e217]: (1 of 1)
+          - generic [ref=f6e218]:
+            - textbox "Search specs…" [ref=f6e220]
+            - group "View mode" [ref=f6e221]:
+              - button "List view" [pressed] [ref=f6e222] [cursor=pointer]
+              - button "Grid view" [ref=f6e224] [cursor=pointer]
+            - generic [ref=f6e230]: Group specs
+            - combobox "Group specs" [ref=f6e236]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=f6e237] [cursor=pointer]
+        - generic [ref=f6e239]:
+          - button "All" [ref=f6e240] [cursor=pointer]
+          - button "Draft" [ref=f6e241] [cursor=pointer]
+          - button "Review" [ref=f6e242] [cursor=pointer]
+          - button "Approved" [ref=f6e243] [cursor=pointer]
+          - button "Validated" [ref=f6e244] [cursor=pointer]
+          - button "In Progress" [ref=f6e245] [cursor=pointer]
+          - button "Done" [ref=f6e246] [cursor=pointer]
+          - button "Show archived" [ref=f6e247] [cursor=pointer]
+        - generic [ref=f6e250]:
+          - generic [ref=f6e251] [cursor=pointer]:
+            - 'heading "Refinement: Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f6e258]'
+            - generic [ref=f6e259]: (1)
+          - generic [ref=f6e263] [cursor=pointer]:
+            - generic [ref=f6e264]:
+              - generic [ref=f6e265]:
+                - generic [ref=f6e266]: Draft
+                - generic "Edition 1" [ref=f6e270]
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f6e271]
+              - paragraph [ref=f6e272]: "Especificação conceitual H01–H04: consultar, criar, alterar e cancelar reservas próprias com consistência, idempotência, histórico e arquitetura hexagonal. Exercício de testes do Pulse; nenhuma implementação real solicitada."
+              - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=f6e274]':
+                - generic [ref=f6e275]: Requirement lint
+                - strong [ref=f6e276]: Not assessed
+              - generic [ref=f6e277]:
+                - generic [ref=f6e278]: mock
+                - generic [ref=f6e279]: reserva-de-salas
+                - generic [ref=f6e280]: teste-sdlc
+            - generic [ref=f6e281]:
+              - button "Open lineage graph" [ref=f6e282]
+              - button "Archive tree" [ref=f6e287]
+        - generic [ref=f6e293]:
+          - status [ref=f6e294]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f6e295]:
+            - generic [ref=f6e296]:
+              - generic [ref=f6e297]: Items per page
+              - combobox "Items per page" [ref=f6e298]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=f6e299]:
+              - generic [ref=f6e300]:
+                - button "Previous page" [disabled] [ref=f6e301]: Previous
+                - button "Page 1" [disabled] [ref=f6e302]: "1"
+                - button "Next page" [disabled] [ref=f6e303]: Next
+        - dialog [ref=f6e305]:
+          - generic [ref=f6e306]:
+            - generic [ref=f6e307]:
+              - generic [ref=f6e308]: Draft
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=2] [ref=f6e312]
+              - generic "Edition 1" [ref=f6e313]
+            - generic [ref=f6e314]:
+              - button "Open lineage graph" [ref=f6e315] [cursor=pointer]
+              - button "Export report" [ref=f6e320] [cursor=pointer]
+              - button "Refresh" [ref=f6e324] [cursor=pointer]
+              - button "Expand" [ref=f6e330] [cursor=pointer]
+              - button "Close spec" [ref=f6e336] [cursor=pointer]
+          - generic [ref=f6e340]:
+            - generic [ref=f6e341]: "Move to:"
+            - button "Review" [ref=f6e342] [cursor=pointer]
+            - button "Cancelled" [ref=f6e345] [cursor=pointer]
+          - generic [ref=f6e348]:
+            - generic [ref=f6e349]: "From:"
+            - button "Reserva de salas — teste do SDLC v24" [ref=f6e350] [cursor=pointer]:
+              - text: Reserva de salas — teste do SDLC
+              - generic [ref=f6e353]: v24
+            - button "Reserva de salas — consistência das reservas e contratos hexagonais v39" [ref=f6e356] [cursor=pointer]:
+              - text: Reserva de salas — consistência das reservas e contratos hexagonais
+              - generic [ref=f6e361]: v39
+          - generic [ref=f6e363]:
+            - tablist "Spec sections" [ref=f6e364]:
+              - tab "Details" [ref=f6e365] [cursor=pointer]
+              - tab "Requirements & Decisions" [ref=f6e370] [cursor=pointer]
+              - tab "Tests & Verifications" [selected] [ref=f6e375] [cursor=pointer]
+              - tab "Coverage" [ref=f6e379] [cursor=pointer]
+              - tab "Code Evidence Matrix" [ref=f6e385] [cursor=pointer]
+              - tab "Project structure" [ref=f6e389] [cursor=pointer]
+              - tab "Dependencies" [ref=f6e396] [cursor=pointer]
+              - tab "TRs 6" [ref=f6e402] [cursor=pointer]:
+                - generic [ref=f6e406]: TRs
+                - generic [ref=f6e407]: "6"
+              - tab "Resources" [ref=f6e408] [cursor=pointer]
+              - tab "Q&A 9" [ref=f6e412] [cursor=pointer]:
+                - generic [ref=f6e416]: Q&A
+                - generic [ref=f6e417]: "9"
+              - tab "References" [ref=f6e418] [cursor=pointer]
+              - tab "KG Graph" [ref=f6e423] [cursor=pointer]
+              - tab "Validation" [ref=f6e430] [cursor=pointer]
+              - tab "Activity" [ref=f6e435] [cursor=pointer]
+            - button "Scroll Spec sections right" [ref=f6e441] [cursor=pointer]
+          - tabpanel "Tests & Verifications" [ref=f6e1779]:
+            - tablist "Tests and verifications sections" [ref=f6e1780]:
+              - tab "Tests 51" [ref=f6e1781] [cursor=pointer]:
+                - generic [ref=f6e1784]: Tests
+                - generic [ref=f6e1785]: "51"
+              - tab "Criterion verification" [active] [selected] [ref=f6e1786] [cursor=pointer]
+            - tabpanel "Criterion verification" [ref=f6e2544]:
+              - generic [ref=f6e2545]:
+                - generic [ref=f6e2546]:
+                  - generic [ref=f6e2547]:
+                    - heading "Acceptance Criteria (31)" [level=4] [ref=f6e2548]:
+                      - text: Acceptance Criteria
+                      - generic [ref=f6e2553]: (31)
+                    - button "Add" [ref=f6e2554] [cursor=pointer]
+                  - list [ref=f6e2556]:
+                    - listitem [ref=f6e2557]:
+                      - generic [ref=f6e2558]: "1."
+                      - generic [ref=f6e2559]: Busca retorna somente salas com capacidade>=participantes e sem confirmed sobreposta; intervalos adjacentes permitidos; falha de leitura é erro, nunca lista vazia.
+                      - button "Edit" [ref=f6e2560] [cursor=pointer]
+                      - button "Remove" [ref=f6e2564] [cursor=pointer]
+                    - listitem [ref=f6e2568]:
+                      - generic [ref=f6e2569]: "2."
+                      - generic [ref=f6e2570]: Aceitar apenas seg–sex08h–18h, mesmo dia local, início futuro em:00/:30 e até data local+30; duração30min–4h em múltiplos30, sem segundos/micros; recusar cada limite violado sem mutação.
+                      - button "Edit" [ref=f6e2571] [cursor=pointer]
+                      - button "Remove" [ref=f6e2575] [cursor=pointer]
+                    - listitem [ref=f6e2579]:
+                      - generic [ref=f6e2580]: "3."
+                      - generic [ref=f6e2581]: Participantes deve ser inteiro>=1 e<=capacidade da sala existente; zero,negativo,fracionário e excesso são recusados sem escrita.
+                      - button "Edit" [ref=f6e2582] [cursor=pointer]
+                      - button "Remove" [ref=f6e2586] [cursor=pointer]
+                    - listitem [ref=f6e2590]:
+                      - generic [ref=f6e2591]: "4."
+                      - generic [ref=f6e2592]: Primeira criação válida produz exatamente1 reserva confirmed versão1,1 evento e1 recibo; resposta somente após commit.
+                      - button "Edit" [ref=f6e2593] [cursor=pointer]
+                      - button "Remove" [ref=f6e2597] [cursor=pointer]
+                    - listitem [ref=f6e2601]:
+                      - generic [ref=f6e2602]: "5."
+                      - generic [ref=f6e2603]: Lista/histórico só incluem o ator; default20,max100; cursor inválido e limite101 são recusados; páginas não duplicam itens em dataset estável.
+                      - button "Edit" [ref=f6e2604] [cursor=pointer]
+                      - button "Remove" [ref=f6e2608] [cursor=pointer]
+                    - listitem [ref=f6e2612]:
+                      - generic [ref=f6e2613]: "6."
+                      - generic [ref=f6e2614]: Alteração válida incrementa versão exatamente1 e gera evento; conflito/versão incorreta preservam before e não criam recibo de sucesso.
+                      - button "Edit" [ref=f6e2615] [cursor=pointer]
+                      - button "Remove" [ref=f6e2619] [cursor=pointer]
+                    - listitem [ref=f6e2623]:
+                      - generic [ref=f6e2624]: "7."
+                      - generic [ref=f6e2625]: Cancelamento válido mantém reserva cancelled e histórico e libera intervalo; no início/depois ou nova intenção em cancelled é recusado; replay não cria evento.
+                      - button "Edit" [ref=f6e2626] [cursor=pointer]
+                      - button "Remove" [ref=f6e2630] [cursor=pointer]
+                    - listitem [ref=f6e2634]:
+                      - generic [ref=f6e2635]: "8."
+                      - generic [ref=f6e2636]: Histórico retorna eventos ordenados versão asc, before=null somente na criação, after explícito, sem mutação por leitura ou replay.
+                      - button "Edit" [ref=f6e2637] [cursor=pointer]
+                      - button "Remove" [ref=f6e2641] [cursor=pointer]
+                    - listitem [ref=f6e2645]:
+                      - generic [ref=f6e2646]: "9."
+                      - generic [ref=f6e2647]: Mesmo ator/operação/chave/carga retorna resultado original com replayed=true; chave/carga diferente recusa; outro ator não reutiliza nem observa recibo alheio.
+                      - button "Edit" [ref=f6e2648] [cursor=pointer]
+                      - button "Remove" [ref=f6e2652] [cursor=pointer]
+                    - listitem [ref=f6e2656]:
+                      - generic [ref=f6e2657]: "10."
+                      - generic [ref=f6e2658]: Duas conexões concorrentes não confirmam sobreposição nem duas alterações com mesmo expected_version; falha entre reserva e commit reverte reserva,histórico e recibo.
+                      - button "Edit" [ref=f6e2659] [cursor=pointer]
+                      - button "Remove" [ref=f6e2663] [cursor=pointer]
+                    - listitem [ref=f6e2667]:
+                      - generic [ref=f6e2668]: "11."
+                      - generic [ref=f6e2669]: Teste estático detecta imports de mecanismo/reach-in privado; domínio/aplicação testáveis com fakes sem infraestrutura; nenhuma porta interna contém http_status.
+                      - button "Edit" [ref=f6e2670] [cursor=pointer]
+                      - button "Remove" [ref=f6e2674] [cursor=pointer]
+                    - listitem [ref=f6e2678]:
+                      - generic [ref=f6e2679]: "12."
+                      - generic [ref=f6e2680]: Sessão ausente/expirada, ID alheio, owner_id forjado e CSRF inválido são recusados sem escrita e sem vazamento; logs excluem segredos.
+                      - button "Edit" [ref=f6e2681] [cursor=pointer]
+                      - button "Remove" [ref=f6e2685] [cursor=pointer]
+                    - listitem [ref=f6e2689]:
+                      - generic [ref=f6e2690]: "13."
+                      - generic [ref=f6e2691]: Com Clock controlado, comando bloqueado pela transação usa now obtido após aquisição; UTC e fuso local produzem os mesmos limites, sem relógio global no domínio.
+                      - button "Edit" [ref=f6e2692] [cursor=pointer]
+                      - button "Remove" [ref=f6e2696] [cursor=pointer]
+                    - listitem [ref=f6e2700]:
+                      - generic [ref=f6e2701]: "14."
+                      - generic [ref=f6e2702]: Busy esgota orçamento2s e retorna503 sem escrita parcial; após commit e perda da resposta, reinício+replay recupera mesma reserva/evento únicos.
+                      - button "Edit" [ref=f6e2703] [cursor=pointer]
+                      - button "Remove" [ref=f6e2707] [cursor=pointer]
+                    - listitem [ref=f6e2711]:
+                      - generic [ref=f6e2712]: "15."
+                      - generic [ref=f6e2713]: H01–H04 apresentam loading/vazio/erro/sucesso/conflicto/incerto distintos, preservam entrada/chave correta e exibem fuso; dupla submissão não cria nova intenção.
+                      - button "Edit" [ref=f6e2714] [cursor=pointer]
+                      - button "Remove" [ref=f6e2718] [cursor=pointer]
+                    - listitem [ref=f6e2722]:
+                      - generic [ref=f6e2723]: "16."
+                      - generic [ref=f6e2724]: Em320px e zoom200% fluxo principal sem overflow horizontal; modal inicia em Manter, contém foco, Escape não cancela, devolve foco; resultados e erros possuem nome/anúncio acessível.
+                      - button "Edit" [ref=f6e2725] [cursor=pointer]
+                      - button "Remove" [ref=f6e2729] [cursor=pointer]
+                    - listitem [ref=f6e2733]:
+                      - generic [ref=f6e2734]: "17."
+                      - generic [ref=f6e2735]: No contrato ir_res_storage, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - button "Edit" [ref=f6e2736] [cursor=pointer]
+                      - button "Remove" [ref=f6e2740] [cursor=pointer]
+                    - listitem [ref=f6e2744]:
+                      - generic [ref=f6e2745]: "18."
+                      - generic [ref=f6e2746]: No contrato ir_res_change, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - button "Edit" [ref=f6e2747] [cursor=pointer]
+                      - button "Remove" [ref=f6e2751] [cursor=pointer]
+                    - listitem [ref=f6e2755]:
+                      - generic [ref=f6e2756]: "19."
+                      - generic [ref=f6e2757]: No contrato ir_res_rules, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - button "Edit" [ref=f6e2758] [cursor=pointer]
+                      - button "Remove" [ref=f6e2762] [cursor=pointer]
+                    - listitem [ref=f6e2766]:
+                      - generic [ref=f6e2767]: "20."
+                      - generic [ref=f6e2768]: No contrato ir_res_history, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - button "Edit" [ref=f6e2769] [cursor=pointer]
+                      - button "Remove" [ref=f6e2773] [cursor=pointer]
+                    - listitem [ref=f6e2777]:
+                      - generic [ref=f6e2778]: "21."
+                      - generic [ref=f6e2779]: No contrato ir_res_identity_port, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - button "Edit" [ref=f6e2780] [cursor=pointer]
+                      - button "Remove" [ref=f6e2784] [cursor=pointer]
+                    - listitem [ref=f6e2788]:
+                      - generic [ref=f6e2789]: "22."
+                      - generic [ref=f6e2790]: No contrato ir_res_create, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - button "Edit" [ref=f6e2791] [cursor=pointer]
+                      - button "Remove" [ref=f6e2795] [cursor=pointer]
+                    - listitem [ref=f6e2799]:
+                      - generic [ref=f6e2800]: "23."
+                      - generic [ref=f6e2801]: No contrato ir_res_usecases, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - button "Edit" [ref=f6e2802] [cursor=pointer]
+                      - button "Remove" [ref=f6e2806] [cursor=pointer]
+                    - listitem [ref=f6e2810]:
+                      - generic [ref=f6e2811]: "24."
+                      - generic [ref=f6e2812]: No contrato ir_res_search, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - button "Edit" [ref=f6e2813] [cursor=pointer]
+                      - button "Remove" [ref=f6e2817] [cursor=pointer]
+                    - listitem [ref=f6e2821]:
+                      - generic [ref=f6e2822]: "25."
+                      - generic [ref=f6e2823]: No contrato ir_res_list, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - button "Edit" [ref=f6e2824] [cursor=pointer]
+                      - button "Remove" [ref=f6e2828] [cursor=pointer]
+                    - listitem [ref=f6e2832]:
+                      - generic [ref=f6e2833]: "26."
+                      - generic [ref=f6e2834]: No contrato ir_res_cancel, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - button "Edit" [ref=f6e2835] [cursor=pointer]
+                      - button "Remove" [ref=f6e2839] [cursor=pointer]
+                    - listitem [ref=f6e2843]:
+                      - generic [ref=f6e2844]: "27."
+                      - generic [ref=f6e2845]: No contrato ir_res_wiring, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - button "Edit" [ref=f6e2846] [cursor=pointer]
+                      - button "Remove" [ref=f6e2850] [cursor=pointer]
+                    - listitem [ref=f6e2854]:
+                      - generic [ref=f6e2855]: "28."
+                      - generic [ref=f6e2856]: No contrato ir_res_clock_port, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - button "Edit" [ref=f6e2857] [cursor=pointer]
+                      - button "Remove" [ref=f6e2861] [cursor=pointer]
+                    - listitem [ref=f6e2865]:
+                      - generic [ref=f6e2866]: "29."
+                      - generic [ref=f6e2867]: No contrato ir_res_uow, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador.
+                      - button "Edit" [ref=f6e2868] [cursor=pointer]
+                      - button "Remove" [ref=f6e2872] [cursor=pointer]
+                    - listitem [ref=f6e2876]:
+                      - generic [ref=f6e2877]: "30."
+                      - generic [ref=f6e2878]: Cada tentativa tem registro com request_id,operação,resultado,replayed,duração_ms; inspeção dos logs encontra zero cookie,senha,SQL ou payload de reserva.
+                      - button "Edit" [ref=f6e2879] [cursor=pointer]
+                      - button "Remove" [ref=f6e2883] [cursor=pointer]
+                    - listitem [ref=f6e2887]:
+                      - generic [ref=f6e2888]: "31."
+                      - generic [ref=f6e2889]: Contador reservation_commands_total aumenta exatamente1 por tentativa no rótulo operação/resultado correto; replay/conflitos/unavailable distinguíveis, sem criar SLO.
+                      - button "Edit" [ref=f6e2890] [cursor=pointer]
+                      - button "Remove" [ref=f6e2894] [cursor=pointer]
+                - region "Criterion verification" [ref=f6e2898]:
+                  - heading "Criterion verification" [level=4] [ref=f6e2899]
+                  - paragraph [ref=f6e2900]: Define each criterion’s profile and requirement links. Planning completeness and evidence are evaluated separately.
+                  - generic [ref=f6e2901]:
+                    - paragraph [ref=f6e2902]: Busca retorna somente salas com capacidade>=participantes e sem confirmed sobreposta; intervalos adjacentes permitidos; falha de leitura é erro, nunca lista vazia. · functional · 2 requirement link(s)
+                    - paragraph [ref=f6e2903]: Usuário autenticado consulta intervalo e participantes; recebe somente salas com capacidade suficiente e sem reserva confirmed sobreposta, com nome, localização, capacidade e recursos. Busca é indicativa e não bloqueia disponibilidade. · fr_res_search
+                    - paragraph [ref=f6e2904]: Exclusão de sobreposição · br_5278b8d5
+                    - button "Edit verification ac_res_search" [ref=f6e2905] [cursor=pointer]
+                  - generic [ref=f6e2906]:
+                    - paragraph [ref=f6e2907]: Aceitar apenas seg–sex08h–18h, mesmo dia local, início futuro em:00/:30 e até data local+30; duração30min–4h em múltiplos30, sem segundos/micros; recusar cada limite violado sem mutação. · functional · 5 requirement link(s)
+                    - paragraph [ref=f6e2908]: Usuário autenticado consulta intervalo e participantes; recebe somente salas com capacidade suficiente e sem reserva confirmed sobreposta, com nome, localização, capacidade e recursos. Busca é indicativa e não bloqueia disponibilidade. · fr_res_search
+                    - paragraph [ref=f6e2909]: Confirmar reserva válida do ator autenticado, retornando ID, versão1, status confirmed e replayed=false somente após commit de reserva, histórico e recibo. · fr_res_create
+                    - paragraph [ref=f6e2910]: Responsável altera sala, intervalo e participantes de reserva confirmed futura mediante expected_version e chave de intenção. Sucesso incrementa versão1; qualquer recusa preserva integralmente a reserva original. · fr_res_change
+                    - paragraph [ref=f6e2911]: Persistir instantes UTC e aplicar calendário America/Sao_Paulo. Clock público substituível; capturar now após adquirir transação. Recusar offsets incoerentes e horários ambíguos/inexistentes, sem inferência silenciosa. · tr_res_clock
+                    - paragraph [ref=f6e2912]: Calendário e capacidade · br_f4101c5c
+                    - button "Edit verification ac_res_calendar" [ref=f6e2913] [cursor=pointer]
+                  - generic [ref=f6e2914]:
+                    - paragraph [ref=f6e2915]: Participantes deve ser inteiro>=1 e<=capacidade da sala existente; zero,negativo,fracionário e excesso são recusados sem escrita. · functional · 4 requirement link(s)
+                    - paragraph [ref=f6e2916]: Usuário autenticado consulta intervalo e participantes; recebe somente salas com capacidade suficiente e sem reserva confirmed sobreposta, com nome, localização, capacidade e recursos. Busca é indicativa e não bloqueia disponibilidade. · fr_res_search
+                    - paragraph [ref=f6e2917]: Confirmar reserva válida do ator autenticado, retornando ID, versão1, status confirmed e replayed=false somente após commit de reserva, histórico e recibo. · fr_res_create
+                    - paragraph [ref=f6e2918]: Responsável altera sala, intervalo e participantes de reserva confirmed futura mediante expected_version e chave de intenção. Sucesso incrementa versão1; qualquer recusa preserva integralmente a reserva original. · fr_res_change
+                    - paragraph [ref=f6e2919]: Calendário e capacidade · br_f4101c5c
+                    - button "Edit verification ac_res_capacity" [ref=f6e2920] [cursor=pointer]
+                  - generic [ref=f6e2921]:
+                    - paragraph [ref=f6e2922]: Primeira criação válida produz exatamente1 reserva confirmed versão1,1 evento e1 recibo; resposta somente após commit. · functional · 1 requirement link(s)
+                    - paragraph [ref=f6e2923]: Confirmar reserva válida do ator autenticado, retornando ID, versão1, status confirmed e replayed=false somente após commit de reserva, histórico e recibo. · fr_res_create
+                    - button "Edit verification ac_res_create" [ref=f6e2924] [cursor=pointer]
+                  - generic [ref=f6e2925]:
+                    - paragraph [ref=f6e2926]: Lista/histórico só incluem o ator; default20,max100; cursor inválido e limite101 são recusados; páginas não duplicam itens em dataset estável. · functional · 4 requirement link(s)
+                    - paragraph [ref=f6e2927]: Listar exclusivamente reservas do ator, ordenadas por start_at desc e ID; paginação default20/max100, cursor opaco e ações permitidas calculadas no servidor. · fr_res_list
+                    - paragraph [ref=f6e2928]: Ler eventos imutáveis create/change/cancel da própria reserva, ordenados por versão crescente, com paginação default20/max100 e snapshots before/after explícitos; alheia/inexistente retorna not_found. · fr_res_history
+                    - paragraph [ref=f6e2929]: Autoridade exclusiva do responsável · br_5c35321c
+                    - paragraph [ref=f6e2930]: Histórico e paginação · br_be2abc28
+                    - button "Edit verification ac_res_list" [ref=f6e2931] [cursor=pointer]
+                  - generic [ref=f6e2932]:
+                    - paragraph [ref=f6e2933]: Alteração válida incrementa versão exatamente1 e gera evento; conflito/versão incorreta preservam before e não criam recibo de sucesso. · functional · 2 requirement link(s)
+                    - paragraph [ref=f6e2934]: Responsável altera sala, intervalo e participantes de reserva confirmed futura mediante expected_version e chave de intenção. Sucesso incrementa versão1; qualquer recusa preserva integralmente a reserva original. · fr_res_change
+                    - paragraph [ref=f6e2935]: Ciclo de vida e versão · br_61ffa7b7
+                    - button "Edit verification ac_res_change" [ref=f6e2936] [cursor=pointer]
+                  - generic [ref=f6e2937]:
+                    - paragraph [ref=f6e2938]: Cancelamento válido mantém reserva cancelled e histórico e libera intervalo; no início/depois ou nova intenção em cancelled é recusado; replay não cria evento. · functional · 3 requirement link(s)
+                    - paragraph [ref=f6e2939]: Responsável cancela reserva confirmed estritamente antes do início mediante expected_version e chave de intenção. Cancelamento mantém registro/histórico e libera disponibilidade; não existe desfazer. · fr_res_cancel
+                    - paragraph [ref=f6e2940]: Mesmo ator/operação/chave e carga normalizada retornam resultado originalmente confirmado com replayed=true, inclusive após timeout ou reinício; carga diferente retorna idempotency_conflict. Reautenticar toda tentativa. · fr_res_replay
+                    - paragraph [ref=f6e2941]: Ciclo de vida e versão · br_61ffa7b7
+                    - button "Edit verification ac_res_cancel" [ref=f6e2942] [cursor=pointer]
+                  - generic [ref=f6e2943]:
+                    - paragraph [ref=f6e2944]: Histórico retorna eventos ordenados versão asc, before=null somente na criação, after explícito, sem mutação por leitura ou replay. · functional · 2 requirement link(s)
+                    - paragraph [ref=f6e2945]: Ler eventos imutáveis create/change/cancel da própria reserva, ordenados por versão crescente, com paginação default20/max100 e snapshots before/after explícitos; alheia/inexistente retorna not_found. · fr_res_history
+                    - paragraph [ref=f6e2946]: Histórico e paginação · br_be2abc28
+                    - button "Edit verification ac_res_history" [ref=f6e2947] [cursor=pointer]
+                  - generic [ref=f6e2948]:
+                    - paragraph [ref=f6e2949]: Mesmo ator/operação/chave/carga retorna resultado original com replayed=true; chave/carga diferente recusa; outro ator não reutiliza nem observa recibo alheio. · functional · 2 requirement link(s)
+                    - paragraph [ref=f6e2950]: Mesmo ator/operação/chave e carga normalizada retornam resultado originalmente confirmado com replayed=true, inclusive após timeout ou reinício; carga diferente retorna idempotency_conflict. Reautenticar toda tentativa. · fr_res_replay
+                    - paragraph [ref=f6e2951]: Idempotência por intenção · br_3520507f
+                    - button "Edit verification ac_res_replay" [ref=f6e2952] [cursor=pointer]
+                  - generic [ref=f6e2953]:
+                    - paragraph [ref=f6e2954]: Duas conexões concorrentes não confirmam sobreposição nem duas alterações com mesmo expected_version; falha entre reserva e commit reverte reserva,histórico e recibo. · integration · 2 requirement link(s)
+                    - paragraph [ref=f6e2955]: Um backend, SQLite local, nenhum arquivo em rede ou escritor externo. BEGIN IMMEDIATE no adaptador antes de leituras de comando; revalidar relógio/estado/conflito/CAS, salvar reserva+histórico+recibo juntos e rollback integral antes de commit. · tr_res_atomic
+                    - paragraph [ref=f6e2956]: Commit e recuperação · br_02da6056
+                    - button "Edit verification ac_res_atomic" [ref=f6e2957] [cursor=pointer]
+                  - generic [ref=f6e2958]:
+                    - paragraph [ref=f6e2959]: Teste estático detecta imports de mecanismo/reach-in privado; domínio/aplicação testáveis com fakes sem infraestrutura; nenhuma porta interna contém http_status. · technical · 1 requirement link(s)
+                    - paragraph [ref=f6e2960]: Domínio/aplicação não importam HTTP, SQL, ORM, filesystem, relógio global ou adaptadores. Portas públicas usam valores e erros de negócio sem http_status; composição externa injeta mecanismos; adaptadores não acessam privados. · tr_res_hex
+                    - button "Edit verification ac_res_hex" [ref=f6e2961] [cursor=pointer]
+                  - generic [ref=f6e2962]:
+                    - paragraph [ref=f6e2963]: Sessão ausente/expirada, ID alheio, owner_id forjado e CSRF inválido são recusados sem escrita e sem vazamento; logs excluem segredos. · technical · 1 requirement link(s)
+                    - paragraph [ref=f6e2964]: Identidade vem da sessão validada, nunca owner_id do cliente. Revalidar autorização inclusive em replay; sem sessão=401, alheio/inexistente=404; CSRF inválido não muta. HTTPS exige cookie Secure/HttpOnly/SameSite; não expor cookies, senhas, SQL ou stacktrace. · tr_res_security
+                    - button "Edit verification ac_res_security" [ref=f6e2965] [cursor=pointer]
+                  - generic [ref=f6e2966]:
+                    - paragraph [ref=f6e2967]: Com Clock controlado, comando bloqueado pela transação usa now obtido após aquisição; UTC e fuso local produzem os mesmos limites, sem relógio global no domínio. · technical · 1 requirement link(s)
+                    - paragraph [ref=f6e2968]: Persistir instantes UTC e aplicar calendário America/Sao_Paulo. Clock público substituível; capturar now após adquirir transação. Recusar offsets incoerentes e horários ambíguos/inexistentes, sem inferência silenciosa. · tr_res_clock
+                    - button "Edit verification ac_res_clock" [ref=f6e2969] [cursor=pointer]
+                  - generic [ref=f6e2970]:
+                    - paragraph [ref=f6e2971]: Busy esgota orçamento2s e retorna503 sem escrita parcial; após commit e perda da resposta, reinício+replay recupera mesma reserva/evento únicos. · operational · 1 requirement link(s)
+                    - paragraph [ref=f6e2972]: Espera de busy limitada a2s por tentativa; esgotamento retorna unavailable/503, sem sucesso presumido. Recibo confirmado sobrevive ao reinício; timeout pós-commit tratado por replay. Handle encerrado não pode ser reutilizado. · tr_res_recovery
+                    - button "Edit verification ac_res_recovery" [ref=f6e2973] [cursor=pointer]
+                  - generic [ref=f6e2974]:
+                    - paragraph [ref=f6e2975]: H01–H04 apresentam loading/vazio/erro/sucesso/conflicto/incerto distintos, preservam entrada/chave correta e exibem fuso; dupla submissão não cria nova intenção. · functional · 3 requirement link(s)
+                    - paragraph [ref=f6e2976]: Telas distinguem carregamento, vazio, erro, sucesso, conflito e resultado incerto; preservam entradas após erro, exibem America/Sao_Paulo e usam Design System v1. Repetição incerta conserva chave/carga. · fr_res_ux
+                    - paragraph [ref=f6e2977]: H01–H04 funcionam em320px e desktop, zoom200%, sem rolagem horizontal no fluxo principal. Labels persistentes, foco visível, anúncio de resultado; modal contém Tab/Shift+Tab, Escape não muta e foco retorna ao acionador. · tr_res_ui
+                    - paragraph [ref=f6e2978]: Intenção e feedback da interface · br_1a496b36
+                    - button "Edit verification ac_res_ux" [ref=f6e2979] [cursor=pointer]
+                  - generic [ref=f6e2980]:
+                    - paragraph [ref=f6e2981]: Em320px e zoom200% fluxo principal sem overflow horizontal; modal inicia em Manter, contém foco, Escape não cancela, devolve foco; resultados e erros possuem nome/anúncio acessível. · functional · 2 requirement link(s)
+                    - paragraph [ref=f6e2982]: Telas distinguem carregamento, vazio, erro, sucesso, conflito e resultado incerto; preservam entradas após erro, exibem America/Sao_Paulo e usam Design System v1. Repetição incerta conserva chave/carga. · fr_res_ux
+                    - paragraph [ref=f6e2983]: H01–H04 funcionam em320px e desktop, zoom200%, sem rolagem horizontal no fluxo principal. Labels persistentes, foco visível, anúncio de resultado; modal contém Tab/Shift+Tab, Escape não muta e foco retorna ao acionador. · tr_res_ui
+                    - button "Edit verification ac_res_a11y" [ref=f6e2984] [cursor=pointer]
+                  - generic [ref=f6e2985]:
+                    - paragraph [ref=f6e2986]: No contrato ir_res_storage, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador. · integration · 1 requirement link(s)
+                    - paragraph [ref=f6e2987]: Persistência de transação · ir_res_storage
+                    - button "Edit verification ac_ir_res_storage" [ref=f6e2988] [cursor=pointer]
+                  - generic [ref=f6e2989]:
+                    - paragraph [ref=f6e2990]: No contrato ir_res_change, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador. · integration · 1 requirement link(s)
+                    - paragraph [ref=f6e2991]: Alterar reserva · ir_res_change
+                    - button "Edit verification ac_ir_res_change" [ref=f6e2992] [cursor=pointer]
+                  - generic [ref=f6e2993]:
+                    - paragraph [ref=f6e2994]: No contrato ir_res_rules, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador. · integration · 1 requirement link(s)
+                    - paragraph [ref=f6e2995]: Contrato de invariantes · ir_res_rules
+                    - button "Edit verification ac_ir_res_rules" [ref=f6e2996] [cursor=pointer]
+                  - generic [ref=f6e2997]:
+                    - paragraph [ref=f6e2998]: No contrato ir_res_history, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador. · integration · 1 requirement link(s)
+                    - paragraph [ref=f6e2999]: Ler histórico da própria reserva · ir_res_history
+                    - button "Edit verification ac_ir_res_history" [ref=f6e3000] [cursor=pointer]
+                  - generic [ref=f6e3001]:
+                    - paragraph [ref=f6e3002]: No contrato ir_res_identity_port, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador. · integration · 1 requirement link(s)
+                    - paragraph [ref=f6e3003]: IdentityProvider · ir_res_identity_port
+                    - button "Edit verification ac_ir_res_identity_port" [ref=f6e3004] [cursor=pointer]
+                  - generic [ref=f6e3005]:
+                    - paragraph [ref=f6e3006]: No contrato ir_res_create, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador. · integration · 1 requirement link(s)
+                    - paragraph [ref=f6e3007]: Criar reserva · ir_res_create
+                    - button "Edit verification ac_ir_res_create" [ref=f6e3008] [cursor=pointer]
+                  - generic [ref=f6e3009]:
+                    - paragraph [ref=f6e3010]: No contrato ir_res_usecases, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador. · integration · 1 requirement link(s)
+                    - paragraph [ref=f6e3011]: Porta pública de casos de uso · ir_res_usecases
+                    - button "Edit verification ac_ir_res_usecases" [ref=f6e3012] [cursor=pointer]
+                  - generic [ref=f6e3013]:
+                    - paragraph [ref=f6e3014]: No contrato ir_res_search, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador. · integration · 1 requirement link(s)
+                    - paragraph [ref=f6e3015]: Consultar disponibilidade · ir_res_search
+                    - button "Edit verification ac_ir_res_search" [ref=f6e3016] [cursor=pointer]
+                  - generic [ref=f6e3017]:
+                    - paragraph [ref=f6e3018]: No contrato ir_res_list, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador. · integration · 1 requirement link(s)
+                    - paragraph [ref=f6e3019]: Listar próprias reservas · ir_res_list
+                    - button "Edit verification ac_ir_res_list" [ref=f6e3020] [cursor=pointer]
+                  - generic [ref=f6e3021]:
+                    - paragraph [ref=f6e3022]: No contrato ir_res_cancel, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador. · integration · 1 requirement link(s)
+                    - paragraph [ref=f6e3023]: Cancelar reserva · ir_res_cancel
+                    - button "Edit verification ac_ir_res_cancel" [ref=f6e3024] [cursor=pointer]
+                  - generic [ref=f6e3025]:
+                    - paragraph [ref=f6e3026]: No contrato ir_res_wiring, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador. · integration · 1 requirement link(s)
+                    - paragraph [ref=f6e3027]: Injeção de adaptadores · ir_res_wiring
+                    - button "Edit verification ac_ir_res_wiring" [ref=f6e3028] [cursor=pointer]
+                  - generic [ref=f6e3029]:
+                    - paragraph [ref=f6e3030]: No contrato ir_res_clock_port, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador. · integration · 1 requirement link(s)
+                    - paragraph [ref=f6e3031]: Clock · ir_res_clock_port
+                    - button "Edit verification ac_ir_res_clock_port" [ref=f6e3032] [cursor=pointer]
+                  - generic [ref=f6e3033]:
+                    - paragraph [ref=f6e3034]: No contrato ir_res_uow, cada operação declarada aceita valores válidos do request_schema e produz resultado compatível com response_schema; campos obrigatórios ausentes, tipos inválidos e operação desconhecida são recusados. Respeitar o error_contract, isolamento do ator e pós-condições da descrição. Contratos internos não expõem HTTP/SQL; no transporte externo traduzir somente no adaptador. · integration · 1 requirement link(s)
+                    - paragraph [ref=f6e3035]: ReservationUnitOfWork · ir_res_uow
+                    - button "Edit verification ac_ir_res_uow" [ref=f6e3036] [cursor=pointer]
+                  - generic [ref=f6e3037]:
+                    - paragraph [ref=f6e3038]: Cada tentativa tem registro com request_id,operação,resultado,replayed,duração_ms; inspeção dos logs encontra zero cookie,senha,SQL ou payload de reserva. · operational · 1 requirement link(s)
+                    - paragraph [ref=f6e3039]: Diagnóstico seguro de comandos · or_5a717f07
+                    - button "Edit verification ac_res_observe_0" [ref=f6e3040] [cursor=pointer]
+                  - generic [ref=f6e3041]:
+                    - paragraph [ref=f6e3042]: Contador reservation_commands_total aumenta exatamente1 por tentativa no rótulo operação/resultado correto; replay/conflitos/unavailable distinguíveis, sem criar SLO. · operational · 1 requirement link(s)
+                    - paragraph [ref=f6e3043]: Contagem de conflito e indisponibilidade · or_28a096df
+                    - button "Edit verification ac_res_observe_1" [ref=f6e3044] [cursor=pointer]
+                - region "Requirement qualification" [ref=f6e3045]:
+                  - button "Review requirement qualification" [ref=f6e3046] [cursor=pointer]
+          - generic [ref=f6e753]:
+            - button "Delete spec" [ref=f6e754] [cursor=pointer]
+            - button "Close" [ref=f6e756] [cursor=pointer]

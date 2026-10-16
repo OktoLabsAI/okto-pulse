@@ -1,0 +1,429 @@
+- generic [ref=f6e3]:
+  - banner [ref=f6e4]:
+    - generic [ref=f6e5]:
+      - generic [ref=f6e6]:
+        - button "Hide sidebar" [ref=f6e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f6e12]
+        - generic [ref=f6e31]: / My Board
+      - generic [ref=f6e32]:
+        - button "Refresh board" [ref=f6e33] [cursor=pointer]
+        - button [ref=f6e40] [cursor=pointer]
+  - generic [ref=f6e13]:
+    - complementary [ref=f6e14]:
+      - generic [ref=f6e15]:
+        - generic [ref=f6e17]:
+          - heading "Boards" [level=2] [ref=f6e18]
+          - button "New board" [ref=f6e19] [cursor=pointer]
+        - navigation [ref=f6e21]:
+          - generic [ref=f6e22]:
+            - heading "My Boards" [level=3] [ref=f6e23]
+            - list [ref=f6e44]:
+              - listitem [ref=f6e45]:
+                - button "My Board" [ref=f6e46] [cursor=pointer]
+    - main [ref=f6e26]:
+      - group "Board views" [ref=f6e53]:
+        - button "Stories" [ref=f6e54] [cursor=pointer]
+        - button "Ideations" [ref=f6e58] [cursor=pointer]
+        - button "Refinements" [ref=f6e61] [cursor=pointer]
+        - button "Specs" [pressed] [ref=f6e66] [cursor=pointer]
+        - button "Tasks" [ref=f6e71] [cursor=pointer]
+      - generic [ref=f6e213]:
+        - generic [ref=f6e214]:
+          - generic [ref=f6e215]:
+            - heading "Specifications" [level=2] [ref=f6e216]
+            - generic [ref=f6e217]: (1 of 1)
+          - generic [ref=f6e218]:
+            - textbox "Search specs…" [ref=f6e220]
+            - group "View mode" [ref=f6e221]:
+              - button "List view" [pressed] [ref=f6e222] [cursor=pointer]
+              - button "Grid view" [ref=f6e224] [cursor=pointer]
+            - generic [ref=f6e230]: Group specs
+            - combobox "Group specs" [ref=f6e236]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=f6e237] [cursor=pointer]
+        - generic [ref=f6e239]:
+          - button "All" [ref=f6e240] [cursor=pointer]
+          - button "Draft" [ref=f6e241] [cursor=pointer]
+          - button "Review" [ref=f6e242] [cursor=pointer]
+          - button "Approved" [ref=f6e243] [cursor=pointer]
+          - button "Validated" [ref=f6e244] [cursor=pointer]
+          - button "In Progress" [ref=f6e245] [cursor=pointer]
+          - button "Done" [ref=f6e246] [cursor=pointer]
+          - button "Show archived" [ref=f6e247] [cursor=pointer]
+        - generic [ref=f6e250]:
+          - generic [ref=f6e251] [cursor=pointer]:
+            - 'heading "Refinement: Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f6e258]'
+            - generic [ref=f6e259]: (1)
+          - generic [ref=f6e263] [cursor=pointer]:
+            - generic [ref=f6e264]:
+              - generic [ref=f6e265]:
+                - generic [ref=f6e266]: Draft
+                - generic "Edition 1" [ref=f6e270]
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f6e271]
+              - paragraph [ref=f6e272]: "Especificação conceitual H01–H04: consultar, criar, alterar e cancelar reservas próprias com consistência, idempotência, histórico e arquitetura hexagonal. Exercício de testes do Pulse; nenhuma implementação real solicitada."
+              - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=f6e274]':
+                - generic [ref=f6e275]: Requirement lint
+                - strong [ref=f6e276]: Not assessed
+              - generic [ref=f6e277]:
+                - generic [ref=f6e278]: mock
+                - generic [ref=f6e279]: reserva-de-salas
+                - generic [ref=f6e280]: teste-sdlc
+            - generic [ref=f6e281]:
+              - button "Open lineage graph" [ref=f6e282]
+              - button "Archive tree" [ref=f6e287]
+        - generic [ref=f6e293]:
+          - status [ref=f6e294]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f6e295]:
+            - generic [ref=f6e296]:
+              - generic [ref=f6e297]: Items per page
+              - combobox "Items per page" [ref=f6e298]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=f6e299]:
+              - generic [ref=f6e300]:
+                - button "Previous page" [disabled] [ref=f6e301]: Previous
+                - button "Page 1" [disabled] [ref=f6e302]: "1"
+                - button "Next page" [disabled] [ref=f6e303]: Next
+        - dialog [ref=f6e305]:
+          - generic [ref=f6e306]:
+            - generic [ref=f6e307]:
+              - generic [ref=f6e308]: Draft
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=2] [ref=f6e312]
+              - generic "Edition 1" [ref=f6e313]
+            - generic [ref=f6e314]:
+              - button "Open lineage graph" [ref=f6e315] [cursor=pointer]
+              - button "Export report" [ref=f6e320] [cursor=pointer]
+              - button "Refresh" [ref=f6e324] [cursor=pointer]
+              - button "Expand" [ref=f6e330] [cursor=pointer]
+              - button "Close spec" [ref=f6e336] [cursor=pointer]
+          - generic [ref=f6e340]:
+            - generic [ref=f6e341]: "Move to:"
+            - button "Review" [ref=f6e342] [cursor=pointer]
+            - button "Cancelled" [ref=f6e345] [cursor=pointer]
+          - generic [ref=f6e348]:
+            - generic [ref=f6e349]: "From:"
+            - button "Reserva de salas — teste do SDLC v24" [ref=f6e350] [cursor=pointer]:
+              - text: Reserva de salas — teste do SDLC
+              - generic [ref=f6e353]: v24
+            - button "Reserva de salas — consistência das reservas e contratos hexagonais v39" [ref=f6e356] [cursor=pointer]:
+              - text: Reserva de salas — consistência das reservas e contratos hexagonais
+              - generic [ref=f6e361]: v39
+          - generic [ref=f6e363]:
+            - tablist "Spec sections" [ref=f6e364]:
+              - tab "Details" [ref=f6e365] [cursor=pointer]
+              - tab "Requirements & Decisions" [selected] [ref=f6e370] [cursor=pointer]
+              - tab "Tests & Verifications" [ref=f6e375] [cursor=pointer]
+              - tab "Coverage" [ref=f6e379] [cursor=pointer]
+              - tab "Code Evidence Matrix" [ref=f6e385] [cursor=pointer]
+              - tab "Project structure" [ref=f6e389] [cursor=pointer]
+              - tab "Dependencies" [ref=f6e396] [cursor=pointer]
+              - tab "TRs 6" [ref=f6e402] [cursor=pointer]:
+                - generic [ref=f6e406]: TRs
+                - generic [ref=f6e407]: "6"
+              - tab "Resources" [ref=f6e408] [cursor=pointer]
+              - tab "Q&A 9" [ref=f6e412] [cursor=pointer]:
+                - generic [ref=f6e416]: Q&A
+                - generic [ref=f6e417]: "9"
+              - tab "References" [ref=f6e418] [cursor=pointer]
+              - tab "KG Graph" [ref=f6e423] [cursor=pointer]
+              - tab "Validation" [ref=f6e430] [cursor=pointer]
+              - tab "Activity" [ref=f6e435] [cursor=pointer]
+            - button "Scroll Spec sections right" [ref=f6e441] [cursor=pointer]
+          - tabpanel "Requirements & Decisions" [ref=f6e757]:
+            - generic [ref=f6e758]:
+              - tablist "Requirements and decisions sections" [ref=f6e759]:
+                - tab "Functional 8" [ref=f6e760] [cursor=pointer]:
+                  - generic [ref=f6e763]: Functional
+                  - generic [ref=f6e764]: "8"
+                - tab "Business 8" [ref=f6e765] [cursor=pointer]:
+                  - generic [ref=f6e770]: Business
+                  - generic [ref=f6e771]: "8"
+                - tab "Integration 13" [active] [selected] [ref=f6e772] [cursor=pointer]:
+                  - generic [ref=f6e778]: Integration
+                  - generic [ref=f6e779]: "13"
+                - tab "Observability 2" [ref=f6e780] [cursor=pointer]:
+                  - generic [ref=f6e784]: Observability
+                  - generic [ref=f6e785]: "2"
+                - tab "Contracts 6" [ref=f6e786] [cursor=pointer]:
+                  - generic [ref=f6e792]: Contracts
+                  - generic [ref=f6e793]: "6"
+                - tab "Decisions 5" [ref=f6e794] [cursor=pointer]:
+                  - generic [ref=f6e799]: Decisions
+                  - generic [ref=f6e800]: "5"
+              - button "Scroll Requirements and decisions sections right" [ref=f6e801] [cursor=pointer]
+            - tabpanel "Integration 13" [ref=f6e903]:
+              - generic [ref=f6e904]:
+                - generic [ref=f6e906]:
+                  - heading "IR Task Coverage (0/13)" [level=4] [ref=f6e907]
+                  - generic [ref=f6e908]: 0% linked
+                - generic [ref=f6e910]:
+                  - generic [ref=f6e911]:
+                    - text: Skip IR coverage requirement
+                    - paragraph [ref=f6e912]: Allow validation without full IR-to-task coverage
+                  - button [ref=f6e913] [cursor=pointer]
+                - generic [ref=f6e916] [cursor=pointer]:
+                  - generic [ref=f6e921]: Data
+                  - generic [ref=f6e922]: Persistência de transação
+                  - generic [ref=f6e923]: 0 tasks
+                  - button [ref=f6e924]
+                  - button [ref=f6e928]
+                - generic [ref=f6e935] [cursor=pointer]:
+                  - generic [ref=f6e940]: API
+                  - generic [ref=f6e941]: Alterar reserva
+                  - generic [ref=f6e942]: 0 tasks
+                  - button [ref=f6e943]
+                  - button [ref=f6e947]
+                - generic [ref=f6e954] [cursor=pointer]:
+                  - generic [ref=f6e959]: Data
+                  - generic [ref=f6e960]: Contrato de invariantes
+                  - generic [ref=f6e961]: 0 tasks
+                  - button [ref=f6e962]
+                  - button [ref=f6e966]
+                - generic [ref=f6e973] [cursor=pointer]:
+                  - generic [ref=f6e978]: API
+                  - generic [ref=f6e979]: Ler histórico da própria reserva
+                  - generic [ref=f6e980]: 0 tasks
+                  - button [ref=f6e981]
+                  - button [ref=f6e985]
+                - generic [ref=f6e992] [cursor=pointer]:
+                  - generic [ref=f6e997]: Data
+                  - generic [ref=f6e998]: IdentityProvider
+                  - generic [ref=f6e999]: 0 tasks
+                  - button [ref=f6e1000]
+                  - button [ref=f6e1004]
+                - generic [ref=f6e1011] [cursor=pointer]:
+                  - generic [ref=f6e1016]: API
+                  - generic [ref=f6e1017]: Criar reserva
+                  - generic [ref=f6e1018]: 0 tasks
+                  - button [ref=f6e1019]
+                  - button [ref=f6e1023]
+                - generic [ref=f6e1030] [cursor=pointer]:
+                  - generic [ref=f6e1035]: Data
+                  - generic [ref=f6e1036]: Porta pública de casos de uso
+                  - generic [ref=f6e1037]: 0 tasks
+                  - button [ref=f6e1038]
+                  - button [ref=f6e1042]
+                - generic [ref=f6e1049] [cursor=pointer]:
+                  - generic [ref=f6e1054]: API
+                  - generic [ref=f6e1055]: Consultar disponibilidade
+                  - generic [ref=f6e1056]: 0 tasks
+                  - button [ref=f6e1057]
+                  - button [ref=f6e1061]
+                - generic [ref=f6e1068] [cursor=pointer]:
+                  - generic [ref=f6e1073]: API
+                  - generic [ref=f6e1074]: Listar próprias reservas
+                  - generic [ref=f6e1075]: 0 tasks
+                  - button [ref=f6e1076]
+                  - button [ref=f6e1080]
+                - generic [ref=f6e1087] [cursor=pointer]:
+                  - generic [ref=f6e1092]: API
+                  - generic [ref=f6e1093]: Cancelar reserva
+                  - generic [ref=f6e1094]: 0 tasks
+                  - button [ref=f6e1095]
+                  - button [ref=f6e1099]
+                - generic [ref=f6e1106] [cursor=pointer]:
+                  - generic [ref=f6e1111]: Data
+                  - generic [ref=f6e1112]: Injeção de adaptadores
+                  - generic [ref=f6e1113]: 0 tasks
+                  - button [ref=f6e1114]
+                  - button [ref=f6e1118]
+                - generic [ref=f6e1125] [cursor=pointer]:
+                  - generic [ref=f6e1130]: Data
+                  - generic [ref=f6e1131]: Clock
+                  - generic [ref=f6e1132]: 0 tasks
+                  - button [ref=f6e1133]
+                  - button [ref=f6e1137]
+                - generic [ref=f6e1144] [cursor=pointer]:
+                  - generic [ref=f6e1149]: Data
+                  - generic [ref=f6e1150]: ReservationUnitOfWork
+                  - generic [ref=f6e1151]: 0 tasks
+                  - button [ref=f6e1152]
+                  - button [ref=f6e1156]
+                - button "Add Integration Requirement" [ref=f6e1162] [cursor=pointer]
+              - region "Architecture classifications" [ref=f6e1164]:
+                - heading "Architecture candidates" [level=3] [ref=f6e1165]
+                - paragraph [ref=f6e1166]: Interface contracts from the adopted architecture. Create or reuse an integration requirement, or keep the interface as context. API Contracts are separate definitions.
+                - button "Review classifications" [expanded] [ref=f6e1167] [cursor=pointer]
+                - paragraph [ref=f6e1168]: This review does not approve requirements or authorize starting the Spec. Context decisions do not waive existing IRs.
+                - button "Refresh classifications" [ref=f6e1169] [cursor=pointer]
+                - generic [ref=f6e1170]:
+                  - text: Classification state
+                  - combobox "Classification state" [ref=f6e1171]:
+                    - option "All states" [selected]
+                    - option "Pending"
+                    - option "Current"
+                    - option "Review required"
+                    - option "Unresolved"
+                    - option "Retired"
+                    - option "Unavailable"
+                - paragraph [ref=f6e1172]: Current contracts are classified. Execution gates and semantic review still apply.
+                - list "Global classification counts" [ref=f6e1173]:
+                  - listitem [ref=f6e1174]: "Pending: 0"
+                  - listitem [ref=f6e1175]: "Current: 13"
+                  - listitem [ref=f6e1176]: "Review required: 0"
+                  - listitem [ref=f6e1177]: "Unresolved: 0"
+                  - listitem [ref=f6e1178]: "Retired: 0"
+                  - listitem [ref=f6e1179]: "Unavailable: 0"
+                - article [ref=f6e1180]:
+                  - generic [ref=f6e1181]:
+                    - heading "Persistência de transação" [level=4] [ref=f6e1182]
+                    - generic [ref=f6e1183]: Current
+                  - group [ref=f6e1184]:
+                    - generic "Source references" [ref=f6e1185] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1186] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1187]:
+                    - generic [ref=f6e1188]:
+                      - button "Create IR" [ref=f6e1189] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1190] [cursor=pointer]
+                      - button "Context only" [ref=f6e1191] [cursor=pointer]
+                - article [ref=f6e1192]:
+                  - generic [ref=f6e1193]:
+                    - heading "Alterar reserva" [level=4] [ref=f6e1194]
+                    - generic [ref=f6e1195]: Current
+                  - group [ref=f6e1196]:
+                    - generic "Source references" [ref=f6e1197] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1198] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1199]:
+                    - generic [ref=f6e1200]:
+                      - button "Create IR" [ref=f6e1201] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1202] [cursor=pointer]
+                      - button "Context only" [ref=f6e1203] [cursor=pointer]
+                - article [ref=f6e1204]:
+                  - generic [ref=f6e1205]:
+                    - heading "Contrato de invariantes" [level=4] [ref=f6e1206]
+                    - generic [ref=f6e1207]: Current
+                  - group [ref=f6e1208]:
+                    - generic "Source references" [ref=f6e1209] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1210] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1211]:
+                    - generic [ref=f6e1212]:
+                      - button "Create IR" [ref=f6e1213] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1214] [cursor=pointer]
+                      - button "Context only" [ref=f6e1215] [cursor=pointer]
+                - article [ref=f6e1216]:
+                  - generic [ref=f6e1217]:
+                    - heading "Ler histórico da própria reserva" [level=4] [ref=f6e1218]
+                    - generic [ref=f6e1219]: Current
+                  - group [ref=f6e1220]:
+                    - generic "Source references" [ref=f6e1221] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1222] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1223]:
+                    - generic [ref=f6e1224]:
+                      - button "Create IR" [ref=f6e1225] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1226] [cursor=pointer]
+                      - button "Context only" [ref=f6e1227] [cursor=pointer]
+                - article [ref=f6e1228]:
+                  - generic [ref=f6e1229]:
+                    - heading "IdentityProvider" [level=4] [ref=f6e1230]
+                    - generic [ref=f6e1231]: Current
+                  - group [ref=f6e1232]:
+                    - generic "Source references" [ref=f6e1233] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1234] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1235]:
+                    - generic [ref=f6e1236]:
+                      - button "Create IR" [ref=f6e1237] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1238] [cursor=pointer]
+                      - button "Context only" [ref=f6e1239] [cursor=pointer]
+                - article [ref=f6e1240]:
+                  - generic [ref=f6e1241]:
+                    - heading "Criar reserva" [level=4] [ref=f6e1242]
+                    - generic [ref=f6e1243]: Current
+                  - group [ref=f6e1244]:
+                    - generic "Source references" [ref=f6e1245] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1246] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1247]:
+                    - generic [ref=f6e1248]:
+                      - button "Create IR" [ref=f6e1249] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1250] [cursor=pointer]
+                      - button "Context only" [ref=f6e1251] [cursor=pointer]
+                - article [ref=f6e1252]:
+                  - generic [ref=f6e1253]:
+                    - heading "Porta pública de casos de uso" [level=4] [ref=f6e1254]
+                    - generic [ref=f6e1255]: Current
+                  - group [ref=f6e1256]:
+                    - generic "Source references" [ref=f6e1257] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1258] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1259]:
+                    - generic [ref=f6e1260]:
+                      - button "Create IR" [ref=f6e1261] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1262] [cursor=pointer]
+                      - button "Context only" [ref=f6e1263] [cursor=pointer]
+                - article [ref=f6e1264]:
+                  - generic [ref=f6e1265]:
+                    - heading "Consultar disponibilidade" [level=4] [ref=f6e1266]
+                    - generic [ref=f6e1267]: Current
+                  - group [ref=f6e1268]:
+                    - generic "Source references" [ref=f6e1269] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1270] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1271]:
+                    - generic [ref=f6e1272]:
+                      - button "Create IR" [ref=f6e1273] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1274] [cursor=pointer]
+                      - button "Context only" [ref=f6e1275] [cursor=pointer]
+                - article [ref=f6e1276]:
+                  - generic [ref=f6e1277]:
+                    - heading "Listar próprias reservas" [level=4] [ref=f6e1278]
+                    - generic [ref=f6e1279]: Current
+                  - group [ref=f6e1280]:
+                    - generic "Source references" [ref=f6e1281] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1282] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1283]:
+                    - generic [ref=f6e1284]:
+                      - button "Create IR" [ref=f6e1285] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1286] [cursor=pointer]
+                      - button "Context only" [ref=f6e1287] [cursor=pointer]
+                - article [ref=f6e1288]:
+                  - generic [ref=f6e1289]:
+                    - heading "Cancelar reserva" [level=4] [ref=f6e1290]
+                    - generic [ref=f6e1291]: Current
+                  - group [ref=f6e1292]:
+                    - generic "Source references" [ref=f6e1293] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1294] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1295]:
+                    - generic [ref=f6e1296]:
+                      - button "Create IR" [ref=f6e1297] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1298] [cursor=pointer]
+                      - button "Context only" [ref=f6e1299] [cursor=pointer]
+                - article [ref=f6e1300]:
+                  - generic [ref=f6e1301]:
+                    - heading "Injeção de adaptadores" [level=4] [ref=f6e1302]
+                    - generic [ref=f6e1303]: Current
+                  - group [ref=f6e1304]:
+                    - generic "Source references" [ref=f6e1305] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1306] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1307]:
+                    - generic [ref=f6e1308]:
+                      - button "Create IR" [ref=f6e1309] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1310] [cursor=pointer]
+                      - button "Context only" [ref=f6e1311] [cursor=pointer]
+                - article [ref=f6e1312]:
+                  - generic [ref=f6e1313]:
+                    - heading "Clock" [level=4] [ref=f6e1314]
+                    - generic [ref=f6e1315]: Current
+                  - group [ref=f6e1316]:
+                    - generic "Source references" [ref=f6e1317] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1318] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1319]:
+                    - generic [ref=f6e1320]:
+                      - button "Create IR" [ref=f6e1321] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1322] [cursor=pointer]
+                      - button "Context only" [ref=f6e1323] [cursor=pointer]
+                - article [ref=f6e1324]:
+                  - generic [ref=f6e1325]:
+                    - heading "ReservationUnitOfWork" [level=4] [ref=f6e1326]
+                    - generic [ref=f6e1327]: Current
+                  - group [ref=f6e1328]:
+                    - generic "Source references" [ref=f6e1329] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1330] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1331]:
+                    - generic [ref=f6e1332]:
+                      - button "Create IR" [ref=f6e1333] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1334] [cursor=pointer]
+                      - button "Context only" [ref=f6e1335] [cursor=pointer]
+          - generic [ref=f6e753]:
+            - button "Delete spec" [ref=f6e754] [cursor=pointer]
+            - button "Close" [ref=f6e756] [cursor=pointer]

@@ -15,25 +15,26 @@
  *     close/X control — "X fecha todas as modais, independente do nível
  *     de drill down".
  *
- * Entities supported today: card, story, spec, ideation, refinement, sprint,
+ * Entities supported today: card, story, spec, ideation, refinement,
  * kg_node. New entity types just need an entry in ModalStackRenderer.
  */
 
 import { createContext, useCallback, useContext, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
+import type { ReadinessCardLocation, ReadinessSpecTab } from '@/components/code-traceability/readinessNavigation';
 
 export type ModalStackEntry = { boardId?: string } & (
-  | { type: 'card'; id: string }
+  | { type: 'card'; id: string; target?: ReadinessCardLocation }
   | { type: 'story'; id: string }
   | {
     type: 'spec';
     id: string;
-    initialTab?: 'evidence-matrix' | 'project-structure';
+    initialTab?: 'evidence-matrix' | 'project-structure' | ReadinessSpecTab;
     focusProjectNodeId?: string | null;
+    focusReadinessRef?: string | null;
   }
   | { type: 'ideation'; id: string }
   | { type: 'refinement'; id: string }
-  | { type: 'sprint'; id: string }
   | { type: 'kg_node'; id: string });
 
 interface ModalStackContextValue {
@@ -49,13 +50,22 @@ export function ModalStackProvider({ children }: { children: ReactNode }) {
   const [stack, setStack] = useState<ModalStackEntry[]>([]);
 
   const push = useCallback((entry: ModalStackEntry) => {
+    // Old links or external graph data must not open an unsupported modal.
+    if (!['card', 'story', 'spec', 'ideation', 'refinement', 'kg_node'].includes(entry.type)) return;
     setStack((prev) => {
       // Dedupe: if the top of the stack is the same entity, don't push
       // twice (avoids double-click creating phantom layers).
       const top = prev[prev.length - 1];
       const scopedEntry = entry.boardId === undefined && top?.boardId
         ? { ...entry, boardId: top.boardId } : entry;
-      if (top && top.type === scopedEntry.type && top.id === scopedEntry.id && top.boardId === scopedEntry.boardId) return prev;
+      if (top && top.type === scopedEntry.type && top.id === scopedEntry.id && top.boardId === scopedEntry.boardId) {
+        if (top.type === 'card' && scopedEntry.type === 'card' && scopedEntry.target
+          && JSON.stringify(top.target) !== JSON.stringify(scopedEntry.target)) return [...prev.slice(0, -1), scopedEntry];
+        if (top.type === 'spec' && scopedEntry.type === 'spec' && scopedEntry.initialTab
+          && (top.initialTab !== scopedEntry.initialTab || top.focusReadinessRef !== scopedEntry.focusReadinessRef
+            || top.focusProjectNodeId !== scopedEntry.focusProjectNodeId)) return [...prev.slice(0, -1), scopedEntry];
+        return prev;
+      }
       return [...prev, scopedEntry];
     });
   }, []);

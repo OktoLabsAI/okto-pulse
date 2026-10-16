@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import stat
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +27,7 @@ from okto_pulse.community.adapters.grafx_board_operational import (
 )
 from okto_pulse.community.adapters.grafx_board_storage import (
     GrafxBoardPrivacyScope,
+    GrafxDirectoryObservationLimit,
     erase_grafx_board_privacy_storage,
     grafx_board_storage_ref,
     grafx_board_privacy_scope,
@@ -34,6 +37,7 @@ from okto_pulse.community.adapters.grafx_board_storage import (
     storage_residues,
 )
 from okto_pulse.community.adapters.grafx_error_mapping import map_grafx_error
+from okto_pulse.community.adapters.filesystem_observation import FilesystemObservationBudget
 
 ConfiguredMaxBytes = Callable[[], int | None]
 BudgetSnapshotProvider = Callable[[], GraphRuntimeBudgetSnapshot]
@@ -63,6 +67,7 @@ class CommunityGrafxGraphRuntimeStore:
         board_storage_root_resolver: BoardStorageRootResolver,
         configured_max_bytes: ConfiguredMaxBytes | None = None,
         budget_snapshot_provider: BudgetSnapshotProvider | None = None,
+        observation_timeout: Callable[[str], float | None] | None = None,
     ) -> None:
         self._path_resolver = path_resolver
         self._close_callback = close_callback
@@ -70,6 +75,7 @@ class CommunityGrafxGraphRuntimeStore:
         self._board_storage_root_resolver = board_storage_root_resolver
         self._configured_max_bytes_provider = configured_max_bytes
         self._budget_snapshot_provider = budget_snapshot_provider
+        self._observation_timeout = observation_timeout
 
     def _privacy_scope(
         self,
@@ -86,13 +92,26 @@ class CommunityGrafxGraphRuntimeStore:
         *,
         generation: str | None,
         observed_at: datetime,
+        observation: FilesystemObservationBudget | None = None,
     ) -> GraphRuntimeState | None:
         """Prove strict absence from the board root without reopening Grafx."""
 
         try:
             scope = self._privacy_scope(board_id)
-            present = grafx_board_privacy_storage_present(scope)
+            present = grafx_board_privacy_storage_present(scope, observation=observation)
+            if observation is not None:
+                observation.check()
         except Exception:
+            if observation is not None:
+                # An incomplete Health scan is never an absence proof, even
+                # when the selected primary path itself was already missing.
+                return self._state(
+                    board_id,
+                    GraphRuntimeObservationState.PRESENT_UNREADABLE_OR_ERROR,
+                    generation=generation,
+                    reason_code="board_graph_absence_observation_unavailable",
+                    observed_at=observed_at,
+                )
             return None
         if present:
             return self._state(
@@ -147,6 +166,9 @@ class CommunityGrafxGraphRuntimeStore:
         generation: str | None = None,
     ) -> GraphRuntimeState:
         observed_at = datetime.now(timezone.utc)
+        observation = None
+        if self._observation_timeout is not None and self._observation_timeout(board_id) is not None:
+            observation = FilesystemObservationBudget(lambda: self._observation_timeout(board_id))
         try:
             path = Path(self._path_resolver(board_id))
         except Exception:
@@ -154,6 +176,7 @@ class CommunityGrafxGraphRuntimeStore:
                 board_id,
                 generation=generation,
                 observed_at=observed_at,
+                observation=observation,
             )
             if fallback is not None:
                 return fallback
@@ -169,7 +192,7 @@ class CommunityGrafxGraphRuntimeStore:
             metadata = path.lstat()
         except FileNotFoundError:
             try:
-                residues = storage_residues(path)
+                residues = storage_residues(path, observation=observation)
             except OSError:
                 return self._state(
                     board_id,
@@ -192,6 +215,7 @@ class CommunityGrafxGraphRuntimeStore:
                 board_id,
                 generation=generation,
                 observed_at=observed_at,
+                observation=observation,
             )
             if fallback is not None:
                 return fallback
@@ -230,8 +254,32 @@ class CommunityGrafxGraphRuntimeStore:
                     reason_code="board_graph_identity_not_regular_file",
                     observed_at=observed_at,
                 )
-            entry_count = sum(1 for _entry in path.iterdir())
+            observing = (
+                self._observation_timeout is not None
+                and self._observation_timeout(board_id) is not None
+            )
+            entry_count = 0
+            # Path.iterdir eagerly collects the directory on Python 3.13.
+            # Health must stream and close the OS iterator on overflow/error.
+            scan = os.scandir(path) if observing else nullcontext(path.iterdir())
+            with scan as entries:
+                for _entry in entries:
+                    if observing:
+                        # Share the caller's remaining deadline, never restart
+                        # it per entry. Foreground retains complete observation.
+                        self._observation_timeout(board_id)
+                        if entry_count >= 2000:
+                            return self._state(
+                                board_id,
+                                GraphRuntimeObservationState.PRESENT_UNREADABLE_OR_ERROR,
+                                generation=generation,
+                                reason_code="board_graph_metadata_entry_limit",
+                                observed_at=observed_at,
+                            )
+                    entry_count += 1
             lease_record_present = (path / _WRITER_LEASE).is_file()
+            if observing:
+                self._observation_timeout(board_id)
         except FileNotFoundError:
             return self._state(
                 board_id,
@@ -418,14 +466,17 @@ class CommunityGrafxGraphRuntimeStore:
             )
         try:
             total = grafx_directory_size(path)
-        except OSError:
+        except OSError as failure:
             return GraphStorageFootprint(
                 board_id=board_id,
                 storage_ref=grafx_board_storage_ref(board_id),
                 status="unavailable",
                 source="runtime_capability",
                 configured_max_bytes=maximum,
-                unavailable_reason="stat_failed",
+                unavailable_reason=(
+                    failure.reason if isinstance(failure, GrafxDirectoryObservationLimit)
+                    else "stat_failed"
+                ),
             )
         percentage = None
         if maximum is not None:

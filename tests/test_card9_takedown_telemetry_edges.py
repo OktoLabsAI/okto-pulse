@@ -63,7 +63,7 @@ async def telemetry_db(tmp_path):
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     async with sessions() as session:
-        session.add(Board(id=BOARD_ID, name="Card 9 edges", owner_id="tester"))
+        session.add(Board(id=BOARD_ID, name="Card 9 edges", owner_id="tester", realm_id="local"))
         await session.commit()
     try:
         yield SimpleNamespace(engine=engine, sessions=sessions)
@@ -533,6 +533,7 @@ async def test_timeline_and_aggregates_are_scoped_before_materialization(
                 id=OTHER_BOARD_ID,
                 name="Card 9 other board",
                 owner_id="other-owner",
+                realm_id="local",
             )
         )
         for item in (

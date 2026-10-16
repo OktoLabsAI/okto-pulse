@@ -6,10 +6,13 @@ import { useEffect, useState, useMemo } from 'react';
 import { Plus, Trash2, Settings, CheckCircle, XCircle, Link, Unlink, Pencil } from 'lucide-react';
 import toast from 'react-hot-toast';
 import type { Spec, TechnicalRequirement } from '@/types';
+import { useSpecCollectionEditor } from './useSpecCollectionEditor';
+import { SpecCollectionDraftNotice } from './SpecCollectionDraftNotice';
 
 interface TechnicalRequirementsTabProps {
   spec: Spec;
-  onUpdate: (trs: TechnicalRequirement[]) => void;
+  onUpdate: (trs: TechnicalRequirement[], expectedVersion: number) => void | Promise<void>;
+  readCurrent?: boolean;
   specCards?: { id: string; title: string; status: string }[];
   onLinkTask?: (trId: string, cardId: string) => Promise<void>;
   onUnlinkTask?: (trId: string, cardId: string) => Promise<void>;
@@ -23,17 +26,14 @@ interface TechnicalRequirementsTabProps {
   onFocusHandled?: () => void;
 }
 
-/** Normalize a TR entry (string or object) to a TechnicalRequirement object. */
-function normalizeTR(tr: string | TechnicalRequirement, fallbackIndex: number): TechnicalRequirement {
-  if (typeof tr === 'string') {
-    return { id: `tr_legacy_${fallbackIndex}`, text: tr, linked_task_ids: null };
-  }
-  return tr;
+export function TechnicalRequirementsTab(props: TechnicalRequirementsTabProps) {
+  return <TechnicalRequirementsTabEditor key={`${props.spec.board_id}:${props.spec.id}:${props.canCreate}:${props.canEdit}`} {...props} />;
 }
 
-export function TechnicalRequirementsTab({
+function TechnicalRequirementsTabEditor({
   spec,
   onUpdate,
+  readCurrent = true,
   specCards,
   onLinkTask,
   onUnlinkTask,
@@ -46,6 +46,8 @@ export function TechnicalRequirementsTab({
   focusCreateToken = null,
   onFocusHandled,
 }: TechnicalRequirementsTabProps) {
+  const editor = useSpecCollectionEditor(spec, readCurrent);
+  const begin = editor.begin;
   const [draft, setDraft] = useState('');
   const [adding, setAdding] = useState(false);
   const [editingTrId, setEditingTrId] = useState<string | null>(null);
@@ -53,9 +55,13 @@ export function TechnicalRequirementsTab({
   const [linkingTrId, setLinkingTrId] = useState<string | null>(null);
 
   const rawTRs = spec.technical_requirements || [];
-  const trs: TechnicalRequirement[] = rawTRs
-    .map((tr, i) => normalizeTR(tr as any, i))
-    .filter((tr) => (tr.status || 'active') === 'active');
+  if (rawTRs.some((tr) => !tr || typeof tr !== 'object'
+    || typeof tr.id !== 'string' || !tr.id.trim()
+    || typeof tr.text !== 'string' || !tr.text.trim())) {
+    throw new Error('Incompatible technical requirement: id and text are required');
+  }
+  const trs = rawTRs.filter((tr) => (tr.status || 'active') === 'active');
+  const removed = !!editingTrId && !trs.some(item => item.id === editingTrId);
 
   // Coverage: TRs with at least one linked task
   const coverage = useMemo(() => {
@@ -67,51 +73,64 @@ export function TechnicalRequirementsTab({
     };
   }, [trs]);
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     const text = draft.trim();
     if (!text) return;
     const id = `tr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     const newTR: TechnicalRequirement = { id, text, linked_task_ids: null };
-    onUpdate([...trs, newTR]);
+    if (!canCreate || !await editor.save(version => onUpdate([...rawTRs, newTR], version))) return;
     setDraft('');
+    setAdding(false);
   };
 
-  const handleRemove = (id: string) => {
-    onUpdate(trs.filter(tr => tr.id !== id));
+  const handleRemove = async (id: string) => {
+    if (canDelete) await editor.save(version => onUpdate(rawTRs.filter(tr => tr.id !== id), version), true);
   };
 
   const startEdit = (tr: TechnicalRequirement) => {
+    if (!canEdit || !editor.begin()) return;
     setEditingTrId(tr.id);
     setEditDraft(tr.text);
   };
 
   useEffect(() => {
     if (!focusEditId || !canEdit) return;
+    if (editingTrId || adding) return;
     const target = trs.find((tr) => tr.id === focusEditId);
     if (!target) return;
     startEdit(target);
     onFocusHandled?.();
-  }, [focusEditId, canEdit, spec.technical_requirements, onFocusHandled]);
+  }, [focusEditId, canEdit, spec.technical_requirements, onFocusHandled, editingTrId, adding]);
 
   useEffect(() => {
     if (!focusCreateToken || !canCreate) return;
+    if (editingTrId || adding) return;
+    if (!begin()) return;
     setAdding(true);
     onFocusHandled?.();
-  }, [focusCreateToken, canCreate, onFocusHandled]);
+  }, [focusCreateToken, canCreate, onFocusHandled, editingTrId, adding, begin]);
 
   const cancelEdit = () => {
+    if (editor.saving) return;
+    editor.cancel();
     setEditingTrId(null);
     setEditDraft('');
   };
 
-  const saveEdit = () => {
+  const saveEdit = async () => {
     if (!editingTrId || !editDraft.trim()) return;
-    onUpdate(trs.map((tr) => tr.id === editingTrId ? { ...tr, text: editDraft.trim() } : tr));
-    cancelEdit();
+    if (removed || !canEdit || !await editor.save(version => onUpdate(rawTRs.map((tr) => tr.id === editingTrId ? { ...tr, text: editDraft.trim() } : tr), version))) return;
+    setEditingTrId(null); setEditDraft('');
   };
 
   return (
     <div className="space-y-4">
+      <SpecCollectionDraftNotice editor={editor} active={adding || !!editingTrId} removed={removed} currentText={trs.find(item => item.id === editingTrId)?.text} />
+      {removed && <div className="space-y-2">
+        <input aria-label="Removed requirement draft" value={editDraft} onChange={event => setEditDraft(event.target.value)} className="w-full input" />
+        <button disabled className="btn btn-primary text-xs">Save</button>
+        <button onClick={cancelEdit} className="btn btn-secondary text-xs">Cancel</button>
+      </div>}
       {/* TR Task Linkage Coverage */}
       {trs.length > 0 && (
         <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3">
@@ -193,11 +212,11 @@ export function TechnicalRequirementsTab({
         const linkedTaskIds = new Set(tr.linked_task_ids || []);
         const availableCards = (specCards || []).filter(c => !linkedTaskIds.has(c.id));
         return (
-          <div key={tr.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+          <div key={tr.id} data-readiness-ref={`tr:${tr.id}`} tabIndex={-1} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500">
             <div className="flex items-start gap-2 px-3 py-2 group">
               <Settings size={14} className="text-gray-400 shrink-0 mt-0.5" />
               {editingTrId === tr.id ? (
-                <div className="flex-1 flex gap-2">
+                <fieldset disabled={editor.saving} className="flex-1 flex gap-2">
                   <input
                     type="text"
                     value={editDraft}
@@ -213,9 +232,9 @@ export function TechnicalRequirementsTab({
                     className="flex-1 px-2 py-1 border border-gray-300 rounded-md text-sm dark:bg-gray-700 dark:border-gray-600"
                     autoFocus
                   />
-                  <button onClick={saveEdit} disabled={!editDraft.trim()} className="btn btn-primary text-xs">Save</button>
+                  <button onClick={saveEdit} disabled={!editDraft.trim() || editor.blocked || removed} className="btn btn-primary text-xs">Save</button>
                   <button onClick={cancelEdit} className="btn btn-secondary text-xs">Cancel</button>
-                </div>
+                </fieldset>
               ) : (
                 <span className="text-sm text-gray-700 dark:text-gray-300 flex-1">{tr.text}</span>
               )}
@@ -236,6 +255,7 @@ export function TechnicalRequirementsTab({
               {canEdit && editingTrId !== tr.id && (
                 <button
                   onClick={() => startEdit(tr)}
+                  disabled={editor.saving || !readCurrent || adding}
                   title="Edit"
                   className="opacity-0 group-hover:opacity-100 p-0.5 text-blue-400 hover:text-blue-600 transition-opacity shrink-0"
                 >
@@ -244,7 +264,7 @@ export function TechnicalRequirementsTab({
               )}
               <button
                 onClick={() => handleRemove(tr.id)}
-                disabled={!canDelete}
+                disabled={!canDelete || editor.saving || !readCurrent || adding || !!editingTrId}
                 title={canDelete ? 'Remove' : 'Requires spec.structured_entity.technical_requirement.revoke'}
                 className={`opacity-0 group-hover:opacity-100 p-0.5 transition-opacity shrink-0 ${canDelete ? 'text-red-400 hover:text-red-600' : 'text-gray-300 cursor-not-allowed'}`}
               >
@@ -287,7 +307,7 @@ export function TechnicalRequirementsTab({
 
       {/* Add form */}
       {adding ? (
-        <div className="flex gap-2">
+        <fieldset disabled={editor.saving} className="flex gap-2">
           <input
             type="text"
             value={draft}
@@ -297,13 +317,13 @@ export function TechnicalRequirementsTab({
             className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm dark:bg-gray-700 dark:border-gray-600"
             autoFocus
           />
-          <button onClick={handleAdd} disabled={!draft.trim()} className="btn btn-primary text-xs">Add</button>
-          <button onClick={() => { setAdding(false); setDraft(''); }} className="btn btn-secondary text-xs">Cancel</button>
-        </div>
+          <button onClick={handleAdd} disabled={!draft.trim() || editor.blocked} className="btn btn-primary text-xs">Add</button>
+          <button onClick={() => { editor.cancel(); setAdding(false); setDraft(''); }} className="btn btn-secondary text-xs">Cancel</button>
+        </fieldset>
       ) : (
         <button
-          onClick={() => setAdding(true)}
-          disabled={!canCreate}
+          onClick={() => { if (editor.begin()) setAdding(true); }}
+          disabled={!canCreate || editor.saving || !readCurrent || !!editingTrId}
           title={canCreate ? 'Add Technical Requirement' : 'Requires spec.structured_entity.technical_requirement.create'}
           className={`flex items-center gap-1 text-sm ${canCreate ? 'text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300' : 'text-gray-300 cursor-not-allowed'}`}
         >

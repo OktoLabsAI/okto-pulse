@@ -430,16 +430,14 @@ class CommunitySqlAlchemySpecDependency:
         payload = dict(row.result_payload)
         dependency = _record_from_payload(dict(payload["dependency"]))
         persisted_satisfaction = payload.get("satisfied")
+        if not isinstance(persisted_satisfaction, bool):
+            raise ValueError("spec_dependency_receipt_satisfaction_invalid")
         return SpecDependencyMutationReceipt(
             operation=str(row.operation),
             dependency=dependency,
             source_spec=_snapshot_from_payload(dict(payload["source_spec"])),
             request_digest=str(row.request_digest),
-            satisfied=(
-                persisted_satisfaction
-                if isinstance(persisted_satisfaction, bool)
-                else dependency.resolved_on_create
-            ),
+            satisfied=persisted_satisfaction,
             replayed=True,
         )
 

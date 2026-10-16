@@ -329,33 +329,14 @@ def _credential_from_request(request: Request):
     )
 
 
-def _legacy_profile_requested(
-    fn: Any, args: tuple[Any, ...], kwargs: dict[str, Any]
-) -> bool:
-    """Return true only for an explicit ``profile=legacy`` invocation."""
-
-    try:
-        bound = inspect.signature(fn).bind_partial(*args, **kwargs)
-    except (TypeError, ValueError):
-        return kwargs.get("profile") == "legacy"
-    return bound.arguments.get("profile") == "legacy"
-
-
 def _project_transport_tool_result(
     result: Any,
     *,
     tool_name: str,
-    legacy_profile: bool,
 ) -> _OutcomeToolResult:
     """Perform JSON parsing/projection outside the shared API/MCP event loop."""
 
     outcome = coerce_mcp_tool_outcome(result, tool_name=tool_name)
-    if legacy_profile:
-        return _OutcomeToolResult(
-            content=[TextContent(type="text", text=outcome.legacy_content())],
-            is_error=outcome.is_error,
-        )
-
     structured = outcome.structured_content(tool_name=tool_name)
     text = json.dumps(structured, default=str, separators=(",", ":"))
     return _OutcomeToolResult(
@@ -383,7 +364,6 @@ def _transport_tool(fn: Any, *, tool_name: str):
             _project_transport_tool_result,
             result,
             tool_name=tool_name,
-            legacy_profile=_legacy_profile_requested(fn, args, kwargs),
         )
 
     return invoke
@@ -431,11 +411,6 @@ class _OutcomeValidationMiddleware(Middleware):
             payload={"issues": issues},
             details={"issues": issues},
         )
-        if arguments.get("profile") == "legacy":
-            return _OutcomeToolResult(
-                content=[TextContent(type="text", text=outcome.legacy_content())],
-                is_error=True,
-            )
         structured = outcome.structured_content(tool_name=tool_name)
         return _OutcomeToolResult(
             content=[
@@ -456,6 +431,16 @@ class _OutcomeValidationMiddleware(Middleware):
         message = context.message
         tool_name = getattr(message, "name", None) or "<unknown>"
         arguments = getattr(message, "arguments", None) or {}
+        if arguments.get("profile") == "legacy":
+            return self._validation_result(
+                tool_name=tool_name,
+                arguments=arguments,
+                issues=[{
+                    "loc": ("profile",),
+                    "type": "unsupported_projection",
+                    "msg": "Unsupported projection profile: legacy",
+                }],
+            )
         if (
             tool_name in self._board_id_bounded_tools
             and "board_id" in arguments
@@ -474,6 +459,17 @@ class _OutcomeValidationMiddleware(Middleware):
         try:
             return await call_next(context)
         except ValidationError as exc:
+            if tool_name == "okto_pulse_classify_architecture_candidates":
+                # FastMCP validates typed arguments before invoking the Core
+                # handler. Use its public error contract at this boundary too;
+                # do not serialize Pydantic input/ctx or duplicate Core policy.
+                from okto_pulse.core.inbound.architecture_classification import classification_error
+
+                projected = classification_error(exc)
+                return _project_transport_tool_result(
+                    {"success": False, **projected.payload(), "status_code": projected.status_code},
+                    tool_name=tool_name,
+                )
             issues = exc.errors(include_url=False, include_input=False)
             return self._validation_result(
                 tool_name=tool_name,
@@ -545,11 +541,6 @@ class CommunityMcpAdmissionMiddleware(Middleware):
                 **capacity,
             },
         )
-        if arguments.get("profile") == "legacy":
-            return _OutcomeToolResult(
-                content=[TextContent(type="text", text=outcome.legacy_content())],
-                is_error=True,
-            )
         structured = outcome.structured_content(tool_name=tool_name)
         return _OutcomeToolResult(
             content=[

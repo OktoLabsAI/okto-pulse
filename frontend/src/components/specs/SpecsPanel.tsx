@@ -36,6 +36,9 @@ import { PulseLoader } from '@/components/shared/PulseLoader';
 import { AccessiblePaginator } from '@/components/shared/AccessiblePaginator';
 import { usePersistedPagination } from '@/hooks/usePersistedPagination';
 import { SpecEditionLabel } from './SpecEditionLabel';
+import { useWorkspaceRevisions } from '@/hooks/useWorkspaceRevisions';
+import { hasEffectivePermission, refreshBoardPermissions } from '@/hooks/usePermissions';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
 
 interface SpecsPanelProps {
   boardId: string;
@@ -125,10 +128,59 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
   const { viewMode, setViewMode } = useViewMode('specs', 'list');
   const [groupMode, setGroupModeState] = useState<SpecGroupMode>(() => loadSpecGroupMode(boardId));
   const [parentTitleById, setParentTitleById] = useState<Record<string, string>>({});
+  const [accessLost, setAccessLost] = useState(false);
+  const readGeneration = useRef(0);
+  const syncGeneration = useRef(0);
+  const currentBoardId = useRef(boardId);
+  currentBoardId.current = boardId;
+  const backgroundRefresh = useRef(false);
+
+  const loseAccess = () => {
+    readGeneration.current += 1;
+    syncGeneration.current += 1;
+    setAccessLost(true);
+    setSpecs([]);
+    setParentTitleById({});
+    setTotalFiltered(0);
+    setTotalOverall(0);
+    setSelectedSpecId(null);
+    setCreateOpen(false);
+    setLoading(false);
+  };
+  const syncState = useWorkspaceRevisions({
+    boardId,
+    subjects: [{ subject_type: 'spec_collection', subject_id: boardId }],
+    onAccessLost: loseAccess,
+    onChange: async ({ initial, authorityChanged }) => {
+      if (initial && !accessLost) return;
+      const requestedBoard = boardId;
+      const generation = ++syncGeneration.current;
+      const current = () => currentBoardId.current === requestedBoard && generation === syncGeneration.current;
+      if (authorityChanged) {
+        try {
+          const permissions = await refreshBoardPermissions(boardId);
+          if (!current()) return;
+          if (permissions.board_id !== boardId || !hasEffectivePermission(permissions, 'spec.entity.read')) {
+            loseAccess(); return;
+          }
+        }
+        catch { if (current()) loseAccess(); return; }
+      }
+      if (!current()) return;
+      setAccessLost(false);
+      backgroundRefresh.current = !accessLost;
+      setReloadKey(value => value + 1);
+    },
+  });
+
+  useEffect(() => { setAccessLost(false); }, [boardId]);
 
   useEffect(() => {
     const controller = new AbortController();
-    setLoading(true);
+    const generation = ++readGeneration.current;
+    const current = () => !controller.signal.aborted && generation === readGeneration.current;
+    if (!backgroundRefresh.current) setLoading(true);
+    backgroundRefresh.current = false;
     setLoadError(null);
     void apiRef.current.listSpecsPage(boardId, {
       status: filterStatus || undefined,
@@ -138,16 +190,19 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
       limit: requestIntent.limit,
       signal: controller.signal,
     }).then((page) => {
-      if (controller.signal.aborted) return;
+      if (!current()) return;
       setSpecs(page.items);
       setTotalFiltered(page.total_filtered);
       setTotalOverall(page.total_overall);
     }).catch((error: unknown) => {
-      if (controller.signal.aborted) return;
+      if (!current()) return;
+      if (error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status)) {
+        loseAccess(); return;
+      }
       setLoadError(error instanceof Error ? error.message : 'Failed to load specs');
       toast.error('Failed to load specs');
     }).finally(() => {
-      if (!controller.signal.aborted) setLoading(false);
+      if (current()) setLoading(false);
     });
     return () => controller.abort();
   }, [
@@ -253,6 +308,8 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
     return title;
   };
 
+  if (accessLost) return <p role="alert" className="p-4 text-sm text-red-600 dark:text-red-400">Access to this Board is no longer available.</p>;
+
   return (
     <div className="h-full flex flex-col">
       {/* Toolbar */}
@@ -332,6 +389,10 @@ export function SpecsPanel({ boardId }: SpecsPanelProps) {
         </button>
       </div>
 
+      {(syncState === 'offline' || syncState === 'unavailable') && <p role="status" className="mb-2 text-sm text-amber-700 dark:text-amber-300">
+        Live updates are unavailable. The list may be out of date.{' '}
+        <button type="button" onClick={loadSpecs} className="underline">Refresh</button>
+      </p>}
       {/* Spec list */}
       <div className="min-h-0 flex-1 overflow-y-auto" data-testid={`specs-${viewMode}`}>
         {loading ? (

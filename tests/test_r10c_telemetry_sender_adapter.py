@@ -188,6 +188,9 @@ def _prepare(
         FIXED_NOW + timedelta(hours=expires_in_hours)
     )
     state["next_batch_seq"] = 5
+    state["watermark"] = None
+    state["watermark_event_id"] = None
+    state = fs.write_failure_state(state, fs.FailureState(status=fs.STATUS_OK))
     state_path.write_text(json.dumps(state), encoding="utf-8")
     service.record_event("cli", {"command": "serve"})
     return settings

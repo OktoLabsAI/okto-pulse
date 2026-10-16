@@ -14,8 +14,8 @@ from okto_pulse.core.domain.human_validation_cycle import (
     SubjectEditRequiresDraftError,
 )
 from okto_pulse.core.application.use_cases.architecture_crud import (
-    ArchitecturePropagationLegacyReportCommand,
-    ArchitecturePropagationLegacyReportUseCase,
+    ArchitecturePropagationReportCommand,
+    ArchitecturePropagationReportUseCase,
     CopyArchitectureFromSpecToCardCommand,
     CopyArchitectureFromSpecToCardUseCase,
     CreateArchitectureCommand,
@@ -56,6 +56,7 @@ from okto_pulse.core.models.schemas import (
 )
 from okto_pulse.core.services.architecture import (
     ArchitecturePayloadValidationError,
+    ArchitectureVersionConflict,
     ArchitecturePropagationBlocked,
     CARD_ARCHITECTURE_READ_ONLY_MESSAGE,
     CardArchitectureReadOnlyError,
@@ -73,6 +74,7 @@ class DiagramPayloadUpdate(BaseModel):
     """Payload replacement for an existing diagram."""
 
     payload: dict[str, Any] | list[Any] | str
+    expected_version: int | None = Field(None, ge=1, strict=True)
     format: ArchitectureDiagramFormat | None = None
     change_summary: str | None = None
     architecture_warning_acknowledgement: (
@@ -84,6 +86,7 @@ class ExcalidrawImportRequest(BaseModel):
     """Import an Excalidraw scene into an architecture design."""
 
     title: str = Field(..., min_length=1, max_length=255)
+    expected_version: int | None = Field(None, ge=1, strict=True)
     payload: dict[str, Any]
     diagram_type: ArchitectureDiagramType = "other"
     description: str | None = None
@@ -128,6 +131,8 @@ class ArchitecturePayloadValidationResponse(BaseModel):
 
 
 def _http_error_from_value(error: ValueError) -> HTTPException:
+    if isinstance(error, ArchitectureVersionConflict):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=error.to_payload())
     if isinstance(error, ArchitectureWarningAcknowledgementRequired):
         return HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=error.to_payload()
@@ -345,8 +350,8 @@ async def validate_architecture_payload(
     return result.critique
 
 
-@router.get("/architecture/propagation-legacy-report")
-async def architecture_propagation_legacy_report(
+@router.get("/architecture/propagation-report")
+async def architecture_propagation_report(
     board_id: str = Query(...),
     limit: int = Query(100),
     offset: int = Query(0, ge=0, le=PAGE_OFFSET_MAX),
@@ -355,13 +360,13 @@ async def architecture_propagation_legacy_report(
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """Spec C: read-only, forward-only diagnostic of legacy Architecture Design snapshots
+    """Spec C: read-only, forward-only diagnostic of propagated Architecture Design snapshots
     whose SOURCE is now ineligible for propagation. Bounded/idempotent; never mutates
     snapshots, findings, or SDLC status. Registered before /architecture/{design_id} so the
     static path wins route matching."""
     try:
-        result = await ArchitecturePropagationLegacyReportUseCase().execute(
-            ArchitecturePropagationLegacyReportCommand(
+        result = await ArchitecturePropagationReportUseCase().execute(
+            ArchitecturePropagationReportCommand(
                 board_id,
                 limit=limit,
                 offset=offset,
@@ -430,12 +435,13 @@ async def update_architecture_design(
 @router.delete("/architecture/{design_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_architecture_design(
     design_id: str,
+    expected_version: int | None = Query(None, ge=1),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     try:
         await DeleteArchitectureDesignUseCase().execute(
-            DeleteArchitectureDesignCommand(design_id),
+            DeleteArchitectureDesignCommand(design_id, expected_version=expected_version),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
@@ -448,6 +454,9 @@ async def delete_architecture_design(
         raise _http_error_from_conflict(exc)
     except SubjectEditRequiresDraftError as error:
         raise RESTAdapterContract.http_error(error) from error
+
+    except ValueError as error:
+        raise _http_error_from_value(error) from error
 
 
 @router.get(
@@ -503,6 +512,7 @@ async def update_architecture_diagram_payload(
                 data.payload,
                 data.change_summary,
                 data.architecture_warning_acknowledgement,
+                expected_version=data.expected_version,
             ),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
@@ -548,6 +558,7 @@ async def import_excalidraw_architecture_diagram(
                 data.replace_diagram_id,
                 data.change_summary,
                 data.architecture_warning_acknowledgement,
+                expected_version=data.expected_version,
             ),
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,

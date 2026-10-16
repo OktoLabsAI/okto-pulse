@@ -4,7 +4,6 @@ export const GUIDELINE_ENTITY_TYPES: readonly PolicyEntityType[] = [
   'ideation',
   'refinement',
   'spec',
-  'sprint',
   'card',
   'test_scenario',
 ];

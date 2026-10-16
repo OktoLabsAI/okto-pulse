@@ -3,6 +3,14 @@
  */
 
 import React, { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { notifyReadinessChanged } from '@/lib/readinessEvents';
+import { useNativeReferenceFocus } from '@/components/shared/useNativeReferenceFocus';
+import { CardScenarioReferenceNotice } from './CardScenarioReferenceNotice';
+import { MissingLinkNotice } from '@/components/shared/MissingLinkNotice';
+import { DeliverySelectionEditor } from '@/components/code-traceability/DeliverySelectionEditor';
+import { DeliveryReportBatchEditor } from '@/components/code-traceability/DeliveryReportBatchEditor';
+import { sameDeliveryBasis } from '@/components/code-traceability/deliveryReportDraft';
+import type { CardDeliveryBatchDraft, CardDeliveryReportInput, DeliverySelectionInput } from '@/types/delivery-evidence';
 import { v4 as uuidv4 } from 'uuid';
 import { X, HelpCircle, Trash2, Clock, Link, Unlink, RefreshCw, FileText, FlaskConical, Maximize2, Minimize2, Bug, AlertCircle, Check, Scale, Shield, ShieldCheck, ShieldX, ChevronDown, ChevronUp, CheckCircle, XCircle, GitBranch, Network, Gauge, History, Layers, MessageCircleQuestion, MessageSquare, ListChecks, Target, FolderTree } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -15,9 +23,13 @@ import {
   useColumns,
   useCurrentBoard,
 } from '@/store/dashboard';
-import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec, Sprint, BugRegressionScenarioPreview, BugWorkflowRemediationMessage, AmendmentRevisionListResponse, ValidationEntry, ImpactEvidence, ProjectStructureProjectionResponse } from '@/types';
+import type { Card, CardStatus, CardPriority, Comment, TestScenario, TestScenarioEvidence, BugSeverity, Spec, BugRegressionScenarioPreview, BugWorkflowRemediationMessage, AmendmentRevisionListResponse, ValidationEntry, ImpactEvidence, ProjectStructureProjectionResponse } from '@/types';
 import { CARD_STATUSES, STATUS_LABELS, PRIORITY_LABELS, CARD_PRIORITIES, BUG_SEVERITY_LABELS } from '@/types';
 import { PathBRemediationPanel } from '@/components/kanban/PathBRemediationPanel';
+import { LearningCapturePanel } from '@/components/kanban/LearningCapturePanel';
+import { LearningCaptureSelector } from '@/components/kanban/LearningCaptureSelector';
+import { LearningSubmissionEditor } from '@/components/kanban/LearningSubmissionEditor';
+import type { LearningCaptureSelection, LearningSubmission } from '@/types';
 import {
   ImpactEvidenceEditor,
 } from '@/components/cards/ImpactEvidenceEditor';
@@ -31,13 +43,19 @@ import { MarkdownContent } from '@/components/shared/MarkdownContent';
 import { CancellationDetails, CancellationReasonDialog } from '@/components/shared/CancellationReasonDialog';
 import { ActivityLogList } from '@/components/shared/ActivityLogList';
 import { EvidenceBadge } from '@/components/specs/EvidenceBadge';
+import { VerificationReportDetails } from '@/components/specs/VerificationReportDetails';
 import { ScenarioTypeBadge } from '@/components/specs/ScenarioTypeBadge';
 import { EditableField } from '@/components/shared/EditableField';
 import { openLineageGraph } from '@/components/traceability';
 import {
+  hasEffectivePermission,
   hasPermissionWithState,
+  refreshBoardPermissions,
   usePermissions,
 } from '@/hooks/usePermissions';
+import { useWorkspaceRevisions } from '@/hooks/useWorkspaceRevisions';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
+import { PulseLoader } from '@/components/shared/PulseLoader';
 import { SettingsToggle } from '@/components/board/BoardSettingsForm';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import {
@@ -57,11 +75,11 @@ import type {
 } from '@/components/shared/tabRouting';
 import {
   ImplementationTargetsPanel,
+  CardDeliveryDoDPanel,
   useCodeTraceabilityAuthority,
 } from '@/components/code-traceability';
 import { CardResourcesPanel } from './CardResourcesPanel';
 import {
-  resolveTaskValidationThresholds,
   type ResolvedTaskValidationThresholds,
   type TaskValidationThresholdSource,
 } from './taskValidationThresholds';
@@ -134,7 +152,6 @@ const TEST_EVIDENCE_FIELDS: Array<keyof TestScenarioEvidence> = [
   // must count as "has evidence" for rendering.
   'evidence_class',
   'replay_command',
-  'mcp_replay_manifest',
   'manifest_ref',
   'execution_attestation',
   'manual_checklist_ref',
@@ -143,7 +160,7 @@ const TEST_EVIDENCE_FIELDS: Array<keyof TestScenarioEvidence> = [
 ];
 
 function getScenarioEvidence(scenario: TestScenario): TestScenarioEvidence | null {
-  return scenario.evidence ?? scenario.latest_evidence ?? null;
+  return scenario.evidence ?? null;
 }
 
 function hasScenarioEvidence(scenario: TestScenario): boolean {
@@ -174,10 +191,8 @@ function remediationPathLabel(path: string): string {
       return 'Path A · Reuse eligible scenario';
     case 'path_b_semantic_gap':
       return 'Path B · Semantic gap';
-    case 'path_c_hotfix_lane':
-      return 'Path C · Hotfix lane';
-    case 'standard_sprint':
-      return 'Sprint lane';
+    case 'path_b_amendment_lineage':
+      return 'Path B · Amendment lineage';
     default:
       return 'Workflow guidance';
   }
@@ -232,7 +247,7 @@ function BugWorkflowRemediationPanel({
             </span>
           </div>
           <p className="text-xs mt-1 opacity-90">{remediation.detail}</p>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-3 text-[10px]">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-3 text-[10px]">
             <div className="rounded bg-white/70 dark:bg-black/20 px-2 py-1">
               <span className="block opacity-70">Next action</span>
               <strong>{remediation.next_action}</strong>
@@ -244,10 +259,6 @@ function BugWorkflowRemediationPanel({
             <div className="rounded bg-white/70 dark:bg-black/20 px-2 py-1">
               <span className="block opacity-70">Semantic gap</span>
               <strong>{remediation.semantic_gap_required ? 'yes' : 'no'}</strong>
-            </div>
-            <div className="rounded bg-white/70 dark:bg-black/20 px-2 py-1">
-              <span className="block opacity-70">Hotfix lane</span>
-              <strong>{remediation.hotfix_lane_status}</strong>
             </div>
           </div>
           {primaryAction && (
@@ -321,9 +332,7 @@ interface CardModalProps {
 interface TaskValidationHierarchySnapshot {
   cardId: string;
   specId: string | null;
-  sprintId: string | null;
-  spec: Spec | null;
-  sprint: Sprint | null;
+  config: ResolvedTaskValidationThresholds;
 }
 
 export function CardModal({
@@ -342,7 +351,13 @@ export function CardModal({
   const cardDataGenerationRef = useRef(0);
   const cardStatusRef = useRef<CardStatus | null>(null);
   const isOpen = useIsCardModalOpen();
-  const { closeCardModal, removeCardFromColumn, updateCardInColumn } = useDashboardStore();
+  const modalOrigin = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!isOpen) return;
+    modalOrigin.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    return () => { if (modalOrigin.current?.isConnected) modalOrigin.current.focus(); };
+  }, [isOpen]);
+  const { closeCardModal, openCardModal, removeCardFromColumn, updateCardInColumn, cardModalTarget } = useDashboardStore();
   const columns = useColumns();
   const currentBoard = useCurrentBoard();
 
@@ -351,7 +366,17 @@ export function CardModal({
 
   const [card, setCard] = useState<Card | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [liveRevision, setLiveRevision] = useState(0);
+  const [syncAuthorizing, setSyncAuthorizing] = useState(false);
+  const syncGeneration = useRef(0);
+  const authorizationRequired = useRef(false);
+  const refreshedRevision = useRef(0);
+  const boardIdRef = useRef(boardId);
+  boardIdRef.current = boardId;
   const [activeTab, setActiveTab] = useState<CardModalTab>('details');
+  const nativeReferenceRoot = useRef<HTMLDivElement>(null);
+  useNativeReferenceFocus(nativeReferenceRoot, card?.id === selectedCardId ? cardModalTarget?.focusReference : undefined,
+    `${selectedCardId}:${isOpen}:${isLoading}:${activeTab}`);
   const [testsTab, setTestsTab] = useState<CardTestsTab>('regression');
   const [referencesTab, setReferencesTab] =
     useState<CardReferencesTab>('lineage');
@@ -370,6 +395,7 @@ export function CardModal({
     useState<ProjectStructureProjectionResponse | null>(null);
   const [projectStructureLoading, setProjectStructureLoading] = useState(false);
   const [projectStructureError, setProjectStructureError] = useState<string | null>(null);
+  const projectStructureGeneration = useRef(0);
   const [taskValidationHierarchy, setTaskValidationHierarchy] =
     useState<TaskValidationHierarchySnapshot | null>(null);
   const [taskValidationHierarchyLoading, setTaskValidationHierarchyLoading] =
@@ -389,6 +415,7 @@ export function CardModal({
   const [viewingSpecId, setViewingSpecId] = useState<string | null>(null);
   const [viewingSpecNodeId, setViewingSpecNodeId] = useState<string | null>(null);
   const [specKBsFull, setSpecKBsFull] = useState<{ id: string; title: string; description?: string; content: string; mime_type?: string }[]>([]);
+  const [knowledgeReaderActive, setKnowledgeReaderActive] = useState(false);
   const [showConclusionPrompt, setShowConclusionPrompt] = useState(false);
   const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [conclusionTargetStatus, setConclusionTargetStatus] = useState<CardStatus>('done');
@@ -401,19 +428,32 @@ export function CardModal({
   // AC-16: the 409 impact_evidence_required remediation renders inline and
   // the prompt stays open with its state preserved.
   const [conclusionGateError, setConclusionGateError] = useState<string | null>(null);
+  const [conclusionDeliverySelection, setConclusionDeliverySelection] = useState<DeliverySelectionInput>();
+  const [conclusionSelectionPending, setConclusionSelectionPending] = useState(false);
+  const [conclusionBatchMode, setConclusionBatchMode] = useState(false);
+  const [conclusionBatch, setConclusionBatch] = useState<CardDeliveryBatchDraft>();
+  const conclusionOrigin = useRef<{ cardId: string; status: CardStatus }>();
+  const conclusionReplay = useRef<{ body: string; key: string }>();
+  const learningSubmissionReplay = useRef<{ body: string; key: string }>();
+  const learningReportScope = `${boardId}:${card?.id}:${conclusionTargetStatus}`;
+  const [reportLearning, setReportLearning] = useState<{ scope: string; draft: Omit<LearningSubmission, 'capture_id'> | null; pending: boolean } | null>(null);
+  const onReportLearning = useCallback((draft: Omit<LearningSubmission, 'capture_id'> | null, pending: boolean) => {
+    setReportLearning({ scope: learningReportScope, draft, pending });
+  }, [learningReportScope]);
+  const canAuthorLearning = !perms.isLoading && !perms.error
+    && ['board.read', 'card.entity.read', 'card.entity.context_read', 'card.validation.read',
+      'card.comments.read', 'card.conclusion.read', 'card.tests.read', 'spec.entity.read', 'spec.tests.read',
+      'kg.session.begin', 'kg.session.add_node', 'kg.session.add_edge', 'kg.session.commit', 'card.conclusion.write'].every(perms.has);
+  const reportLearningPending = reportLearning?.scope === learningReportScope && reportLearning.pending;
+  const conclusionSubmitting = useRef(false);
   const taskValidationThresholdsReady = Boolean(
     card
     && currentBoard?.id === card.board_id
     && taskValidationHierarchy?.cardId === card.id
-    && taskValidationHierarchy.specId === (card.spec_id ?? null)
-    && taskValidationHierarchy.sprintId === (card.sprint_id ?? null),
+    && taskValidationHierarchy.specId === (card.spec_id ?? null),
   );
   const taskValidationThresholds = taskValidationThresholdsReady
-    ? resolveTaskValidationThresholds({
-        boardSettings: currentBoard?.settings,
-        spec: taskValidationHierarchy?.spec,
-        sprint: taskValidationHierarchy?.sprint,
-      })
+    ? taskValidationHierarchy!.config
     : null;
   const originTask = card?.origin_task_id
     ? allBoardCards.find((candidate) => candidate.id === card.origin_task_id) || null
@@ -453,13 +493,14 @@ export function CardModal({
     canReadProjectStructure
     && card?.spec_id
     && ['normal', 'test'].includes(card.card_type ?? 'normal')
-    && (
-      projectStructureProjection?.authored
-      || (fullSpec
-        && fullSpec.project_structure !== null
-        && fullSpec.project_structure !== undefined)
-    ),
+    && fullSpec?.id === card.spec_id
+    && fullSpec.project_structure !== null
+    && fullSpec.project_structure !== undefined,
   );
+  const projectStructureActive = showCardProjectStructure && isOpen && card?.id === selectedCardId
+    && activeTab === 'references' && referencesTab === 'project-structure' && !syncAuthorizing;
+  const projectStructureVisible = useRef(projectStructureActive);
+  projectStructureVisible.current = projectStructureActive;
   const canLinkIRTasks = perms.has('spec.integration_requirements.link_task') && canMutateCard('card.link_to.ir');
   const canLinkORTasks = perms.has('spec.observability_requirements.link_task') && canMutateCard('card.link_to.or');
   const canReadTests = perms.has('card.tests.read');
@@ -475,19 +516,21 @@ export function CardModal({
   const canReadActivity = perms.has('card.activity_read');
   const { canReadProjection: canReadCodeTraceability } =
     useCodeTraceabilityAuthority(boardId);
-  const canEditCardFields = canMutateCard('card.entity.edit_fields');
+  const normalContentFrozen = (card?.card_type ?? 'normal') === 'normal'
+    && fullSpec?.id === card?.spec_id && fullSpec?.status === 'done';
+  const canEditCardFields = !normalContentFrozen && canMutateCard('card.entity.edit_fields');
   const canEditBugFields = canMutateCard('card.entity.edit_bug_fields');
-  const canAssignCard = canMutateCard('card.entity.assign');
+  const canAssignCard = !normalContentFrozen && canMutateCard('card.entity.assign');
   const canLinkTests = canMutateCard('card.entity.link_tests');
   const canAskQA = canMutateCard('card.qa.ask');
   const canAnswerQA = canMutateCard('card.qa.answer');
   const canCreateComments = canMutateCard('card.comments.create');
   const canCreateChoiceComments = canMutateCard('card.comments.create_choice');
   const canRespondToChoiceComments = canMutateCard('card.comments.respond_choice');
-  const canUploadAttachments = canMutateCard('card.attachments.upload');
-  const canDeleteAttachments = canMutateCard('card.attachments.delete');
-  const canDeleteCard = canMutateCard('card.entity.delete');
-  const canManageDependencies = canMutateCard('card.entity.manage_dependencies');
+  const canUploadAttachments = !normalContentFrozen && canMutateCard('card.attachments.upload');
+  const canDeleteAttachments = !normalContentFrozen && canMutateCard('card.attachments.delete');
+  const canDeleteCard = !normalContentFrozen && canMutateCard('card.entity.delete');
+  const canManageDependencies = !normalContentFrozen && canMutateCard('card.entity.manage_dependencies');
   const canLinkScenarios = canMutateCard('card.link_to.scenario');
   const canLinkRules = canMutateCard('card.link_to.rule');
   const canLinkContracts = canMutateCard('card.link_to.contract');
@@ -507,6 +550,8 @@ export function CardModal({
   const loadProjectStructureProjection = useCallback(async (
     subject: Pick<Card, 'id' | 'board_id' | 'spec_id' | 'card_type'>,
   ) => {
+    if (!projectStructureVisible.current) return;
+    const generation = ++projectStructureGeneration.current;
     const supportsProjection = Boolean(
       canReadProjectStructure
       && subject.spec_id
@@ -519,6 +564,9 @@ export function CardModal({
       return;
     }
     const requestCardId = subject.id;
+    const isCurrent = () => generation === projectStructureGeneration.current
+      && selectedCardIdRef.current === requestCardId && boardIdRef.current === boardId
+      && projectStructureVisible.current;
     setProjectStructureLoading(true);
     setProjectStructureError(null);
     try {
@@ -526,14 +574,14 @@ export function CardModal({
         subject.board_id || boardId,
         requestCardId,
       );
-      if (selectedCardIdRef.current !== requestCardId) return;
+      if (!isCurrent()) return;
       setProjectStructureProjection(projection);
     } catch {
-      if (selectedCardIdRef.current !== requestCardId) return;
+      if (!isCurrent()) return;
       setProjectStructureProjection(null);
       setProjectStructureError('The project structure projection could not be loaded.');
     } finally {
-      if (selectedCardIdRef.current === requestCardId) {
+      if (isCurrent()) {
         setProjectStructureLoading(false);
       }
     }
@@ -583,6 +631,14 @@ export function CardModal({
     setConclusionDrift(0);
     setConclusionDriftJustification('');
     setConclusionImpactDraft(emptyImpactEvidenceDraft());
+    setConclusionDeliverySelection(undefined);
+    setConclusionSelectionPending(false);
+    setConclusionBatchMode(false);
+    setConclusionBatch(undefined);
+    conclusionOrigin.current = card ? { cardId: card.id, status: card.status } : undefined;
+    conclusionReplay.current = undefined;
+    learningSubmissionReplay.current = undefined;
+    setReportLearning(null);
     setConclusionGateError(null);
   };
 
@@ -593,6 +649,34 @@ export function CardModal({
     if (card.card_type === 'test') return false;
     return ['not_started', 'started', 'in_progress', 'on_hold'].includes(card.status);
   };
+
+  const loseCardAccess = () => {
+    syncGeneration.current += 1;
+    cardLoadGenerationRef.current += 1;
+    cardDataGenerationRef.current += 1;
+    setSyncAuthorizing(false);
+    setCard(null);
+    setFullSpec(null);
+    setParentSpec(null);
+    setSpecKBsFull([]);
+    setDependencies([]);
+    setDependents([]);
+    setSeenStatus({});
+    setBoardMembers([]);
+    setSpecScenarios([]);
+    setSpecRules([]);
+    setSpecContracts([]);
+    setSpecIRs([]);
+    setSpecORs([]);
+    setSpecTRs([]);
+    setShowConclusionPrompt(false);
+    setShowCancelDialog(false);
+    resetConclusionPrompt();
+    closeCardModal();
+    onClose?.();
+  };
+  const loseCardAccessRef = useRef(loseCardAccess);
+  loseCardAccessRef.current = loseCardAccess;
 
   const loadCard = (cardId: string) => {
     const loadGeneration = ++cardLoadGenerationRef.current;
@@ -648,10 +732,7 @@ export function CardModal({
         const specRequest: Promise<Spec | null | undefined> = data.spec_id
           ? api.getSpec(data.spec_id).catch(() => undefined)
           : Promise.resolve(null);
-        const sprintRequest: Promise<Sprint | null | undefined> = data.sprint_id
-          ? api.getSprint(data.sprint_id).catch(() => undefined)
-          : Promise.resolve(null);
-        void Promise.all([specRequest, sprintRequest]).then(([spec, sprint]) => {
+        void specRequest.then((spec) => {
           if (!isCurrentLoad()) return;
 
           if (spec) {
@@ -663,17 +744,6 @@ export function CardModal({
             setSpecIRs(spec.integration_requirements || []);
             setSpecORs(spec.observability_requirements || []);
             setSpecTRs((spec.technical_requirements || []).map((tr: any, i: number) => typeof tr === 'string' ? { id: `tr_legacy_${i}`, text: tr, linked_task_ids: null } : tr));
-            // Knowledge bodies are not part of the threshold authority, but
-            // remain guarded by the same full-load generation.
-            void Promise.all(
-              (spec.knowledge_bases || []).map((kb: any) => api.getSpecKnowledge(spec.id, kb.id).catch(() => null))
-            ).then((kbs) => {
-              if (isCurrentLoad()) {
-                setSpecKBsFull(kbs.filter(Boolean) as any[]);
-              }
-            }).catch(() => {
-              if (isCurrentLoad()) setSpecKBsFull([]);
-            });
           } else {
             setParentSpec(null);
             setFullSpec(null);
@@ -685,26 +755,27 @@ export function CardModal({
             setSpecTRs([]);
             setSpecKBsFull([]);
           }
-          if (spec === undefined || sprint === undefined) {
+          if (spec === undefined || !data.validation_config) {
             setTaskValidationHierarchy(null);
             setTaskValidationHierarchyError(
-              'Could not load the authoritative Spec/Sprint validation thresholds.',
+              'Could not load the authoritative Card validation thresholds.',
             );
           } else {
             setTaskValidationHierarchy({
               cardId: data.id,
               specId: data.spec_id ?? null,
-              sprintId: data.sprint_id ?? null,
-              spec,
-              sprint,
+              config: data.validation_config,
             });
             setTaskValidationHierarchyError(null);
           }
           setTaskValidationHierarchyLoading(false);
         });
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (isCurrentLoad()) {
+          if (error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status)) {
+            loseCardAccessRef.current(); return;
+          }
           setTaskValidationHierarchy(null);
           setTaskValidationHierarchyLoading(false);
           setTaskValidationHierarchyError(
@@ -744,6 +815,31 @@ export function CardModal({
       .catch(() => {});
   };
 
+  // Bodies are needed only by the visible Knowledge picker, not threshold
+  // resolution. A new Spec inventory replaces the previous roots; late results
+  // from a closed pane or another Card never repopulate the current picker.
+  const knowledgeSourceId = fullSpec?.id;
+  const knowledgeSourceInventory = fullSpec?.knowledge_bases;
+  const knowledgeCardSpecId = card?.spec_id;
+  useEffect(() => {
+    if (!canReadKnowledge || !knowledgeSourceId || knowledgeCardSpecId !== knowledgeSourceId) {
+      setSpecKBsFull([]);
+      return;
+    }
+    if (!knowledgeReaderActive || activeTab !== 'resources' || syncAuthorizing) return;
+    let cancelled = false;
+    setSpecKBsFull([]);
+    void Promise.all((knowledgeSourceInventory || []).map(kb =>
+      api.getSpecKnowledge(knowledgeSourceId, kb.id).catch(() => null),
+    )).then(items => {
+      if (!cancelled) setSpecKBsFull(items.filter(item => item !== null).map(item => ({
+        ...item, description: item.description ?? undefined, content: item.content || '',
+      })));
+    });
+    return () => { cancelled = true; };
+  }, [api, canReadKnowledge, selectedCardId, knowledgeCardSpecId, knowledgeSourceId,
+    knowledgeSourceInventory, knowledgeReaderActive, activeTab, syncAuthorizing, liveRevision]);
+
   // Silent refresh — updates card data without showing loading spinner
   const silentRefresh = useCallback((cardId: string) => {
     if (isLoading || taskValidationHierarchyLoading) return;
@@ -755,9 +851,9 @@ export function CardModal({
       .then((data) => {
         if (!isCurrentRefresh()) return;
         const reconciled = withPreservedOpenQACount(data);
-        const subjectChanged =
-          card?.id === data.id
-          && card.updated_at !== data.updated_at;
+        // Reuse the existing modal refresh cycle for external-agent writes.
+        // Verification may change on another Card while this Card stays Done.
+        notifyReadinessChanged();
         const previousStatus = cardStatusRef.current;
         cardStatusRef.current = reconciled.status;
         setCard(reconciled);
@@ -767,9 +863,9 @@ export function CardModal({
         }
         setTaskValidationHierarchyLoading(true);
         setTaskValidationHierarchyError(null);
-        if (subjectChanged) {
-          notePolicySubjectChanged();
-        }
+        // A Spec/policy revision can change allowed actions without changing
+        // the Card's updated_at. Refresh only after an actual invalidation.
+        notePolicySubjectChanged();
         if (data.card_type === 'bug') {
           api.getBugRegressionScenarioCandidates(data.id, data.board_id)
             .then((preview) => {
@@ -804,10 +900,7 @@ export function CardModal({
         const specRequest: Promise<Spec | null | undefined> = data.spec_id
           ? api.getSpec(data.spec_id).catch(() => undefined)
           : Promise.resolve(null);
-        const sprintRequest: Promise<Sprint | null | undefined> = data.sprint_id
-          ? api.getSprint(data.sprint_id).catch(() => undefined)
-          : Promise.resolve(null);
-        void Promise.all([specRequest, sprintRequest]).then(([spec, sprint]) => {
+        void specRequest.then((spec) => {
           if (!isCurrentRefresh()) return;
           if (spec) {
             setParentSpec({ id: spec.id, title: spec.title });
@@ -828,26 +921,27 @@ export function CardModal({
             setSpecORs([]);
             setSpecTRs([]);
           }
-          if (spec === undefined || sprint === undefined) {
+          if (spec === undefined || !data.validation_config) {
             setTaskValidationHierarchy(null);
             setTaskValidationHierarchyError(
-              'Could not refresh the authoritative Spec/Sprint validation thresholds.',
+              'Could not refresh the authoritative Card validation thresholds.',
             );
           } else {
             setTaskValidationHierarchy({
               cardId: data.id,
               specId: data.spec_id ?? null,
-              sprintId: data.sprint_id ?? null,
-              spec,
-              sprint,
+              config: data.validation_config,
             });
             setTaskValidationHierarchyError(null);
           }
           setTaskValidationHierarchyLoading(false);
         });
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (!isCurrentRefresh()) return;
+        if (error instanceof AuthenticatedFetchError && [401, 403, 404].includes(error.status)) {
+          loseCardAccessRef.current(); return;
+        }
         setTaskValidationHierarchy(null);
         setTaskValidationHierarchyLoading(false);
         setTaskValidationHierarchyError(
@@ -872,8 +966,6 @@ export function CardModal({
   }, [
     api,
     canReadAmendmentRevisions,
-    card?.id,
-    card?.updated_at,
     isLoading,
     notePolicySubjectChanged,
     onAuthoritativeStatusChange,
@@ -919,6 +1011,7 @@ export function CardModal({
 
   useEffect(() => {
     if (selectedCardId && isOpen) {
+      if (syncAuthorizing) return;
       loadCard(selectedCardId);
     } else {
       cardLoadGenerationRef.current += 1;
@@ -933,17 +1026,26 @@ export function CardModal({
   }, [selectedCardId, isOpen, canReadAmendmentRevisions, canReadBoardAgents]);
 
   useEffect(() => {
-    if (!card || !isOpen) {
+    if (isOpen && card?.id === selectedCardId && canReadCodeTraceability && cardModalTarget)
+      setActiveTab(cardModalTarget.tab);
+  }, [isOpen, card?.id, selectedCardId, canReadCodeTraceability, cardModalTarget]);
+
+  useEffect(() => {
+    if (!card || !isOpen || !showCardProjectStructure) {
       setProjectStructureProjection(null);
       setProjectStructureError(null);
       setProjectStructureLoading(false);
       return;
     }
-    void loadProjectStructureProjection(card);
+    if (projectStructureActive) void loadProjectStructureProjection(card);
+    return () => { projectStructureGeneration.current += 1; };
   }, [
     card,
     fullSpec?.project_structure_revision,
     isOpen,
+    showCardProjectStructure,
+    projectStructureActive,
+    liveRevision,
     loadProjectStructureProjection,
   ]);
 
@@ -1035,29 +1137,66 @@ export function CardModal({
     validationTab,
   ]);
 
-  // Auto-refresh every 10s while modal is open
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const handleWorkspaceRevision = async ({ initial, authorityChanged }: {
+    initial: boolean; authorityChanged: boolean;
+  }) => {
+      if (initial) return;
+      const requestedCard = selectedCardId;
+      const generation = ++syncGeneration.current;
+      const current = () => generation === syncGeneration.current
+        && selectedCardIdRef.current === requestedCard && boardIdRef.current === boardId;
+      authorizationRequired.current ||= authorityChanged;
+      if (authorizationRequired.current) {
+        cardLoadGenerationRef.current += 1;
+        cardDataGenerationRef.current += 1;
+        // Invalidated loads cannot clear their loading flags in finally.
+        // The authorized revision below queues their replacement explicitly.
+        setIsLoading(false);
+        setTaskValidationHierarchyLoading(false);
+        setSyncAuthorizing(true);
+        try {
+          const effective = await refreshBoardPermissions(boardId);
+          if (!current()) return;
+          if (effective.board_id !== boardId || !hasEffectivePermission(effective, 'card.entity.read')) {
+            loseCardAccessRef.current(); return;
+          }
+        } catch { if (current()) loseCardAccessRef.current(); return; }
+      }
+      if (!current()) return;
+      authorizationRequired.current = false;
+      setSyncAuthorizing(false);
+      setLiveRevision(value => value + 1);
+  };
+
+  const syncState = useWorkspaceRevisions({
+    boardId: isOpen && selectedCardId ? boardId : undefined,
+    subjects: selectedCardId ? [
+      { subject_type: 'card', subject_id: selectedCardId },
+      ...(card?.id === selectedCardId && card.spec_id && perms.has('spec.entity.read')
+        ? [{ subject_type: 'spec' as const, subject_id: card.spec_id }] : []),
+    ] : [],
+    // The linked Spec can lose access while the Card remains readable. Recheck
+    // the Card's own authority; its native refresh still refuses lost Card access.
+    onAccessLost: () => { void handleWorkspaceRevision({ initial: false, authorityChanged: true }); },
+    onChange: handleWorkspaceRevision,
+  });
+
   useEffect(() => {
-    if (
-      selectedCardId
-      && isOpen
-      && !isLoading
-      && !taskValidationHierarchyLoading
-    ) {
-      intervalRef.current = setInterval(() => {
-        silentRefresh(selectedCardId);
-      }, 10000);
-    }
+    if (!selectedCardId || !isOpen || isLoading || taskValidationHierarchyLoading || syncAuthorizing
+      || liveRevision === refreshedRevision.current) return;
+    refreshedRevision.current = liveRevision;
+    silentRefresh(selectedCardId);
+  }, [selectedCardId, isOpen, isLoading, taskValidationHierarchyLoading, syncAuthorizing, liveRevision, silentRefresh]);
+
+  useEffect(() => {
+    authorizationRequired.current = false;
+    setSyncAuthorizing(false);
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      syncGeneration.current += 1;
+      cardLoadGenerationRef.current += 1;
+      cardDataGenerationRef.current += 1;
     };
-  }, [
-    selectedCardId,
-    isOpen,
-    isLoading,
-    silentRefresh,
-    taskValidationHierarchyLoading,
-  ]);
+  }, [boardId, selectedCardId, isOpen]);
 
   const handleRefresh = () => {
     if (selectedCardId) loadCard(selectedCardId);
@@ -1080,13 +1219,16 @@ export function CardModal({
     },
   );
 
-  const handleStatusChange = async (status: CardStatus, conclusion?: string, metrics?: { completeness: number; completeness_justification: string; drift: number; drift_justification: string }, cancellationReason?: string, impactEvidence?: ImpactEvidence): Promise<boolean> => {
-    if (!card || status === card.status) return false;
+  const handleStatusChange = async (status: CardStatus, conclusion?: string, metrics?: { completeness: number; completeness_justification: string; drift: number; drift_justification: string }, cancellationReason?: string, impactEvidence?: ImpactEvidence, deliverySelection?: DeliverySelectionInput, batch?: CardDeliveryBatchDraft): Promise<boolean> => {
+    if (!card || conclusionSubmitting.current || (!batch && status === card.status)) return false;
     // Rejected is consequence-only. Even if a rolling-upgrade server were to
     // project a stale manual edge, the client must never invoke it.
     if (status === 'rejected') return false;
-    if (card.status === 'rejected' && status !== 'in_progress') return false;
-    if (!canMutateCard(`card.move.${card.status}_to_${status}`)) return false;
+    const fromStatus = batch ? conclusionOrigin.current?.status : card.status;
+    if (batch && conclusionOrigin.current?.cardId !== card.id) return false;
+    if (!batch && card.status === 'rejected' && status !== 'in_progress') return false;
+    if (batch ? !hasPermissionWithState(perms.has, `card.move.${fromStatus}_to_${status}`, 'card', fromStatus)
+      : !canMutateCard(`card.move.${card.status}_to_${status}`)) return false;
 
     // ITEM 17: cancelling requires a justification — intercept with the dialog.
     if (status === 'cancelled' && !cancellationReason) {
@@ -1103,9 +1245,47 @@ export function CardModal({
     }
 
     setMovingStatus(status);
+    conclusionSubmitting.current = true;
     policyTransitionAuthority.clearRejection();
     try {
+      if (reportLearningPending && conclusion) throw new Error('Complete or remove the Learning before submitting this report.');
+      let learningSubmission: LearningSubmission | undefined;
+      if (conclusion && card.card_type === 'bug' && reportLearning?.scope === learningReportScope && reportLearning.draft) {
+        if (!canAuthorLearning) throw new Error('Learning authoring permission is unavailable.');
+        const body = JSON.stringify({ boardId, cardId: card.id, status, conclusion, metrics,
+          impactEvidence, deliverySelection, batch, learning: reportLearning.draft });
+        if (learningSubmissionReplay.current?.body !== body) learningSubmissionReplay.current = { body, key: uuidv4() };
+        learningSubmission = { ...reportLearning.draft, capture_id: learningSubmissionReplay.current.key };
+      }
+      if (batch) {
+        if (!card.spec_id || !deliverySelection || !sameDeliveryBasis(batch, deliverySelection)
+          || !batch.entries.length || !conclusion || !metrics
+          || !['started', 'in_progress'].includes(fromStatus ?? '') || !['validation', 'done'].includes(status)) {
+          throw new Error('Refresh and review the delivery selection before submitting this draft.');
+        }
+        const body: CardDeliveryReportInput = {
+          contract_version: 'card-delivery-report/v1', expected_card_status: fromStatus as 'started' | 'in_progress',
+          batch: { ...batch, idempotency_key: '' },
+          report: { status: status as 'validation' | 'done', conclusion, ...metrics,
+            ...(learningSubmission ? { learning_submission: learningSubmission } : {}),
+            ...(impactEvidence ? { impact_evidence: impactEvidence } : {}) },
+          existing_record_ids: deliverySelection.record_ids, reuse_impact: deliverySelection.reuse_impact ?? false,
+        };
+        if (batch.entries.length + body.existing_record_ids.length > 200 || new TextEncoder().encode(JSON.stringify(body)).length > 128 * 1024) {
+          throw new Error('The report exceeds the selected record or size limit. Reduce the draft before submitting.');
+        }
+        const fingerprint = JSON.stringify({ boardId: card.board_id, cardId: card.id, specId: card.spec_id, body });
+        if (conclusionReplay.current?.body !== fingerprint) conclusionReplay.current = { body: fingerprint, key: crypto.randomUUID() };
+        body.batch.idempotency_key = conclusionReplay.current.key;
+        await api.recordCardDeliveryEvidence(card.board_id, card.id, card.spec_id, body);
+        // A failed refresh cannot turn a confirmed commit into a failed submission.
+        try { applyCardUpdate(await api.getCard(card.id)); }
+        catch { toast.error('Report saved. Refresh the card to see its current state.'); }
+        toast.success('Evidence and report saved');
+        return true;
+      }
       const updated = await api.moveCard(card.id, {
+        ...(learningSubmission ? { learning_submission: learningSubmission } : {}),
         status,
         conclusion,
         completeness: metrics?.completeness,
@@ -1114,6 +1294,7 @@ export function CardModal({
         drift_justification: metrics?.drift_justification,
         ...(cancellationReason ? { cancellation_reason: cancellationReason } : {}),
         ...(impactEvidence ? { impact_evidence: impactEvidence } : {}),
+        ...(deliverySelection ? { delivery_selection: deliverySelection } : {}),
       });
       applyCardUpdate(updated);
       if (updated.status === 'cancelled') {
@@ -1155,6 +1336,7 @@ export function CardModal({
       );
       return false;
     } finally {
+      conclusionSubmitting.current = false;
       setMovingStatus(null);
     }
   };
@@ -1265,6 +1447,15 @@ export function CardModal({
             : []
         ),
         ...(
+          canReadCodeTraceability && card.spec_id && ['normal', 'bug', 'test'].includes(card.card_type || 'normal')
+            ? [{
+                id: 'delivery' as const,
+                label: 'Delivery',
+                icon: <ShieldCheck size={14} />,
+              }]
+            : []
+        ),
+        ...(
           canReadTests && ['bug', 'test'].includes(card.card_type || 'normal')
             ? [{
                 id: 'tests' as const,
@@ -1340,8 +1531,13 @@ export function CardModal({
   if (!isOpen) return null;
 
   return (
-    <div className="modal-overlay" onClick={handleClose}>
-      <div className={`modal-content ${expanded ? '!max-w-[95vw] !h-[95vh]' : ''}`} onClick={(e) => e.stopPropagation()}>
+    <div className="modal-overlay" onClick={event => {
+      // Nested dialogs are siblings of the Card content. Their clicks must not
+      // dismiss the Card (and thereby unmount an open Spec or its draft).
+      if (event.target === event.currentTarget) handleClose();
+    }}>
+      {syncAuthorizing && <PulseLoader label="Checking Card access…" />}
+      <div ref={nativeReferenceRoot} style={{ display: syncAuthorizing ? 'none' : undefined }} className={`modal-content ${expanded ? '!max-w-[95vw] !h-[95vh]' : ''}`} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div className="modal-header">
           <div className="flex items-center gap-3 flex-1">
@@ -1377,41 +1573,14 @@ export function CardModal({
                 TEST
               </span>
             )}
-            <h2
-              className={`font-semibold text-lg whitespace-pre-wrap break-words line-clamp-3 rounded px-1 -mx-1 outline-none ${
-                canEditCardFields
-                  ? 'cursor-text hover:bg-gray-100 dark:hover:bg-gray-700 focus:ring-2 focus:ring-blue-400 focus:bg-white dark:focus:bg-gray-700'
-                  : 'cursor-default'
-              }`}
-              contentEditable={!isLoading && !!card && canEditCardFields}
-              suppressContentEditableWarning
-              onBlur={async (e) => {
-                if (!card || !canEditCardFields) return;
-                const newTitle = (e.currentTarget.textContent || '').trim();
-                if (!newTitle || newTitle === card.title) {
-                  e.currentTarget.textContent = card.title;
-                  return;
-                }
-                try {
-                  const updated = await api.updateCard(card.id, { title: newTitle });
-                  applyCardUpdate(updated);
+            <h2 className="font-semibold text-lg whitespace-pre-wrap break-words flex-1 min-w-0">
+              <EditableField value={card?.title || ''} disabled={isLoading || !card || !canEditCardFields}
+                placeholder="Card title" renderView={value => <span>{value}</span>}
+                onSave={async title => {
+                  if (!card || !title) throw new Error('Card title is required.');
+                  applyCardUpdate(await api.updateCard(card.id, { title }));
                   toast.success('Title updated');
-                } catch {
-                  e.currentTarget.textContent = card.title;
-                  toast.error('Failed to update title');
-                }
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); }
-                if (e.key === 'Escape') {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  e.currentTarget.textContent = card?.title || '';
-                  e.currentTarget.blur();
-                }
-              }}
-            >
-              {isLoading ? 'Loading...' : card?.title}
+                }} />
             </h2>
           </div>
           {parentSpec && (
@@ -1469,6 +1638,9 @@ export function CardModal({
         </div>
 
         {/* Body */}
+        {(syncState === 'offline' || syncState === 'unavailable') && <p role="status" className="px-6 py-2 text-sm text-amber-700 dark:text-amber-300">
+          Live updates are unavailable. This Card may be out of date.
+        </p>}
         {isLoading ? (
           <div className="modal-body text-center py-8 text-gray-500 dark:text-gray-400">Loading...</div>
         ) : card ? (
@@ -1487,6 +1659,11 @@ export function CardModal({
             />
 
             <div className="modal-body">
+              {normalContentFrozen && (
+                <p role="status" className="mb-4 text-sm text-amber-700 dark:text-amber-300">
+                  This Spec is Done. Normal task content is locked; use the authorized Spec revision workflow to resume normal work. Reading and collaboration remain available.
+                </p>
+              )}
               {/* Details Tab */}
               <AccessibleTabPanel
                 idBase={`${tabIdBase}-card-${card.id}`}
@@ -1722,6 +1899,8 @@ export function CardModal({
                 >
                   <ImplementationTargetsPanel
                     boardId={card.board_id}
+                    revision={liveRevision}
+                    active={activeTab === 'implementation-targets' && !syncAuthorizing}
                     subjectId={card.id}
                     subjectVersion={card.subject_version ?? 1}
                     specVersion={fullSpec?.version}
@@ -1730,6 +1909,31 @@ export function CardModal({
                       setActiveTab('references');
                       setReferencesTab('dependencies');
                     } : undefined}
+                  />
+                </AccessibleTabPanel>
+              )}
+
+              {canReadCodeTraceability && card.spec_id && ['normal', 'bug', 'test'].includes(card.card_type || 'normal') && (
+                <AccessibleTabPanel
+                  idBase={`${tabIdBase}-card-${card.id}`}
+                  tabId="delivery"
+                  value={activeTab}
+                  mount="lazy-keep"
+                >
+                  <CardDeliveryDoDPanel
+                    active={activeTab === 'delivery' && !syncAuthorizing}
+                    revision={liveRevision}
+                    boardId={card.board_id}
+                    card={{ id: card.id, card_type: card.card_type || 'normal', spec_id: card.spec_id }}
+                    canRecord={perms.has('code_traceability.target.execution_submit')}
+                    canProgress={perms.has('card.conclusion.write')}
+                    canTest={perms.has('spec.tests.execute')}
+                    canWaiver={perms.has('code_traceability.waiver.create')}
+                    onOpenTests={canReadTests && card.card_type === 'test' ? () => setActiveTab('tests') : undefined}
+                    focusDiagnosis={cardModalTarget?.focusDiagnosis}
+                    focusRecordId={cardModalTarget?.recordId}
+                    onOpenReadinessCard={openCardModal}
+                    onChanged={() => { void loadCard(card.id); notifyReadinessChanged(); }}
                   />
                 </AccessibleTabPanel>
               )}
@@ -2245,7 +2449,11 @@ export function CardModal({
                 >
                   <CardResourcesPanel
                     card={card}
+                    revision={liveRevision}
+                    active={activeTab === 'resources' && !syncAuthorizing}
+                    onKnowledgeVisibilityChange={setKnowledgeReaderActive}
                     expanded={expanded}
+                    contentReadOnly={normalContentFrozen}
                     specKnowledgeBases={specKBsFull}
                     canReadMockups={canReadMockups}
                     canReadKnowledge={canReadKnowledge}
@@ -2308,6 +2516,7 @@ export function CardModal({
                   idBase={`${tabIdBase}-card-${card.id}`}
                   tabId="validation"
                   value={activeTab}
+                  mount="lazy-keep"
                 >
                   <div className="space-y-4">
                     <AccessibleTabList
@@ -2348,8 +2557,12 @@ export function CardModal({
                         idBase={`${tabIdBase}-card-${card.id}-validation`}
                         tabId="execution-report"
                         value={validationTab}
+                        mount="lazy-keep"
                       >
                         <ExecutionReportsPanel card={card} />
+                        {card.card_type === 'bug' && card.id === selectedCardId && card.board_id === boardId && (
+                          <LearningCapturePanel boardId={boardId} bugId={card.id} />
+                        )}
                       </AccessibleTabPanel>
                     )}
 
@@ -2360,6 +2573,7 @@ export function CardModal({
                         value={validationTab}
                       >
                         <ValidationsTab
+                          boardId={boardId}
                           card={card}
                           onCardChanged={(updated) => {
                             applyCardUpdate(updated);
@@ -2389,6 +2603,7 @@ export function CardModal({
                         <PolicyCompliancePanel
                           boardId={card.board_id}
                           entityType="card"
+                          presentationMode="subject-version"
                           subjectId={card.id}
                           transitionPreview={policyTransitionAuthority.preview}
                           refreshKey={policyAuthorityRefreshKey}
@@ -2418,7 +2633,7 @@ export function CardModal({
                   tabId="activity"
                   value={activeTab}
                 >
-                  <ActivityTab cardId={card.id} api={api} />
+                  <ActivityTab cardId={card.id} api={api} revision={liveRevision} />
                 </AccessibleTabPanel>
               )}
             </div>
@@ -2517,10 +2732,26 @@ export function CardModal({
                 </div>
               </div>
             </div>
-            <ImpactEvidenceEditor
+            <fieldset disabled={movingStatus !== null} className="min-w-0">
+            {card?.card_type === 'bug' && <LearningSubmissionEditor key={learningReportScope}
+              boardId={boardId} bugId={card.id} canCreate={canAuthorLearning}
+              canReadTargets={!perms.isLoading && !perms.error && perms.has('kg.query.learning_from_bugs')} onChange={onReportLearning} />}
+            {!conclusionDeliverySelection?.reuse_impact && <ImpactEvidenceEditor
               draft={conclusionImpactDraft}
               onChange={setConclusionImpactDraft}
-            />
+            />}
+            {card?.spec_id && <DeliverySelectionEditor key={card.id} boardId={card.board_id} cardId={card.id} specId={card.spec_id} onChange={setConclusionDeliverySelection} onPending={setConclusionSelectionPending} />}
+            {card?.spec_id && ['started', 'in_progress'].includes(conclusionOrigin.current?.status ?? '') && <div className="mt-3 space-y-2">
+              <label><input type="checkbox" checked={conclusionBatchMode} onChange={event => { setConclusionBatchMode(event.target.checked); if (!event.target.checked) setConclusionBatch(undefined); }} /> Save a last batch together with this report</label>
+              {conclusionBatchMode && (!conclusionDeliverySelection
+                ? <p>Enable evidence selection above to prepare the last batch.</p>
+                : <DeliveryReportBatchEditor key={`${card.id}:${card.spec_id}`} boardId={card.board_id}
+                  card={{ id: card.id, card_type: card.card_type || 'normal', spec_id: card.spec_id }}
+                  selection={conclusionDeliverySelection} draft={conclusionBatch} onChange={setConclusionBatch}
+                  canRecord={perms.has('code_traceability.target.execution_submit')} canTest={perms.has('spec.tests.execute')}
+                  canProgress={perms.has('card.conclusion.write')} />)}
+            </div>}
+            </fieldset>
             {conclusionGateError && (
               <p
                 className="mt-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300"
@@ -2530,7 +2761,7 @@ export function CardModal({
               </p>
             )}
             <div className="flex justify-end gap-2 mt-3">
-              <button onClick={() => setShowConclusionPrompt(false)} className="btn btn-secondary text-xs">Cancel</button>
+              <button disabled={movingStatus !== null} onClick={() => setShowConclusionPrompt(false)} className="btn btn-secondary text-xs">Cancel</button>
               <button
                 onClick={async () => {
                   setConclusionGateError(null);
@@ -2539,12 +2770,12 @@ export function CardModal({
                     completeness_justification: conclusionCompletenessJustification.trim(),
                     drift: conclusionDrift,
                     drift_justification: conclusionDriftJustification.trim(),
-                  }, undefined, buildImpactEvidencePayload(conclusionImpactDraft));
+                  }, undefined, conclusionDeliverySelection?.reuse_impact ? undefined : buildImpactEvidencePayload(conclusionImpactDraft), conclusionDeliverySelection, conclusionBatchMode ? conclusionBatch : undefined);
                   // AC-16: only a successful move closes the prompt — a gate
                   // rejection keeps every typed row intact.
                   if (ok) setShowConclusionPrompt(false);
                 }}
-                disabled={!conclusionDraft.trim() || !conclusionCompletenessJustification.trim() || !conclusionDriftJustification.trim()}
+                disabled={movingStatus !== null || reportLearningPending || conclusionSelectionPending || (conclusionBatchMode && (!conclusionBatch?.entries.length || !conclusionDeliverySelection || !sameDeliveryBasis(conclusionBatch, conclusionDeliverySelection))) || !conclusionDraft.trim() || !conclusionCompletenessJustification.trim() || !conclusionDriftJustification.trim()}
                 className={`btn text-xs ${conclusionDraft.trim() && conclusionCompletenessJustification.trim() && conclusionDriftJustification.trim() ? 'btn-primary' : 'btn-secondary opacity-50'}`}
               >
                 Complete & Move to {conclusionTargetLabel}
@@ -2629,6 +2860,8 @@ function CardLineagePanel({
 
   return (
     <div className="space-y-4" data-testid="card-lineage-panel">
+      <CardScenarioReferenceNotice context={card.scenario_reference_context} />
+      <MissingLinkNotice context={card.missing_link_context} />
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
           <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
@@ -2647,14 +2880,6 @@ function CardLineagePanel({
               No parent spec
             </p>
           )}
-        </div>
-        <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
-          <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-            Sprint
-          </p>
-          <p className="mt-1 break-all text-sm font-medium text-gray-800 dark:text-gray-200">
-            {card.sprint_id || 'Not assigned to a sprint'}
-          </p>
         </div>
         <div className="rounded-lg border border-gray-200 p-3 dark:border-gray-700">
           <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
@@ -2781,11 +3006,6 @@ export function ExecutionReportsPanel({ card }: { card: Card }) {
               <p className="text-xs font-semibold text-gray-700 dark:text-gray-200">
                 Execution report #{reports.length - index}
               </p>
-              {report.source === 'task_validation' && (
-                <p className="mt-0.5 text-[10px] text-amber-700 dark:text-amber-300">
-                  Legacy report generated during task validation
-                </p>
-              )}
             </div>
             <span className="text-[10px] text-gray-400">
               {shortId(report.author_id)} ·{' '}
@@ -2841,6 +3061,12 @@ export function ExecutionReportsPanel({ card }: { card: Card }) {
             <Md>{report.text}</Md>
           </div>
 
+          {report.delivery_manifest && <div className="mt-3 rounded border p-3 text-sm">
+            <p>Sealed delivery revision {report.delivery_manifest.delivery_revision} · {report.delivery_manifest.records.length} selected records</p>
+            {report.delivery_manifest.impact_basis && <p>Impact reused from recorded declarations · {report.delivery_manifest.impact_basis.length} source bases</p>}
+            <code className="break-all text-xs">{report.delivery_manifest.sha256}</code>
+            <p>This is the evidence presented with the report; current eligibility is evaluated separately.</p>
+          </div>}
           {report.impact_evidence && (
             <div
               className="mt-4 rounded-lg border border-gray-200 bg-gray-50/60 p-3 dark:border-gray-700 dark:bg-gray-900/20"
@@ -3011,15 +3237,6 @@ export function TestEvidenceTab({ scenarios }: { scenarios: TestScenario[] }) {
                 : null,
               mono: true,
             },
-            {
-              label: 'Legacy MCP manifest',
-              value: typeof evidence?.mcp_replay_manifest === 'string'
-                ? evidence.mcp_replay_manifest
-                : evidence?.mcp_replay_manifest
-                  ? 'embedded object (unverified)'
-                  : null,
-              mono: true,
-            },
             { label: 'Manual checklist', value: evidence?.manual_checklist_ref, mono: true },
             { label: 'Last run', value: formatEvidenceTimestamp(evidence?.last_run_at), mono: false },
             { label: 'Run ID', value: evidence?.test_run_id, mono: true },
@@ -3038,6 +3255,7 @@ export function TestEvidenceTab({ scenarios }: { scenarios: TestScenario[] }) {
                     </span>
                     <ScenarioTypeBadge scenarioType={scenario.scenario_type} />
                     <EvidenceBadge scenario={scenario} />
+                    <VerificationReportDetails evidence={evidence} />
                   </div>
                   <h3 className="mt-2 text-sm font-semibold text-gray-900 dark:text-gray-100 break-words">{scenario.title}</h3>
                   <p className="mt-1 text-xs text-gray-500 dark:text-gray-400 break-words">
@@ -3594,11 +3812,7 @@ function QATab({
 function validationVerdict(
   validation: ValidationEntry,
 ): 'pass' | 'fail' {
-  if (validation.verdict) return validation.verdict;
-  if (validation.outcome) {
-    return validation.outcome === 'success' ? 'pass' : 'fail';
-  }
-  return validation.recommendation === 'approve' ? 'pass' : 'fail';
+  return validation.outcome === 'success' ? 'pass' : 'fail';
 }
 
 function validationMetricStatus(
@@ -3737,6 +3951,7 @@ function ValidationHistoryMetric({
 
 // Validations Tab Component
 function ValidationsTab({
+  boardId,
   card,
   onCardChanged,
   api,
@@ -3750,6 +3965,7 @@ function ValidationsTab({
   reworkBusy,
   onStartRework,
 }: {
+  boardId: string;
   card: Card;
   onCardChanged: (card: Card) => void;
   api: ReturnType<typeof useDashboardApi>;
@@ -3775,6 +3991,19 @@ function ValidationsTab({
   const [submitting, setSubmitting] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const validationIntentRef = useRef({ signature: '', idempotencyKey: '' });
+  const learningPermissions = usePermissions(boardId);
+  const canSelectLearning = !learningPermissions.isLoading && !learningPermissions.error
+    && ['board.read', 'card.entity.read', 'card.entity.context_read', 'card.validation.read',
+      'card.comments.read', 'card.conclusion.read', 'card.tests.read', 'spec.entity.read',
+      'spec.tests.read', 'kg.query.learning_from_bugs'].every(learningPermissions.has);
+  const learningScope = `${boardId}:${card.id}:${card.subject_version}`;
+  const [learningChoice, setLearningChoice] = useState<{ scope: string; value: LearningCaptureSelection } | null>(null);
+  const onLearningChange = useCallback((value: LearningCaptureSelection | null) => {
+    setLearningChoice(value ? { scope: learningScope, value } : null);
+  }, [learningScope]);
+  useEffect(() => {
+    if (!canSelectLearning || recommendation !== 'approve') setLearningChoice(null);
+  }, [canSelectLearning, recommendation]);
   const validations = card.validations || [];
   const latestFailedValidation = [...validations]
     .reverse()
@@ -3828,6 +4057,8 @@ function ValidationsTab({
         drift_justification: driftJustification.trim(),
         general_justification: generalJustification.trim(),
         recommendation,
+        ...(card.card_type === 'bug' && recommendation === 'approve' && canSelectLearning
+          && learningChoice?.scope === learningScope ? { learning_capture: learningChoice.value } : {}),
       };
       const signature = JSON.stringify(request);
       if (
@@ -3880,6 +4111,7 @@ function ValidationsTab({
       setDriftJustification('');
       setGeneralJustification('');
       setRecommendation('approve');
+      setLearningChoice(null);
       validationIntentRef.current = { signature: '', idempotencyKey: '' };
       toast.success('Validation submitted');
     } catch (err) {
@@ -3907,8 +4139,7 @@ function ValidationsTab({
               <p className="mt-1 text-xs text-rose-800 dark:text-rose-200">
                 {card.current_rejection_summary
                   || (rejectionFeedbackValidation
-                  ? rejectionFeedbackValidation.summary
-                    || rejectionFeedbackValidation.general_justification
+                  ? rejectionFeedbackValidation.general_justification
                     || 'The latest Task Validation did not pass.'
                   : 'The latest governed completion attempt did not pass. Review the available validation, policy and activity feedback before rework.')}
               </p>
@@ -4066,6 +4297,11 @@ function ValidationsTab({
             </button>
           </div>
 
+          {card.card_type === 'bug' && recommendation === 'approve' && canSelectLearning && (
+            <LearningCaptureSelector key={learningScope} boardId={boardId} bugId={card.id}
+              disabled={submitting} onChange={onLearningChange} />
+          )}
+
           {/* Submit */}
           <button
             onClick={handleSubmit}
@@ -4140,10 +4376,10 @@ function ValidationsTab({
               const isExpanded = expandedId === v.id;
               const verdict = validationVerdict(v);
               const completenessScore =
-                v.completeness ?? v.estimated_completeness ?? 0;
-              const driftScore = v.drift ?? v.estimated_drift ?? 0;
-              const summary = v.summary || v.general_justification;
-              const evaluatorId = v.evaluator_id || v.reviewer_id;
+                v.estimated_completeness ?? 0;
+              const driftScore = v.estimated_drift ?? 0;
+              const summary = v.general_justification;
+              const evaluatorId = v.reviewer_id;
               return (
                 <div key={v.id} className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
                   <div
@@ -4281,17 +4517,19 @@ function ValidationsTab({
 }
 
 // Activity Tab Component
-function ActivityTab({ cardId, api }: { cardId: string; api: ReturnType<typeof useDashboardApi> }) {
+function ActivityTab({ cardId, api, revision }: { cardId: string; api: ReturnType<typeof useDashboardApi>; revision: number }) {
   const [logs, setLogs] = useState<ActivityLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
     setLoading(true);
     api.getCardActivity(cardId)
-      .then(setLogs)
-      .catch(() => toast.error('Failed to load activity'))
-      .finally(() => setLoading(false));
-  }, [cardId]);
+      .then(value => { if (!cancelled) setLogs(value); })
+      .catch(() => { if (!cancelled) { setLogs([]); toast.error('Failed to load activity'); } })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [api, cardId, revision]);
 
   return <ActivityLogList entries={logs} loading={loading} />;
 }

@@ -1,0 +1,139 @@
+- generic [ref=e2]:
+  - dialog [ref=e329]:
+    - generic [ref=e330]:
+      - banner [ref=e331]:
+        - generic [ref=e332]: 01 / 04 · Onboarding
+        - generic [ref=e333]:
+          - button "Switch to dark theme" [ref=e334] [cursor=pointer]
+          - button "Close onboarding" [ref=e337] [cursor=pointer]
+      - main [ref=e341]:
+        - generic [ref=e342]:
+          - generic [ref=e343]: OktoLabs · Product no. 01
+          - heading "Welcome to Okto Pulse" [level=1] [ref=e344]
+          - paragraph [ref=e345]: Spec-driven project management for the Agentic Development Life Cycle — where humans and AI agents plan, refine, and ship together on the same board.
+          - generic [ref=e346]: ADLC · Ideation → Refinement → Spec → Tasks
+      - contentinfo [ref=e348]:
+        - tablist "Slide indicator" [ref=e349]:
+          - tab "Slide 1 (current)" [selected] [ref=e350]
+          - tab "Slide 2" [ref=e351]
+          - tab "Slide 3" [ref=e352]
+          - tab "Slide 4" [ref=e353]
+        - button "Next →" [active] [ref=e355] [cursor=pointer]
+      - status [ref=e356]: "Slide 1 of 4: Welcome to Okto Pulse"
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - generic [ref=e5]:
+        - generic [ref=e6]:
+          - button "Hide sidebar" [ref=e7] [cursor=pointer]
+          - img "Okto Pulse" [ref=e12]
+          - generic [ref=e357]: / My Board
+        - generic [ref=e358]:
+          - button "Refresh board" [ref=e359] [cursor=pointer]
+          - button [ref=e366] [cursor=pointer]
+    - generic [ref=e13]:
+      - complementary [ref=e14]:
+        - generic [ref=e15]:
+          - generic [ref=e17]:
+            - heading "Boards" [level=2] [ref=e18]
+            - button "New board" [ref=e19] [cursor=pointer]
+          - navigation [ref=e21]:
+            - generic [ref=e22]:
+              - heading "My Boards" [level=3] [ref=e23]
+              - list [ref=e370]:
+                - listitem [ref=e371]:
+                  - button "My Board" [ref=e372] [cursor=pointer]
+      - main [ref=e26]:
+        - group "Board views" [ref=e379]:
+          - button "Stories" [pressed] [ref=e380] [cursor=pointer]
+          - button "Ideations" [ref=e384] [cursor=pointer]
+          - button "Refinements" [ref=e387] [cursor=pointer]
+          - button "Specs" [ref=e392] [cursor=pointer]
+          - button "Tasks" [ref=e397] [cursor=pointer]
+        - generic [ref=e404]:
+          - generic [ref=e405]:
+            - generic [ref=e406]:
+              - heading "Stories" [level=2] [ref=e407]
+              - generic [ref=e408]: (4 of 4)
+            - generic [ref=e409]:
+              - textbox "Search stories..." [ref=e411]
+              - group "View mode" [ref=e412]:
+                - button "List view" [pressed] [ref=e413] [cursor=pointer]
+                - button "Grid view" [ref=e415] [cursor=pointer]
+              - button "New Story" [ref=e421] [cursor=pointer]
+          - generic [ref=e423]:
+            - button "All" [ref=e424] [cursor=pointer]
+            - button "Draft" [ref=e425] [cursor=pointer]
+            - button "Triage" [ref=e426] [cursor=pointer]
+            - button "Ready" [ref=e427] [cursor=pointer]
+            - button "Converted" [ref=e428] [cursor=pointer]
+            - button "Show archived" [ref=e429] [cursor=pointer]
+          - generic [ref=e430]:
+            - complementary [ref=e431]:
+              - generic [ref=e432]:
+                - generic [ref=e433]: Topics
+                - button "New Topic" [ref=e438] [cursor=pointer]
+              - generic [ref=e440]:
+                - button "All topics 4" [ref=e441] [cursor=pointer]:
+                  - generic [ref=e442]: All topics
+                  - generic [ref=e443]: "4"
+                - generic [ref=e444]:
+                  - button "Mock — Completude dos cards 4" [ref=e445] [cursor=pointer]:
+                    - generic [ref=e446]: Mock — Completude dos cards
+                    - generic [ref=e447]: "4"
+                  - 'button "Topic actions: Mock — Completude dos cards" [ref=e448] [cursor=pointer]'
+            - generic [ref=e453]:
+              - generic [ref=e454]:
+                - generic [ref=e457] [cursor=pointer]:
+                  - generic [ref=e458]:
+                    - generic [ref=e459]: Converted
+                    - generic [ref=e460]: Mock — Completude dos cards
+                  - heading "H01 — Consultar itens fictícios" [level=3] [ref=e461]
+                  - paragraph [ref=e462]: "Como pessoa testando o mock, quero consultar uma lista fixa e identificar quando ela está vazia, para encontrar o que está disponível sem confundir lista vazia com erro. Obrigações planejadas: listar três itens sintéticos; apresentar estado vazio. Cenário inicial: ainda sem prova…"
+                  - generic [ref=e463]:
+                    - generic [ref=e464]: "As: Pessoa testando a lista fictícia"
+                    - generic [ref=e465]: "Want: consultar uma lista fixa e identificar quando ela está vazia"
+                    - generic [ref=e466]: "So: encontrar o que está disponível sem confundir lista vazia com erro"
+                - generic [ref=e475] [cursor=pointer]:
+                  - generic [ref=e476]:
+                    - generic [ref=e477]: Converted
+                    - generic [ref=e478]: Mock — Completude dos cards
+                  - heading "H03 — Marcar e desmarcar item" [level=3] [ref=e479]
+                  - paragraph [ref=e480]: "Como pessoa testando o mock, quero marcar um item como comprado e desfazer a marcação, para acompanhar a lista sem perder o item original. Obrigações planejadas: marcar; desmarcar. Marco: ambas implementadas com verificação pendente, esperado 100% / 50%. Cenário planejado; nenhum…"
+                  - generic [ref=e481]:
+                    - generic [ref=e482]: "As: Pessoa testando a lista fictícia"
+                    - generic [ref=e483]: "Want: marcar um item como comprado e desfazer a marcação"
+                    - generic [ref=e484]: "So: acompanhar a lista sem perder o item original"
+                - generic [ref=e493] [cursor=pointer]:
+                  - generic [ref=e494]:
+                    - generic [ref=e495]: Converted
+                    - generic [ref=e496]: Mock — Completude dos cards
+                  - heading "H02 — Adicionar item ao mock" [level=3] [ref=e497]
+                  - paragraph [ref=e498]: "Como pessoa testando o mock, quero adicionar um item válido e receber uma mensagem para nome vazio, para evitar itens inválidos e verificar o que foi adicionado. Obrigações planejadas: adicionar nome válido; recusar nome vazio. Marco intermediário: apenas uma implementação compro…"
+                  - generic [ref=e499]:
+                    - generic [ref=e500]: "As: Pessoa testando a lista fictícia"
+                    - generic [ref=e501]: "Want: adicionar um item válido e receber uma mensagem para nome vazio"
+                    - generic [ref=e502]: "So: evitar itens inválidos e verificar o que foi adicionado"
+                - generic [ref=e511] [cursor=pointer]:
+                  - generic [ref=e512]:
+                    - generic [ref=e513]: Converted
+                    - generic [ref=e514]: Mock — Completude dos cards
+                  - heading "H04 — Filtrar itens pendentes" [level=3] [ref=e515]
+                  - paragraph [ref=e516]: "Como pessoa testando o mock, quero ver apenas itens pendentes e voltar à lista completa, para distinguir pendências dos itens já comprados. Obrigações planejadas: filtro de pendentes; restauração da lista completa. Marcos: testes autenticados antes de Done, esperado 100% / 80%; a…"
+                  - generic [ref=e517]:
+                    - generic [ref=e518]: "As: Pessoa testando a lista fictícia"
+                    - generic [ref=e519]: "Want: ver apenas itens pendentes e voltar à lista completa"
+                    - generic [ref=e520]: "So: distinguir pendências dos itens já comprados"
+              - generic [ref=e527]:
+                - status [ref=e528]: Showing 1–4 of 4 matching. 4 overall. Page 1 of 1.
+                - generic [ref=e529]:
+                  - generic [ref=e530]:
+                    - generic [ref=e531]: Items per page
+                    - combobox "Items per page" [ref=e532]:
+                      - option "25" [selected]
+                      - option "50"
+                      - option "100"
+                  - navigation "Stories pagination" [ref=e533]:
+                    - generic [ref=e534]:
+                      - button "Previous page" [disabled] [ref=e535]: Previous
+                      - button "Page 1" [disabled] [ref=e536]: "1"
+                      - button "Next page" [disabled] [ref=e537]: Next

@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from okto_pulse.community.api import boards as boards_api
 from okto_pulse.community.api import cards as cards_api
 from okto_pulse.community.api import refinements as refinements_api
+from okto_pulse.community.api import ideations as ideations_api
 from okto_pulse.core.application.use_cases import EntityNotFoundError
 from okto_pulse.core.domain.knowledge_selection import (
     KnowledgeAssignmentState,
@@ -19,6 +20,7 @@ from okto_pulse.core.domain.knowledge_selection import (
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.models import CardCreate
 from okto_pulse.core.models.knowledge_propagation import (
+    DeriveIdeationSpecRequest,
     DeriveSpecKnowledgeRequest,
     KnowledgeAssignmentReplaceRequest,
 )
@@ -45,11 +47,13 @@ class _RequestWithBody:
 def test_openapi_publishes_all_selective_propagation_rest_surfaces() -> None:
     app = FastAPI()
     app.include_router(refinements_api.router, prefix="/api/v1")
+    app.include_router(ideations_api.router, prefix="/api/v1")
     app.include_router(boards_api.router, prefix="/api/v1/boards")
     app.include_router(cards_api.router, prefix="/api/v1/cards")
 
     paths = app.openapi()["paths"]
     assert "/api/v1/refinements/{refinement_id}/derive-spec" in paths
+    assert "/api/v1/ideations/{ideation_id}/derive-spec" in paths
     assert "/api/v1/boards/{board_id}/cards" in paths
     assignment_path = "/api/v1/cards/{card_id}/knowledge-assignments"
     assert set(paths[assignment_path]) >= {"get", "put"}
@@ -62,43 +66,48 @@ def test_openapi_publishes_all_selective_propagation_rest_surfaces() -> None:
 
 
 @pytest.mark.asyncio
-async def test_refinement_derive_without_body_stays_on_v1(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    spec = object()
-    seen: dict[str, Any] = {}
+async def test_ideation_derive_uses_native_receipt_and_preserves_delivery_context(monkeypatch):
+    mutation = object()
+    factory = object()
+    data = DeriveIdeationSpecRequest(delivery_context="greenfield")
+    async def execute(_self, command, **kwargs):
+        assert command.ideation_id == "ideation-1"
+        assert command.data is data
+        assert command.data.knowledge_propagation.selection_state is KnowledgeSelectionState.OMITTED
+        return SimpleNamespace(knowledge_mutation=mutation)
+    async def retry(**kwargs):
+        assert kwargs["uow_factory"] is factory
+        return await kwargs["operation"](kwargs["uow"])
+    monkeypatch.setattr(ideations_api.DeriveSpecUseCase, "execute", execute)
+    monkeypatch.setattr(ideations_api, "get_unit_of_work_factory", lambda request: factory)
+    monkeypatch.setattr(ideations_api, "execute_knowledge_creation_with_one_retry", retry)
+    monkeypatch.setattr(ideations_api, "project_derive_spec_response", lambda value: value)
+    assert await ideations_api.derive_spec(
+        "ideation-1", request=object(), data=data, user_id="user-1", uow=object(),
+    ) is mutation
+    with pytest.raises(ValueError, match="delivery_context"):
+        DeriveIdeationSpecRequest()
 
-    async def execute(_self: Any, command: Any, **kwargs: Any) -> Any:
-        seen["command"] = command
-        seen["uow"] = kwargs["uow"]
-        return SimpleNamespace(spec=spec, knowledge_mutation=None)
 
-    def unexpected_factory(_request: Any) -> Any:
-        raise AssertionError("v1 must not resolve the bounded-retry factory")
-
-    monkeypatch.setattr(
-        refinements_api.DeriveSpecFromRefinementUseCase,
-        "execute",
-        execute,
-    )
-    monkeypatch.setattr(
-        refinements_api,
-        "get_unit_of_work_factory",
-        unexpected_factory,
-    )
-    uow = object()
-
+@pytest.mark.asyncio
+async def test_refinement_derive_without_body_uses_native_omitted_selection(monkeypatch):
+    mutation = object()
+    factory = object()
+    async def execute(_self, command, **kwargs):
+        assert command.knowledge_propagation.selection_state is KnowledgeSelectionState.OMITTED
+        assert command.knowledge_propagation.knowledge_ids == []
+        return SimpleNamespace(knowledge_mutation=mutation)
+    async def retry(**kwargs):
+        assert kwargs["uow_factory"] is factory
+        return await kwargs["operation"](kwargs["uow"])
+    monkeypatch.setattr(refinements_api.DeriveSpecFromRefinementUseCase, "execute", execute)
+    monkeypatch.setattr(refinements_api, "get_unit_of_work_factory", lambda request: factory)
+    monkeypatch.setattr(refinements_api, "execute_knowledge_creation_with_one_retry", retry)
+    monkeypatch.setattr(refinements_api, "project_derive_spec_response", lambda value: value)
     result = await refinements_api.derive_spec(
-        "ref-1",
-        request=object(),  # type: ignore[arg-type]
-        data=None,
-        user_id="user-1",
-        uow=uow,  # type: ignore[arg-type]
+        "ref-1", request=object(), data=None, user_id="user-1", uow=object(),
     )
-
-    assert result is spec
-    assert seen["uow"] is uow
-    assert seen["command"].knowledge_propagation is None
+    assert result is mutation
 
 
 @pytest.mark.asyncio
@@ -180,98 +189,37 @@ async def test_refinement_derive_v2_uses_bounded_retry_and_receipt_projection(
     assert seen["command"].knowledge_propagation is data.knowledge_propagation
 
 
-@pytest.mark.asyncio
-async def test_refinement_derive_rejects_legacy_and_v2_before_target(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def unexpected_execute(*_args: Any, **_kwargs: Any) -> Any:
-        raise AssertionError("a conflicting request must not create a target")
-
-    monkeypatch.setattr(
-        refinements_api.DeriveSpecFromRefinementUseCase,
-        "execute",
-        unexpected_execute,
-    )
-    data = DeriveSpecKnowledgeRequest(
-        knowledge_propagation=_v2_envelope(),
-        kb_ids=["kb-legacy"],
-    )
-
-    response = await refinements_api.derive_spec(
-        "ref-1",
-        request=object(),  # type: ignore[arg-type]
-        data=data,
-        user_id="user-1",
-        uow=object(),  # type: ignore[arg-type]
-    )
-
-    assert response.status_code == 422
-    assert b'"code":"conflicting_propagation_parameters"' in response.body
+def test_refinement_request_rejects_removed_selector():
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        DeriveSpecKnowledgeRequest(knowledge_propagation=_v2_envelope(), kb_ids=["kb-old"])
 
 
 @pytest.mark.asyncio
-async def test_board_card_create_without_envelope_stays_on_v1(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    card = object()
-
-    async def execute(_self: Any, command: Any, **_kwargs: Any) -> Any:
-        assert command.data.knowledge_propagation is None
-        return SimpleNamespace(card=card, knowledge_mutation=None)
-
-    monkeypatch.setattr(
-        boards_api.CreateCardInBoardUseCase,
-        "execute",
-        execute,
-    )
-    monkeypatch.setattr(
-        boards_api,
-        "get_unit_of_work_factory",
-        lambda _request: (_ for _ in ()).throw(
-            AssertionError("v1 must not resolve the bounded-retry factory")
-        ),
-    )
-
+async def test_board_card_create_without_envelope_uses_native_omitted_selection(monkeypatch):
+    mutation = object()
+    factory = object()
+    async def execute(_self, command, **kwargs):
+        assert command.data.knowledge_propagation.selection_state is KnowledgeSelectionState.OMITTED
+        assert command.data.knowledge_propagation.knowledge_ids == []
+        return SimpleNamespace(knowledge_mutation=mutation)
+    async def retry(**kwargs):
+        assert kwargs["uow_factory"] is factory
+        return await kwargs["operation"](kwargs["uow"])
+    monkeypatch.setattr(boards_api.CreateCardInBoardUseCase, "execute", execute)
+    monkeypatch.setattr(boards_api, "get_unit_of_work_factory", lambda request: factory)
+    monkeypatch.setattr(boards_api, "execute_knowledge_creation_with_one_retry", retry)
+    monkeypatch.setattr(boards_api, "project_card_create_response", lambda value: value)
     result = await boards_api.create_card(
-        "board-1",
-        request=object(),  # type: ignore[arg-type]
-        data=CardCreate(title="legacy"),
-        principal=Principal(
-            "user-1", realm_id=LOCAL_REALM_ID, actor_kind="human"
-        ),
-        uow=object(),  # type: ignore[arg-type]
+        "board-1", request=object(), data=CardCreate(title="Native omitted"),
+        principal=Principal("user-1", realm_id=LOCAL_REALM_ID, actor_kind="human"),
+        uow=object(),
     )
+    assert result is mutation
 
-    assert result is card
 
-
-@pytest.mark.asyncio
-async def test_board_card_create_rejects_explicit_null_field_before_target(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def unexpected_execute(*_args: Any, **_kwargs: Any) -> Any:
-        raise AssertionError("explicit null must not enter v1 or create a target")
-
-    monkeypatch.setattr(
-        boards_api.CreateCardInBoardUseCase,
-        "execute",
-        unexpected_execute,
-    )
-    data = CardCreate(title="invalid null", knowledge_propagation=None)
-    assert "knowledge_propagation" in data.model_fields_set
-
-    response = await boards_api.create_card(
-        "board-1",
-        request=object(),  # type: ignore[arg-type]
-        data=data,
-        principal=Principal(
-            "user-1", realm_id=LOCAL_REALM_ID, actor_kind="human"
-        ),
-        uow=object(),  # type: ignore[arg-type]
-    )
-
-    assert response.status_code == 422
-    assert b'"code":"knowledge_propagation_envelope_required"' in response.body
+def test_card_create_request_rejects_explicit_null():
+    with pytest.raises(ValueError, match="knowledge_propagation"):
+        CardCreate(title="invalid null", knowledge_propagation=None)
 
 
 @pytest.mark.asyncio
@@ -366,15 +314,11 @@ async def test_card_assignment_get_projects_current_v2_selection(
                     "target_id": "card-1",
                 },
                 "scope_revision": 7,
-                "v2_active": True,
                 "selection_state": KnowledgeSelectionState.EXPLICIT_IDS,
-                "v2_activated_at": "2026-07-23T12:00:00+00:00",
                 "resolved_assignments": [],
                 "effective_assignment_ids": ["assignment-1"],
-                "effective_legacy_attachments": [],
                 "effective_local_attachments": [],
                 "history_assignments": [],
-                "history_legacy_attachments": [],
                 "tombstones": [],
                 "snapshots": [],
                 "effective_count": 1,

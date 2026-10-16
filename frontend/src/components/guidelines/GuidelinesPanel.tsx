@@ -639,7 +639,7 @@ export function GuidelinesPanel({ boardId, onClose }: GuidelinesPanelProps) {
     .map((candidate) => ({
       guidelineId: candidate.guideline_id,
       title: candidate.title,
-      semanticVersion: candidate.semantic_version,
+      semanticVersion: candidate.head_revision.semantic_version,
     }));
 
   // ==================== SHARED RENDERERS ====================

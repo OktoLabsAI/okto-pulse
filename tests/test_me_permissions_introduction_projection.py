@@ -43,7 +43,7 @@ async def test_me_permissions_projects_every_current_core_introduction(
     )
 
     authorities = response.introduced_historical_authorities
-    assert authorities["sprint.tasks.assign"] == "sprint.entity.assign"
+    assert not any(leaf.startswith("sprint.") for leaf in authorities)
     assert (
         authorities["ideation.move.review_to_approved"]
         == "ideation.entity.read"

@@ -18,6 +18,8 @@ concurrent download does not starve a lightweight control route.
 
 from __future__ import annotations
 
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+
 import asyncio
 import os
 import time
@@ -42,6 +44,8 @@ from okto_pulse.community.api.auth_deps import require_principal, require_user
 from okto_pulse.core.infra.database import get_db, get_session_factory
 from okto_pulse.core.infra.storage import StorageProvider, configure_storage
 from okto_pulse.core.runtime_registry import register_unit_of_work_factory
+from okto_pulse.core.ports.relational_application import register_relational_application_adapter
+from okto_pulse.community.adapters.relational_application import CommunityRelationalApplicationAdapter
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID
 from okto_pulse.core.ports.authentication import Principal
 
@@ -72,6 +76,7 @@ def env(tmp_path):
         _db_mod.create_database(f"sqlite+aiosqlite:///{tmp_path / 'r02_imp2.db'}")
         register_community_relational_schema_lifecycle()
         await _db_mod.init_db()
+        register_relational_application_adapter(CommunityRelationalApplicationAdapter())
         register_unit_of_work_factory(
             build_community_unit_of_work_factory(get_session_factory())
         )
@@ -140,7 +145,10 @@ def _seed_board_card() -> tuple[str, str]:
                     realm_id=LOCAL_REALM_ID,
                 )
             )
-            db.add(Spec(id=sid, board_id=bid, title="r02i2-spec", created_by=USER))
+            db.add(Spec(architecture_adoption=ArchitectureAdoptionScope(
+                board_id=bid, spec_id=sid, adopted_in_edition=1,
+                actor_id=USER, inherited_resource_ids=(),
+            ).model_dump(mode="json"), id=sid, board_id=bid, title="r02i2-spec", created_by=USER))
             db.add(
                 Card(
                     id=cid,

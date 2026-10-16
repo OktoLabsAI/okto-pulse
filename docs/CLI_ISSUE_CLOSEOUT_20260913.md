@@ -1,5 +1,11 @@
 # CLI issue closeout — September 13, 2026
 
+Historical checkpoint. The v0.4.0 simplification removes the `reset` command
+and the `kg` group, including their exclusive CLI implementations/tests. The
+reset and schema-migration sections below record prior
+behavior and qualification, not a supported operation. Current commands are
+listed in the [README](../README.md).
+
 Scope: Community issues [#78](https://github.com/OktoLabsAI/okto-pulse/issues/78),
 [#79](https://github.com/OktoLabsAI/okto-pulse/issues/79),
 [#80](https://github.com/OktoLabsAI/okto-pulse/issues/80),

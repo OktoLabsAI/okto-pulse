@@ -20,6 +20,9 @@ from okto_pulse.community.adapters.board_source_reader import (
 from okto_pulse.community.adapters.sqlalchemy_consolidation import (
     CommunitySqlAlchemyConsolidationPersistence,
 )
+from okto_pulse.community.adapters.sqlalchemy_kg_cognitive_source import (
+    CommunitySqlAlchemyCognitiveSourceStore,
+)
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Base,
     ConsolidationQueue,
@@ -27,7 +30,10 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 from okto_pulse.core.application.processors.consolidation import (
     _run_deterministic_worker,
 )
-from okto_pulse.core.kg.rebuild_sources import RebuildSourceEnumerator
+from okto_pulse.core.kg.rebuild_sources import (
+    RebuildSourceEnumerator,
+    cognitive_durable_digest_from_rows,
+)
 
 
 NOW = datetime(2026, 8, 9, 18, 0, tzinfo=timezone.utc)
@@ -40,56 +46,67 @@ TRACEABILITY_TYPES = {
 }
 
 
-async def seed_complete_traceability_source(connection) -> None:
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+
+
+async def seed_complete_traceability_source(
+    connection, *, board_id="board-1", spec_id="spec-1", card_id="card-1",
+    requirement_id="fr-1", include_parents=True, now=NOW, link_spec_version=1,
+) -> None:
     tables = Base.metadata.tables
-    await connection.execute(
-        tables["boards"].insert(),
-        {
-            "id": "board-1",
-            "name": "Traceability board",
-            "owner_id": "owner-1",
-            "realm_id": "local",
-        },
-    )
-    await connection.execute(
-        tables["specs"].insert(),
-        {
-            "id": "spec-1",
-            "board_id": "board-1",
-            "title": "Traceability spec",
-            "description": "A deterministic rebuild fixture.",
-            "functional_requirements": [
-                {
-                    "id": "fr-1",
-                    "title": "FR-1",
-                    "text": "Persist accepted Code Evidence lineage.",
-                }
-            ],
-            "status": "done",
-            "version": 1,
-            "created_by": "owner-1",
-        },
-    )
-    await connection.execute(
-        tables["cards"].insert(),
-        {
-            "id": "card-1",
-            "board_id": "board-1",
-            "spec_id": "spec-1",
-            "title": "Implement traceability",
-            "description": "Use only agent-submitted metadata.",
-            "status": "not_started",
-            "position": 0,
-            "created_by": "owner-1",
-        },
-    )
+    if include_parents:
+        await connection.execute(
+            tables["boards"].insert(),
+            {
+                "id": board_id,
+                "name": "Traceability board",
+                "owner_id": "owner-1",
+                "realm_id": "local",
+            },
+        )
+        await connection.execute(
+            tables["specs"].insert(),
+            {
+                "id": spec_id,
+                "board_id": board_id,
+                "title": "Traceability spec",
+                "architecture_adoption": ArchitectureAdoptionScope(
+                    board_id=board_id, spec_id=spec_id, adopted_in_edition=1,
+                    actor_id="owner-1", inherited_resource_ids=(),
+                ).model_dump(mode="json"),
+                "description": "A deterministic rebuild fixture.",
+                "functional_requirements": [
+                    {
+                        "id": requirement_id,
+                        "title": "FR-1",
+                        "text": "Persist accepted Code Evidence lineage.",
+                    }
+                ],
+                "status": "done",
+                "version": 1,
+                "created_by": "owner-1",
+            },
+        )
+        await connection.execute(
+            tables["cards"].insert(),
+            {
+                "id": card_id,
+                "board_id": board_id,
+                "spec_id": spec_id,
+                "title": "Implement traceability",
+                "description": "Use only agent-submitted metadata.",
+                "status": "not_started",
+                "position": 0,
+                "created_by": "owner-1",
+            },
+        )
     await connection.execute(
         tables["code_investigation_requests"].insert(),
         {
             "id": "request-1",
-            "board_id": "board-1",
+            "board_id": board_id,
             "subject_type": "card",
-            "subject_id": "card-1",
+            "subject_id": card_id,
             "subject_version": 1,
             "issued_to_actor_id": "agent-1",
             "source_ref": "source-opaque-1",
@@ -100,11 +117,11 @@ async def seed_complete_traceability_source(connection) -> None:
             "limits_profile": "code-investigation-limits/v1",
             "challenge_key_id": "challenge-v1",
             "challenge_token_hash": SHA_A,
-            "status": "consumed",
-            "expires_at": NOW + timedelta(minutes=10),
+            "status": "open",
+            "expires_at": now + timedelta(minutes=10),
             "requested_by": "agent-1",
-            "created_at": NOW,
-            "consumed_at": NOW + timedelta(seconds=1),
+            "created_at": now,
+            "consumed_at": None,
             "request_payload_sha256": SHA_B,
             "idempotency_key": "request-idempotency-1",
         },
@@ -114,14 +131,16 @@ async def seed_complete_traceability_source(connection) -> None:
         {
             "id": "receipt-1",
             "request_id": "request-1",
-            "board_id": "board-1",
+            "board_id": board_id,
             "subject_type": "card",
-            "subject_id": "card-1",
+            "subject_id": card_id,
             "subject_version": 1,
             "attestor_actor_id": "agent-1",
             "generation": 1,
             "acceptance_status": "accepted",
-            "outcome": "accessible",
+            "delivery_context": "brownfield",
+            "contextual_outcome": "evidence_applicable",
+            "context_contract_version": 2,
             "capabilities": ["file_read", "path_containment"],
             "source_ref": "source-opaque-1",
             "source_identity_digest": SHA_A,
@@ -143,39 +162,51 @@ async def seed_complete_traceability_source(connection) -> None:
                 "tool_version": "1",
                 "method_id": "deterministic",
             },
-            "observed_at": NOW,
-            "received_at": NOW + timedelta(seconds=1),
-            "expires_at": NOW + timedelta(hours=1),
+            "observed_at": now,
+            "received_at": now + timedelta(seconds=1),
+            "expires_at": now + timedelta(hours=1),
             "observation_sha256": SHA_A,
             "payload_sha256": SHA_B,
             "idempotency_key": "receipt-idempotency-1",
         },
     )
     await connection.execute(
+        tables["code_investigation_requests"].update()
+        .where(tables["code_investigation_requests"].c.id == "request-1")
+        .values(status="consumed", consumed_at=now + timedelta(seconds=1))
+    )
+    await connection.execute(
         tables["code_investigation_heads"].insert(),
         {
-            "board_id": "board-1",
+            "board_id": board_id,
             "source_ref": "source-opaque-1",
             "generation": 1,
             "latest_receipt_id": "receipt-1",
             "current_receipt_id": "receipt-1",
             "state": "current",
             "revision": 1,
-            "updated_at": NOW + timedelta(seconds=1),
+            "updated_at": now + timedelta(seconds=1),
         },
     )
     await connection.execute(
         tables["code_evidence"].insert(),
         {
             "id": "evidence-1",
-            "board_id": "board-1",
+            "board_id": board_id,
             "investigation_receipt_id": "receipt-1",
             "source_ref": "source-opaque-1",
             "parent_type": "card",
-            "card_id": "card-1",
+            "card_id": card_id,
             "parent_version": 1,
             "evidence_type": "structure",
             "claim": "The external agent observed the declared module.",
+            "source_role": "current_implementation",
+            "context_contract_version": 2,
+            "relevance_summary": "Current implementation behavior.",
+            "scope_relation": "same delivery scope",
+            "source_origin": "repository baseline",
+            "baseline_presence": "committed_snapshot",
+            "baseline_workspace_state_id": "workspace-1",
             "declared_revision": "revision-1",
             "workspace_state_id": "workspace-1",
             "declared_dirty": False,
@@ -189,7 +220,7 @@ async def seed_complete_traceability_source(connection) -> None:
             "attestation_basis": "authenticated_agent_receipt",
             "lifecycle_status": "active",
             "submitted_by": "agent-1",
-            "received_at": NOW + timedelta(seconds=2),
+            "received_at": now + timedelta(seconds=2),
             "payload_sha256": SHA_B,
             "idempotency_key": "evidence-idempotency-1",
         },
@@ -198,25 +229,25 @@ async def seed_complete_traceability_source(connection) -> None:
         tables["code_evidence_spec_links"].insert(),
         {
             "id": "evidence-spec-link-1",
-            "board_id": "board-1",
-            "spec_id": "spec-1",
+            "board_id": board_id,
+            "spec_id": spec_id,
             "evidence_id": "evidence-1",
             "entity_type": "functional_requirement",
-            "entity_id": "fr-1",
+            "entity_id": requirement_id,
             "relation_type": "supports",
             "rationale": "Evidence supports FR-1.",
             "evidence_content_sha256": SHA_B,
-            "spec_version": 1,
+            "spec_version": link_spec_version,
             "created_by": "owner-1",
-            "created_at": NOW + timedelta(seconds=3),
+            "created_at": now + timedelta(seconds=3),
         },
     )
     await connection.execute(
         tables["implementation_targets"].insert(),
         {
             "id": "target-1",
-            "board_id": "board-1",
-            "card_id": "card-1",
+            "board_id": board_id,
+            "card_id": card_id,
             "source_ref": "source-opaque-1",
             "selector_kind": "file",
             "relative_path_hint": "src/module.py",
@@ -230,8 +261,8 @@ async def seed_complete_traceability_source(connection) -> None:
             "revision": 1,
             "current_resolution_id": "resolution-1",
             "created_by": "owner-1",
-            "created_at": NOW + timedelta(seconds=4),
-            "updated_at": NOW + timedelta(seconds=5),
+            "created_at": now + timedelta(seconds=4),
+            "updated_at": now + timedelta(seconds=5),
         },
     )
     await connection.execute(
@@ -239,11 +270,11 @@ async def seed_complete_traceability_source(connection) -> None:
         {
             "id": "target-spec-link-1",
             "target_id": "target-1",
-            "spec_id": "spec-1",
+            "spec_id": spec_id,
             "entity_type": "functional_requirement",
-            "entity_id": "fr-1",
+            "entity_id": requirement_id,
             "created_by": "owner-1",
-            "created_at": NOW + timedelta(seconds=4),
+            "created_at": now + timedelta(seconds=4),
         },
     )
     await connection.execute(
@@ -254,14 +285,14 @@ async def seed_complete_traceability_source(connection) -> None:
             "evidence_id": "evidence-1",
             "relation_type": "derived_from",
             "created_by": "owner-1",
-            "created_at": NOW + timedelta(seconds=4),
+            "created_at": now + timedelta(seconds=4),
         },
     )
     await connection.execute(
         tables["implementation_target_resolutions"].insert(),
         {
             "id": "resolution-1",
-            "board_id": "board-1",
+            "board_id": board_id,
             "target_id": "target-1",
             "investigation_receipt_id": "receipt-1",
             "source_ref": "source-opaque-1",
@@ -281,8 +312,8 @@ async def seed_complete_traceability_source(connection) -> None:
             "declared_tool_id": "external-agent-check",
             "declared_tool_version": "1",
             "submitted_by": "agent-1",
-            "agent_observed_at": NOW,
-            "received_at": NOW + timedelta(seconds=5),
+            "agent_observed_at": now,
+            "received_at": now + timedelta(seconds=5),
             "payload_sha256": SHA_B,
             "idempotency_key": "resolution-idempotency-1",
         },
@@ -301,6 +332,13 @@ async def seed_superseded_evidence_chain(connection) -> None:
         "card_id": "card-1",
         "parent_version": 1,
         "evidence_type": "structure",
+        "source_role": "current_implementation",
+        "context_contract_version": 2,
+        "relevance_summary": "Current implementation behavior.",
+        "scope_relation": "same delivery scope",
+        "source_origin": "repository baseline",
+        "baseline_presence": "committed_snapshot",
+        "baseline_workspace_state_id": "workspace-1",
         "declared_revision": "revision-1",
         "workspace_state_id": "workspace-1",
         "declared_dirty": False,
@@ -409,9 +447,19 @@ async def test_rebuild_closes_historical_evidence_chain_without_counting_it_as_c
 
     snapshot = CommunityBoardSourceReader(database_path).fetch("board-1")
     assert snapshot.complete is True
+    # Enumerate the cognitive class from this fixture's database as well.
+    # A process-global store may belong to another test; an unavailable store
+    # must still fail closed, never stand in for an empty source class.
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    cognitive_rows = await CommunitySqlAlchemyCognitiveSourceStore(
+        sessions
+    ).enumerate_latest_verified("board-1")
+    assert cognitive_rows == ()
+    cognitive_digest = cognitive_durable_digest_from_rows(cognitive_rows)
     source_set = RebuildSourceEnumerator(
         source_store=lambda _board_id: list(snapshot.rows),
         now=NOW + timedelta(days=1),
+        cognitive_digest_provider=lambda _board_id: cognitive_digest,
     ).enumerate(board_id="board-1")
     assert {
         row.id
@@ -473,7 +521,6 @@ async def test_rebuild_closes_historical_evidence_chain_without_counting_it_as_c
         ]
     assert ordered_evidence == ["evidence-y", "evidence-z", "evidence-1"]
 
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
     persistence = CommunitySqlAlchemyConsolidationPersistence()
     results = []
     async with sessions() as session:

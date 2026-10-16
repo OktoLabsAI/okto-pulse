@@ -3,7 +3,16 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from okto_pulse.community.api.auth_deps import require_user
-from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.deps import get_unit_of_work, get_unit_of_work_factory
+from okto_pulse.community.api.knowledge_propagation import (
+    KnowledgePropagationContractError, KnowledgePropagationServiceError,
+    execute_knowledge_creation_with_one_retry, knowledge_propagation_error_response,
+    rollback_and_record_knowledge_error,
+)
+from okto_pulse.core.ports.knowledge_propagation import KnowledgePropagationPortError
+from okto_pulse.core.application.knowledge_propagation_projection import project_derive_spec_response
+from okto_pulse.core.models.knowledge_propagation import DeriveIdeationSpecRequest
+from okto_pulse.core.models.schemas import DeriveSpecResponse
 from okto_pulse.community.api.knowledge_governance import (
     KnowledgeGovernanceInvalidMetadata,
     knowledge_governance_error_response,
@@ -15,7 +24,6 @@ from okto_pulse.community.api.lookups import (
 )
 from okto_pulse.community.api.pagination import (
     board_scope,
-    pagination_requested,
     project_page,
     record_fields,
     resolve_window,
@@ -29,7 +37,6 @@ from okto_pulse.community.api.quality_summary_projection import (
 )
 from okto_pulse.community.api.qa_count_projection import (
     project_open_qa_count,
-    redact_open_qa_count_records,
     resolve_board_projection_permissions,
 )
 from okto_pulse.core.ports.application_persistence import (
@@ -83,7 +90,7 @@ from okto_pulse.core.application.ideation_scope import (
     IdeationScopeValidationError,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
-from okto_pulse.core.domain.guideline_policy_transition import (
+from okto_pulse.core.domain.guideline_semantic_transition import (
     PolicyTransitionRejected,
 )
 from okto_pulse.core.domain.human_validation_cycle import (
@@ -106,11 +113,9 @@ from okto_pulse.core.models.schemas import (
     IdeationResponse,
     IdeationSnapshotResponse,
     IdeationSnapshotSummary,
-    IdeationSummary,
     IdeationUpdate,
     LookupResponse,
     PageEnvelope,
-    SpecResponse,
 )
 from okto_pulse.core.application.errors import (
     AmbiguityGateError,
@@ -151,7 +156,7 @@ async def create_ideation(
 
 @router.get(
     "/boards/{board_id}/ideations",
-    response_model=list[IdeationSummary] | PageEnvelope[IdeationPageItem],
+    response_model=PageEnvelope[IdeationPageItem],
     dependencies=[Depends(validate_ideation_pagination_query)],
 )
 async def list_ideations(
@@ -165,129 +170,100 @@ async def list_ideations(
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """List ideations for a board, optionally filtered by status.
-
-    With ``offset``/``limit``: paginated envelope (spec 8b33f9a8); without:
-    legacy shape unchanged (DR9).
-    """
+    """List ideations with one paginated envelope and defaults offset=0, limit=25."""
     actor = RESTAdapterContract.actor(user_id, board_id=board_id)
-    if pagination_requested(offset, limit):
-        command = ListIdeationsCommand(
-            board_id,
-            status_filter=status_filter,
-            include_archived=include_archived,
-        )
-        use_case = ListIdeationsUseCase()
-        try:
-            resolved_offset, resolved_limit = resolve_window(offset, limit)
-            filters: tuple[ApplicationFilter, ...] = ()
-            if status_filter:
-                filters = (ApplicationFilter("status", "eq", status_filter),)
-            if derivation_pending is not None:
-                filters = (
-                    *filters,
-                    ApplicationFilter(
-                        "derivation_pending",
-                        "is_true" if derivation_pending else "is_false",
-                        None,
-                    ),
-                )
-            page = await run_paginated_list(
-                uow,
-                PageRequest(
-                    surface="ideation_list",
-                    scope=board_scope(board_id, include_archived=include_archived),
-                    offset=resolved_offset,
-                    limit=resolved_limit,
-                    filters=filters,
-                    any_groups=search_groups(search, ("title", "description")),
-                ),
-                preflight=lambda: use_case.preflight(command, actor=actor, uow=uow),
-            )
-        except EntityNotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
-            )
-        subject_ids = tuple(str(record.values["id"]) for record in page.items)
-        projection_permissions = (
-            await resolve_board_projection_permissions(
-                actor=actor,
-                uow=uow,
-                board_id=board_id,
-                permission_leaves=(
-                    "ideation.qa.read",
-                    "ideation.quality.read",
-                ),
-            )
-            if subject_ids
-            else {}
-        )
-        quality_summaries = await load_quality_summaries_for_page(
-            uow=uow,
-            user_id=user_id,
-            board_id=board_id,
-            subject_type="ideation",
-            subject_ids=subject_ids,
-            can_read_quality=projection_permissions.get("ideation.quality.read"),
-        )
-        return project_page(
-            page,
-            lambda record: IdeationPageItem(
-                **project_open_qa_count(
-                    record_fields(
-                        record,
-                        (
-                            "id",
-                            "board_id",
-                            "title",
-                            "description",
-                            "problem_statement",
-                            "complexity",
-                            "status",
-                            "edition",
-                            "version",
-                            "assignee_id",
-                            "created_by",
-                            "created_at",
-                            "updated_at",
-                            "labels",
-                            "archived",
-                            "scope_assessment",
-                            "open_qa_count",
-                        ),
-                    ),
-                    can_read_qa=projection_permissions.get("ideation.qa.read", False),
-                ),
-                **quality_summary_field(
-                    str(record.values["id"]),
-                    quality_summaries,
-                ),
-            ),
-        )
+    command = ListIdeationsCommand(
+        board_id,
+        status_filter=status_filter,
+        include_archived=include_archived,
+    )
+    use_case = ListIdeationsUseCase()
     try:
-        result = await ListIdeationsUseCase().execute(
-            ListIdeationsCommand(
-                board_id, status_filter=status_filter, include_archived=include_archived
+        resolved_offset, resolved_limit = resolve_window(offset, limit)
+        filters: tuple[ApplicationFilter, ...] = ()
+        if status_filter:
+            filters = (ApplicationFilter("status", "eq", status_filter),)
+        if derivation_pending is not None:
+            filters = (
+                *filters,
+                ApplicationFilter(
+                    "derivation_pending",
+                    "is_true" if derivation_pending else "is_false",
+                    None,
+                ),
+            )
+        page = await run_paginated_list(
+            uow,
+            PageRequest(
+                surface="ideation_list",
+                scope=board_scope(board_id, include_archived=include_archived),
+                offset=resolved_offset,
+                limit=resolved_limit,
+                filters=filters,
+                any_groups=search_groups(search, ("title", "description")),
             ),
-            actor=actor,
-            uow=uow,
+            preflight=lambda: use_case.preflight(command, actor=actor, uow=uow),
         )
     except EntityNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Board not found"
         )
-    if result.ideations:
-        projection_permissions = await resolve_board_projection_permissions(
+    subject_ids = tuple(str(record.values["id"]) for record in page.items)
+    projection_permissions = (
+        await resolve_board_projection_permissions(
             actor=actor,
             uow=uow,
             board_id=board_id,
-            permission_leaves=("ideation.qa.read",),
+            permission_leaves=(
+                "ideation.qa.read",
+                "ideation.quality.read",
+            ),
         )
-        redact_open_qa_count_records(
-            result.ideations,
-            can_read_qa=projection_permissions["ideation.qa.read"],
-        )
-    return result.ideations
+        if subject_ids
+        else {}
+    )
+    quality_summaries = await load_quality_summaries_for_page(
+        uow=uow,
+        user_id=user_id,
+        board_id=board_id,
+        subject_type="ideation",
+        subject_ids=subject_ids,
+        can_read_quality=projection_permissions.get("ideation.quality.read"),
+    )
+    return project_page(
+        page,
+        lambda record: IdeationPageItem(
+            **project_open_qa_count(
+                record_fields(
+                    record,
+                    (
+                        "id",
+                        "board_id",
+                        "title",
+                        "description",
+                        "problem_statement",
+                        "complexity",
+                        "status",
+                        "edition",
+                        "version",
+                        "assignee_id",
+                        "created_by",
+                        "created_at",
+                        "updated_at",
+                        "labels",
+                        "archived",
+                        "scope_assessment",
+                        "open_qa_count",
+                    ),
+                ),
+                can_read_qa=projection_permissions.get("ideation.qa.read", False),
+            ),
+            **quality_summary_field(
+                str(record.values["id"]),
+                quality_summaries,
+            ),
+        ),
+    )
 
 
 @router.get(
@@ -511,26 +487,35 @@ async def evaluate_complexity(
     return result.ideation
 
 
-@router.post("/ideations/{ideation_id}/derive-spec", response_model=SpecResponse)
+@router.post("/ideations/{ideation_id}/derive-spec", response_model=DeriveSpecResponse)
 async def derive_spec(
     ideation_id: str,
+    request: Request,
+    data: DeriveIdeationSpecRequest,
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
-    """Create a spec draft from a done ideation."""
+    """Create a governed Spec draft from a completed small ideation."""
+    actor = RESTAdapterContract.actor(user_id)
+    command = DeriveSpecCommand(ideation_id, data)
+    async def execute(target_uow):
+        return await DeriveSpecUseCase().execute(command, actor=actor, uow=target_uow)
     try:
-        result = await DeriveSpecUseCase().execute(
-            DeriveSpecCommand(ideation_id),
-            actor=RESTAdapterContract.actor(user_id),
-            uow=uow,
+        result = await execute_knowledge_creation_with_one_retry(
+            uow=uow, uow_factory=get_unit_of_work_factory(request), actor=actor,
+            operation=execute,
         )
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        return project_derive_spec_response(result.knowledge_mutation)
+    except KnowledgePropagationServiceError as error:
+        await rollback_and_record_knowledge_error(uow, error)
+        return knowledge_propagation_error_response(error)
+    except (KnowledgePropagationContractError, KnowledgePropagationPortError) as error:
+        await uow.rollback()
+        return knowledge_propagation_error_response(error)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error))
     except EntityNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found"
-        )
-    return result.spec
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found")
 
 
 @router.get(

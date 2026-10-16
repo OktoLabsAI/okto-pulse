@@ -81,7 +81,6 @@ from okto_pulse.core.domain.guideline_import_export import (
 from okto_pulse.core.domain.guideline_lifecycle import (
     GUIDELINE_REVISION_DIGEST_CONTRACT_VERSION,
     GuidelineLifecycleError,
-    guideline_revision_content_digest_v2,
     validate_binding_transition,
 )
 from okto_pulse.core.ports.guideline_policy import (
@@ -105,7 +104,7 @@ from okto_pulse.core.ports.guideline_policy import (
     GuidelineRevisionListQuery,
     PolicyTransitionSnapshotResolver,
 )
-from okto_pulse.core.domain.guideline_policy_transition import (
+from okto_pulse.core.domain.guideline_semantic_transition import (
     PolicyTransitionSnapshot,
 )
 from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
@@ -133,7 +132,6 @@ from .sqlalchemy_models import (
     DomainEventRow,
     Refinement,
     Spec,
-    Sprint,
     SemanticGuidelineRevisionRow,
     SemanticGuidelineBindingConfigurationRow,
 )
@@ -530,11 +528,9 @@ _GUIDELINE_EXPORT_BINDING_FIELDS = frozenset(
         "physical_source_kind",
         "binding_origin",
         "materialization",
-        "legacy_source_id",
-        "legacy_guideline_version",
-        "legacy_template_id",
-        "legacy_template_version",
-        "legacy_version_unresolvable",
+        "materialized_revision_number",
+        "materialized_template_id",
+        "materialized_template_version",
         "evidence_refs",
         "binding_digest",
     }
@@ -561,11 +557,9 @@ def _guideline_export_binding_from_payload(
             physical_source_kind=payload["physical_source_kind"],
             binding_origin=payload["binding_origin"],
             materialization=GuidelineBindingMaterialization(payload["materialization"]),
-            legacy_source_id=payload.get("legacy_source_id"),
-            legacy_guideline_version=payload.get("legacy_guideline_version"),
-            legacy_template_id=payload.get("legacy_template_id"),
-            legacy_template_version=payload.get("legacy_template_version"),
-            legacy_version_unresolvable=payload["legacy_version_unresolvable"],
+            materialized_revision_number=payload.get("materialized_revision_number"),
+            materialized_template_id=payload.get("materialized_template_id"),
+            materialized_template_version=payload.get("materialized_template_version"),
             evidence_refs=tuple(tuple(item) for item in evidence_refs),
             binding_digest=payload.get("binding_digest"),
         )
@@ -601,23 +595,6 @@ def _guideline_binding_merge_digest(
     return canonical_sha256(payload)
 
 
-def guideline_revision_content_digest(
-    *,
-    title: str,
-    content: str,
-    metrics: tuple[GuidelineMetric, ...] | list[GuidelineMetric] = (),
-    tags: tuple[str, ...] | list[str] = (),
-    semantic_version: str = "1.0.0",
-) -> str:
-    """Community seam over the canonical semantic revision digest."""
-
-    return guideline_revision_content_digest_v2(
-        semantic_version=semantic_version,
-        title=title,
-        content=content,
-        metrics=metrics,
-        tags=tags,
-    )
 
 
 def _guideline_from_row(row: LegacyGuidelineRow) -> Guideline:
@@ -644,13 +621,7 @@ def _revision_from_rows(
         semantic.revision_id != row.revision_id
         or semantic.guideline_id != row.guideline_id
         or semantic.source_revision_digest != row.content_digest
-        or semantic.authority_state
-        not in {"native", "legacy_context_only"}
         or not isinstance(semantic.metrics, list)
-        or (
-            semantic.authority_state == "legacy_context_only"
-            and semantic.metrics
-        )
     ):
         raise GuidelinePolicyRevisionConflict(
             "guideline_semantic_revision_authority_invalid"
@@ -795,19 +766,9 @@ def _export_binding_from_live_row(
         physical_source_kind=row.source_kind,
         binding_origin=row.binding_origin,
         materialization=GuidelineBindingMaterialization.LIVE,
-        legacy_source_id=row.legacy_source_id,
-        legacy_guideline_version=(
-            str(row.legacy_guideline_version)
-            if row.legacy_guideline_version is not None
-            else None
-        ),
-        legacy_template_id=row.legacy_template_id,
-        legacy_template_version=(
-            str(row.legacy_template_version)
-            if row.legacy_template_version is not None
-            else None
-        ),
-        legacy_version_unresolvable=bool(row.legacy_version_unresolvable),
+        materialized_revision_number=row.materialized_revision_number,
+        materialized_template_id=row.materialized_template_id,
+        materialized_template_version=row.materialized_template_version,
         evidence_refs=evidence_refs,
     )
 
@@ -920,18 +881,13 @@ def _revision_row(
         content=revision.content,
         content_digest=revision.revision_digest,
         tags=list(revision.tags),
-        rules=[],
         created_by=revision.created_by,
         created_at=revision.created_at,
         published_head_revision=published_head.head_revision,
         published_head_updated_at=published_head.updated_at,
         parent_revision_id=revision.parent_revision_id,
-        legacy_version=None,
-        legacy_version_unresolvable=False,
-        legacy_tags=None,
         idempotency_key=idempotency_key,
         request_digest=request_digest,
-        legacy_version_text=None,
     )
 
 
@@ -944,8 +900,6 @@ def _semantic_revision_row(
         metrics=[metric.digest_payload() for metric in revision.metrics],
         revision_digest=revision.revision_digest,
         source_revision_digest=revision.revision_digest,
-        authority_state="native",
-        legacy_rules_digest=None,
         created_by=revision.created_by,
         created_at=revision.created_at,
     )
@@ -980,23 +934,21 @@ def _binding_row(
         enforcement=binding.enforcement.value,
         state=binding.state.value,
         source_kind="native",
-        legacy_source_id=None,
-        legacy_guideline_version=(
+        materialized_revision_number=(
             materialization_proof.guideline_revision_number
             if materialization_proof is not None
             else None
         ),
-        legacy_template_id=(
+        materialized_template_id=(
             materialization_proof.template_id
             if materialization_proof is not None
             else None
         ),
-        legacy_template_version=(
+        materialized_template_version=(
             materialization_proof.template_version
             if materialization_proof is not None
             else None
         ),
-        legacy_version_unresolvable=False,
         idempotency_key=idempotency_key,
         request_digest=request_digest,
         impact_receipt_id=impact_receipt_id,
@@ -1230,6 +1182,7 @@ class CommunitySqlAlchemyGuidelinePolicy:
         entity_type: PolicyEntityType,
         subject_id: str,
         expected_from_status: str,
+        lock: bool = True,
     ) -> PolicyTransitionSnapshot:
         """Delegate one transaction-bound gate snapshot to Community authority."""
 
@@ -1244,6 +1197,7 @@ class CommunitySqlAlchemyGuidelinePolicy:
             entity_type=entity_type,
             subject_id=subject_id,
             expected_from_status=expected_from_status,
+            lock=lock,
         )
 
     async def get_revision_result_by_idempotency(
@@ -1606,7 +1560,6 @@ class CommunitySqlAlchemyGuidelinePolicy:
         guideline_ids: tuple[str, ...] | None,
         owner_id: str | None,
         board_id: str | None,
-        include_binding_history: bool,
         trusted_import_discovery: bool = False,
     ) -> _GuidelineExportRows:
         """Read a deterministic aggregate snapshot without owning the UoW.
@@ -1857,24 +1810,19 @@ class CommunitySqlAlchemyGuidelinePolicy:
         guideline_ids: tuple[str, ...] | None = None,
         owner_id: str | None = None,
         board_id: str | None = None,
-        include_binding_history: bool = True,
         _trusted_import_discovery: bool = False,
     ) -> GuidelineExportSnapshot:
         """Project live authority plus inert candidates into one Core snapshot.
 
-        ``include_binding_history=False`` is a compatibility hint only:
-        ``guideline-export/v2`` cannot represent a lone revision N without the
-        contiguous 1..N chain, so persistence always returns a closed history.
-        ``migration_notes`` are codec/import diagnostics rather than policy
-        authority and are intentionally reconstructed only when relational
-        provenance proves a legacy baseline.
+        The export always preserves the contiguous revision and binding
+        history required by the current contract. Import diagnostics belong
+        to the operation result and are not persisted as policy authority.
         """
 
         rows = await self._guideline_export_rows(
             guideline_ids=guideline_ids,
             owner_id=owner_id,
             board_id=board_id,
-            include_binding_history=include_binding_history,
             trusted_import_discovery=_trusted_import_discovery,
         )
         hydrated_revisions = await self._hydrate_revision_rows(
@@ -1950,64 +1898,22 @@ class CommunitySqlAlchemyGuidelinePolicy:
         for identity_row in rows.identities:
             identity = _guideline_from_row(identity_row)
             revision_rows = tuple(revisions_by_guideline.get(identity.guideline_id, ()))
-            unresolvable = tuple(
-                row for row in revision_rows if row.legacy_version_unresolvable
+            history_status = GuidelineHistoryStatus.COMPLETE
+            exported_revisions = tuple(
+                GuidelineExportRevision(
+                    revision=hydrated_by_id[row.revision_id],
+                    published_head_revision=row.published_head_revision,
+                    published_head_updated_at=_utc(row.published_head_updated_at),
+                )
+                for row in revision_rows
             )
-            if unresolvable:
-                if (
-                    len(revision_rows) != 1
-                    or len(unresolvable) != 1
-                    or (
-                        unresolvable[0].legacy_version is None
-                        and unresolvable[0].legacy_version_text is None
-                    )
-                ):
-                    raise GuidelinePolicyDigestConflict(
-                        "guideline_export_legacy_history_shape_unsupported"
-                    )
-                history_status = GuidelineHistoryStatus.BASELINE_ONLY
-                exported_revisions = (
-                    GuidelineExportRevision(
-                        revision=hydrated_by_id[
-                            unresolvable[0].revision_id
-                        ],
-                        published_head_revision=(
-                            unresolvable[0].published_head_revision
-                        ),
-                        published_head_updated_at=(
-                            _utc(unresolvable[0].published_head_updated_at)
-                        ),
-                        legacy_version=(
-                            unresolvable[0].legacy_version_text
-                            or str(unresolvable[0].legacy_version)
-                        ),
-                        legacy_version_unresolvable=True,
-                        legacy_tags=(
-                            tuple(unresolvable[0].legacy_tags)
-                            if unresolvable[0].legacy_tags is not None
-                            else None
-                        ),
-                    ),
-                )
-                exported_bindings: tuple[GuidelineExportBinding, ...] = ()
-                migration_notes = ("legacy_history_unresolvable",)
-            else:
-                history_status = GuidelineHistoryStatus.COMPLETE
-                exported_revisions = tuple(
-                    GuidelineExportRevision(
-                        revision=hydrated_by_id[row.revision_id],
-                        published_head_revision=row.published_head_revision,
-                        published_head_updated_at=_utc(row.published_head_updated_at),
-                    )
-                    for row in revision_rows
-                )
-                exported_bindings = tuple(
-                    bindings_by_guideline.get(
-                        identity.guideline_id,
-                        {},
-                    ).values()
-                )
-                migration_notes = ()
+            exported_bindings = tuple(
+                bindings_by_guideline.get(
+                    identity.guideline_id,
+                    {},
+                ).values()
+            )
+            import_notes = ()
             head_row = heads_by_guideline.get(identity.guideline_id)
             if head_row is None:
                 raise GuidelinePolicyDigestConflict(
@@ -2026,7 +1932,7 @@ class CommunitySqlAlchemyGuidelinePolicy:
                     ),
                     bindings=exported_bindings,
                     history_status=history_status,
-                    migration_notes=migration_notes,
+                    import_notes=import_notes,
                 )
             )
         return GuidelineExportSnapshot(
@@ -2056,7 +1962,6 @@ class CommunitySqlAlchemyGuidelinePolicy:
 
         return await self.export_guideline_snapshot(
             guideline_ids=guideline_ids,
-            include_binding_history=True,
             _trusted_import_discovery=True,
         )
 
@@ -2448,7 +2353,6 @@ class CommunitySqlAlchemyGuidelinePolicy:
                     revision_id=resolved_revision_ids[source_revision.revision_id],
                     parent_revision_id=resolved_parent_id,
                 )
-                legacy_version = exported_revision.legacy_version_as_int
                 revision_rows.append(
                     GuidelineRevisionRow(
                         revision_id=resolved_revision.revision_id,
@@ -2459,7 +2363,6 @@ class CommunitySqlAlchemyGuidelinePolicy:
                         content=resolved_revision.content,
                         content_digest=resolved_revision.revision_digest,
                         tags=list(resolved_revision.tags),
-                        rules=[],
                         created_by=resolved_revision.created_by,
                         created_at=resolved_revision.created_at,
                         published_head_revision=(
@@ -2469,18 +2372,8 @@ class CommunitySqlAlchemyGuidelinePolicy:
                             exported_revision.published_head_updated_at
                         ),
                         parent_revision_id=(resolved_revision.parent_revision_id),
-                        legacy_version=legacy_version,
-                        legacy_version_unresolvable=(
-                            exported_revision.legacy_version_unresolvable
-                        ),
-                        legacy_tags=(
-                            list(exported_revision.legacy_tags)
-                            if exported_revision.legacy_tags is not None
-                            else None
-                        ),
                         idempotency_key=None,
                         request_digest=None,
-                        legacy_version_text=(exported_revision.legacy_version),
                     )
                 )
                 semantic_revision_rows.append(
@@ -3374,7 +3267,6 @@ class CommunitySqlAlchemyGuidelinePolicy:
                 await self._hydrate_revision_row(replay),
                 _published_head_from_revision_row(replay),
             )
-
         self._session.add(
             LegacyGuidelineRow(
                 id=guideline.guideline_id,
@@ -3510,7 +3402,6 @@ class CommunitySqlAlchemyGuidelinePolicy:
         ).scalar_one_or_none()
         if retirement is not None:
             raise GuidelinePolicyRevisionConflict("guideline_is_terminal")
-
         # The exact-revision FK is DEFERRABLE: fence first, then append the row.
         # A stale writer therefore creates no orphan immutable revision.
         result = await self._session.execute(
@@ -4045,10 +3936,10 @@ class CommunitySqlAlchemyGuidelinePolicy:
                     "guideline_binding_idempotency_digest_mismatch"
                 )
             if materialization_proof is not None and (
-                replay.legacy_template_id != materialization_proof.template_id
-                or replay.legacy_template_version
+                replay.materialized_template_id != materialization_proof.template_id
+                or replay.materialized_template_version
                 != materialization_proof.template_version
-                or replay.legacy_guideline_version
+                or replay.materialized_revision_number
                 != materialization_proof.guideline_revision_number
             ):
                 raise GuidelinePolicyIdempotencyConflict(
@@ -4197,14 +4088,13 @@ class CommunitySqlAlchemyGuidelinePolicy:
         *,
         board_id: str,
     ) -> tuple[PolicySubjectRef, ...]:
-        """Return every resolvable board artifact/version in canonical order."""
+        """Return live board subjects; sealed historical receipts keep their own inventory."""
 
         subjects: list[PolicySubjectRef] = []
         model_specs = (
             (PolicyEntityType.IDEATION, Ideation, "version", "edition"),
             (PolicyEntityType.REFINEMENT, Refinement, "version", "edition"),
             (PolicyEntityType.SPEC, Spec, "version", "edition"),
-            (PolicyEntityType.SPRINT, Sprint, "version", None),
             (PolicyEntityType.CARD, Card, "policy_version", None),
         )
         for entity_type, model, version_field, edition_field in model_specs:
@@ -5310,5 +5200,4 @@ class CommunitySqlAlchemyGuidelinePolicy:
 __all__ = [
     "CommunitySqlAlchemyGuidelinePolicy",
     "GUIDELINE_REVISION_DIGEST_CONTRACT",
-    "guideline_revision_content_digest",
 ]

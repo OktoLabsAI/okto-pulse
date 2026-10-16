@@ -32,15 +32,8 @@ from okto_pulse.community.adapters.telemetry_store import CommunityLocalTelemetr
 from okto_pulse.core.infra.config import CoreSettings
 from okto_pulse.core.telemetry.era import (
     ERA_POST_FIX,
-    ERA_PRE_FIX,
     POST_FIX_DELTA_MARKER,
-    SEMANTICS_CUMULATIVE,
     SEMANTICS_DELTA,
-    TRUST_EXCLUDED,
-    TRUST_FAILED,
-    TRUST_TRUSTED_DELTA,
-    TRUST_UNTRUSTED,
-    classify_trust_state,
 )
 from okto_pulse.core.telemetry.schema import CURRENT_SCHEMA_VERSION
 from okto_pulse.community.adapters.telemetry_port import (
@@ -264,57 +257,8 @@ def test_confirmation_survives_reload_via_sent_ledger(
     assert reloaded_batch is None  # nothing pending after reload
 
 
-# --- canonical era/semantics/trust_state enum (br_ade18c8a) -----------------
+# --- current transport marker -------------------------------------------
 
 
 def test_post_fix_delta_marker_is_the_canonical_pair() -> None:
     assert POST_FIX_DELTA_MARKER == {"era": ERA_POST_FIX, "semantics": SEMANTICS_DELTA}
-
-
-def test_classify_trust_state_canonical_matrix() -> None:
-    # Post-fix delta on the current schema is the only trusted_delta.
-    assert (
-        classify_trust_state(
-            era=ERA_POST_FIX,
-            semantics=SEMANTICS_DELTA,
-            schema_version=CURRENT_SCHEMA_VERSION,
-        )
-        == TRUST_TRUSTED_DELTA
-    )
-    # Pre-fix is excluded so R4 never sums it with post-fix deltas (br_660cdac7).
-    assert (
-        classify_trust_state(
-            era=ERA_PRE_FIX,
-            semantics=SEMANTICS_DELTA,
-            schema_version=CURRENT_SCHEMA_VERSION,
-        )
-        == TRUST_EXCLUDED
-    )
-    # Valid markers but not a current-schema delta → untrusted, not trusted.
-    assert (
-        classify_trust_state(
-            era=ERA_POST_FIX,
-            semantics=SEMANTICS_CUMULATIVE,
-            schema_version=CURRENT_SCHEMA_VERSION,
-        )
-        == TRUST_UNTRUSTED
-    )
-    assert (
-        classify_trust_state(
-            era=ERA_POST_FIX, semantics=SEMANTICS_DELTA, schema_version="0.0.0-old"
-        )
-        == TRUST_UNTRUSTED
-    )
-    # Missing/invalid markers cannot be trusted.
-    assert (
-        classify_trust_state(era=None, semantics=None, schema_version=None)
-        == TRUST_FAILED
-    )
-    assert (
-        classify_trust_state(
-            era="bogus",
-            semantics=SEMANTICS_DELTA,
-            schema_version=CURRENT_SCHEMA_VERSION,
-        )
-        == TRUST_FAILED
-    )

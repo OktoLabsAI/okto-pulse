@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
+from graph_observation_fixtures import prepare_fixture_index
 
 from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphCapabilityUnavailable,
@@ -43,8 +44,14 @@ def ranked(request):
         if name == "other":
             attrs["title"], attrs["content"] = "unrelated", "no matching tokens"
         store.create_node(BOARD_ID, "Decision", f"ranked:{name}", attrs)
-    provider = CommunityGrafxRankedSearch(lambda _board: db, fence)
+    provider = CommunityGrafxRankedSearch(lambda _board: db)
     return provider, store, db, fence, path
+
+
+@pytest.fixture
+def indexed_ranked(ranked):
+    prepare_fixture_index(ranked[2])
+    return ranked
 
 
 def test_01_readiness_does_not_create_an_index_and_missing_is_not_empty(ranked):
@@ -58,30 +65,23 @@ def test_01_readiness_does_not_create_an_index_and_missing_is_not_empty(ranked):
     }
     with pytest.raises(GraphCapabilityUnavailable):
         provider.search(BOARD_ID, RankedGraphQuery("Decision", "durable"))
+    page = provider.search(BOARD_ID, RankedGraphQuery('Decision', 'irrelevant lexical tokens',
+        mode='vector', limit=2, vector=(1.0,) + (0.0,) * 383))
+    assert {hit['node_id'] for hit in page['hits']} == {'ranked:visible', 'ranked:other'}
+    assert page['ranking'] == 'cosine' and page['lexical_regime'] == 'disabled'
+    assert page['achieved_k'] == page['requested_k'] == 2
+    assert page['snapshot'].isdigit() and page['vector_regime']
+    assert all(hit['score'] == pytest.approx(1.0) and hit['lexical_score'] is None for hit in page['hits'])
+    assert {hit['node_id']: hit['content'] for hit in page['hits']} == {
+        'ranked:visible': 'recovery and consistency', 'ranked:other': 'no matching tokens'}
     assert db.indexes.indexes() == before
 
 
-def test_02_preparation_is_explicit_idempotent_and_fenced(ranked):
-    provider, _store, db, fence, _path = ranked
-    fence.calls.clear()
-    assert provider.prepare(BOARD_ID, "Decision", reason="ranked test")["ready"]
-    first = db.wal.last_lsn
-    assert provider.prepare(BOARD_ID, "Decision", reason="ranked test")["ready"]
-    assert db.wal.last_lsn == first
-    assert fence.calls == [
-        (BOARD_ID, phase)
-        for phase in [
-            "ranked_search_prepare",
-            "ranked_search_prepare_complete",
-            "ranked_search_prepare",
-            "ranked_search_prepare_complete",
-        ]
-    ]
 
 
 @pytest.mark.parametrize("mode", ["text", "hybrid"])
-def test_filters_precede_topk_and_sources_are_explicit(ranked, mode):
-    provider, *_ = ranked
+def test_filters_precede_topk_and_sources_are_explicit(indexed_ranked, mode):
+    provider, *_ = indexed_ranked
     query = RankedGraphQuery(
         "Decision",
         "durable",
@@ -97,7 +97,7 @@ def test_filters_precede_topk_and_sources_are_explicit(ranked, mode):
     assert (page["hits"][0]["vector_score"] is None) == (mode == "text")
 
 
-def test_opt_in_preserves_superseded_and_layer_and_code_visibility(ranked):
+def test_opt_in_preserves_superseded_and_layer_and_code_visibility(indexed_ranked):
     query = RankedGraphQuery(
         "Decision",
         "durable",
@@ -105,7 +105,7 @@ def test_opt_in_preserves_superseded_and_layer_and_code_visibility(ranked):
         graph_layer="all",
         include_code_traceability=True,
     )
-    page = ranked[0].search(BOARD_ID, query)
+    page = indexed_ranked[0].search(BOARD_ID, query)
     assert {hit["node_id"] for hit in page["hits"]} == {
         "ranked:visible",
         "ranked:old",
@@ -114,8 +114,8 @@ def test_opt_in_preserves_superseded_and_layer_and_code_visibility(ranked):
     }
 
 
-def test_phrase_is_explicit_and_empty_hits_are_successful_only_after_search(ranked):
-    provider = ranked[0]
+def test_phrase_is_explicit_and_empty_hits_are_successful_only_after_search(indexed_ranked):
+    provider = indexed_ranked[0]
     assert (
         provider.search(
             BOARD_ID, RankedGraphQuery("Decision", "graph durable", phrase=True)
@@ -130,11 +130,30 @@ def test_phrase_is_explicit_and_empty_hits_are_successful_only_after_search(rank
     ]
 
 
-def test_filter_budget_is_a_refusal_not_truncation(ranked):
+@pytest.mark.parametrize('mode', ['text', 'vector'])
+def test_filter_budget_is_a_refusal_not_truncation(indexed_ranked, mode):
     with pytest.raises(GraphError):
-        ranked[0].search(
-            BOARD_ID, RankedGraphQuery("Decision", "durable", max_filter_rows=1)
+        indexed_ranked[0].search(
+            BOARD_ID, RankedGraphQuery("Decision", "durable", max_filter_rows=1, mode=mode,
+                vector=(1.0,) + (0.0,) * 383 if mode == 'vector' else ())
         )
+
+
+def test_vector_search_passes_native_deadline_and_visibility_filter(indexed_ranked, monkeypatch):
+    import okto_grafx
+    provider, _, db, *_ = indexed_ranked
+    native = okto_grafx.Database.search_vectors
+    observed = []
+    def controlled(self, reader, **kwargs):
+        assert self is db and reader.active and reader.mode == 'read'
+        assert 0 < kwargs['timeout_seconds'] <= 15
+        assert kwargs['candidate_filter'].cardinality == 2
+        observed.append(reader.snapshot.read_lsn)
+        return native(self, reader, **kwargs)
+    monkeypatch.setattr(okto_grafx.Database, 'search_vectors', controlled)
+    page = provider.search(BOARD_ID, RankedGraphQuery('Decision', 'lesson', mode='vector',
+        vector=(1.0,) + (0.0,) * 383, limit=2, timeout_seconds=15))
+    assert str(observed[0]) == page['snapshot'] and len(page['hits']) == 2
 
 
 @pytest.mark.parametrize(
@@ -153,11 +172,14 @@ def test_filter_budget_is_a_refusal_not_truncation(ranked):
         {"mode": "hybrid"},
         {"vector": (1.0,)},
         {"mode": "hybrid", "phrase": True},
+        {"mode": "vector"},
+        {"mode": "vector", "vector": (float('nan'),) * 384},
+        {"mode": "vector", "phrase": True},
     ],
 )
 def test_invalid_request_refuses_before_database_resolution(patch):
     provider = CommunityGrafxRankedSearch(
-        lambda _: pytest.fail("unexpected I/O"), lambda *_: None
+        lambda _: pytest.fail("unexpected I/O")
     )
     with pytest.raises((ValueError, GraphCapabilityUnavailable)):
         provider.search(
@@ -165,7 +187,7 @@ def test_invalid_request_refuses_before_database_resolution(patch):
         )
 
 
-def test_route_lifetime_and_exclusive_activation_close_before_and_after():
+def test_route_lifetime_revalidates_before_publishing():
     events = []
 
     @contextmanager
@@ -183,39 +205,25 @@ def test_route_lifetime_and_exclusive_activation_close_before_and_after():
         revalidate_snapshot=lambda *a, **kw: events.append("validate"),
     )
     native = SimpleNamespace(
-        prepare=lambda *a, **kw: events.append("prepare") or {"ready": True},
         search=lambda *a: events.append("search") or {"hits": []},
     )
     facade = CommunityRoutedRankedSearch(
         resolver,
         native,
         operation_window=window,
-        mutation_window=window,
-        close=lambda _: events.append("close"),
     )
-    facade.prepare(BOARD_ID, "Decision", reason="test")
-    assert events == [
-        ("enter", {"phase": "graph_schema_migrate"}),
-        "acquire",
-        "close",
-        "prepare",
-        "validate",
-        "close",
-        ("exit", {"phase": "graph_schema_migrate"}),
-    ]
-    events.clear()
     facade.search(BOARD_ID, RankedGraphQuery("Decision", "test"))
     assert events == [("enter", {}), "acquire", "search", "validate", ("exit", {})]
 
 
 def test_native_search_retains_snapshot_across_a_concurrent_committed_update(
-    ranked, monkeypatch
+    indexed_ranked, monkeypatch
 ):
     import okto_grafx
     from okto_pulse.community.adapters.grafx_graph_store import CommunityGrafxGraphStore
 
-    provider, _store, db, fence, path = ranked
-    provider.prepare(BOARD_ID, "Decision", reason="snapshot test")
+    provider, _store, db, fence, path = indexed_ranked
+    prepare_fixture_index(db)
     native = okto_grafx.Database.search_text
     with okto_grafx.connect(path, page_size=4096) as writer:
         store = CommunityGrafxGraphStore(lambda _: writer, fence)
@@ -250,8 +258,8 @@ def test_native_search_retains_snapshot_across_a_concurrent_committed_update(
             )
 
 
-def test_index_definition_or_staleness_is_never_accepted_as_ready(ranked):
-    provider, _, db, *_ = ranked
+def test_index_definition_or_staleness_is_never_accepted_as_ready(indexed_ranked):
+    provider, _, db, *_ = indexed_ranked
     for patch in (
         {"stale": True},
         {"columns": ("content",)},
@@ -275,38 +283,29 @@ def test_index_definition_or_staleness_is_never_accepted_as_ready(ranked):
             provider._ready(facade, "Decision")
 
 
-def test_visibility_payload_memory_bound_is_a_refusal(ranked, monkeypatch):
+def test_visibility_payload_memory_bound_is_a_refusal(indexed_ranked, monkeypatch):
     from okto_pulse.community.adapters import grafx_ranked_search as module
 
     monkeypatch.setattr(module, "_FILTER_PAYLOAD_BYTES", 1)
     with pytest.raises(GraphError):
-        ranked[0].search(BOARD_ID, RankedGraphQuery("Decision", "durable"))
+        indexed_ranked[0].search(BOARD_ID, RankedGraphQuery("Decision", "durable"))
 
 
-def test_retirement_keeps_primary_failure_and_stale_route_never_publishes():
+def test_stale_route_never_publishes():
     from contextlib import nullcontext
     from unittest.mock import Mock
 
     resolver = SimpleNamespace(
         acquire_board_route=lambda _: "snapshot", revalidate_snapshot=Mock()
     )
-    primary = GraphCapabilityUnavailable("activation refused")
     native = SimpleNamespace(
-        prepare=Mock(side_effect=primary),
         search=lambda *a: {"hits": ["must not escape"]},
     )
-    close = Mock(side_effect=[None, RuntimeError("close failed")])
     facade = CommunityRoutedRankedSearch(
         resolver,
         native,
         operation_window=lambda _: nullcontext(),
-        mutation_window=lambda *a, **kw: nullcontext(),
-        close=close,
     )
-    with pytest.raises(GraphCapabilityUnavailable) as failure:
-        facade.prepare(BOARD_ID, "Decision", reason="test")
-    assert failure.value is primary
-    assert "Participant closure also failed" in primary.__notes__[0]
     resolver.revalidate_snapshot.side_effect = GraphCapabilityUnavailable(
         "generation changed"
     )

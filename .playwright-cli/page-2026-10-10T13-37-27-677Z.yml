@@ -1,0 +1,331 @@
+- generic [ref=f6e3]:
+  - banner [ref=f6e4]:
+    - generic [ref=f6e5]:
+      - generic [ref=f6e6]:
+        - button "Hide sidebar" [ref=f6e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f6e12]
+        - generic [ref=f6e31]: / My Board
+      - generic [ref=f6e32]:
+        - button "Refresh board" [ref=f6e33] [cursor=pointer]
+        - button [ref=f6e40] [cursor=pointer]
+  - generic [ref=f6e13]:
+    - complementary [ref=f6e14]:
+      - generic [ref=f6e15]:
+        - generic [ref=f6e17]:
+          - heading "Boards" [level=2] [ref=f6e18]
+          - button "New board" [ref=f6e19] [cursor=pointer]
+        - navigation [ref=f6e21]:
+          - generic [ref=f6e22]:
+            - heading "My Boards" [level=3] [ref=f6e23]
+            - list [ref=f6e44]:
+              - listitem [ref=f6e45]:
+                - button "My Board" [ref=f6e46] [cursor=pointer]
+    - main [ref=f6e26]:
+      - group "Board views" [ref=f6e53]:
+        - button "Stories" [ref=f6e54] [cursor=pointer]
+        - button "Ideations" [ref=f6e58] [cursor=pointer]
+        - button "Refinements" [ref=f6e61] [cursor=pointer]
+        - button "Specs" [ref=f6e66] [cursor=pointer]
+        - button "Tasks" [active] [pressed] [ref=f6e71] [cursor=pointer]
+      - generic [ref=f6e651]:
+        - generic [ref=f6e652]:
+          - textbox "Search cards…" [ref=f6e654]
+          - button "Unlinked" [ref=f6e657] [cursor=pointer]
+          - button "Filter specs..." [ref=f6e659] [cursor=pointer]
+          - button "Show archived" [ref=f6e663] [cursor=pointer]
+        - generic [ref=f6e664]:
+          - generic [ref=f6e665]:
+            - generic [ref=f6e666]:
+              - generic [ref=f6e668]:
+                - generic [ref=f6e669]:
+                  - generic [ref=f6e670]:
+                    - heading "Not Started" [level=3] [ref=f6e671]
+                    - generic "2 total cards" [ref=f6e672]: "2"
+                  - generic [ref=f6e673]:
+                    - button "1 task cards" [pressed] [ref=f6e674] [cursor=pointer]:
+                      - generic [ref=f6e675]: Task
+                      - generic [ref=f6e680]: "1"
+                    - button "1 test cards" [pressed] [ref=f6e681] [cursor=pointer]:
+                      - generic [ref=f6e682]: Test
+                      - generic [ref=f6e686]: "1"
+                    - button "0 bug cards" [pressed] [ref=f6e687] [cursor=pointer]:
+                      - generic [ref=f6e688]: Bug
+                      - generic [ref=f6e699]: "0"
+                - button "Add card to Not Started" [ref=f6e700] [cursor=pointer]
+              - generic [ref=f6e702]:
+                - 'button "H01 — Consultar itens spec list_items(items) retorna cópia da lista na ordem original; lista vazia retorna []. Não altera items. Implementar somente esta função em shopping.py, sem I/O; registrar provas reais. Nenhum percentual narrado constitui evidência. mock completude Implementation 0% Verified delivery 0% 0%. 0 of 4 obligations have current implementation proof 0%. 4 planned · 0 implemented · 0 verified · 0 accepted C: Codex A: Codex" [ref=f6e703]':
+                  - generic [ref=f6e704]:
+                    - generic "Move card" [ref=f6e705]
+                    - generic [ref=f6e713] [cursor=pointer]:
+                      - generic [ref=f6e714]:
+                        - heading "H01 — Consultar itens" [level=4] [ref=f6e715]
+                        - generic "Linked to a spec" [ref=f6e716]: spec
+                      - paragraph [ref=f6e720]: list_items(items) retorna cópia da lista na ordem original; lista vazia retorna []. Não altera items. Implementar somente esta função em shopping.py, sem I/O; registrar provas reais. Nenhum percentual narrado constitui evidência.
+                      - generic [ref=f6e721]:
+                        - generic [ref=f6e722]: mock
+                        - generic [ref=f6e723]: completude
+                      - generic "4 planned · 0 implemented · 0 verified · 0 accepted" [ref=f6e724]:
+                        - generic [ref=f6e725]:
+                          - generic [ref=f6e726]:
+                            - text: Implementation
+                            - strong [ref=f6e727]: 0%
+                          - generic [ref=f6e728]:
+                            - text: Verified delivery
+                            - strong [ref=f6e729]: 0%
+                        - generic [ref=f6e730]:
+                          - progressbar "Implementation"
+                          - progressbar "Verified delivery"
+                      - generic [ref=f6e732]:
+                        - 'generic "Creator: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=f6e733]': "C: Codex"
+                        - 'generic "Assignee: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=f6e734]': "A: Codex"
+                - 'button "test T01 — Verificar Consultar itens spec Executar os cenários vinculados usando unittest em test_shopping.py, com dados isolados. Admitir o relatório do runner autenticado e associar a prova atual da implementação, sem fabricar resultados. mock completude 2 scenarios linked C: Codex A: Codex" [ref=f6e735]':
+                  - generic [ref=f6e736]:
+                    - generic "Move card" [ref=f6e737]
+                    - generic [ref=f6e745] [cursor=pointer]:
+                      - generic [ref=f6e746]:
+                        - generic [ref=f6e747]: test
+                        - heading "T01 — Verificar Consultar itens" [level=4] [ref=f6e750]
+                        - generic "Linked to a spec" [ref=f6e751]: spec
+                      - paragraph [ref=f6e755]: Executar os cenários vinculados usando unittest em test_shopping.py, com dados isolados. Admitir o relatório do runner autenticado e associar a prova atual da implementação, sem fabricar resultados.
+                      - generic [ref=f6e756]:
+                        - generic [ref=f6e757]: mock
+                        - generic [ref=f6e758]: completude
+                      - generic [ref=f6e759]: 2 scenarios linked
+                      - generic [ref=f6e764]:
+                        - 'generic "Creator: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=f6e765]': "C: Codex"
+                        - 'generic "Assignee: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=f6e766]': "A: Codex"
+            - generic [ref=f6e767]:
+              - generic [ref=f6e769]:
+                - generic [ref=f6e770]:
+                  - generic [ref=f6e771]:
+                    - heading "Started" [level=3] [ref=f6e772]
+                    - generic "0 total cards" [ref=f6e773]: "0"
+                  - generic [ref=f6e774]:
+                    - button "0 task cards" [pressed] [ref=f6e775] [cursor=pointer]:
+                      - generic [ref=f6e776]: Task
+                      - generic [ref=f6e781]: "0"
+                    - button "0 test cards" [pressed] [ref=f6e782] [cursor=pointer]:
+                      - generic [ref=f6e783]: Test
+                      - generic [ref=f6e787]: "0"
+                    - button "0 bug cards" [pressed] [ref=f6e788] [cursor=pointer]:
+                      - generic [ref=f6e789]: Bug
+                      - generic [ref=f6e800]: "0"
+                - button "Add card to Started" [ref=f6e801] [cursor=pointer]
+              - generic [ref=f6e803]: No cards
+            - generic [ref=f6e805]:
+              - generic [ref=f6e808]:
+                - generic [ref=f6e809]:
+                  - heading "In Progress" [level=3] [ref=f6e810]
+                  - generic "6 total cards" [ref=f6e811]: "6"
+                - generic [ref=f6e812]:
+                  - button "3 task cards" [pressed] [ref=f6e813] [cursor=pointer]:
+                    - generic [ref=f6e814]: Task
+                    - generic [ref=f6e819]: "3"
+                  - button "3 test cards" [pressed] [ref=f6e820] [cursor=pointer]:
+                    - generic [ref=f6e821]: Test
+                    - generic [ref=f6e825]: "3"
+                  - button "0 bug cards" [pressed] [ref=f6e826] [cursor=pointer]:
+                    - generic [ref=f6e827]: Bug
+                    - generic [ref=f6e838]: "0"
+              - generic [ref=f6e839]:
+                - 'button "H02 — Adicionar item spec add_item(items, name) aplica strip ao nome, anexa item com id=max(ids,default=0)+1 e purchased=false, retornando nova lista. Nome vazio após strip gera ValueError(\"name_required\") sem alterar a entrada. Implementar somente esta função em shopping.py, sem I/O; registrar provas reais. Nenhum percentual narrado constitui evidência. mock completude Implementation 25% Verified delivery 12% 25%. 1 of 4 obligations have current implementation proof 12%. 3 planned · 1 implemented · 0 verified · 0 accepted C: Codex A: Codex" [ref=f6e840]':
+                  - generic [ref=f6e841]:
+                    - generic "Move card" [ref=f6e842]
+                    - generic [ref=f6e850] [cursor=pointer]:
+                      - generic [ref=f6e851]:
+                        - heading "H02 — Adicionar item" [level=4] [ref=f6e852]
+                        - generic "Linked to a spec" [ref=f6e853]: spec
+                      - paragraph [ref=f6e857]: add_item(items, name) aplica strip ao nome, anexa item com id=max(ids,default=0)+1 e purchased=false, retornando nova lista. Nome vazio após strip gera ValueError("name_required") sem alterar a entrada. Implementar somente esta função em shopping.py, sem I/O; registrar provas reais. Nenhum percentual narrado constitui evidência.
+                      - generic [ref=f6e858]:
+                        - generic [ref=f6e859]: mock
+                        - generic [ref=f6e860]: completude
+                      - generic "3 planned · 1 implemented · 0 verified · 0 accepted" [ref=f6e861]:
+                        - generic [ref=f6e862]:
+                          - generic [ref=f6e863]:
+                            - text: Implementation
+                            - strong [ref=f6e864]: 25%
+                          - generic [ref=f6e865]:
+                            - text: Verified delivery
+                            - strong [ref=f6e866]: 12%
+                        - generic [ref=f6e867]:
+                          - progressbar "Implementation" [ref=f6e868]
+                          - progressbar "Verified delivery" [ref=f6e869]
+                      - generic [ref=f6e871]:
+                        - 'generic "Creator: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=f6e872]': "C: Codex"
+                        - 'generic "Assignee: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=f6e873]': "A: Codex"
+                - 'button "test T02 — Verificar Adicionar item spec Executar os cenários vinculados usando unittest em test_shopping.py, com dados isolados. Admitir o relatório do runner autenticado e associar a prova atual da implementação, sem fabricar resultados. mock completude 2 scenarios linked C: Codex A: Codex" [ref=f6e874]':
+                  - generic [ref=f6e875]:
+                    - generic "Move card" [ref=f6e876]
+                    - generic [ref=f6e884] [cursor=pointer]:
+                      - generic [ref=f6e885]:
+                        - generic [ref=f6e886]: test
+                        - heading "T02 — Verificar Adicionar item" [level=4] [ref=f6e889]
+                        - generic "Linked to a spec" [ref=f6e890]: spec
+                      - paragraph [ref=f6e894]: Executar os cenários vinculados usando unittest em test_shopping.py, com dados isolados. Admitir o relatório do runner autenticado e associar a prova atual da implementação, sem fabricar resultados.
+                      - generic [ref=f6e895]:
+                        - generic [ref=f6e896]: mock
+                        - generic [ref=f6e897]: completude
+                      - generic [ref=f6e898]: 2 scenarios linked
+                      - generic [ref=f6e903]:
+                        - 'generic "Creator: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=f6e904]': "C: Codex"
+                        - 'generic "Assignee: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=f6e905]': "A: Codex"
+                - 'button "H03 — Marcar compra spec set_purchased(items,id,value) retorna nova lista com purchased=value no id existente; preserva ordem, nomes e demais itens. Chamadas true e false são idempotentes. Id ausente gera ValueError(\"item_not_found\"). Implementar somente esta função em shopping.py, sem I/O; registrar provas reais. Nenhum percentual narrado constitui evidência. mock completude Implementation 100% Verified delivery 50% 100%. 4 of 4 obligations have current implementation proof 50%. 0 planned · 4 implemented · 0 verified · 0 accepted C: Codex A: Codex" [ref=f6e906]':
+                  - generic [ref=f6e907]:
+                    - generic "Move card" [ref=f6e908]
+                    - generic [ref=f6e916] [cursor=pointer]:
+                      - generic [ref=f6e917]:
+                        - heading "H03 — Marcar compra" [level=4] [ref=f6e918]
+                        - generic "Linked to a spec" [ref=f6e919]: spec
+                      - paragraph [ref=f6e923]: set_purchased(items,id,value) retorna nova lista com purchased=value no id existente; preserva ordem, nomes e demais itens. Chamadas true e false são idempotentes. Id ausente gera ValueError("item_not_found"). Implementar somente esta função em shopping.py, sem I/O; registrar provas reais. Nenhum percentual narrado constitui evidência.
+                      - generic [ref=f6e924]:
+                        - generic [ref=f6e925]: mock
+                        - generic [ref=f6e926]: completude
+                      - generic "0 planned · 4 implemented · 0 verified · 0 accepted" [ref=f6e927]:
+                        - generic [ref=f6e928]:
+                          - generic [ref=f6e929]:
+                            - text: Implementation
+                            - strong [ref=f6e930]: 100%
+                          - generic [ref=f6e931]:
+                            - text: Verified delivery
+                            - strong [ref=f6e932]: 50%
+                        - generic [ref=f6e933]:
+                          - progressbar "Implementation" [ref=f6e934]
+                          - progressbar "Verified delivery" [ref=f6e935]
+                      - generic [ref=f6e937]:
+                        - 'generic "Creator: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=f6e938]': "C: Codex"
+                        - 'generic "Assignee: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=f6e939]': "A: Codex"
+                - 'button "test T03 — Verificar Marcar compra spec Executar os cenários vinculados usando unittest em test_shopping.py, com dados isolados. Admitir o relatório do runner autenticado e associar a prova atual da implementação, sem fabricar resultados. mock completude 2 scenarios linked C: Codex A: Codex" [ref=f6e940]':
+                  - generic [ref=f6e941]:
+                    - generic "Move card" [ref=f6e942]
+                    - generic [ref=f6e950] [cursor=pointer]:
+                      - generic [ref=f6e951]:
+                        - generic [ref=f6e952]: test
+                        - heading "T03 — Verificar Marcar compra" [level=4] [ref=f6e955]
+                        - generic "Linked to a spec" [ref=f6e956]: spec
+                      - paragraph [ref=f6e960]: Executar os cenários vinculados usando unittest em test_shopping.py, com dados isolados. Admitir o relatório do runner autenticado e associar a prova atual da implementação, sem fabricar resultados.
+                      - generic [ref=f6e961]:
+                        - generic [ref=f6e962]: mock
+                        - generic [ref=f6e963]: completude
+                      - generic [ref=f6e964]: 2 scenarios linked
+                      - generic [ref=f6e969]:
+                        - 'generic "Creator: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=f6e970]': "C: Codex"
+                        - 'generic "Assignee: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=f6e971]': "A: Codex"
+                - 'button "H04 — Filtrar pendências spec filter_items(items,pending_only) retorna nova lista: se true seleciona purchased=false; se false inclui todos. Preserva ordem e não modifica items; nenhum pendente retorna []. Implementar somente esta função em shopping.py, sem I/O; registrar provas reais. Nenhum percentual narrado constitui evidência. mock completude Implementation 100% Verified delivery 50% 100%. 4 of 4 obligations have current implementation proof 50%. 0 planned · 4 implemented · 0 verified · 0 accepted C: Codex A: Codex" [ref=f6e972]':
+                  - generic [ref=f6e973]:
+                    - generic "Move card" [ref=f6e974]
+                    - generic [ref=f6e982] [cursor=pointer]:
+                      - generic [ref=f6e983]:
+                        - heading "H04 — Filtrar pendências" [level=4] [ref=f6e984]
+                        - generic "Linked to a spec" [ref=f6e985]: spec
+                      - paragraph [ref=f6e989]: "filter_items(items,pending_only) retorna nova lista: se true seleciona purchased=false; se false inclui todos. Preserva ordem e não modifica items; nenhum pendente retorna []. Implementar somente esta função em shopping.py, sem I/O; registrar provas reais. Nenhum percentual narrado constitui evidência."
+                      - generic [ref=f6e990]:
+                        - generic [ref=f6e991]: mock
+                        - generic [ref=f6e992]: completude
+                      - generic "0 planned · 4 implemented · 0 verified · 0 accepted" [ref=f6e993]:
+                        - generic [ref=f6e994]:
+                          - generic [ref=f6e995]:
+                            - text: Implementation
+                            - strong [ref=f6e996]: 100%
+                          - generic [ref=f6e997]:
+                            - text: Verified delivery
+                            - strong [ref=f6e998]: 50%
+                        - generic [ref=f6e999]:
+                          - progressbar "Implementation" [ref=f6e1000]
+                          - progressbar "Verified delivery" [ref=f6e1001]
+                      - generic [ref=f6e1003]:
+                        - 'generic "Creator: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=f6e1004]': "C: Codex"
+                        - 'generic "Assignee: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=f6e1005]': "A: Codex"
+                - 'button "test T04 — Verificar Filtrar pendências spec Executar os cenários vinculados usando unittest em test_shopping.py, com dados isolados. Admitir o relatório do runner autenticado e associar a prova atual da implementação, sem fabricar resultados. mock completude 2 scenarios linked C: Codex A: Codex" [ref=f6e1006]':
+                  - generic [ref=f6e1007]:
+                    - generic "Move card" [ref=f6e1008]
+                    - generic [ref=f6e1016] [cursor=pointer]:
+                      - generic [ref=f6e1017]:
+                        - generic [ref=f6e1018]: test
+                        - heading "T04 — Verificar Filtrar pendências" [level=4] [ref=f6e1021]
+                        - generic "Linked to a spec" [ref=f6e1022]: spec
+                      - paragraph [ref=f6e1026]: Executar os cenários vinculados usando unittest em test_shopping.py, com dados isolados. Admitir o relatório do runner autenticado e associar a prova atual da implementação, sem fabricar resultados.
+                      - generic [ref=f6e1027]:
+                        - generic [ref=f6e1028]: mock
+                        - generic [ref=f6e1029]: completude
+                      - generic [ref=f6e1030]: 2 scenarios linked
+                      - generic [ref=f6e1035]:
+                        - 'generic "Creator: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=f6e1036]': "C: Codex"
+                        - 'generic "Assignee: 67897b89-6f59-4c41-bf5f-1a530a5c8818" [ref=f6e1037]': "A: Codex"
+            - generic [ref=f6e1038]:
+              - generic [ref=f6e1041]:
+                - generic [ref=f6e1042]:
+                  - heading "Validation" [level=3] [ref=f6e1043]
+                  - generic "0 total cards" [ref=f6e1044]: "0"
+                - generic [ref=f6e1045]:
+                  - button "0 task cards" [pressed] [ref=f6e1046] [cursor=pointer]:
+                    - generic [ref=f6e1047]: Task
+                    - generic [ref=f6e1052]: "0"
+                  - button "0 test cards" [pressed] [ref=f6e1053] [cursor=pointer]:
+                    - generic [ref=f6e1054]: Test
+                    - generic [ref=f6e1058]: "0"
+                  - button "0 bug cards" [pressed] [ref=f6e1059] [cursor=pointer]:
+                    - generic [ref=f6e1060]: Bug
+                    - generic [ref=f6e1071]: "0"
+              - generic [ref=f6e1072]: No cards
+            - generic [ref=f6e1074]:
+              - generic [ref=f6e1077]:
+                - generic [ref=f6e1078]:
+                  - heading "Rejected" [level=3] [ref=f6e1079]
+                  - generic "0 total cards" [ref=f6e1080]: "0"
+                - generic [ref=f6e1081]:
+                  - button "0 task cards" [pressed] [ref=f6e1082] [cursor=pointer]:
+                    - generic [ref=f6e1083]: Task
+                    - generic [ref=f6e1088]: "0"
+                  - button "0 bug cards" [pressed] [ref=f6e1089] [cursor=pointer]:
+                    - generic [ref=f6e1090]: Bug
+                    - generic [ref=f6e1101]: "0"
+              - generic [ref=f6e1102]: No cards requiring rework
+            - generic [ref=f6e1104]:
+              - generic [ref=f6e1107]:
+                - generic [ref=f6e1108]:
+                  - heading "On Hold" [level=3] [ref=f6e1109]
+                  - generic "0 total cards" [ref=f6e1110]: "0"
+                - generic [ref=f6e1111]:
+                  - button "0 task cards" [pressed] [ref=f6e1112] [cursor=pointer]:
+                    - generic [ref=f6e1113]: Task
+                    - generic [ref=f6e1118]: "0"
+                  - button "0 test cards" [pressed] [ref=f6e1119] [cursor=pointer]:
+                    - generic [ref=f6e1120]: Test
+                    - generic [ref=f6e1124]: "0"
+                  - button "0 bug cards" [pressed] [ref=f6e1125] [cursor=pointer]:
+                    - generic [ref=f6e1126]: Bug
+                    - generic [ref=f6e1137]: "0"
+              - generic [ref=f6e1138]: No cards
+            - generic [ref=f6e1140]:
+              - generic [ref=f6e1143]:
+                - generic [ref=f6e1144]:
+                  - heading "Done" [level=3] [ref=f6e1145]
+                  - generic "0 total cards" [ref=f6e1146]: "0"
+                - generic [ref=f6e1147]:
+                  - button "0 task cards" [pressed] [ref=f6e1148] [cursor=pointer]:
+                    - generic [ref=f6e1149]: Task
+                    - generic [ref=f6e1154]: "0"
+                  - button "0 test cards" [pressed] [ref=f6e1155] [cursor=pointer]:
+                    - generic [ref=f6e1156]: Test
+                    - generic [ref=f6e1160]: "0"
+                  - button "0 bug cards" [pressed] [ref=f6e1161] [cursor=pointer]:
+                    - generic [ref=f6e1162]: Bug
+                    - generic [ref=f6e1173]: "0"
+              - generic [ref=f6e1174]: No cards
+            - generic [ref=f6e1176]:
+              - generic [ref=f6e1179]:
+                - generic [ref=f6e1180]:
+                  - heading "Cancelled" [level=3] [ref=f6e1181]
+                  - generic "0 total cards" [ref=f6e1182]: "0"
+                - generic [ref=f6e1183]:
+                  - button "0 task cards" [pressed] [ref=f6e1184] [cursor=pointer]:
+                    - generic [ref=f6e1185]: Task
+                    - generic [ref=f6e1190]: "0"
+                  - button "0 test cards" [pressed] [ref=f6e1191] [cursor=pointer]:
+                    - generic [ref=f6e1192]: Test
+                    - generic [ref=f6e1196]: "0"
+                  - button "0 bug cards" [pressed] [ref=f6e1197] [cursor=pointer]:
+                    - generic [ref=f6e1198]: Bug
+                    - generic [ref=f6e1209]: "0"
+              - generic [ref=f6e1210]: No cards
+          - status [ref=f6e1212]

@@ -1,3 +1,4 @@
+import { taskValidationFixture } from '@/test/taskValidationFixture';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CardModal, TestEvidenceTab } from '../CardModal';
@@ -7,13 +8,33 @@ import type {
   Card,
   CardSummary,
   CardStatus,
+  Spec,
   PolicyComplianceTransitionDecision,
   TestScenario,
 } from '@/types';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
+import type { useWorkspaceRevisions } from '@/hooks/useWorkspaceRevisions';
+
+const workspace = vi.hoisted(() => ({
+  options: null as Parameters<typeof useWorkspaceRevisions>[0] | null,
+  refreshPermissions: vi.fn(),
+}));
+vi.mock('@/hooks/useWorkspaceRevisions', () => ({
+  useWorkspaceRevisions: (options: Parameters<typeof useWorkspaceRevisions>[0]) => {
+    workspace.options = options;
+    return 'current';
+  },
+}));
+
+async function externalRevision() {
+  await act(async () => workspace.options!.onChange({ subjects: workspace.options!.subjects, initial: false, authorityChanged: false }));
+}
 
 const apiMock = vi.hoisted(() => ({
   getCard: vi.fn(),
+  getDeliveryEvidence: vi.fn(),
+  getBoard: vi.fn(),
+  recordCardDeliveryEvidence: vi.fn(),
   getSpec: vi.fn(),
   getSprint: vi.fn(),
   getSpecKnowledge: vi.fn(),
@@ -22,6 +43,7 @@ const apiMock = vi.hoisted(() => ({
   getCardSeenStatus: vi.fn(),
   getCardDependencies: vi.fn(),
   getCardDependents: vi.fn(),
+  getCardProjectStructure: vi.fn(),
   getCardActivity: vi.fn(),
   getArchitectureDesign: vi.fn(),
   getBugRegressionScenarioCandidates: vi.fn(),
@@ -79,6 +101,8 @@ const permissionsMock = vi.hoisted(() => ({
 const policyComplianceMock = vi.hoisted(() => ({
   panelProps: vi.fn(),
 }));
+const learningCaptureApi = vi.hoisted(() => ({ source: vi.fn(), history: vi.fn(), create: vi.fn() }));
+vi.mock('@/services/learning-capture-api', () => ({ useLearningCaptureApi: () => learningCaptureApi }));
 
 vi.mock('@/services/api', () => ({
   useDashboardApi: () => apiMock,
@@ -88,6 +112,7 @@ vi.mock('@/hooks/usePermissions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/hooks/usePermissions')>();
   return {
     ...actual,
+    refreshBoardPermissions: workspace.refreshPermissions,
     usePermissions: () => ({
       preset: 'full_control',
       isLoading: false,
@@ -123,12 +148,6 @@ vi.mock('react-hot-toast', () => ({
   },
 }));
 
-vi.mock('@/components/shared/EditableField', () => ({
-  EditableField: ({ value, renderView, placeholder }: any) => (
-    <div>{value ? renderView(value) : placeholder}</div>
-  ),
-}));
-
 vi.mock('@/components/shared/MarkdownContent', () => ({
   MarkdownContent: ({ content }: { content: string }) => <div>{content}</div>,
 }));
@@ -144,7 +163,10 @@ vi.mock('@/components/resources/ResourceGateDisclosure', () => ({
 }));
 
 vi.mock('@/components/specs/SpecModal', () => ({
-  SpecModal: () => <div />,
+  SpecModal: ({ onClose }: { onClose: () => void }) => <div role="dialog" aria-label="Nested Spec">
+    <button type="button">Nested Spec section</button>
+    <button type="button" onClick={onClose}>Close nested Spec</button>
+  </div>,
 }));
 
 vi.mock('@/components/policy-compliance', async (importOriginal) => {
@@ -210,7 +232,7 @@ vi.mock('../CardKnowledgeTab', () => ({
 }));
 
 vi.mock('@/components/architecture', () => ({
-  ArchitectureTab: () => <div />,
+  ArchitectureTab: ({ locked }: { locked?: boolean }) => <div data-testid="architecture-tab" data-locked={Boolean(locked)} />,
 }));
 
 vi.mock('@/components/traceability', () => ({
@@ -246,12 +268,19 @@ async function flushMicrotasks() {
   });
 }
 
+function policyConfig(min_confidence = 70, min_completeness = 80, max_drift = 50,
+  sources: Partial<NonNullable<Card['validation_config']>['resolved_sources']> = {},
+): NonNullable<Card['validation_config']> {
+  return { required: true, min_confidence, min_completeness, max_drift, resolved_from: 'board',
+    resolved_sources: { required: 'board', min_confidence: 'board', min_completeness: 'board', max_drift: 'board', ...sources } };
+}
+
 const bugCard: Card = {
+  validation_config: policyConfig(),
   subject_version: 7,
   id: 'bug-1',
   board_id: 'board-1',
   spec_id: 'spec-1',
-  sprint_id: null,
   title: 'Bug: traceability is hidden',
   description: 'Bug description',
   details: null,
@@ -452,8 +481,38 @@ function policyRejection(
 }
 
 describe('CardModal', () => {
+  it('does not dismiss the Card when interacting with or closing its nested Spec', async () => {
+    apiMock.getSpec.mockResolvedValue({ id: 'spec-1', title: 'Nested source Spec', status: 'draft', version: 1,
+      test_scenarios: [], business_rules: [], api_contracts: [], technical_requirements: [], knowledge_bases: [] });
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Nested source Spec' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Nested Spec section' }));
+    expect(storeMock.closeCardModal).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog', { name: 'Nested Spec' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Close nested Spec' }));
+    expect(screen.queryByRole('dialog', { name: 'Nested Spec' })).not.toBeInTheDocument();
+    expect(storeMock.closeCardModal).not.toHaveBeenCalled();
+    fireEvent.click(document.querySelector('.modal-overlay')!);
+    expect(storeMock.closeCardModal).toHaveBeenCalledOnce();
+  });
+  it.each(['normal', 'bug', 'test'] as const)('offers only current context for the selected %s Card', async cardType => {
+    const selected = cardForType(cardType);
+    storeMock.selectedCardId = selected.id;
+    apiMock.getCard.mockResolvedValue(selected);
+    render(<CardModal boardId="board-1" />);
+    await screen.findByText(selected.title);
+    expect(screen.queryByRole('tab', { name: 'Historical context' })).not.toBeInTheDocument();
+    expect(apiMock.updateCard).not.toHaveBeenCalled();
+    expect(apiMock.moveCard).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
+    learningCaptureApi.source.mockReset().mockResolvedValue({ source_digest: 'a'.repeat(64), source_policy_version: 1, scenarios: [] });
+    learningCaptureApi.history.mockReset().mockResolvedValue({ items: [], next_cursor: null });
+    learningCaptureApi.create.mockReset();
     vi.clearAllMocks();
+    workspace.options = null;
+    workspace.refreshPermissions.mockReset().mockResolvedValue({ board_id: 'board-1', flags: { card: { entity: { read: true } } } });
     permissionsMock.has.mockImplementation((_permission: string) => true);
     storeMock.selectedCardId = 'bug-1';
     storeMock.isCardModalOpen = true;
@@ -556,7 +615,6 @@ describe('CardModal', () => {
         next_action: 'create_regression_test_card',
         semantic_gap_required: false,
         eligible_scenarios_count: 1,
-        hotfix_lane_status: 'not_applicable',
         message: 'Create a fresh regression test card that references one of the eligible existing scenarios.',
         detail: 'This is Path A: reuse an existing scenario linked to the bug origin task.',
         actions: [
@@ -633,6 +691,66 @@ describe('CardModal', () => {
     },
   );
 
+  it('loads Learning authorship lazily for a Bug and retains text across modal tabs', async () => {
+    const selected = cardForType('bug');
+    storeMock.selectedCardId = selected.id;
+    apiMock.getCard.mockResolvedValue(selected);
+    render(<CardModal boardId="board-1" />);
+    const tabs = await screen.findByRole('tablist', { name: 'Card sections' });
+    expect(learningCaptureApi.source).not.toHaveBeenCalled();
+    fireEvent.click(within(tabs).getByRole('tab', { name: /^Validation/ }));
+    const input = await screen.findByLabelText('Learning', { exact: true });
+    fireEvent.change(input, { target: { value: 'Keep this draft while inspecting details' } });
+    fireEvent.click(within(tabs).getByRole('tab', { name: /^Details$/ }));
+    fireEvent.click(within(tabs).getByRole('tab', { name: /^Validation/ }));
+    expect(screen.getByLabelText('Learning', { exact: true })).toHaveValue('Keep this draft while inspecting details');
+    expect(learningCaptureApi.source.mock.calls[0].slice(0, 2)).toEqual(['board-1', selected.id]);
+    expect(learningCaptureApi.source).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['normal', 'bug', 'test'] as const)('applies the Done Spec content restriction only to %s normal work', async (cardType) => {
+    const selected = cardForType(cardType);
+    storeMock.selectedCardId = selected.id;
+    apiMock.getCard.mockResolvedValue(selected);
+    apiMock.getSpec.mockResolvedValue({ id: 'spec-1', title: 'Delivered', status: 'done', test_scenarios: [] });
+    apiMock.getAllowedTransitions.mockResolvedValue(transitionEnvelope(selected.id, 'not_started', [
+      allowedTransition('started', cardType === 'normal' ? {
+        blocked_reason: 'normal_card_spec_done: Normal work requires an authorized Spec revision.',
+      } : {}),
+      allowedTransition('cancelled'),
+    ]));
+    render(<CardModal boardId="board-1" />);
+    const title = await screen.findByText(selected.title);
+    await waitFor(() => expect(apiMock.getSpec).toHaveBeenCalled());
+    if (cardType === 'normal') {
+      expect(await screen.findByText(/This Spec is Done\. Normal task content is locked/)).toBeVisible();
+      fireEvent.click(title);
+      expect(screen.queryByPlaceholderText('Card title')).not.toBeInTheDocument();
+      expect(apiMock.updateCard).not.toHaveBeenCalled();
+      const status = screen.getByRole('combobox', { name: 'Card status' });
+      expect(within(status).queryByRole('option', { name: 'Started' })).not.toBeInTheDocument();
+    } else {
+      apiMock.updateCard.mockResolvedValue({ ...selected, title: 'Updated regression work' });
+      fireEvent.click(title);
+      const input = screen.getByPlaceholderText('Card title');
+      fireEvent.change(input, { target: { value: 'Updated regression work' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(apiMock.updateCard).toHaveBeenCalledWith(selected.id, { title: 'Updated regression work' }));
+      expect(screen.queryByText(/Normal task content is locked/)).not.toBeInTheDocument();
+    }
+    expect(screen.getByRole('tab', { name: /^Comments/ })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Delete' }) !== null).toBe(cardType !== 'normal');
+    fireEvent.click(screen.getByRole('tab', { name: /^Resources/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Attachments/ }));
+    expect(screen.queryByText('+ Add attachment') !== null).toBe(cardType !== 'normal');
+    fireEvent.click(screen.getByRole('tab', { name: /^Knowledge/ }));
+    expect(cardKnowledgeTabMock.render).toHaveBeenLastCalledWith(expect.objectContaining({ readOnly: cardType === 'normal' }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Architecture/ }));
+    expect(screen.getByTestId('architecture-tab')).toHaveAttribute('data-locked', String(cardType === 'normal'));
+    expect(apiMock.updateCard).toHaveBeenCalledTimes(cardType === 'normal' ? 0 : 1);
+    expect(apiMock.moveCard).not.toHaveBeenCalled();
+  });
+
   it('keeps cancellation audit context in Details instead of creating a transient tab', async () => {
     const cancelledCard: Card = {
       ...cardForType('normal'),
@@ -692,6 +810,7 @@ describe('CardModal', () => {
       id: 'rejected-1',
       status: 'rejected',
       validations: [{
+        ...taskValidationFixture({ outcome: 'failed', recommendation: 'reject', validation_outcome: 'failed', completion_outcome: 'rejected', card_status: 'rejected' }),
         id: 'failed-validation-1',
         confidence: 62,
         estimated_completeness: 91,
@@ -701,14 +820,14 @@ describe('CardModal', () => {
         drift_justification: 'The implementation follows the approved scope.',
         general_justification: 'Validation rejected because confidence is below the required threshold.',
         recommendation: 'reject',
-        verdict: 'fail',
+        outcome: 'failed',
         threshold_violations: ['confidence 62 is below minimum 70'],
         resolved_thresholds: {
           min_confidence: 70,
           min_completeness: 80,
           max_drift: 50,
         },
-        evaluator_id: 'agent-1',
+        reviewer_id: 'agent-1',
         created_at: '2026-08-14T01:00:00Z',
         card_status: 'rejected',
       }],
@@ -734,9 +853,9 @@ describe('CardModal', () => {
       />,
     );
 
-    expect(
-      await screen.findByRole('heading', { name: rejectedCard.title }),
-    ).toHaveAttribute('contenteditable', 'false');
+    fireEvent.click(await screen.findByText(rejectedCard.title));
+    expect(screen.queryByPlaceholderText('Card title')).not.toBeInTheDocument();
+    expect(apiMock.updateCard).not.toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: 'Delete' }))
       .not.toBeInTheDocument();
     const status = await screen.findByRole('combobox', { name: 'Card status' });
@@ -784,6 +903,7 @@ describe('CardModal', () => {
 
   it('shows every governed completion gate that caused the current rejection', async () => {
     const gateValidation = {
+      ...taskValidationFixture(),
       id: 'successful-assessment-1',
       confidence: 96,
       estimated_completeness: 94,
@@ -793,7 +913,7 @@ describe('CardModal', () => {
       drift_justification: 'No material drift from the approved specification was found.',
       general_justification: 'The Task Validation assessment passed before completion gates ran.',
       recommendation: 'approve' as const,
-      verdict: 'pass' as const,
+      outcome: 'success' as const,
       validation_outcome: 'success' as const,
       completion_outcome: 'rejected' as const,
       completion_gate_failures: [
@@ -815,7 +935,7 @@ describe('CardModal', () => {
         summary: 'Two governed completion gates require action.',
       },
       threshold_violations: [],
-      evaluator_id: 'agent-1',
+      reviewer_id: 'agent-1',
       created_at: '2026-08-14T01:00:00Z',
       card_status: 'rejected' as const,
     };
@@ -1268,9 +1388,7 @@ describe('CardModal', () => {
       );
 
       storeMock.updateCardInColumn.mockClear();
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(10_000);
-      });
+      await externalRevision();
       await flushMicrotasks();
 
       expect(apiMock.getCard).toHaveBeenCalledTimes(2);
@@ -1281,6 +1399,82 @@ describe('CardModal', () => {
       view.unmount();
       vi.useRealTimers();
     }
+  });
+
+  it('preserves an unsaved title when an external revision changes the saved value', async () => {
+    render(<CardModal boardId="board-1" />);
+    await screen.findByRole('tablist', { name: 'Card sections' });
+    fireEvent.click(screen.getByText(bugCard.title));
+    fireEvent.change(screen.getByPlaceholderText('Card title'), { target: { value: 'My local draft' } });
+    apiMock.getCard.mockResolvedValue({ ...bugCard, title: 'Remote title', updated_at: '2026-10-14T21:00:00Z' });
+    await externalRevision();
+    expect(await screen.findByText('Current value: Remote title')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Card title')).toHaveValue('My local draft');
+    fireEvent.blur(screen.getByPlaceholderText('Card title'));
+    expect(apiMock.updateCard).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Use current value' }));
+    expect(screen.getByText('Remote title')).toBeInTheDocument();
+  });
+
+  it('keeps the Card and its draft when only the linked Spec loses access', async () => {
+    render(<CardModal boardId="board-1" />);
+    await screen.findByRole('tablist', { name: 'Card sections' });
+    fireEvent.click(screen.getByText(bugCard.title));
+    fireEvent.change(screen.getByPlaceholderText('Card title'), { target: { value: 'Unsaved authorized Card title' } });
+    workspace.refreshPermissions.mockImplementation(async () => {
+      permissionsMock.has.mockImplementation(permission => permission !== 'spec.entity.read');
+      return { board_id: 'board-1', flags: { card: { entity: { read: true } }, spec: { entity: { read: false } } } };
+    });
+    await act(async () => workspace.options!.onAccessLost());
+    await waitFor(() => expect(apiMock.getCard).toHaveBeenCalledTimes(2));
+    expect(storeMock.closeCardModal).not.toHaveBeenCalled();
+    expect(screen.getByPlaceholderText('Card title')).toHaveValue('Unsaved authorized Card title');
+    expect(workspace.options!.subjects).toEqual([{ subject_type: 'card', subject_id: bugCard.id }]);
+  });
+
+  it('still clears the Card after its own read permission is confirmed lost', async () => {
+    render(<CardModal boardId="board-1" />);
+    await screen.findByRole('tablist', { name: 'Card sections' });
+    workspace.refreshPermissions.mockResolvedValue({ board_id: 'board-1', flags: { card: { entity: { read: false } } } });
+    await act(async () => workspace.options!.onAccessLost());
+    await waitFor(() => expect(storeMock.closeCardModal).toHaveBeenCalled());
+    expect(screen.queryByText(bugCard.title)).not.toBeInTheDocument();
+  });
+
+  it('queues external invalidation while the original threshold read is pending', async () => {
+    const spec = deferred<Spec>();
+    apiMock.getSpec.mockReturnValueOnce(spec.promise);
+    render(<CardModal boardId="board-1" />);
+    await screen.findByRole('tablist', { name: 'Card sections' });
+    await externalRevision();
+    expect(apiMock.getCard).toHaveBeenCalledTimes(1);
+    await act(async () => spec.resolve({ id: 'spec-1', title: 'Loaded', test_scenarios: [] } as unknown as Spec));
+    await waitFor(() => expect(apiMock.getCard).toHaveBeenCalledTimes(2));
+  });
+
+  it('does not poll the full card without a revision change', async () => {
+    vi.useFakeTimers();
+    const view = render(<CardModal boardId="board-1" />);
+    try {
+      await flushMicrotasks();
+      expect(apiMock.getCard).toHaveBeenCalledTimes(1);
+      await act(async () => vi.advanceTimersByTimeAsync(30_000));
+      expect(apiMock.getCard).toHaveBeenCalledTimes(1);
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
+  it('clears the Card after access is revoked and ignores a late data response', async () => {
+    const late = deferred<Card>();
+    render(<CardModal boardId="board-1" />);
+    await screen.findByRole('tablist', { name: 'Card sections' });
+    apiMock.getCard.mockReturnValueOnce(late.promise);
+    await externalRevision();
+    workspace.refreshPermissions.mockResolvedValue({ board_id: 'board-1', flags: { card: { entity: { read: false } } } });
+    await act(async () => workspace.options!.onChange({ subjects: workspace.options!.subjects, initial: false, authorityChanged: true }));
+    expect(storeMock.closeCardModal).toHaveBeenCalled();
+    await act(async () => late.resolve({ ...bugCard, title: 'Protected late result' }));
+    expect(screen.queryByText('Protected late result')).not.toBeInTheDocument();
+    expect(screen.queryByText(bugCard.title)).not.toBeInTheDocument();
   });
 
   it('does not restore a projected Q&A count when card.qa.read is denied', async () => {
@@ -1372,6 +1566,8 @@ describe('CardModal', () => {
 
     const view = render(<CardModal boardId="board-1" />);
     await screen.findByText('Card with source spec');
+    fireEvent.click(screen.getByRole('tab', { name: /^Resources/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Knowledge/ }));
     await waitFor(() => {
       expect(apiMock.getSpecKnowledge).toHaveBeenCalledWith('spec-a', 'old-kb');
     });
@@ -1397,6 +1593,58 @@ describe('CardModal', () => {
     });
   });
 
+  it('submits the selected Bug Learning, preserves exact retry and changes intent when selection is removed', async () => {
+    const card = { ...cardForType('bug'), status: 'validation' as const };
+    storeMock.selectedCardId = card.id;
+    apiMock.getCard.mockResolvedValue(card);
+    apiMock.submitTaskValidation.mockRejectedValue(new Error('network unavailable'));
+    const selection = { learning_id: 'saved-learning', generation: 2, fingerprint: 'f'.repeat(64) };
+    learningCaptureApi.history.mockResolvedValue({ items: [{ ...selection, source_revision: 3,
+      capture: { content: 'Saved lesson', context: 'Correction', applicability: 'Same component',
+        source: { digest: 'a'.repeat(64), policy_version: 1 } } }], next_cursor: null });
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^Validation/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Task validation/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Choose saved Learning' }));
+    fireEvent.click(await screen.findByRole('radio', { name: /Saved lesson/ }));
+    for (const placeholder of ['Justify the confidence score...', 'Justify the completeness score...',
+      'Justify the drift score...', 'Overall validation summary...']) {
+      fireEvent.change(screen.getByPlaceholderText(placeholder), { target: { value: 'Independent review supported by the current evidence.' } });
+    }
+    const submit = () => screen.getByRole('button', { name: 'Submit Validation (Approve)' });
+    fireEvent.click(submit());
+    await waitFor(() => expect(apiMock.submitTaskValidation).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(submit()).toBeEnabled());
+    const first = apiMock.submitTaskValidation.mock.calls[0][1];
+    expect(first.learning_capture).toEqual(selection);
+    fireEvent.click(submit());
+    await waitFor(() => expect(apiMock.submitTaskValidation).toHaveBeenCalledTimes(2));
+    expect(apiMock.submitTaskValidation.mock.calls[1][1]).toEqual(first);
+    await waitFor(() => expect(submit()).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Clear Learning selection' }));
+    fireEvent.click(submit());
+    await waitFor(() => expect(apiMock.submitTaskValidation).toHaveBeenCalledTimes(3));
+    const last = apiMock.submitTaskValidation.mock.calls[2][1];
+    expect(last).not.toHaveProperty('learning_capture');
+    expect(last.idempotency_key).not.toBe(first.idempotency_key);
+    await waitFor(() => expect(submit()).toBeEnabled());
+  });
+
+  it.each(['board.read', 'card.entity.read', 'card.entity.context_read', 'card.validation.read',
+    'card.comments.read', 'card.conclusion.read', 'card.tests.read', 'spec.entity.read',
+    'spec.tests.read', 'kg.query.learning_from_bugs'])('does not offer Learning selection without %s', async denied => {
+    const card = { ...cardForType('bug'), status: 'validation' as const };
+    storeMock.selectedCardId = card.id;
+    apiMock.getCard.mockResolvedValue(card);
+    permissionsMock.has.mockImplementation(permission => permission !== denied);
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^Validation/ }));
+    const taskTab = screen.queryByRole('tab', { name: /^Task validation/ });
+    if (taskTab) fireEvent.click(taskTab);
+    expect(screen.queryByRole('button', { name: 'Choose saved Learning' })).not.toBeInTheDocument();
+    expect(learningCaptureApi.history).not.toHaveBeenCalled();
+  });
+
   it('submits the explicit task-validation contract from circular score inputs', async () => {
     const validationCard: Card = {
       ...cardForType('normal'),
@@ -1408,6 +1656,7 @@ describe('CardModal', () => {
       .mockResolvedValueOnce(validationCard)
       .mockRejectedValue(new Error('refresh unavailable'));
     apiMock.submitTaskValidation.mockResolvedValue({
+      ...taskValidationFixture(),
       id: 'validation-entry-1',
       confidence: 91,
       estimated_completeness: 89,
@@ -1417,8 +1666,8 @@ describe('CardModal', () => {
       drift_justification: 'Only intentional implementation details differ.',
       general_justification: 'The implementation is ready for independent approval.',
       recommendation: 'approve',
-      verdict: 'pass',
-      evaluator_id: 'agent-1',
+      outcome: 'success',
+      reviewer_id: 'agent-1',
       created_at: '2026-07-28T14:00:00Z',
       resolved_thresholds: {
         min_confidence: 80,
@@ -1541,6 +1790,7 @@ describe('CardModal', () => {
     const validationCard: Card = {
       ...cardForType('normal'),
       id: 'validation-thresholds-1',
+      validation_config: policyConfig(85, 90, 10),
       status: 'validation',
     };
     storeMock.currentBoard.settings = {
@@ -1574,12 +1824,12 @@ describe('CardModal', () => {
     expect(screen.queryByText('No threshold configured')).not.toBeInTheDocument();
   });
 
-  it('resolves each task-validation threshold through sprint, spec, and board overrides', async () => {
+  it('uses the Core policy instead of recomputing from parent records', async () => {
     const validationCard: Card = {
       ...cardForType('normal'),
       id: 'validation-mixed-thresholds-1',
+      validation_config: policyConfig(95, 92, 12, { min_confidence: 'spec', min_completeness: 'spec' }),
       status: 'validation',
-      sprint_id: 'sprint-1',
     };
     storeMock.currentBoard.settings = {
       min_confidence: 70,
@@ -1630,24 +1880,43 @@ describe('CardModal', () => {
       }),
     ).toBeInTheDocument();
     expect(screen.getByTestId('task-validation-confidence-threshold-source'))
-      .toHaveTextContent('Threshold source: sprint');
+      .toHaveTextContent('Threshold source: spec');
     expect(screen.getByTestId('task-validation-completeness-threshold-source'))
       .toHaveTextContent('Threshold source: spec');
     expect(screen.getByTestId('task-validation-drift-threshold-source'))
       .toHaveTextContent('Threshold source: board');
-    expect(apiMock.getSprint).toHaveBeenCalledWith('sprint-1');
+    expect(apiMock.getSprint).not.toHaveBeenCalled();
+  });
+
+  it.each([60, 90])('shows the current Spec threshold %s without changing policy', async confidence => {
+    const validationCard: Card = { ...cardForType('normal'), status: 'validation',
+      validation_config: policyConfig(confidence, 92, 0, { min_confidence: 'spec', min_completeness: 'spec', max_drift: 'spec' }) };
+    storeMock.selectedCardId = validationCard.id;
+    storeMock.currentBoard.settings = { min_confidence: 70, min_completeness: 80, max_drift: 50 };
+    apiMock.getCard.mockResolvedValue(validationCard);
+    apiMock.getSpec.mockResolvedValue({ id: 'spec-1', title: 'Spec', validation_min_completeness: 92,
+      test_scenarios: [], business_rules: [], api_contracts: [], technical_requirements: [], knowledge_bases: [] });
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^Validation/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Task validation/ }));
+    expect(await screen.findByRole('img', { name: new RegExp(`Confidence score 80 out of 100.*Minimum ${confidence}`, 'i') })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: /Completeness score 80 out of 100.*Minimum 92/i })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: /Drift score 20 out of 100.*Maximum 0/i })).toBeInTheDocument();
+    expect(screen.getByTestId('task-validation-confidence-threshold-source')).toHaveTextContent('spec');
+    expect(screen.getByTestId('task-validation-completeness-threshold-source')).toHaveTextContent('Threshold source: spec');
+    expect(apiMock.getSprint).not.toHaveBeenCalled();
+    expect(apiMock.updateCard).not.toHaveBeenCalled();
   });
 
   it('fails closed when threshold authority cannot load and retries explicitly', async () => {
     const validationCard: Card = {
       ...cardForType('normal'),
       id: 'validation-threshold-retry-1',
+      validation_config: null,
       status: 'validation',
-      sprint_id: 'sprint-threshold-retry',
     };
     storeMock.selectedCardId = validationCard.id;
     apiMock.getCard.mockResolvedValue(validationCard);
-    apiMock.getSprint.mockRejectedValueOnce(new Error('sprint unavailable'));
 
     render(<CardModal boardId="board-1" />);
 
@@ -1655,20 +1924,13 @@ describe('CardModal', () => {
     fireEvent.click(await screen.findByRole('tab', { name: /^Task validation/ }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Could not load the authoritative Spec/Sprint validation thresholds.',
+      'Could not load the authoritative Card validation thresholds.',
     );
     expect(
       screen.queryByRole('button', { name: /Submit Validation/ }),
     ).not.toBeInTheDocument();
 
-    apiMock.getSprint.mockResolvedValue({
-      id: 'sprint-threshold-retry',
-      spec_id: 'spec-1',
-      board_id: 'board-1',
-      validation_min_confidence: 96,
-      validation_min_completeness: 94,
-      validation_max_drift: 6,
-    });
+    apiMock.getCard.mockResolvedValue({ ...validationCard, validation_config: policyConfig(96, 94, 6) });
     fireEvent.click(screen.getByRole('button', { name: 'Retry thresholds' }));
 
     expect(
@@ -1686,6 +1948,7 @@ describe('CardModal', () => {
     const initialCard: Card = {
       ...cardForType('normal'),
       id: 'validation-poll-generation-1',
+      validation_config: policyConfig(71, 80, 50, { min_confidence: 'spec' }),
       status: 'validation',
       updated_at: '2026-08-06T10:00:00Z',
     };
@@ -1695,6 +1958,7 @@ describe('CardModal', () => {
     };
     const currentCard = {
       ...initialCard,
+      validation_config: policyConfig(97, 80, 50, { min_confidence: 'spec' }),
       updated_at: '2026-08-06T10:02:00Z',
     };
     const initialSpec = {
@@ -1752,14 +2016,10 @@ describe('CardModal', () => {
         screen.getByRole('button', { name: 'Submit Validation (Approve)' }),
       ).toBeEnabled();
 
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(10_000);
-      });
+      await externalRevision();
       expect(apiMock.getCard).toHaveBeenCalledTimes(2);
 
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(10_000);
-      });
+      await externalRevision();
       expect(apiMock.getCard).toHaveBeenCalledTimes(3);
 
       currentRefresh.resolve(currentCard);
@@ -1807,6 +2067,7 @@ describe('CardModal', () => {
       id: 'validation-history-1',
       status: 'done',
       validations: [{
+        ...taskValidationFixture(),
         id: 'validation-entry-1',
         confidence: 92,
         estimated_completeness: 88,
@@ -1816,8 +2077,8 @@ describe('CardModal', () => {
         drift_justification: 'No unintended product behavior was introduced.',
         general_justification: 'The implementation meets all acceptance criteria.',
         recommendation: 'approve',
-        verdict: 'pass',
-        evaluator_id: 'agent-1',
+        outcome: 'success',
+        reviewer_id: 'agent-1',
         created_at: '2026-07-28T14:00:00Z',
         resolved_thresholds: {
           min_confidence: 85,
@@ -1826,7 +2087,7 @@ describe('CardModal', () => {
           resolved_from: 'spec',
           resolved_sources: {
             required: 'spec',
-            min_confidence: 'sprint',
+            min_confidence: 'spec',
             min_completeness: 'spec',
             max_drift: 'board',
           },
@@ -1869,7 +2130,7 @@ describe('CardModal', () => {
         name: /Drift score 9 out of 100.*Maximum 15.*threshold met/i,
       }),
     ).toBeInTheDocument();
-    expect(screen.getByText('Threshold source: sprint')).toBeInTheDocument();
+    expect(screen.getAllByText('Threshold source: spec')).toHaveLength(2);
     expect(screen.getByText('Threshold source: board')).toBeInTheDocument();
   });
 
@@ -1957,8 +2218,7 @@ describe('CardModal', () => {
           status: 'passed',
           linked_task_ids: ['test-1'],
           created_at: '2026-05-06T09:30:00Z',
-          evidence: null,
-          latest_evidence: {
+          evidence: {
             test_file_path: 'tests/test_flow.py',
             test_function: 'test_flow_happy_path',
             last_run_at: '2026-05-07T12:00:00Z',
@@ -2128,6 +2388,191 @@ describe('CardModal', () => {
     expect(await screen.findByText('No history yet')).toBeInTheDocument();
   });
 
+  it('refreshes activity and lifecycle authority when only the watched revision changes', async () => {
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /Activity/i }));
+    await screen.findByText('No history yet');
+    apiMock.getAllowedTransitions.mockClear();
+    apiMock.getCardActivity.mockResolvedValue([{
+      id: 'external-event', action: 'structured_entity_updated', actor_type: 'agent', actor_id: 'agent-1',
+      actor_name: 'External evaluator', created_at: '2026-10-14T23:00:00Z', summary: 'External evaluation recorded',
+      trigger: 'structured_entity_updated', details: {},
+    }]);
+    await externalRevision();
+    expect(await screen.findByText('External evaluation recorded')).toBeInTheDocument();
+    await waitFor(() => expect(apiMock.getAllowedTransitions).toHaveBeenCalled());
+    expect(screen.getByRole('tab', { name: /Activity/i })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.click(screen.getByRole('tab', { name: /^Details$/ }));
+    apiMock.getCardActivity.mockClear();
+    await externalRevision();
+    expect(apiMock.getCardActivity).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: /Activity/i }));
+    await waitFor(() => expect(apiMock.getCardActivity).toHaveBeenCalledOnce());
+  });
+
+  it('defers inherited Knowledge bodies until their resource pane is visible', async () => {
+    apiMock.getSpec.mockResolvedValue({ id: 'spec-1', title: 'Source', knowledge_bases: [{ id: 'kb-new' }] });
+    apiMock.getSpecKnowledge.mockResolvedValue({ id: 'kb-new', title: 'Current root', content: 'Current content' });
+    render(<CardModal boardId="board-1" />);
+    await screen.findByRole('tab', { name: /^Resources/ });
+    await waitFor(() => expect(apiMock.getSpec).toHaveBeenCalled());
+    expect(apiMock.getSpecKnowledge).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: /^Resources/ }));
+    expect(apiMock.getSpecKnowledge).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: /^Knowledge/ }));
+    await waitFor(() => expect(apiMock.getSpecKnowledge).toHaveBeenCalledWith('spec-1', 'kb-new'));
+    fireEvent.click(screen.getByRole('tab', { name: /^Details$/ }));
+    apiMock.getSpecKnowledge.mockClear();
+    await externalRevision();
+    expect(apiMock.getSpecKnowledge).not.toHaveBeenCalled();
+  });
+
+  function structureProjection(name: string) {
+    return {
+      contract_version: 'project-structure/v1', state: 'projected', spec_id: 'spec-1', spec_version: 1,
+      authored: true, structure_revision: 1, digest: 'a'.repeat(64), reference_type: 'task', reference_id: 'task-1',
+      affected_references: [], nodes: [{ depth: 1, direct: true, context_only: false, reference_role: 'modify', node: {
+        id: 'node-1', parent_id: null, position: 0, kind: 'file', name, note: '', classification: 'to_be',
+        state: 'planned', interpretation_limit: null, status: 'active', task_references: [], test_references: [], evidence_ids: [],
+      } }],
+    };
+  }
+
+  function prepareStructureCard() {
+    const selected = { ...cardForType('normal'), spec_id: 'spec-1' };
+    storeMock.selectedCardId = selected.id;
+    apiMock.getCard.mockResolvedValue(selected);
+    apiMock.getSpec.mockResolvedValue({ id: 'spec-1', title: 'Source', project_structure: [], project_structure_revision: 1 });
+    apiMock.getCardProjectStructure.mockReset().mockResolvedValue(structureProjection('current.ts'));
+  }
+
+  it('watches a linked Spec only while its entity is readable, preserving Card access', async () => {
+    prepareStructureCard();
+    permissionsMock.has.mockImplementation(permission => permission !== 'spec.entity.read');
+    const view = render(<CardModal boardId="board-1" />);
+    await screen.findByRole('tab', { name: /^Details$/ });
+    const cardSubject = { subject_type: 'card', subject_id: storeMock.selectedCardId };
+    expect(workspace.options!.subjects).toEqual([cardSubject]);
+    await externalRevision();
+    expect(screen.getByRole('tab', { name: /^Details$/ })).toBeInTheDocument();
+
+    permissionsMock.has.mockImplementation(() => true);
+    view.rerender(<CardModal boardId="board-1" />);
+    expect(workspace.options!.subjects).toEqual([
+      cardSubject, { subject_type: 'spec', subject_id: 'spec-1' },
+    ]);
+
+    permissionsMock.has.mockImplementation(permission => permission !== 'spec.entity.read');
+    view.rerender(<CardModal boardId="board-1" />);
+    expect(workspace.options!.subjects).toEqual([cardSubject]);
+    expect(screen.getByRole('tab', { name: /^Details$/ })).toBeInTheDocument();
+  });
+
+  it('defers project structure until visible and refreshes it after an external revision', async () => {
+    prepareStructureCard();
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^References/ }));
+    const tab = await screen.findByRole('tab', { name: /^Project structure/ });
+    expect(apiMock.getCardProjectStructure).not.toHaveBeenCalled();
+    fireEvent.click(tab);
+    await screen.findByText('current.ts');
+    apiMock.getCardProjectStructure.mockResolvedValue(structureProjection('updated.ts'));
+    await externalRevision();
+    await screen.findByText('updated.ts');
+    fireEvent.click(screen.getByRole('tab', { name: /^Details$/ }));
+    apiMock.getCardProjectStructure.mockClear();
+    await externalRevision();
+    expect(apiMock.getCardProjectStructure).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('tab', { name: /^References/ }));
+    await waitFor(() => expect(apiMock.getCardProjectStructure).toHaveBeenCalled());
+  });
+
+  it('ignores an older project structure read after a newer revision completes', async () => {
+    prepareStructureCard();
+    const oldRead = deferred<ReturnType<typeof structureProjection>>();
+    apiMock.getCardProjectStructure.mockReturnValueOnce(oldRead.promise);
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^References/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Project structure/ }));
+    await waitFor(() => expect(apiMock.getCardProjectStructure).toHaveBeenCalled());
+    await externalRevision();
+    await screen.findByText('current.ts');
+    await act(async () => oldRead.resolve(structureProjection('outdated.ts')));
+    expect(screen.getByText('current.ts')).toBeInTheDocument();
+    expect(screen.queryByText('outdated.ts')).not.toBeInTheDocument();
+  });
+
+  it('does not restore project structure after read permission is revoked', async () => {
+    prepareStructureCard();
+    const oldRead = deferred<ReturnType<typeof structureProjection>>();
+    apiMock.getCardProjectStructure.mockReturnValueOnce(oldRead.promise);
+    const view = render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^References/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Project structure/ }));
+    await waitFor(() => expect(apiMock.getCardProjectStructure).toHaveBeenCalled());
+    permissionsMock.has.mockImplementation(permission => permission !== 'spec.entity.read');
+    view.rerender(<CardModal boardId="board-1" />);
+    await act(async () => oldRead.resolve(structureProjection('protected.ts')));
+    expect(screen.queryByRole('tab', { name: /^Project structure/ })).not.toBeInTheDocument();
+    permissionsMock.has.mockImplementation(() => true);
+    apiMock.getCardProjectStructure.mockResolvedValue(structureProjection('authorized.ts'));
+    view.rerender(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^Project structure/ }));
+    await screen.findByText('authorized.ts');
+    expect(screen.queryByText('protected.ts')).not.toBeInTheDocument();
+  });
+
+  it('refreshes dependency summaries without requiring a Card timestamp change', async () => {
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^References/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Dependencies/ }));
+    apiMock.getCardDependencies.mockResolvedValue([{ id: 'predecessor', title: 'External prerequisite', status: 'in_progress' }]);
+    await externalRevision();
+    await screen.findByText(/External prerequisite/);
+    apiMock.getCardDependencies.mockResolvedValue([]);
+    await externalRevision();
+    await waitFor(() => expect(screen.queryByText(/External prerequisite/)).not.toBeInTheDocument());
+  });
+
+  it('refreshes inherited Knowledge roots after an external Spec edit and removes deleted roots', async () => {
+    apiMock.getSpec.mockResolvedValue({ id: 'spec-1', title: 'Source', knowledge_bases: [{ id: 'kb-old' }] });
+    apiMock.getSpecKnowledge.mockResolvedValue({ id: 'kb-old', title: 'Old root', content: 'Old content' });
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^Resources/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /^Knowledge/ }));
+    const roots = () => cardKnowledgeTabMock.render.mock.calls.at(-1)![0].specKnowledgeBases;
+    await waitFor(() => expect(roots()).toEqual([expect.objectContaining({ id: 'kb-old' })]));
+    apiMock.getSpec.mockResolvedValue({ id: 'spec-1', title: 'Source', knowledge_bases: [{ id: 'kb-new' }] });
+    apiMock.getSpecKnowledge.mockResolvedValue({ id: 'kb-new', title: 'New root', content: 'New content' });
+    await externalRevision();
+    await waitFor(() => expect(roots()).toEqual([expect.objectContaining({ id: 'kb-new' })]));
+    apiMock.getSpec.mockResolvedValue({ id: 'spec-1', title: 'Source', knowledge_bases: [] });
+    await externalRevision();
+    await waitFor(() => expect(roots()).toEqual([]));
+  });
+
+  it('propagates external revisions and visibility through Resources to Knowledge', async () => {
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^Resources/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /^Knowledge/ }));
+    await screen.findByTestId('card-knowledge-tab');
+    const props = () => cardKnowledgeTabMock.render.mock.calls.at(-1)![0];
+    expect(props().active).toBe(true);
+    const initial = props().revision;
+    await externalRevision();
+    await waitFor(() => expect(props().revision).not.toBe(initial));
+    expect(props().active).toBe(true);
+    fireEvent.click(screen.getByRole('tab', { name: /^Details$/ }));
+    expect(props().active).toBe(false);
+    const hidden = props().revision;
+    await externalRevision();
+    await waitFor(() => expect(props().revision).not.toBe(hidden));
+    expect(props().active).toBe(false);
+    fireEvent.click(screen.getByRole('tab', { name: /^Resources/ }));
+    expect(props().active).toBe(true);
+    expect(screen.getByRole('tab', { name: /^Knowledge/ })).toHaveAttribute('aria-selected', 'true');
+  });
+
   it.each(['assign', 'drop', 'refresh'] as const)(
     'keeps the Knowledge tab mounted and ignores Escape, backdrop, and tab changes during %s',
     async (operation) => {
@@ -2191,10 +2636,21 @@ describe('TestEvidenceTab — re-executable evidence visibility (spec 9e0bf979)'
       status: 'passed',
       linked_task_ids: null,
       evidence: null,
-      latest_evidence: null,
       ...overrides,
     } as TestScenario;
   }
+
+  it('shows external report evidence on the Test Card without claiming independent approval', () => {
+    render(<TestEvidenceTab scenarios={[scenario({ id: 'report', verification_method: 'inspection', evidence: {
+      evidence_class: 'verification_report', report_author_id: 'inspector', execution_receipt: 'opaque',
+      verification_report: { method: 'inspection', report_id: 'inspection-1', result: 'passed',
+        observed_at: '2026-09-23T10:00:00Z', conclusion: 'Imports observed through public ports', observations: [] },
+    } })]} />);
+    expect(screen.getByText('Submission author: inspector')).toBeInTheDocument();
+    expect(screen.getByText(/Imports observed through public ports/)).toBeInTheDocument();
+    expect(screen.getByText(/Independent approval is separate/)).toBeInTheDocument();
+    expect(screen.getByTestId('evidence-badge-report')).toHaveAttribute('data-replayable', 'false');
+  });
 
   it('renders the new re-executable evidence fields for a replay_command scenario', () => {
     render(
@@ -2417,10 +2873,162 @@ describe('ExecutionReportsPanel impact evidence (TS-11)', () => {
 // remediation renders IN-PLACE and the prompt keeps its state; the same
 // submit succeeds after the gate clears.
 describe('conclusion prompt keeps state on impact_evidence_required (TS-16)', () => {
-  it('shows the remediation without closing and retries successfully', async () => {
+  beforeEach(() => {
+    // This group must also run alone, without state from the CardModal group.
+    vi.clearAllMocks();
+    permissionsMock.has.mockImplementation(() => true);
+    storeMock.isCardModalOpen = true;
+    storeMock.columns = emptyColumns();
+    apiMock.getBoard.mockReset().mockResolvedValue({ settings: {} });
+    apiMock.getSpec.mockReset().mockResolvedValue({
+      id: 'spec-1', title: 'Stories spec', test_scenarios: [], business_rules: [], api_contracts: [],
+      technical_requirements: [], knowledge_bases: [],
+    });
+    apiMock.getSpecKnowledge.mockReset().mockResolvedValue(null);
+    apiMock.listAgentsForBoard.mockReset().mockResolvedValue([]);
+    apiMock.getCardSeenStatus.mockReset().mockResolvedValue({ items: {} });
+    apiMock.getCardDependencies.mockReset().mockResolvedValue([]);
+    apiMock.getCardDependents.mockReset().mockResolvedValue([]);
+    apiMock.getCardActivity.mockReset().mockResolvedValue([]);
+    learningCaptureApi.source.mockReset().mockResolvedValue({
+      source_digest: 'a'.repeat(64), source_policy_version: 1, scenarios: [],
+    });
+    learningCaptureApi.history.mockReset().mockResolvedValue({ items: [], next_cursor: null });
+  });
+  async function prepareAtomicReport(target: 'validation' | 'done' = 'validation', cardType: 'normal' | 'bug' = 'normal') {
+    const normalCard = { ...cardForType(cardType), status: 'in_progress', spec_id: 'spec-1' } as Card;
+    storeMock.selectedCardId = normalCard.id;
+    apiMock.getCard.mockResolvedValue(normalCard);
+    apiMock.getBoard.mockResolvedValue({ settings: { delivery_evidence_gate: 'blocking' } });
+    apiMock.getAllowedTransitions.mockResolvedValue(transitionEnvelope(normalCard.id, 'in_progress', [allowedTransition(target)]));
+    apiMock.getDeliveryEvidence.mockResolvedValue({ board_id: 'board-1', spec_id: 'spec-1', edition: 1,
+      rows: [], implementations: [], candidates: [], records: [], rejected_record_ids: [],
+      per_card: [{ card_id: normalCard.id, status: 'in_progress', card_version: 2, delivery_revision: 3, obligations: [],
+        selection: { total: 1, truncated: false, records: [{ id: 'saved-proof', kind: 'implementation', summary: 'Delivered parser' }] } }] });
+    render(<CardModal boardId="board-1" />);
+    const status = await screen.findByRole('combobox', { name: 'Card status' });
+    await waitFor(() => expect(status).not.toBeDisabled());
+    fireEvent.change(status, { target: { value: target } });
+    await screen.findByText('Execution Report Required');
+    fireEvent.change(screen.getByPlaceholderText(/## Implementation Summary/), { target: { value: 'Final review summary' } });
+    fireEvent.change(screen.getByPlaceholderText('Justify the completeness score...'), { target: { value: 'complete' } });
+    fireEvent.change(screen.getByPlaceholderText('Justify the drift score...'), { target: { value: 'no drift' } });
+    fireEvent.click(screen.getByLabelText('Save a last batch together with this report'));
+    const submit = screen.getByRole('button', { name: /Complete & Move to/ });
+    expect(submit).toBeDisabled();
+    fireEvent.click(screen.getByLabelText('Seal recorded evidence with this report'));
+    await screen.findByText('Delivery revision 3 · 1 selected');
+    await screen.findByLabelText('Work recorded');
+    return { submit, normalCard };
+  }
+
+  function stageReportProgress() {
+    fireEvent.change(screen.getByLabelText('Work recorded'), { target: { value: 'Review notes' } });
+    fireEvent.change(screen.getByLabelText('Remaining work'), { target: { value: 'Independent review' } });
+    fireEvent.change(screen.getByLabelText('Code change in this checkpoint'), { target: { value: 'none' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add progress to report draft' }));
+  }
+
+  it.each([[false, false], [false, true], [true, false], [true, true]])(
+    'submits joint Bug Learning once with stable retry; batch=%s edit=%s', async (batch, edit) => {
+      learningCaptureApi.source.mockReset().mockResolvedValue({ source_digest: 'a'.repeat(64), source_policy_version: 7,
+        scenarios: [{ id: 'proof', title: 'Signed inspection', authenticated: true }] });
+      const { submit } = await prepareAtomicReport('validation', 'bug');
+      if (batch) stageReportProgress();
+      else fireEvent.click(screen.getByLabelText('Save a last batch together with this report'));
+      fireEvent.click(screen.getByLabelText('Record a Learning with this report'));
+      expect(submit).toBeDisabled();
+      for (const label of ['Learning for this report', 'Learning context', 'Learning applicability']) {
+        fireEvent.change(screen.getByLabelText(label), { target: { value: 'The authored lesson' } });
+      }
+      fireEvent.click(await screen.findByRole('checkbox', { name: 'Signed inspection' }));
+      const writer = batch ? apiMock.recordCardDeliveryEvidence : apiMock.moveCard;
+      writer.mockReset().mockRejectedValueOnce(new Error('Joint request timed out'))
+        .mockResolvedValueOnce({ ...cardForType('bug'), status: 'validation' });
+      fireEvent.click(submit); await screen.findByText('Joint request timed out');
+      expect(screen.getByLabelText('Learning for this report')).toHaveValue('The authored lesson');
+      if (edit) fireEvent.change(screen.getByPlaceholderText(/## Implementation Summary/), { target: { value: 'Corrected report' } });
+      fireEvent.click(submit);
+      await waitFor(() => expect(screen.queryByText('Execution Report Required')).not.toBeInTheDocument());
+      const reports = writer.mock.calls.map(call => batch ? call[3].report : call[1]);
+      expect(reports[0].learning_submission).toEqual({ capture_id: expect.any(String),
+        expected_source_digest: 'a'.repeat(64), expected_source_version: 7, scenario_ids: ['proof'],
+        content: 'The authored lesson', context: 'The authored lesson', applicability: 'The authored lesson' });
+      if (edit) expect(reports[1].learning_submission.capture_id).not.toBe(reports[0].learning_submission.capture_id);
+      else expect(reports[1]).toEqual(reports[0]);
+    });
+
+  it('keeps the Done report, selection and unsent batch when delivery proof blocks completion', async () => {
+    const { submit } = await prepareAtomicReport('done');
+    apiMock.recordCardDeliveryEvidence.mockReset().mockRejectedValueOnce(new Error('delivery_evidence_incomplete: obligations=fr:fr'));
+    stageReportProgress();
+    fireEvent.click(submit);
+    await screen.findByText('delivery_evidence_incomplete: obligations=fr:fr');
+    expect(screen.getByPlaceholderText(/## Implementation Summary/)).toHaveValue('Final review summary');
+    expect(screen.getByRole('list', { name: 'Unsent delivery entries' })).toHaveTextContent('Review notes');
+    expect(screen.getByText('Delivery revision 3 · 1 selected')).toBeInTheDocument();
+    expect(submit).not.toBeDisabled();
+    expect(apiMock.moveCard).not.toHaveBeenCalled();
+    expect(apiMock.recordCardDeliveryEvidence.mock.calls[0][3].report.status).toBe('done');
+  });
+
+  it.each([false, true])('submits the last batch once and preserves retry content, edit=%s', async edit => {
+    const { submit } = await prepareAtomicReport();
+    apiMock.recordCardDeliveryEvidence.mockReset().mockRejectedValueOnce(new Error('Request timed out')).mockResolvedValueOnce({ entries: [{ id: 'new' }], replayed: true });
+    stageReportProgress();
+    expect(apiMock.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+    expect(apiMock.moveCard).not.toHaveBeenCalled();
+    fireEvent.click(submit);
+    await screen.findByText('Request timed out');
+    expect(screen.getByRole('list', { name: 'Unsent delivery entries' })).toHaveTextContent('Review notes');
+    if (edit) fireEvent.change(screen.getByPlaceholderText(/## Implementation Summary/), { target: { value: 'Corrected review summary' } });
+    fireEvent.click(submit);
+    await waitFor(() => expect(screen.queryByText('Execution Report Required')).not.toBeInTheDocument());
+    expect(apiMock.moveCard).not.toHaveBeenCalled();
+    const first = apiMock.recordCardDeliveryEvidence.mock.calls[0][3];
+    const second = apiMock.recordCardDeliveryEvidence.mock.calls[1][3];
+    expect(first).toMatchObject({ contract_version: 'card-delivery-report/v1', expected_card_status: 'in_progress',
+      batch: { expected_card_version: 2, expected_spec_edition: 1, expected_delivery_revision: 3, entries: [{ kind: 'progress', justification: 'Review notes' }] },
+      report: { status: 'validation', conclusion: 'Final review summary' }, existing_record_ids: ['saved-proof'], reuse_impact: false });
+    expect(first.report).not.toHaveProperty('delivery_selection');
+    if (edit) expect(second.batch.idempotency_key).not.toBe(first.batch.idempotency_key);
+    else expect(second).toEqual(first);
+  });
+
+  it('blocks double submission and treats a refresh failure after commit as saved', async () => {
+    const { submit } = await prepareAtomicReport();
+    let finish!: () => void;
+    apiMock.recordCardDeliveryEvidence.mockReset().mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
+    stageReportProgress();
+    fireEvent.click(submit); fireEvent.click(submit);
+    expect(apiMock.recordCardDeliveryEvidence).toHaveBeenCalledOnce();
+    expect(submit).toBeDisabled();
+    apiMock.getCard.mockRejectedValueOnce(new Error('Refresh failed'));
+    await act(async () => finish());
+    await waitFor(() => expect(screen.queryByText('Execution Report Required')).not.toBeInTheDocument());
+    expect(apiMock.recordCardDeliveryEvidence).toHaveBeenCalledOnce();
+    expect(apiMock.moveCard).not.toHaveBeenCalled();
+  });
+
+  it('keeps a changed delivery revision from silently rebasing queued entries', async () => {
+    const { submit } = await prepareAtomicReport(); stageReportProgress();
+    const projection = await apiMock.getDeliveryEvidence.mock.results[0].value;
+    apiMock.getDeliveryEvidence.mockResolvedValue({ ...projection, per_card: [{ ...projection.per_card[0], delivery_revision: 4 }] });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh evidence selection' }));
+    await screen.findByText('Delivery revision 4 · 1 selected');
+    expect(submit).toBeDisabled();
+    expect(screen.getByRole('list', { name: 'Unsent delivery entries' })).toHaveTextContent('Review notes');
+    expect(apiMock.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove draft entry 1' }));
+    expect(submit).toBeDisabled();
+  });
+
+  it.each([false, true])('shows the remediation and retries with sealed selection=%s', async seal => {
+    apiMock.moveCard.mockReset();
     const normalCard = {
       ...cardForType('normal'),
       status: 'in_progress',
+      spec_id: 'spec-1',
     } as Card;
     storeMock.selectedCardId = normalCard.id;
     apiMock.getCard.mockResolvedValue(normalCard);
@@ -2466,6 +3074,14 @@ describe('conclusion prompt keeps state on impact_evidence_required (TS-16)', ()
     const submit = screen.getByRole('button', {
       name: /Complete & Move to/,
     });
+    if (seal) {
+      apiMock.getDeliveryEvidence.mockResolvedValue({ edition: 1, per_card: [{ card_id: normalCard.id, card_version: 2, delivery_revision: 3,
+        selection: { total: 1, truncated: false, records: [{ id: 'saved-proof', kind: 'implementation', summary: 'Delivered parser' }] } }] });
+      fireEvent.click(screen.getByLabelText('Seal recorded evidence with this report'));
+      expect(submit).toBeDisabled();
+      await screen.findByText('Delivery revision 3 · 1 selected');
+      fireEvent.click(screen.getByLabelText('Use accumulated impact from the selected records'));
+    }
     fireEvent.click(submit);
 
     // Gate rejection: remediation in-place, prompt still open, state intact.
@@ -2485,5 +3101,8 @@ describe('conclusion prompt keeps state on impact_evidence_required (TS-16)', ()
       ).not.toBeInTheDocument(),
     );
     expect(apiMock.moveCard).toHaveBeenCalledTimes(2);
+    if (seal) expect(apiMock.moveCard.mock.calls[1][1].delivery_selection).toEqual({
+      expected_card_version: 2, expected_spec_edition: 1, expected_delivery_revision: 3, record_ids: ['saved-proof'], reuse_impact: true,
+    });
   });
 });

@@ -11,6 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from okto_pulse.community.adapters.filesystem_observation import (
+    FilesystemObservationBudget, FilesystemObservationLimit,
+)
+
 
 ACTIVE_GENERATION_FILENAME = "active_generation.json"
 GENERATIONS_DIRNAME = "discovery.generations"
@@ -50,13 +54,13 @@ def validate_generation_id(value: str) -> str:
     return value
 
 
-def generations_root(legacy_path: Path) -> Path:
-    return legacy_path.parent / GENERATIONS_DIRNAME
+def generations_root(anchor_path: Path) -> Path:
+    return anchor_path.parent / GENERATIONS_DIRNAME
 
 
-def generation_dir(legacy_path: Path, generation_id: str) -> Path:
+def generation_dir(anchor_path: Path, generation_id: str) -> Path:
     safe_id = validate_generation_id(generation_id)
-    root = generations_root(legacy_path).resolve(strict=False)
+    root = generations_root(anchor_path).resolve(strict=False)
     candidate = (root / safe_id).resolve(strict=False)
     try:
         candidate.relative_to(root)
@@ -65,12 +69,12 @@ def generation_dir(legacy_path: Path, generation_id: str) -> Path:
     return candidate
 
 
-def generation_graph_path(legacy_path: Path, generation_id: str) -> Path:
-    return generation_dir(legacy_path, generation_id) / legacy_path.name
+def generation_graph_path(anchor_path: Path, generation_id: str) -> Path:
+    return generation_dir(anchor_path, generation_id) / anchor_path.name
 
 
-def active_pointer_path(legacy_path: Path) -> Path:
-    return legacy_path.parent / ACTIVE_GENERATION_FILENAME
+def active_pointer_path(anchor_path: Path) -> Path:
+    return anchor_path.parent / ACTIVE_GENERATION_FILENAME
 
 
 def fsync_directory(path: Path) -> bool:
@@ -106,7 +110,7 @@ def write_json_atomic(path: Path, payload: Mapping[str, Any]) -> bool:
 
 
 def write_generation_manifest(
-    legacy_path: Path,
+    anchor_path: Path,
     generation_id: str,
     payload: Mapping[str, Any],
 ) -> tuple[str, bool]:
@@ -119,21 +123,24 @@ def write_generation_manifest(
     manifest_sha256 = canonical_sha256(binding)
     document = {**binding, "manifest_sha256": manifest_sha256}
     supported = write_json_atomic(
-        generation_dir(legacy_path, safe_id) / GENERATION_MANIFEST_FILENAME,
+        generation_dir(anchor_path, safe_id) / GENERATION_MANIFEST_FILENAME,
         document,
     )
     return manifest_sha256, supported
 
 
 def _load_generation_manifest(
-    legacy_path: Path,
+    anchor_path: Path,
     generation_id: str,
     expected_sha256: str,
+    *,
+    observation: FilesystemObservationBudget | None = None,
 ) -> dict[str, Any]:
-    path = generation_dir(legacy_path, generation_id) / GENERATION_MANIFEST_FILENAME
+    path = generation_dir(anchor_path, generation_id) / GENERATION_MANIFEST_FILENAME
     try:
-        with path.open("r", encoding="utf-8") as stream:
-            raw = json.load(stream)
+        raw = _read_json(path, observation)
+    except FilesystemObservationLimit:
+        raise
     except (OSError, ValueError, TypeError) as exc:
         raise GlobalDiscoveryLayoutError("generation_manifest_unreadable") from exc
     if not isinstance(raw, dict):
@@ -151,13 +158,23 @@ def _load_generation_manifest(
     return raw
 
 
-def read_active_generation(legacy_path: Path) -> ActiveGeneration | None:
-    pointer = active_pointer_path(legacy_path)
+def _read_json(path: Path, observation: FilesystemObservationBudget | None):
+    if observation is not None:
+        return json.loads(observation.read_text(path, max_file_bytes=4 * 1024 * 1024))
+    with path.open("r", encoding="utf-8") as stream:
+        return json.load(stream)
+
+
+def read_active_generation(
+    anchor_path: Path, *, observation: FilesystemObservationBudget | None = None,
+) -> ActiveGeneration | None:
+    pointer = active_pointer_path(anchor_path)
     if not pointer.exists():
         return None
     try:
-        with pointer.open("r", encoding="utf-8") as stream:
-            raw = json.load(stream)
+        raw = _read_json(pointer, observation)
+    except FilesystemObservationLimit:
+        raise
     except (OSError, ValueError, TypeError) as exc:
         raise GlobalDiscoveryLayoutError("active_pointer_unreadable") from exc
     if not isinstance(raw, dict):
@@ -172,40 +189,43 @@ def read_active_generation(legacy_path: Path) -> ActiveGeneration | None:
     manifest_sha256 = str(raw.get("manifest_sha256") or "")
     if not re.fullmatch(r"[0-9a-f]{64}", manifest_sha256):
         raise GlobalDiscoveryLayoutError("active_pointer_manifest_hash_invalid")
-    _load_generation_manifest(legacy_path, generation_id, manifest_sha256)
+    _load_generation_manifest(anchor_path, generation_id, manifest_sha256, observation=observation)
+    if observation is not None:
+        observation.check()
     return ActiveGeneration(
         generation_id=generation_id,
-        graph_path=generation_graph_path(legacy_path, generation_id),
+        graph_path=generation_graph_path(anchor_path, generation_id),
         manifest_sha256=manifest_sha256,
     )
 
 
-def resolve_active_graph_path(legacy_path: Path) -> Path:
-    active = read_active_generation(legacy_path)
-    return active.graph_path if active is not None else legacy_path
+def resolve_active_graph_path(anchor_path: Path) -> Path:
+    active = read_active_generation(anchor_path)
+    return active.graph_path if active is not None else anchor_path
 
 
 def switch_active_generation(
-    legacy_path: Path,
+    anchor_path: Path,
     *,
     generation_id: str,
     manifest_sha256: str,
 ) -> bool:
     safe_id = validate_generation_id(generation_id)
-    _load_generation_manifest(legacy_path, safe_id, manifest_sha256)
+    _load_generation_manifest(anchor_path, safe_id, manifest_sha256)
     binding = {
         "layout_version": LAYOUT_VERSION,
         "generation_id": safe_id,
         "manifest_sha256": manifest_sha256,
     }
     return write_json_atomic(
-        active_pointer_path(legacy_path),
+        active_pointer_path(anchor_path),
         {**binding, "pointer_sha256": canonical_sha256(binding)},
     )
 
 
-def restore_legacy_generation(legacy_path: Path) -> bool:
-    pointer = active_pointer_path(legacy_path)
+def restore_anchor_generation(anchor_path: Path) -> bool:
+    """Restore the native bootstrap primary after a failed generation cutover."""
+    pointer = active_pointer_path(anchor_path)
     try:
         pointer.unlink()
     except FileNotFoundError:
@@ -226,7 +246,7 @@ __all__ = [
     "generation_graph_path",
     "read_active_generation",
     "resolve_active_graph_path",
-    "restore_legacy_generation",
+    "restore_anchor_generation",
     "switch_active_generation",
     "validate_generation_id",
     "write_generation_manifest",

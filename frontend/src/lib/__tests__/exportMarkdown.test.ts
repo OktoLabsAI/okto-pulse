@@ -9,7 +9,6 @@ import {
   exportIdeation,
   exportRefinement,
   exportSpec,
-  exportSprint,
   exportStory,
   markdownFilenameForCard,
   markdownFilenameForSpec,
@@ -36,6 +35,14 @@ function extractMermaidBlocks(markdown: string): string[] {
 }
 
 describe('exportMarkdown export warning collector', () => {
+  it('preserves individual architecture boundaries in the export', () => {
+    const boundaries = ['Tenant data, isolated', 'Public ports\nNo private imports'];
+    const markdown = exportSpec(specWithArchitecture([{
+      id: 'arch-1', title: 'Runtime', entities: [{ id: 'api', name: 'Checkout API', entity_type: 'service', boundaries }],
+      interfaces: [], diagrams: [],
+    }]));
+    expect(markdown).toContain('  - **Boundaries:**\n    - Tenant data, isolated\n    - Public ports\n      No private imports');
+  });
   it('normalizes, deduplicates and sorts warning buckets deterministically', () => {
     const warnings = collectExportWarnings({
       asset_warnings: [
@@ -145,32 +152,15 @@ describe('exportMarkdown export warning collector', () => {
 });
 
 describe('exportMarkdown linked criteria resolution', () => {
-  it('resolves linked criteria by index, string index, AC label, exact text and stable id', () => {
+  it('resolves only exact IDs and reports old reference formats as unresolved', () => {
     const resolved = resolveLinkedCriteriaForExport(
       [1, '2', 'AC-3', 'Fourth criterion', 'ac-5'],
-      [
-        'First criterion',
-        'Second criterion',
-        'Third criterion',
-        'Fourth criterion',
-        { id: 'ac-5', text: 'Fifth criterion' },
-      ],
+      [{ id: 'ac-5', text: 'Fifth criterion' }],
     );
-
     expect(resolved.map((item) => item.status)).toEqual([
-      'resolved',
-      'resolved',
-      'resolved',
-      'resolved',
-      'resolved',
+      'unresolved', 'unresolved', 'unresolved', 'unresolved', 'resolved',
     ]);
-    expect(resolved.map((item) => item.text)).toEqual([
-      'First criterion',
-      'Second criterion',
-      'Third criterion',
-      'Fourth criterion',
-      'Fifth criterion',
-    ]);
+    expect(resolved[4].text).toBe('Fifth criterion');
   });
 
   it('renders unresolved linked criteria as visible Export Warnings', () => {
@@ -179,7 +169,7 @@ describe('exportMarkdown linked criteria resolution', () => {
       status: 'review',
       version: 1,
       labels: [],
-      acceptance_criteria: ['First criterion', 'Second criterion'],
+      acceptance_criteria: [{ id: 'ac-first', text: 'First criterion' }, { id: 'ac-second', text: 'Second criterion' }],
       test_scenarios: [
         {
           id: 'ts-broken',
@@ -188,7 +178,7 @@ describe('exportMarkdown linked criteria resolution', () => {
           given: 'A scenario references mixed criteria.',
           when: 'The exporter renders linked criteria.',
           then: 'Resolved criteria and warnings are both visible.',
-          linked_criteria: ['2', 'AC-999'],
+          linked_criteria: ['ac-second', 'AC-999'],
           notes: null,
           status: 'ready',
           linked_task_ids: [],
@@ -325,7 +315,7 @@ describe('exportMarkdown architecture warnings', () => {
           adapter_payload: {
             elements: [
               { id: 'node-worker', linkedEntityId: 'worker/service' },
-              { id: 'edge-api-worker', sourceElementId: 'node-api', targetElementId: 'node-worker', linkedInterfaceId: 'http-calls' },
+              { id: 'edge-api-worker', sourceElementId: 'node-api', targetElementId: 'node-worker', linkedInterfaceIds: ['http-calls'] },
               { id: 'node-api', linkedEntityId: 'api gateway' },
             ],
           },
@@ -550,7 +540,7 @@ describe('exportMarkdown architecture warnings', () => {
               elements: [
                 { id: 'node-ui', linkedEntityId: 'ui' },
                 { id: 'node-api', linkedEntityId: 'api' },
-                { id: 'edge-ui-api', sourceElementId: 'node-ui', targetElementId: 'node-api', linkedInterfaceId: 'uses-api' },
+                { id: 'edge-ui-api', sourceElementId: 'node-ui', targetElementId: 'node-api', linkedInterfaceIds: ['uses-api'] },
               ],
               appState: { viewBackgroundColor: '#fff' },
               files: { asset: { id: 'file-1' } },
@@ -612,7 +602,7 @@ describe('exportMarkdown architecture warnings', () => {
                 id: 'edge-portal-service',
                 sourceElementId: 'node-portal',
                 targetElementId: 'node-service',
-                linkedInterfaceId: 'call-service',
+                linkedInterfaceIds: ['call-service'],
                 customData: { password: 'RAW_EDGE_SECRET' },
               },
             ],
@@ -1196,9 +1186,9 @@ describe('exportMarkdown complete task family export', () => {
     status: 'in_progress',
     version: 1,
     labels: [],
-    functional_requirements: ['FR1 body'],
-    technical_requirements: ['TR1 body'],
-    acceptance_criteria: ['AC1 body'],
+    functional_requirements: [{ id: 'fr-parent', text: 'FR1 body' }],
+    technical_requirements: [{ id: 'tr-parent', text: 'TR1 body' }],
+    acceptance_criteria: [{ id: 'ac-parent', text: 'AC1 body' }],
     test_scenarios: [
       {
         id: 'ts-linked',
@@ -1207,7 +1197,7 @@ describe('exportMarkdown complete task family export', () => {
         given: 'Given linked test',
         when: 'When exported',
         then: 'Then scenario is present',
-        linked_criteria: ['1'],
+        linked_criteria: ['ac-parent'],
         notes: null,
         status: 'ready',
         linked_task_ids: ['test-card'],
@@ -1242,7 +1232,7 @@ describe('exportMarkdown complete task family export', () => {
         estimated_completeness: 90,
         estimated_drift: 4,
         recommendation: 'reject',
-        verdict: 'fail',
+        outcome: 'failed',
         general_justification: 'Confidence is below the evidence threshold.',
         threshold_violations: ['Confidence 62 is below minimum 70'],
         created_at: '2026-08-14T00:00:00Z',
@@ -1286,7 +1276,7 @@ describe('exportMarkdown complete task family export', () => {
         estimated_completeness: 92,
         estimated_drift: 3,
         recommendation: 'reject',
-        verdict: 'fail',
+        outcome: 'failed',
         general_justification: 'Selected causal validation feedback.',
         threshold_violations: ['Confidence 61 is below minimum 70'],
         created_at: '2026-08-13T23:00:00Z',
@@ -1296,7 +1286,7 @@ describe('exportMarkdown complete task family export', () => {
         estimated_completeness: 88,
         estimated_drift: 7,
         recommendation: 'reject',
-        verdict: 'fail',
+        outcome: 'failed',
         general_justification: 'Newer historical feedback must not replace Current.',
         threshold_violations: ['Confidence 58 is below minimum 70'],
         created_at: '2026-08-14T00:00:00Z',
@@ -1339,7 +1329,7 @@ describe('exportMarkdown complete task family export', () => {
         estimated_completeness: 94,
         estimated_drift: 2,
         recommendation: 'approve',
-        verdict: 'pass',
+        outcome: 'success',
         validation_outcome: 'success',
         completion_outcome: 'rejected',
         general_justification: 'The implementation assessment itself passed.',
@@ -1523,12 +1513,12 @@ describe('exportMarkdown complete task family export', () => {
       validations: [
         {
           id: 'val-1',
-          verdict: 'pass',
+          outcome: 'success',
           confidence: 95,
-          completeness: 96,
-          drift: 3,
-          summary: 'Looks good',
-          evaluator_id: 'validator',
+          estimated_completeness: 96,
+          estimated_drift: 3,
+          general_justification: 'Looks good',
+          reviewer_id: 'validator',
           created_at: '2026-05-28T12:30:00Z',
         },
       ],
@@ -1639,7 +1629,7 @@ describe('exportMarkdown complete task family export', () => {
 });
 
 describe('exportMarkdown existing entity export regressions', () => {
-  it('exports ideation refinement story and sprint without exceptions or object placeholders', () => {
+  it('exports ideation refinement and story without exceptions or object placeholders', () => {
     const commonMockup = {
       id: 'mockup-1',
       title: 'Export mockup',
@@ -1712,41 +1702,7 @@ describe('exportMarkdown existing entity export regressions', () => {
       architecture_designs: [architectureDesign],
       qa_items: [{ question: 'Validated?', answer: 'Yes.' }],
     } as any);
-    const sprintMarkdown = exportSprint({
-      title: 'Sprint export',
-      status: 'closed',
-      version: 1,
-      spec_version: 3,
-      spec_id: 'spec-1',
-      start_date: '2026-05-28',
-      end_date: '2026-05-29',
-      objective: 'Ship export regression.',
-      expected_outcome: 'All existing exports still render.',
-      description: 'Sprint description.',
-      cards: [
-        { id: 'card-1', title: 'Done card', status: 'done', card_type: 'normal' },
-        { id: 'card-2', title: 'Validation card', status: 'validation', card_type: 'test' },
-      ],
-      test_scenario_ids: ['ts-1'],
-      business_rule_ids: ['br-1'],
-      evaluations: [{ evaluator_name: 'Validator', recommendation: 'approve', overall_score: 96 }],
-      labels: ['export'],
-    }, {
-      title: 'Parent spec',
-      test_scenarios: [
-        {
-          id: 'ts-1',
-          title: 'Sprint scenario',
-          given: 'Existing exports',
-          when: 'Regression suite runs',
-          then: 'Markdown remains readable',
-          status: 'passed',
-        },
-      ],
-      business_rules: [{ id: 'br-1', title: 'Export rule', when: 'Export runs', then: 'It is readable' }],
-    });
-
-    const outputs = [storyMarkdown, ideationMarkdown, refinementMarkdown, sprintMarkdown];
+    const outputs = [storyMarkdown, ideationMarkdown, refinementMarkdown];
     for (const md of outputs) {
       expect(md).not.toContain('[object Object]');
       expect(md.trim().startsWith('#')).toBe(true);
@@ -1756,9 +1712,6 @@ describe('exportMarkdown existing entity export regressions', () => {
     expect(ideationMarkdown).toContain('| **Scope Ambiguity** | 1/5 | Clear. |');
     expect(refinementMarkdown).toContain('## In Scope');
     expect(refinementMarkdown).toContain('## Decisions');
-    expect(sprintMarkdown).toContain('## Progress');
-    expect(sprintMarkdown).toContain('## Scoped Test Scenarios');
-    expect(sprintMarkdown).toContain('## Scoped Business Rules');
   });
 });
 

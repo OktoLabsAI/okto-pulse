@@ -1,0 +1,507 @@
+- generic [active] [ref=f5e1]:
+  - generic [ref=f5e3]:
+    - banner [ref=f5e4]:
+      - generic [ref=f5e5]:
+        - generic [ref=f5e6]:
+          - button "Hide sidebar" [ref=f5e7] [cursor=pointer]
+          - img "Okto Pulse" [ref=f5e12]
+          - generic [ref=f5e31]: / My Board
+        - generic [ref=f5e32]:
+          - button "Refresh board" [ref=f5e33] [cursor=pointer]
+          - button [ref=f5e40] [cursor=pointer]
+    - article [ref=f5e767]:
+      - generic [ref=f5e768]:
+        - status [ref=f5e773]:
+          - generic [ref=f5e774]: "Success:"
+          - generic [ref=f5e775]: Spec checklist policy updated
+        - button "Dismiss notification" [ref=f5e776] [cursor=pointer]
+    - generic [ref=f5e13]:
+      - complementary [ref=f5e14]:
+        - generic [ref=f5e15]:
+          - generic [ref=f5e17]:
+            - heading "Boards" [level=2] [ref=f5e18]
+            - button "New board" [ref=f5e19] [cursor=pointer]
+          - navigation [ref=f5e21]:
+            - generic [ref=f5e22]:
+              - heading "My Boards" [level=3] [ref=f5e23]
+              - list [ref=f5e44]:
+                - listitem [ref=f5e45]:
+                  - button "My Board" [ref=f5e46] [cursor=pointer]
+      - main [ref=f5e26]:
+        - group "Board views" [ref=f5e53]:
+          - button "Stories" [pressed] [ref=f5e54] [cursor=pointer]
+          - button "Ideations" [ref=f5e58] [cursor=pointer]
+          - button "Refinements" [ref=f5e61] [cursor=pointer]
+          - button "Specs" [ref=f5e66] [cursor=pointer]
+          - button "Tasks" [ref=f5e71] [cursor=pointer]
+        - generic [ref=f5e78]:
+          - generic [ref=f5e79]:
+            - generic [ref=f5e80]:
+              - heading "Stories" [level=2] [ref=f5e81]
+              - generic [ref=f5e82]: (4 of 4)
+            - generic [ref=f5e83]:
+              - textbox "Search stories..." [ref=f5e85]
+              - group "View mode" [ref=f5e86]:
+                - button "List view" [pressed] [ref=f5e87] [cursor=pointer]
+                - button "Grid view" [ref=f5e89] [cursor=pointer]
+              - button "New Story" [ref=f5e95] [cursor=pointer]
+          - generic [ref=f5e97]:
+            - button "All" [ref=f5e98] [cursor=pointer]
+            - button "Draft" [ref=f5e99] [cursor=pointer]
+            - button "Triage" [ref=f5e100] [cursor=pointer]
+            - button "Ready" [ref=f5e101] [cursor=pointer]
+            - button "Converted" [ref=f5e102] [cursor=pointer]
+            - button "Show archived" [ref=f5e103] [cursor=pointer]
+          - generic [ref=f5e104]:
+            - complementary [ref=f5e105]:
+              - generic [ref=f5e106]:
+                - generic [ref=f5e107]: Topics
+                - button "New Topic" [ref=f5e112] [cursor=pointer]
+              - generic [ref=f5e114]:
+                - button "All topics 4" [ref=f5e115] [cursor=pointer]:
+                  - generic [ref=f5e116]: All topics
+                  - generic [ref=f5e117]: "4"
+                - generic [ref=f5e118]:
+                  - button "Mock — Completude dos cards 4" [ref=f5e119] [cursor=pointer]:
+                    - generic [ref=f5e120]: Mock — Completude dos cards
+                    - generic [ref=f5e121]: "4"
+                  - 'button "Topic actions: Mock — Completude dos cards" [ref=f5e122] [cursor=pointer]'
+            - generic [ref=f5e127]:
+              - generic [ref=f5e128]:
+                - generic [ref=f5e131] [cursor=pointer]:
+                  - generic [ref=f5e132]:
+                    - generic [ref=f5e133]: Converted
+                    - generic [ref=f5e134]: Mock — Completude dos cards
+                  - heading "H01 — Consultar itens fictícios" [level=3] [ref=f5e135]
+                  - paragraph [ref=f5e136]: "Como pessoa testando o mock, quero consultar uma lista fixa e identificar quando ela está vazia, para encontrar o que está disponível sem confundir lista vazia com erro. Obrigações planejadas: listar três itens sintéticos; apresentar estado vazio. Cenário inicial: ainda sem prova…"
+                  - generic [ref=f5e137]:
+                    - generic [ref=f5e138]: "As: Pessoa testando a lista fictícia"
+                    - generic [ref=f5e139]: "Want: consultar uma lista fixa e identificar quando ela está vazia"
+                    - generic [ref=f5e140]: "So: encontrar o que está disponível sem confundir lista vazia com erro"
+                - generic [ref=f5e149] [cursor=pointer]:
+                  - generic [ref=f5e150]:
+                    - generic [ref=f5e151]: Converted
+                    - generic [ref=f5e152]: Mock — Completude dos cards
+                  - heading "H03 — Marcar e desmarcar item" [level=3] [ref=f5e153]
+                  - paragraph [ref=f5e154]: "Como pessoa testando o mock, quero marcar um item como comprado e desfazer a marcação, para acompanhar a lista sem perder o item original. Obrigações planejadas: marcar; desmarcar. Marco: ambas implementadas com verificação pendente, esperado 100% / 50%. Cenário planejado; nenhum…"
+                  - generic [ref=f5e155]:
+                    - generic [ref=f5e156]: "As: Pessoa testando a lista fictícia"
+                    - generic [ref=f5e157]: "Want: marcar um item como comprado e desfazer a marcação"
+                    - generic [ref=f5e158]: "So: acompanhar a lista sem perder o item original"
+                - generic [ref=f5e167] [cursor=pointer]:
+                  - generic [ref=f5e168]:
+                    - generic [ref=f5e169]: Converted
+                    - generic [ref=f5e170]: Mock — Completude dos cards
+                  - heading "H02 — Adicionar item ao mock" [level=3] [ref=f5e171]
+                  - paragraph [ref=f5e172]: "Como pessoa testando o mock, quero adicionar um item válido e receber uma mensagem para nome vazio, para evitar itens inválidos e verificar o que foi adicionado. Obrigações planejadas: adicionar nome válido; recusar nome vazio. Marco intermediário: apenas uma implementação compro…"
+                  - generic [ref=f5e173]:
+                    - generic [ref=f5e174]: "As: Pessoa testando a lista fictícia"
+                    - generic [ref=f5e175]: "Want: adicionar um item válido e receber uma mensagem para nome vazio"
+                    - generic [ref=f5e176]: "So: evitar itens inválidos e verificar o que foi adicionado"
+                - generic [ref=f5e185] [cursor=pointer]:
+                  - generic [ref=f5e186]:
+                    - generic [ref=f5e187]: Converted
+                    - generic [ref=f5e188]: Mock — Completude dos cards
+                  - heading "H04 — Filtrar itens pendentes" [level=3] [ref=f5e189]
+                  - paragraph [ref=f5e190]: "Como pessoa testando o mock, quero ver apenas itens pendentes e voltar à lista completa, para distinguir pendências dos itens já comprados. Obrigações planejadas: filtro de pendentes; restauração da lista completa. Marcos: testes autenticados antes de Done, esperado 100% / 80%; a…"
+                  - generic [ref=f5e191]:
+                    - generic [ref=f5e192]: "As: Pessoa testando a lista fictícia"
+                    - generic [ref=f5e193]: "Want: ver apenas itens pendentes e voltar à lista completa"
+                    - generic [ref=f5e194]: "So: distinguir pendências dos itens já comprados"
+              - generic [ref=f5e201]:
+                - status [ref=f5e202]: Showing 1–4 of 4 matching. 4 overall. Page 1 of 1.
+                - generic [ref=f5e203]:
+                  - generic [ref=f5e204]:
+                    - generic [ref=f5e205]: Items per page
+                    - combobox "Items per page" [ref=f5e206]:
+                      - option "25" [selected]
+                      - option "50"
+                      - option "100"
+                  - navigation "Stories pagination" [ref=f5e207]:
+                    - generic [ref=f5e208]:
+                      - button "Previous page" [disabled] [ref=f5e209]: Previous
+                      - button "Page 1" [disabled] [ref=f5e210]: "1"
+                      - button "Next page" [disabled] [ref=f5e211]: Next
+  - dialog [ref=f5e271]:
+    - generic [ref=f5e272]:
+      - generic [ref=f5e273]:
+        - heading "Board" [level=2] [ref=f5e274]
+        - paragraph [ref=f5e275]: Validation gates, coverage checks and Spec resource automation
+      - button "Close board settings" [ref=f5e276] [cursor=pointer]
+    - generic [ref=f5e280]:
+      - tablist "Board settings sections" [ref=f5e281]:
+        - tab "Board Config" [selected] [ref=f5e282] [cursor=pointer]
+        - tab "Global Default" [ref=f5e283] [cursor=pointer]
+      - group [ref=f5e284]:
+        - generic [ref=f5e285]:
+          - generic [ref=f5e286]:
+            - generic [ref=f5e287]:
+              - heading "General" [level=4] [ref=f5e288]
+              - paragraph [ref=f5e290]: Board-level limits used across validation flows.
+            - generic [ref=f5e291]:
+              - generic [ref=f5e292]:
+                - generic [ref=f5e293]:
+                  - generic [ref=f5e294]: Graph query timeout
+                  - paragraph [ref=f5e295]: "Maximum query duration in milliseconds: 15,000 by default, up to 30,000. Calls may request a shorter duration. Only an authenticated human can change this limit."
+                - spinbutton "Graph query timeout (ms)" [ref=f5e297]: "15000"
+              - generic [ref=f5e298]:
+                - generic [ref=f5e299]: Max test scenarios per card
+                - paragraph [ref=f5e300]: Limits how many scenarios a single card can be linked to.
+                - generic [ref=f5e301]:
+                  - button "1" [ref=f5e302] [cursor=pointer]
+                  - button "2" [ref=f5e303] [cursor=pointer]
+                  - button "3" [ref=f5e304] [cursor=pointer]
+                  - button "5" [ref=f5e305] [cursor=pointer]
+                  - button "10" [ref=f5e306] [cursor=pointer]
+          - generic [ref=f5e307]:
+            - generic [ref=f5e308]:
+              - heading "Requirement Lint Languages" [level=4] [ref=f5e309]
+              - paragraph [ref=f5e314]: Language profiles exposed during preflight for an external agent to evaluate requirement lint. Pulse Community stores this configuration and the evidence returned by the agent; it does not run the analysis. With no language selected, the agent receives only the language-neutral profile (numbers, comparators and units).
+            - generic "Requirement lint languages" [ref=f5e316]:
+              - button "PT-BR" [ref=f5e317] [cursor=pointer]
+              - button "EN-US" [ref=f5e319] [cursor=pointer]
+              - button "ES" [ref=f5e321] [cursor=pointer]
+              - button "DE" [ref=f5e323] [cursor=pointer]
+              - button "FR" [ref=f5e325] [cursor=pointer]
+          - generic [ref=f5e327]:
+            - generic [ref=f5e328]:
+              - heading "Coverage Overrides" [level=4] [ref=f5e329]
+              - paragraph [ref=f5e332]: Global bypasses for board coverage rules.
+            - generic [ref=f5e333]:
+              - generic [ref=f5e334]:
+                - generic [ref=f5e335]:
+                  - generic [ref=f5e336]: Skip test coverage
+                  - paragraph [ref=f5e337]: Bypass test coverage checks for all specs.
+                - switch "Skip test coverage" [ref=f5e339] [cursor=pointer]
+              - generic [ref=f5e341]:
+                - generic [ref=f5e342]:
+                  - generic [ref=f5e343]: Skip rules coverage
+                  - paragraph [ref=f5e344]: Bypass FR to BR coverage checks for all specs.
+                - switch "Skip rules coverage" [ref=f5e346] [cursor=pointer]
+              - generic [ref=f5e348]:
+                - generic [ref=f5e349]:
+                  - generic [ref=f5e350]: Skip TRs coverage
+                  - paragraph [ref=f5e351]: Bypass TR to Task coverage checks for all specs.
+                - switch "Skip TRs coverage" [ref=f5e353] [cursor=pointer]
+              - generic [ref=f5e355]:
+                - generic [ref=f5e356]:
+                  - generic [ref=f5e357]: Skip Code Evidence Matrix coverage
+                  - paragraph [ref=f5e358]: Bypass pending Code Evidence Matrix coverage checks for all specs. Projection integrity and independently applicable technical gates remain enforced.
+                - switch "Skip Code Evidence Matrix coverage" [ref=f5e360] [cursor=pointer]
+              - generic [ref=f5e362]:
+                - generic [ref=f5e363]:
+                  - generic [ref=f5e364]: Skip contract coverage
+                  - paragraph [ref=f5e365]: Bypass API contract to Task coverage checks.
+                - switch "Skip contract coverage" [ref=f5e367] [cursor=pointer]
+              - generic [ref=f5e369]:
+                - generic [ref=f5e370]:
+                  - generic [ref=f5e371]: Skip IR coverage
+                  - paragraph [ref=f5e372]: Bypass Integration Requirement to Task coverage checks.
+                - switch "Skip IR coverage" [ref=f5e374] [cursor=pointer]
+              - generic [ref=f5e376]:
+                - generic [ref=f5e377]:
+                  - generic [ref=f5e378]: Skip OR coverage
+                  - paragraph [ref=f5e379]: Bypass Observability Requirement to Task coverage checks.
+                - switch "Skip OR coverage" [ref=f5e381] [cursor=pointer]
+              - generic [ref=f5e383]:
+                - generic [ref=f5e384]:
+                  - generic [ref=f5e385]: Skip task requirement link gate
+                  - paragraph [ref=f5e386]: Allow task cards to start without a direct FR/TR/BR/IR/OR link.
+                - switch "Skip task requirement link gate" [checked] [ref=f5e388] [cursor=pointer]
+              - generic [ref=f5e390]:
+                - generic [ref=f5e391]:
+                  - generic [ref=f5e392]: Missing reference closeout
+                  - paragraph [ref=f5e393]: Advisory reports unresolved declared references. Blocking requires correction before completion. Optional associations and graph projection delays do not block. Only an authenticated human can change this policy.
+                - combobox "Missing reference closeout" [ref=f5e395]:
+                  - option "Advisory" [selected]
+                  - option "Blocking"
+              - generic [ref=f5e396]:
+                - generic [ref=f5e397]:
+                  - generic [ref=f5e398]: Bug Learning closeout
+                  - paragraph [ref=f5e399]: Advisory allows completion without Learning. Blocking requires a valid saved Learning capture; graph projection may follow later. Only an authenticated human can change this policy.
+                - combobox "Bug Learning closeout" [ref=f5e401]:
+                  - option "Advisory" [selected]
+                  - option "Blocking"
+              - generic [ref=f5e402]:
+                - generic [ref=f5e403]:
+                  - generic [ref=f5e404]: Skip cognitive closeout
+                  - paragraph [ref=f5e405]: Allow done transitions even when cognitive consolidation is pending. This does not waive the Bug Learning capture policy. Badges and KG Health pending lists remain visible.
+                - switch "Skip cognitive closeout" [ref=f5e407] [cursor=pointer]
+              - generic [ref=f5e409]:
+                - generic [ref=f5e410]:
+                  - generic [ref=f5e411]: Skip evidence requirement
+                  - paragraph [ref=f5e412]: Bypass evidence required to mark scenarios passed, automated or failed.
+                - switch "Skip evidence requirement" [ref=f5e414] [cursor=pointer]
+          - generic [ref=f5e416]:
+            - generic [ref=f5e417]:
+              - heading "Agent Governance" [level=4] [ref=f5e418]
+              - paragraph [ref=f5e424]: Controls agent autonomy and context requirements for critical actions.
+            - generic [ref=f5e425]:
+              - generic [ref=f5e426]:
+                - generic [ref=f5e427]:
+                  - generic [ref=f5e428]:
+                    - generic [ref=f5e429]: Allow agent self-answering
+                    - paragraph [ref=f5e430]: Agents may answer their own Q&A questions when board policy permits it.
+                  - switch "Allow agent self-answering" [ref=f5e432] [cursor=pointer]
+                - generic [ref=f5e434]:
+                  - generic [ref=f5e435]:
+                    - generic [ref=f5e436]: Require full context for critical actions
+                    - paragraph [ref=f5e437]: Status changes, validations, approvals and closeout require full entity context.
+                  - switch "Require full context for critical actions" [checked] [ref=f5e439] [cursor=pointer]
+              - generic [ref=f5e441]:
+                - generic [ref=f5e442]:
+                  - paragraph [ref=f5e443]: Independent reviewer policy
+                  - paragraph [ref=f5e444]: Controls whether a task creator, assignee or executor may submit its validation.
+                - group "Independent reviewer policy" [ref=f5e445]:
+                  - button "Off" [pressed] [ref=f5e446] [cursor=pointer]
+                  - button "Warn" [ref=f5e447] [cursor=pointer]
+                  - button "Enforce" [ref=f5e448] [cursor=pointer]
+                - paragraph [ref=f5e449]: Enforce is the default. Off and Warn apply only when explicitly configured.
+              - generic [ref=f5e450]:
+                - generic [ref=f5e451]: Context warnings
+                - list [ref=f5e454]:
+                  - listitem [ref=f5e455]: Board guidelines are empty. Agents will rely only on global process rules.
+          - generic [ref=f5e456]:
+            - generic [ref=f5e457]:
+              - heading "Agent-mediated Code Traceability" [level=4] [ref=f5e458]
+              - paragraph [ref=f5e468]: Policy for structured observations submitted by authenticated external agents.
+            - generic [ref=f5e469]:
+              - note [ref=f5e470]:
+                - paragraph [ref=f5e473]:
+                  - text: Pulse does not access source code. An authenticated external agent checks access and capabilities in its own environment, then submits an
+                  - strong [ref=f5e474]: accessible
+                  - text: ","
+                  - strong [ref=f5e475]: partial
+                  - text: ", or"
+                  - strong [ref=f5e476]: unavailable
+                  - text: attestation. Pulse Community only accepts, stores, and presents those receipts.
+              - generic [ref=f5e477]:
+                - generic [ref=f5e478]:
+                  - generic [ref=f5e479]:
+                    - generic [ref=f5e480]:
+                      - generic [ref=f5e481]: Enforcement mode
+                      - paragraph [ref=f5e482]: Advise about missing traceability by default, or block gated transitions.
+                    - combobox "Code Traceability enforcement mode" [ref=f5e484]:
+                      - option "Advisory" [selected]
+                      - option "Blocking"
+                  - note [ref=f5e485]: "Advisory: Missing Technical Anchors or Code Evidence does not block applicable transitions, but it removes the reusable investigation trail and may force the agent to repeat repository analysis after entity-version or source-head drift, or when this policy is later promoted to Blocking."
+                - generic [ref=f5e486]:
+                  - generic [ref=f5e487]:
+                    - generic [ref=f5e488]: Accepted attestors
+                    - paragraph [ref=f5e489]: Require granular agent permission, with an optional board allowlist.
+                  - combobox "Accepted attestor policy" [ref=f5e491]:
+                    - option "Permission" [selected]
+                    - option "Permission + allowlist"
+                - generic [ref=f5e492]:
+                  - generic [ref=f5e493]:
+                    - generic [ref=f5e494]: Evidence receipt requirement
+                    - paragraph [ref=f5e495]: Controls whether Code Evidence needs a current accepted agent receipt.
+                  - combobox "Evidence receipt requirement" [ref=f5e497]:
+                    - option "None"
+                    - option "Preferred" [selected]
+                    - option "Required"
+                - generic [ref=f5e498]:
+                  - generic [ref=f5e499]:
+                    - generic [ref=f5e500]: Target resolution receipt
+                    - paragraph [ref=f5e501]: Requires agent-attested target resolutions, optionally against the current receipt.
+                  - combobox "Target resolution receipt requirement" [ref=f5e503]:
+                    - option "Advisory" [selected]
+                    - option "Required"
+                    - option "Required + current"
+                - generic [ref=f5e504]:
+                  - generic [ref=f5e505]:
+                    - generic [ref=f5e506]: Receipt freshness
+                    - paragraph [ref=f5e507]: Maximum age of an accepted agent check receipt (60 seconds to 24 hours).
+                  - generic [ref=f5e509]:
+                    - spinbutton "Receipt freshness in minutes" [ref=f5e510]: "30"
+                    - generic [ref=f5e511]: min
+                - generic [ref=f5e512]:
+                  - generic [ref=f5e513]:
+                    - generic [ref=f5e514]: Minimum trust
+                    - paragraph [ref=f5e515]: Accept one agent attestation or require corroboration by another agent.
+                  - combobox "Minimum receipt trust" [ref=f5e517]:
+                    - option "Single attestation" [selected]
+                    - option "Corroborated"
+                - generic [ref=f5e518]:
+                  - generic [ref=f5e519]:
+                    - generic [ref=f5e520]: Overlap policy
+                    - paragraph [ref=f5e521]: Controls guidance when Tasks target the same agent-attested symbol or file.
+                  - combobox "Implementation overlap policy" [ref=f5e523]:
+                    - option "Off"
+                    - option "Warn" [selected]
+                    - option "Block parallel"
+                - generic [ref=f5e524]:
+                  - generic [ref=f5e525]:
+                    - generic [ref=f5e526]: Observed state
+                    - paragraph [ref=f5e527]: Allow dirty-state attestations or require the agent to declare a committed state.
+                  - combobox "Observed source state policy" [ref=f5e529]:
+                    - option "Allow dirty attestation" [selected]
+                    - option "Require committed"
+                - generic [ref=f5e530]:
+                  - generic [ref=f5e531]:
+                    - generic [ref=f5e532]: Receipt content
+                    - paragraph [ref=f5e533]: Retain metadata only, or a defensively sanitized excerpt submitted by the agent.
+                  - combobox "Receipt content retention" [ref=f5e535]:
+                    - option "Metadata only"
+                    - option "Safe excerpt" [selected]
+              - paragraph [ref=f5e536]: No repository binding, provider credential, local checkout, filesystem search, or source resolver is configured in Pulse Community.
+          - generic [ref=f5e537]:
+            - generic [ref=f5e538]:
+              - heading "Task Validation Gate" [level=4] [ref=f5e539]
+              - paragraph [ref=f5e542]: Controls the gate before execution work can be completed.
+            - generic [ref=f5e543]:
+              - generic [ref=f5e544]:
+                - generic [ref=f5e545]:
+                  - generic [ref=f5e546]: Require task validation
+                  - paragraph [ref=f5e547]: Tasks must pass validation before moving to Done.
+                - switch "Require task validation" [checked] [ref=f5e549] [cursor=pointer]
+              - generic [ref=f5e551]:
+                - generic [ref=f5e552]:
+                  - generic [ref=f5e553]: Min Confidence
+                  - generic [ref=f5e554]:
+                    - spinbutton [ref=f5e555]: "70"
+                    - generic [ref=f5e556]: / 100
+                - generic [ref=f5e557]:
+                  - generic [ref=f5e558]: Min Completeness
+                  - generic [ref=f5e559]:
+                    - spinbutton [ref=f5e560]: "80"
+                    - generic [ref=f5e561]: / 100
+                - generic [ref=f5e562]:
+                  - generic [ref=f5e563]: Max Drift
+                  - generic [ref=f5e564]:
+                    - spinbutton [ref=f5e565]: "50"
+                    - generic [ref=f5e566]: / 100
+          - generic [ref=f5e567]:
+            - generic [ref=f5e568]:
+              - heading "Spec Validation Gate" [level=4] [ref=f5e569]
+              - paragraph [ref=f5e572]: Spec validation, resource coverage and automatic resource derivation.
+            - generic [ref=f5e573]:
+              - generic [ref=f5e574]:
+                - generic [ref=f5e575]:
+                  - generic [ref=f5e576]: Auto-derive Spec resources
+                  - paragraph [ref=f5e577]: Copy selected resources to new or linked cards.
+                - switch "Auto-derive Spec resources" [ref=f5e579] [cursor=pointer]
+              - generic "Spec resource types" [ref=f5e581]:
+                - button "KB" [disabled] [ref=f5e582]
+                - button "Arch" [disabled] [ref=f5e586]
+                - button "Mockup" [disabled] [ref=f5e593]
+              - generic [ref=f5e599]:
+                - generic [ref=f5e600]:
+                  - generic [ref=f5e601]: Require resource-to-task coverage
+                  - paragraph [ref=f5e602]: Spec Architecture, Mockup and KB must be linked to tasks.
+                - switch "Require resource-to-task coverage" [checked] [ref=f5e604] [cursor=pointer]
+              - generic [ref=f5e606]:
+                - generic [ref=f5e607]:
+                  - generic [ref=f5e608]: Require spec validation
+                  - paragraph [ref=f5e609]: Specs must pass Confidence, Clarity, Assertiveness, Decidability and Ambiguity gates before Validated.
+                - switch "Require spec validation" [checked] [ref=f5e611] [cursor=pointer]
+              - generic [ref=f5e613]:
+                - generic [ref=f5e614]:
+                  - generic [ref=f5e615]: Min Confidence
+                  - generic [ref=f5e616]:
+                    - spinbutton "Min Confidence" [ref=f5e617]: "70"
+                    - generic [ref=f5e618]: / 100
+                - generic [ref=f5e619]:
+                  - generic [ref=f5e620]: Min Clarity
+                  - generic [ref=f5e621]:
+                    - spinbutton "Min Clarity" [ref=f5e622]: "80"
+                    - generic [ref=f5e623]: / 100
+                - generic [ref=f5e624]:
+                  - generic [ref=f5e625]: Min Assertiveness
+                  - generic [ref=f5e626]:
+                    - spinbutton "Min Assertiveness" [ref=f5e627]: "80"
+                    - generic [ref=f5e628]: / 100
+                - generic [ref=f5e629]:
+                  - generic [ref=f5e630]: Min Decidability
+                  - generic [ref=f5e631]:
+                    - spinbutton "Min Decidability" [ref=f5e632]: "80"
+                    - generic [ref=f5e633]: / 100
+                - generic [ref=f5e634]:
+                  - generic [ref=f5e635]: Max Ambiguity
+                  - generic [ref=f5e636]:
+                    - spinbutton "Max Ambiguity" [ref=f5e637]: "30"
+                    - generic [ref=f5e638]: / 100
+          - generic [ref=f5e639]:
+            - generic [ref=f5e640]:
+              - heading "Execution Report Evidence" [level=4] [ref=f5e641]
+              - paragraph [ref=f5e646]: Controls declared impact evidence (files, symbols, surfaces, tests) on the execution report of a card.
+            - generic [ref=f5e647]:
+              - generic [ref=f5e648]:
+                - generic [ref=f5e649]:
+                  - generic [ref=f5e650]: Require declared impact evidence
+                  - paragraph [ref=f5e651]: Blocking mode rejects a gated move whose conclusion has no populated evidence section.
+                - switch "Require declared impact evidence" [ref=f5e653] [cursor=pointer]
+              - generic "Impact evidence mode" [ref=f5e655]:
+                - button "Off" [pressed] [ref=f5e656] [cursor=pointer]
+                - button "Advisory" [ref=f5e657] [cursor=pointer]
+                - button "Require" [ref=f5e658] [cursor=pointer]
+              - paragraph [ref=f5e659]: Test cards and validator-approved completions stay exempt in every mode.
+          - generic [ref=f5e660]:
+            - generic [ref=f5e661]:
+              - heading "Delivery Evidence Gate" [level=4] [ref=f5e662]
+              - paragraph [ref=f5e665]: Requires accepted delivery proof before a task or a Spec can be completed. Test cards authenticate via passed scenarios and stay exempt.
+            - generic [ref=f5e666]:
+              - generic [ref=f5e668]:
+                - generic [ref=f5e669]: Enforcement mode
+                - paragraph [ref=f5e670]: "Governs both card → Done and Spec → Done. Default: Blocking."
+              - generic "Delivery evidence enforcement mode" [ref=f5e671]:
+                - button "Advisory" [ref=f5e672] [cursor=pointer]
+                - button "Blocking" [pressed] [ref=f5e673] [cursor=pointer]
+          - generic [ref=f5e674]:
+            - generic [ref=f5e675]:
+              - heading "Design System Gate" [level=4] [ref=f5e676]
+              - paragraph [ref=f5e683]: Controls Design System consumption checks on mockup submissions.
+            - generic [ref=f5e684]:
+              - generic [ref=f5e685]:
+                - generic [ref=f5e686]:
+                  - generic [ref=f5e687]: Require Design System evidence
+                  - paragraph [ref=f5e688]: Blocking mode requires every new mockup to reference the board's effective Design System with evidence.
+                - switch "Require Design System evidence" [ref=f5e690] [cursor=pointer]
+              - generic "Design System gate mode" [ref=f5e692]:
+                - button "Off" [pressed] [ref=f5e693] [cursor=pointer]
+                - button "Advisory" [ref=f5e694] [cursor=pointer]
+                - button "Blocking" [ref=f5e695] [cursor=pointer]
+          - generic [ref=f5e696]:
+            - generic [ref=f5e697]:
+              - heading "Ideation Ambiguity Gate" [level=4] [ref=f5e698]
+              - paragraph [ref=f5e701]: Block evaluating→done when an ideation's ambiguity score is missing or above the threshold.
+            - generic [ref=f5e703]:
+              - generic [ref=f5e704]:
+                - generic [ref=f5e705]: Require ideation ambiguity gate
+                - paragraph [ref=f5e706]: Opt-in. Each ideation can still skip the gate individually.
+              - switch "Require ideation ambiguity gate" [ref=f5e708] [cursor=pointer]
+          - generic [ref=f5e710]:
+            - generic [ref=f5e711]:
+              - heading "Refinement Ambiguity Gate" [level=4] [ref=f5e712]
+              - paragraph [ref=f5e715]: Block approved→done unless the current refinement assessment meets the ambiguity threshold; this runs before Resource and Cognitive gates.
+            - generic [ref=f5e717]:
+              - generic [ref=f5e718]:
+                - generic [ref=f5e719]: Require refinement ambiguity gate
+                - paragraph [ref=f5e720]: Opt-in. A human can record a reasoned skip on an individual refinement.
+              - switch "Require refinement ambiguity gate" [ref=f5e722] [cursor=pointer]
+      - generic [ref=f5e724]:
+        - generic [ref=f5e725]:
+          - generic [ref=f5e726]:
+            - heading "Curated Spec Checklist" [level=4] [ref=f5e727]
+            - paragraph [ref=f5e731]: Human-owned governance for the immutable /specify/v1 checklist used by Spec Validation.
+            - button "Learn about Curated Spec Checklist" [ref=f5e732] [cursor=pointer]: How this works
+          - button "Refresh checklist governance" [ref=f5e736] [cursor=pointer]
+        - generic [ref=f5e742]:
+          - radiogroup "Spec checklist mode" [ref=f5e744]:
+            - radio "Off No checklist execution and no validation gate." [ref=f5e745] [cursor=pointer]:
+              - generic [ref=f5e746]: "Off"
+              - generic [ref=f5e747]: No checklist execution and no validation gate.
+            - radio "Advisory Collects traceable evidence without blocking validation." [ref=f5e748] [cursor=pointer]:
+              - generic [ref=f5e749]: Advisory
+              - generic [ref=f5e750]: Collects traceable evidence without blocking validation.
+            - radio "Blocking Requires a passing result for the current validation edition." [checked] [ref=f5e751] [cursor=pointer]:
+              - generic [ref=f5e752]: Blocking
+              - generic [ref=f5e753]: Requires a passing result for the current validation edition.
+          - generic [ref=f5e754]:
+            - generic [ref=f5e755]:
+              - text: /specify/v1 · 10 ordered items · immutable
+              - generic "cef8c52888aa2d479c286c20c43631beb262aafec35acfe03f1780b95f4f7151" [ref=f5e780]: binding v1
+            - button "Save policy" [disabled] [ref=f5e756]
+    - generic [ref=f5e761]:
+      - button "Delete board" [ref=f5e762] [cursor=pointer]
+      - button "Close" [ref=f5e766] [cursor=pointer]

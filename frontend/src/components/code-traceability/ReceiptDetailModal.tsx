@@ -165,7 +165,7 @@ export function ReceiptDetailModal({ boardId, receiptId, onClose, onRevoked }: P
                   </span>
                 </div>
                 <dl className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                  <KeyValue label="Outcome" value={receipt.outcome} />
+                  <KeyValue label="Outcome" value={receipt.contextual_outcome} />
                   <KeyValue label="Attestor" value={receipt.attestor_actor_id} mono />
                   <KeyValue label="Generation" value={`PF-${receipt.generation}`} />
                   <KeyValue label="Logical source ref" value={receipt.source_ref} mono />

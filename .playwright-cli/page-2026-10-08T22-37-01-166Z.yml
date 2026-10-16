@@ -1,0 +1,870 @@
+- generic [ref=f6e3]:
+  - banner [ref=f6e4]:
+    - generic [ref=f6e5]:
+      - generic [ref=f6e6]:
+        - button "Hide sidebar" [ref=f6e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f6e12]
+        - generic [ref=f6e31]: / My Board
+      - generic [ref=f6e32]:
+        - button "Refresh board" [ref=f6e33] [cursor=pointer]
+        - button [ref=f6e40] [cursor=pointer]
+  - generic [ref=f6e13]:
+    - complementary [ref=f6e14]:
+      - generic [ref=f6e15]:
+        - generic [ref=f6e17]:
+          - heading "Boards" [level=2] [ref=f6e18]
+          - button "New board" [ref=f6e19] [cursor=pointer]
+        - navigation [ref=f6e21]:
+          - generic [ref=f6e22]:
+            - heading "My Boards" [level=3] [ref=f6e23]
+            - list [ref=f6e44]:
+              - listitem [ref=f6e45]:
+                - button "My Board" [ref=f6e46] [cursor=pointer]
+    - main [ref=f6e26]:
+      - group "Board views" [ref=f6e53]:
+        - button "Stories" [ref=f6e54] [cursor=pointer]
+        - button "Ideations" [ref=f6e58] [cursor=pointer]
+        - button "Refinements" [ref=f6e61] [cursor=pointer]
+        - button "Specs" [pressed] [ref=f6e66] [cursor=pointer]
+        - button "Tasks" [ref=f6e71] [cursor=pointer]
+      - generic [ref=f6e213]:
+        - generic [ref=f6e214]:
+          - generic [ref=f6e215]:
+            - heading "Specifications" [level=2] [ref=f6e216]
+            - generic [ref=f6e217]: (1 of 1)
+          - generic [ref=f6e218]:
+            - textbox "Search specs…" [ref=f6e220]
+            - group "View mode" [ref=f6e221]:
+              - button "List view" [pressed] [ref=f6e222] [cursor=pointer]
+              - button "Grid view" [ref=f6e224] [cursor=pointer]
+            - generic [ref=f6e230]: Group specs
+            - combobox "Group specs" [ref=f6e236]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=f6e237] [cursor=pointer]
+        - generic [ref=f6e239]:
+          - button "All" [ref=f6e240] [cursor=pointer]
+          - button "Draft" [ref=f6e241] [cursor=pointer]
+          - button "Review" [ref=f6e242] [cursor=pointer]
+          - button "Approved" [ref=f6e243] [cursor=pointer]
+          - button "Validated" [ref=f6e244] [cursor=pointer]
+          - button "In Progress" [ref=f6e245] [cursor=pointer]
+          - button "Done" [ref=f6e246] [cursor=pointer]
+          - button "Show archived" [ref=f6e247] [cursor=pointer]
+        - generic [ref=f6e250]:
+          - generic [ref=f6e251] [cursor=pointer]:
+            - 'heading "Refinement: Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f6e258]'
+            - generic [ref=f6e259]: (1)
+          - generic [ref=f6e263] [cursor=pointer]:
+            - generic [ref=f6e264]:
+              - generic [ref=f6e265]:
+                - generic [ref=f6e266]: Draft
+                - generic "Edition 1" [ref=f6e270]
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=3] [ref=f6e271]
+              - paragraph [ref=f6e272]: "Especificação conceitual H01–H04: consultar, criar, alterar e cancelar reservas próprias com consistência, idempotência, histórico e arquitetura hexagonal. Exercício de testes do Pulse; nenhuma implementação real solicitada."
+              - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=f6e274]':
+                - generic [ref=f6e275]: Requirement lint
+                - strong [ref=f6e276]: Not assessed
+              - generic [ref=f6e277]:
+                - generic [ref=f6e278]: mock
+                - generic [ref=f6e279]: reserva-de-salas
+                - generic [ref=f6e280]: teste-sdlc
+            - generic [ref=f6e281]:
+              - button "Open lineage graph" [ref=f6e282]
+              - button "Archive tree" [ref=f6e287]
+        - generic [ref=f6e293]:
+          - status [ref=f6e294]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f6e295]:
+            - generic [ref=f6e296]:
+              - generic [ref=f6e297]: Items per page
+              - combobox "Items per page" [ref=f6e298]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=f6e299]:
+              - generic [ref=f6e300]:
+                - button "Previous page" [disabled] [ref=f6e301]: Previous
+                - button "Page 1" [disabled] [ref=f6e302]: "1"
+                - button "Next page" [disabled] [ref=f6e303]: Next
+        - dialog [ref=f6e305]:
+          - generic [ref=f6e306]:
+            - generic [ref=f6e307]:
+              - generic [ref=f6e308]: Draft
+              - heading "Reserva de salas — consistência das reservas e contratos hexagonais" [level=2] [ref=f6e312]
+              - generic "Edition 1" [ref=f6e313]
+            - generic [ref=f6e314]:
+              - button "Open lineage graph" [ref=f6e315] [cursor=pointer]
+              - button "Export report" [ref=f6e320] [cursor=pointer]
+              - button "Refresh" [ref=f6e324] [cursor=pointer]
+              - button "Expand" [ref=f6e330] [cursor=pointer]
+              - button "Close spec" [ref=f6e336] [cursor=pointer]
+          - generic [ref=f6e340]:
+            - generic [ref=f6e341]: "Move to:"
+            - button "Review" [ref=f6e342] [cursor=pointer]
+            - button "Cancelled" [ref=f6e345] [cursor=pointer]
+          - generic [ref=f6e348]:
+            - generic [ref=f6e349]: "From:"
+            - button "Reserva de salas — teste do SDLC v24" [ref=f6e350] [cursor=pointer]:
+              - text: Reserva de salas — teste do SDLC
+              - generic [ref=f6e353]: v24
+            - button "Reserva de salas — consistência das reservas e contratos hexagonais v39" [ref=f6e356] [cursor=pointer]:
+              - text: Reserva de salas — consistência das reservas e contratos hexagonais
+              - generic [ref=f6e361]: v39
+          - generic [ref=f6e363]:
+            - tablist "Spec sections" [ref=f6e364]:
+              - tab "Details" [ref=f6e365] [cursor=pointer]
+              - tab "Requirements & Decisions" [selected] [ref=f6e370] [cursor=pointer]
+              - tab "Tests & Verifications" [ref=f6e375] [cursor=pointer]
+              - tab "Coverage" [ref=f6e379] [cursor=pointer]
+              - tab "Code Evidence Matrix" [ref=f6e385] [cursor=pointer]
+              - tab "Project structure" [ref=f6e389] [cursor=pointer]
+              - tab "Dependencies" [ref=f6e396] [cursor=pointer]
+              - tab "TRs 6" [ref=f6e402] [cursor=pointer]:
+                - generic [ref=f6e406]: TRs
+                - generic [ref=f6e407]: "6"
+              - tab "Resources" [ref=f6e408] [cursor=pointer]
+              - tab "Q&A 9" [ref=f6e412] [cursor=pointer]:
+                - generic [ref=f6e416]: Q&A
+                - generic [ref=f6e417]: "9"
+              - tab "References" [ref=f6e418] [cursor=pointer]
+              - tab "KG Graph" [ref=f6e423] [cursor=pointer]
+              - tab "Validation" [ref=f6e430] [cursor=pointer]
+              - tab "Activity" [ref=f6e435] [cursor=pointer]
+            - button "Scroll Spec sections right" [ref=f6e441] [cursor=pointer]
+          - tabpanel "Requirements & Decisions" [ref=f6e757]:
+            - generic [ref=f6e758]:
+              - tablist "Requirements and decisions sections" [ref=f6e759]:
+                - tab "Functional 8" [ref=f6e760] [cursor=pointer]:
+                  - generic [ref=f6e763]: Functional
+                  - generic [ref=f6e764]: "8"
+                - tab "Business 8" [ref=f6e765] [cursor=pointer]:
+                  - generic [ref=f6e770]: Business
+                  - generic [ref=f6e771]: "8"
+                - tab "Integration 13" [selected] [ref=f6e772] [cursor=pointer]:
+                  - generic [ref=f6e778]: Integration
+                  - generic [ref=f6e779]: "13"
+                - tab "Observability 2" [ref=f6e780] [cursor=pointer]:
+                  - generic [ref=f6e784]: Observability
+                  - generic [ref=f6e785]: "2"
+                - tab "Contracts 6" [ref=f6e786] [cursor=pointer]:
+                  - generic [ref=f6e792]: Contracts
+                  - generic [ref=f6e793]: "6"
+                - tab "Decisions 5" [ref=f6e794] [cursor=pointer]:
+                  - generic [ref=f6e799]: Decisions
+                  - generic [ref=f6e800]: "5"
+              - button "Scroll Requirements and decisions sections right" [ref=f6e801] [cursor=pointer]
+            - tabpanel "Integration 13" [ref=f6e903]:
+              - generic [ref=f6e904]:
+                - generic [ref=f6e906]:
+                  - heading "IR Task Coverage (0/13)" [level=4] [ref=f6e907]
+                  - generic [ref=f6e908]: 0% linked
+                - generic [ref=f6e910]:
+                  - generic [ref=f6e911]:
+                    - text: Skip IR coverage requirement
+                    - paragraph [ref=f6e912]: Allow validation without full IR-to-task coverage
+                  - button [ref=f6e913] [cursor=pointer]
+                - generic [ref=f6e916] [cursor=pointer]:
+                  - generic [ref=f6e921]: Data
+                  - generic [ref=f6e922]: Persistência de transação
+                  - generic [ref=f6e923]: 0 tasks
+                  - button [ref=f6e924]
+                  - button [ref=f6e928]
+                - generic [ref=f6e935] [cursor=pointer]:
+                  - generic [ref=f6e940]: API
+                  - generic [ref=f6e941]: Alterar reserva
+                  - generic [ref=f6e942]: 0 tasks
+                  - button [ref=f6e943]
+                  - button [ref=f6e947]
+                - generic [ref=f6e954] [cursor=pointer]:
+                  - generic [ref=f6e959]: Data
+                  - generic [ref=f6e960]: Contrato de invariantes
+                  - generic [ref=f6e961]: 0 tasks
+                  - button [ref=f6e962]
+                  - button [ref=f6e966]
+                - generic [ref=f6e973] [cursor=pointer]:
+                  - generic [ref=f6e978]: API
+                  - generic [ref=f6e979]: Ler histórico da própria reserva
+                  - generic [ref=f6e980]: 0 tasks
+                  - button [ref=f6e981]
+                  - button [ref=f6e985]
+                - generic [ref=f6e992] [cursor=pointer]:
+                  - generic [ref=f6e997]: Data
+                  - generic [ref=f6e998]: IdentityProvider
+                  - generic [ref=f6e999]: 0 tasks
+                  - button [ref=f6e1000]
+                  - button [ref=f6e1004]
+                - generic [ref=f6e1011] [cursor=pointer]:
+                  - generic [ref=f6e1016]: API
+                  - generic [ref=f6e1017]: Criar reserva
+                  - generic [ref=f6e1018]: 0 tasks
+                  - button [ref=f6e1019]
+                  - button [ref=f6e1023]
+                - generic [ref=f6e1030] [cursor=pointer]:
+                  - generic [ref=f6e1035]: Data
+                  - generic [ref=f6e1036]: Porta pública de casos de uso
+                  - generic [ref=f6e1037]: 0 tasks
+                  - button [ref=f6e1038]
+                  - button [ref=f6e1042]
+                - generic [ref=f6e1049] [cursor=pointer]:
+                  - generic [ref=f6e1054]: API
+                  - generic [ref=f6e1055]: Consultar disponibilidade
+                  - generic [ref=f6e1056]: 0 tasks
+                  - button [ref=f6e1057]
+                  - button [ref=f6e1061]
+                - generic [ref=f6e1068] [cursor=pointer]:
+                  - generic [ref=f6e1073]: API
+                  - generic [ref=f6e1074]: Listar próprias reservas
+                  - generic [ref=f6e1075]: 0 tasks
+                  - button [ref=f6e1076]
+                  - button [ref=f6e1080]
+                - generic [ref=f6e1087] [cursor=pointer]:
+                  - generic [ref=f6e1092]: API
+                  - generic [ref=f6e1093]: Cancelar reserva
+                  - generic [ref=f6e1094]: 0 tasks
+                  - button [ref=f6e1095]
+                  - button [ref=f6e1099]
+                - generic [ref=f6e1106] [cursor=pointer]:
+                  - generic [ref=f6e1111]: Data
+                  - generic [ref=f6e1112]: Injeção de adaptadores
+                  - generic [ref=f6e1113]: 0 tasks
+                  - button [ref=f6e1114]
+                  - button [ref=f6e1118]
+                - generic [ref=f6e1125] [cursor=pointer]:
+                  - generic [ref=f6e1130]: Data
+                  - generic [ref=f6e1131]: Clock
+                  - generic [ref=f6e1132]: 0 tasks
+                  - button [ref=f6e1133]
+                  - button [ref=f6e1137]
+                - generic [ref=f6e1144] [cursor=pointer]:
+                  - generic [ref=f6e1149]: Data
+                  - generic [ref=f6e1150]: ReservationUnitOfWork
+                  - generic [ref=f6e1151]: 0 tasks
+                  - button [ref=f6e1152]
+                  - button [ref=f6e1156]
+                - button "Add Integration Requirement" [ref=f6e1162] [cursor=pointer]
+              - region "Architecture classifications" [ref=f6e1164]:
+                - heading "Architecture candidates" [level=3] [ref=f6e1165]
+                - paragraph [ref=f6e1166]: Interface contracts from the adopted architecture. Create or reuse an integration requirement, or keep the interface as context. API Contracts are separate definitions.
+                - button "Review classifications" [expanded] [ref=f6e1167] [cursor=pointer]
+                - paragraph [ref=f6e1168]: This review does not approve requirements or authorize starting the Spec. Context decisions do not waive existing IRs.
+                - button "Refresh classifications" [ref=f6e1169] [cursor=pointer]
+                - generic [ref=f6e1170]:
+                  - text: Classification state
+                  - combobox "Classification state" [ref=f6e1171]:
+                    - option "All states" [selected]
+                    - option "Pending"
+                    - option "Current"
+                    - option "Review required"
+                    - option "Unresolved"
+                    - option "Retired"
+                    - option "Unavailable"
+                - paragraph [ref=f6e1172]: Current contracts are classified. Execution gates and semantic review still apply.
+                - list "Global classification counts" [ref=f6e1173]:
+                  - listitem [ref=f6e1174]: "Pending: 0"
+                  - listitem [ref=f6e1175]: "Current: 13"
+                  - listitem [ref=f6e1176]: "Review required: 0"
+                  - listitem [ref=f6e1177]: "Unresolved: 0"
+                  - listitem [ref=f6e1178]: "Retired: 0"
+                  - listitem [ref=f6e1179]: "Unavailable: 0"
+                - article [ref=f6e1180]:
+                  - generic [ref=f6e1181]:
+                    - heading "Persistência de transação" [level=4] [ref=f6e1182]
+                    - generic [ref=f6e1183]: Current
+                  - group [ref=f6e1184]:
+                    - generic "Source references" [ref=f6e1185] [cursor=pointer]
+                  - button "Review decision and contract" [expanded] [active] [ref=f6e1186] [cursor=pointer]
+                  - generic [ref=f6e1336]:
+                    - generic [ref=f6e1337]:
+                      - paragraph [ref=f6e1338]: Promoted to IR · Current
+                      - paragraph [ref=f6e1339]: By 2edcc8b9-2f64-479e-acb1-c49724f76ae3 at 2026-10-08T20:46:56.055497+00:00 · Spec version 18
+                      - paragraph [ref=f6e1340]: "Scope: Whole contract"
+                      - paragraph [ref=f6e1341]: "IRs: ir_res_storage"
+                      - paragraph [ref=f6e1342]: "Analyzed revisions: ab04c6ea-6709-49b1-9f99-05a9024ebb69 v1"
+                    - generic [ref=f6e1343]:
+                      - paragraph [ref=f6e1344]: Analyzed contract
+                      - generic [ref=f6e1345]:
+                        - generic [ref=f6e1346]:
+                          - term [ref=f6e1347]: contract type
+                          - definition [ref=f6e1348]:
+                            - paragraph [ref=f6e1349]: JSON Schema
+                        - generic [ref=f6e1350]:
+                          - term [ref=f6e1351]: description
+                          - definition [ref=f6e1352]:
+                            - paragraph [ref=f6e1353]: SQLite somente na camada externa; UNIQUE ator/operação/chave e CAS de versão. Toda exceção encerra com rollback; não salvar parcialmente.
+                        - generic [ref=f6e1354]:
+                          - term [ref=f6e1355]: direction
+                          - definition [ref=f6e1356]:
+                            - paragraph [ref=f6e1357]: source_to_target
+                        - generic [ref=f6e1358]:
+                          - term [ref=f6e1359]: endpoint
+                          - definition [ref=f6e1360]:
+                            - paragraph [ref=f6e1361]: SQLite transaction
+                        - generic [ref=f6e1362]:
+                          - term [ref=f6e1363]: error contract
+                          - definition [ref=f6e1364]:
+                            - generic [ref=f6e1365]:
+                              - generic [ref=f6e1366]:
+                                - term [ref=f6e1367]: idempotency conflict
+                                - definition [ref=f6e1368]:
+                                  - generic [ref=f6e1369]:
+                                    - generic [ref=f6e1370]:
+                                      - term [ref=f6e1371]: code
+                                      - definition [ref=f6e1372]:
+                                        - paragraph [ref=f6e1373]: idempotency_conflict
+                                    - generic [ref=f6e1374]:
+                                      - term [ref=f6e1375]: description
+                                      - definition [ref=f6e1376]:
+                                        - paragraph [ref=f6e1377]: Mesma chave com outra carga.
+                              - generic [ref=f6e1378]:
+                                - term [ref=f6e1379]: invalid input
+                                - definition [ref=f6e1380]:
+                                  - generic [ref=f6e1381]:
+                                    - generic [ref=f6e1382]:
+                                      - term [ref=f6e1383]: code
+                                      - definition [ref=f6e1384]:
+                                        - paragraph [ref=f6e1385]: invalid_input
+                                    - generic [ref=f6e1386]:
+                                      - term [ref=f6e1387]: description
+                                      - definition [ref=f6e1388]:
+                                        - paragraph [ref=f6e1389]: Campos inválidos; preservar entrada.
+                              - generic [ref=f6e1390]:
+                                - term [ref=f6e1391]: not found
+                                - definition [ref=f6e1392]:
+                                  - generic [ref=f6e1393]:
+                                    - generic [ref=f6e1394]:
+                                      - term [ref=f6e1395]: code
+                                      - definition [ref=f6e1396]:
+                                        - paragraph [ref=f6e1397]: not_found
+                                    - generic [ref=f6e1398]:
+                                      - term [ref=f6e1399]: description
+                                      - definition [ref=f6e1400]:
+                                        - paragraph [ref=f6e1401]: Reserva inexistente ou alheia; sem revelar identidade.
+                              - generic [ref=f6e1402]:
+                                - term [ref=f6e1403]: reservation conflict
+                                - definition [ref=f6e1404]:
+                                  - generic [ref=f6e1405]:
+                                    - generic [ref=f6e1406]:
+                                      - term [ref=f6e1407]: code
+                                      - definition [ref=f6e1408]:
+                                        - paragraph [ref=f6e1409]: reservation_conflict
+                                    - generic [ref=f6e1410]:
+                                      - term [ref=f6e1411]: description
+                                      - definition [ref=f6e1412]:
+                                        - paragraph [ref=f6e1413]: Horário ocupado; alteração mantém original.
+                              - generic [ref=f6e1414]:
+                                - term [ref=f6e1415]: reservation locked
+                                - definition [ref=f6e1416]:
+                                  - generic [ref=f6e1417]:
+                                    - generic [ref=f6e1418]:
+                                      - term [ref=f6e1419]: code
+                                      - definition [ref=f6e1420]:
+                                        - paragraph [ref=f6e1421]: reservation_locked
+                                    - generic [ref=f6e1422]:
+                                      - term [ref=f6e1423]: description
+                                      - definition [ref=f6e1424]:
+                                        - paragraph [ref=f6e1425]: Iniciada/passada/cancelada; sem mutação.
+                              - generic [ref=f6e1426]:
+                                - term [ref=f6e1427]: unauthorized
+                                - definition [ref=f6e1428]:
+                                  - generic [ref=f6e1429]:
+                                    - generic [ref=f6e1430]:
+                                      - term [ref=f6e1431]: code
+                                      - definition [ref=f6e1432]:
+                                        - paragraph [ref=f6e1433]: unauthorized
+                                    - generic [ref=f6e1434]:
+                                      - term [ref=f6e1435]: description
+                                      - definition [ref=f6e1436]:
+                                        - paragraph [ref=f6e1437]: Entre novamente; nenhuma mutação.
+                              - generic [ref=f6e1438]:
+                                - term [ref=f6e1439]: unavailable
+                                - definition [ref=f6e1440]:
+                                  - generic [ref=f6e1441]:
+                                    - generic [ref=f6e1442]:
+                                      - term [ref=f6e1443]: code
+                                      - definition [ref=f6e1444]:
+                                        - paragraph [ref=f6e1445]: unavailable
+                                    - generic [ref=f6e1446]:
+                                      - term [ref=f6e1447]: description
+                                      - definition [ref=f6e1448]:
+                                        - paragraph [ref=f6e1449]: Falha recuperável; sem sucesso presumido.
+                              - generic [ref=f6e1450]:
+                                - term [ref=f6e1451]: version conflict
+                                - definition [ref=f6e1452]:
+                                  - generic [ref=f6e1453]:
+                                    - generic [ref=f6e1454]:
+                                      - term [ref=f6e1455]: code
+                                      - definition [ref=f6e1456]:
+                                        - paragraph [ref=f6e1457]: version_conflict
+                                    - generic [ref=f6e1458]:
+                                      - term [ref=f6e1459]: description
+                                      - definition [ref=f6e1460]:
+                                        - paragraph [ref=f6e1461]: Recarregar estado; nunca sobrescrever.
+                        - generic [ref=f6e1462]:
+                          - term [ref=f6e1463]: event schema
+                          - definition [ref=f6e1464]: Not specified
+                        - generic [ref=f6e1465]:
+                          - term [ref=f6e1466]: name
+                          - definition [ref=f6e1467]:
+                            - paragraph [ref=f6e1468]: Persistência de transação
+                        - generic [ref=f6e1469]:
+                          - term [ref=f6e1470]: notes
+                          - definition [ref=f6e1471]:
+                            - paragraph [ref=f6e1472]: Contrato de valores independente de transporte. Mapeamento de códigos para status HTTP pertence exclusivamente ao adaptador HTTP; JSON Schema documenta a forma, não impõe JSON ao domínio.
+                        - generic [ref=f6e1473]:
+                          - term [ref=f6e1474]: participants
+                          - definition:
+                            - list
+                        - generic [ref=f6e1475]:
+                          - term [ref=f6e1476]: protocol
+                          - definition [ref=f6e1477]:
+                            - paragraph [ref=f6e1478]: SQLite
+                        - generic [ref=f6e1479]:
+                          - term [ref=f6e1480]: request schema
+                          - definition [ref=f6e1481]:
+                            - generic [ref=f6e1482]:
+                              - generic [ref=f6e1483]:
+                                - term [ref=f6e1484]: additionalProperties
+                                - definition [ref=f6e1485]: "false"
+                              - generic [ref=f6e1486]:
+                                - term [ref=f6e1487]: properties
+                                - definition [ref=f6e1488]:
+                                  - generic [ref=f6e1489]:
+                                    - generic [ref=f6e1490]:
+                                      - term [ref=f6e1491]: changes
+                                      - definition [ref=f6e1492]:
+                                        - generic [ref=f6e1493]:
+                                          - generic [ref=f6e1494]:
+                                            - term [ref=f6e1495]: items
+                                            - definition [ref=f6e1496]:
+                                              - generic [ref=f6e1498]:
+                                                - term [ref=f6e1499]: type
+                                                - definition [ref=f6e1500]:
+                                                  - paragraph [ref=f6e1501]: object
+                                          - generic [ref=f6e1502]:
+                                            - term [ref=f6e1503]: type
+                                            - definition [ref=f6e1504]:
+                                              - paragraph [ref=f6e1505]: array
+                                    - generic [ref=f6e1506]:
+                                      - term [ref=f6e1507]: transaction id
+                                      - definition [ref=f6e1508]:
+                                        - generic [ref=f6e1509]:
+                                          - generic [ref=f6e1510]:
+                                            - term [ref=f6e1511]: minLength
+                                            - definition [ref=f6e1512]: "1"
+                                          - generic [ref=f6e1513]:
+                                            - term [ref=f6e1514]: type
+                                            - definition [ref=f6e1515]:
+                                              - paragraph [ref=f6e1516]: string
+                              - generic [ref=f6e1517]:
+                                - term [ref=f6e1518]: required
+                                - definition [ref=f6e1519]:
+                                  - list [ref=f6e1520]:
+                                    - listitem [ref=f6e1521]:
+                                      - paragraph [ref=f6e1522]: transaction_id
+                                    - listitem [ref=f6e1523]:
+                                      - paragraph [ref=f6e1524]: changes
+                              - generic [ref=f6e1525]:
+                                - term [ref=f6e1526]: type
+                                - definition [ref=f6e1527]:
+                                  - paragraph [ref=f6e1528]: object
+                        - generic [ref=f6e1529]:
+                          - term [ref=f6e1530]: response schema
+                          - definition [ref=f6e1531]:
+                            - generic [ref=f6e1532]:
+                              - generic [ref=f6e1533]:
+                                - term [ref=f6e1534]: additionalProperties
+                                - definition [ref=f6e1535]: "false"
+                              - generic [ref=f6e1536]:
+                                - term [ref=f6e1537]: properties
+                                - definition [ref=f6e1538]:
+                                  - generic [ref=f6e1540]:
+                                    - term [ref=f6e1541]: committed
+                                    - definition [ref=f6e1542]:
+                                      - generic [ref=f6e1544]:
+                                        - term [ref=f6e1545]: type
+                                        - definition [ref=f6e1546]:
+                                          - paragraph [ref=f6e1547]: boolean
+                              - generic [ref=f6e1548]:
+                                - term [ref=f6e1549]: required
+                                - definition [ref=f6e1550]:
+                                  - list [ref=f6e1551]:
+                                    - listitem [ref=f6e1552]:
+                                      - paragraph [ref=f6e1553]: committed
+                              - generic [ref=f6e1554]:
+                                - term [ref=f6e1555]: type
+                                - definition [ref=f6e1556]:
+                                  - paragraph [ref=f6e1557]: object
+                        - generic [ref=f6e1558]:
+                          - term [ref=f6e1559]: schema ref
+                          - definition [ref=f6e1560]: Not specified
+                    - generic [ref=f6e1561]:
+                      - paragraph [ref=f6e1562]: Current contract
+                      - generic [ref=f6e1563]:
+                        - generic [ref=f6e1564]:
+                          - term [ref=f6e1565]: contract type
+                          - definition [ref=f6e1566]:
+                            - paragraph [ref=f6e1567]: JSON Schema
+                        - generic [ref=f6e1568]:
+                          - term [ref=f6e1569]: description
+                          - definition [ref=f6e1570]:
+                            - paragraph [ref=f6e1571]: SQLite somente na camada externa; UNIQUE ator/operação/chave e CAS de versão. Toda exceção encerra com rollback; não salvar parcialmente.
+                        - generic [ref=f6e1572]:
+                          - term [ref=f6e1573]: direction
+                          - definition [ref=f6e1574]:
+                            - paragraph [ref=f6e1575]: source_to_target
+                        - generic [ref=f6e1576]:
+                          - term [ref=f6e1577]: endpoint
+                          - definition [ref=f6e1578]:
+                            - paragraph [ref=f6e1579]: SQLite transaction
+                        - generic [ref=f6e1580]:
+                          - term [ref=f6e1581]: error contract
+                          - definition [ref=f6e1582]:
+                            - generic [ref=f6e1583]:
+                              - generic [ref=f6e1584]:
+                                - term [ref=f6e1585]: idempotency conflict
+                                - definition [ref=f6e1586]:
+                                  - generic [ref=f6e1587]:
+                                    - generic [ref=f6e1588]:
+                                      - term [ref=f6e1589]: code
+                                      - definition [ref=f6e1590]:
+                                        - paragraph [ref=f6e1591]: idempotency_conflict
+                                    - generic [ref=f6e1592]:
+                                      - term [ref=f6e1593]: description
+                                      - definition [ref=f6e1594]:
+                                        - paragraph [ref=f6e1595]: Mesma chave com outra carga.
+                              - generic [ref=f6e1596]:
+                                - term [ref=f6e1597]: invalid input
+                                - definition [ref=f6e1598]:
+                                  - generic [ref=f6e1599]:
+                                    - generic [ref=f6e1600]:
+                                      - term [ref=f6e1601]: code
+                                      - definition [ref=f6e1602]:
+                                        - paragraph [ref=f6e1603]: invalid_input
+                                    - generic [ref=f6e1604]:
+                                      - term [ref=f6e1605]: description
+                                      - definition [ref=f6e1606]:
+                                        - paragraph [ref=f6e1607]: Campos inválidos; preservar entrada.
+                              - generic [ref=f6e1608]:
+                                - term [ref=f6e1609]: not found
+                                - definition [ref=f6e1610]:
+                                  - generic [ref=f6e1611]:
+                                    - generic [ref=f6e1612]:
+                                      - term [ref=f6e1613]: code
+                                      - definition [ref=f6e1614]:
+                                        - paragraph [ref=f6e1615]: not_found
+                                    - generic [ref=f6e1616]:
+                                      - term [ref=f6e1617]: description
+                                      - definition [ref=f6e1618]:
+                                        - paragraph [ref=f6e1619]: Reserva inexistente ou alheia; sem revelar identidade.
+                              - generic [ref=f6e1620]:
+                                - term [ref=f6e1621]: reservation conflict
+                                - definition [ref=f6e1622]:
+                                  - generic [ref=f6e1623]:
+                                    - generic [ref=f6e1624]:
+                                      - term [ref=f6e1625]: code
+                                      - definition [ref=f6e1626]:
+                                        - paragraph [ref=f6e1627]: reservation_conflict
+                                    - generic [ref=f6e1628]:
+                                      - term [ref=f6e1629]: description
+                                      - definition [ref=f6e1630]:
+                                        - paragraph [ref=f6e1631]: Horário ocupado; alteração mantém original.
+                              - generic [ref=f6e1632]:
+                                - term [ref=f6e1633]: reservation locked
+                                - definition [ref=f6e1634]:
+                                  - generic [ref=f6e1635]:
+                                    - generic [ref=f6e1636]:
+                                      - term [ref=f6e1637]: code
+                                      - definition [ref=f6e1638]:
+                                        - paragraph [ref=f6e1639]: reservation_locked
+                                    - generic [ref=f6e1640]:
+                                      - term [ref=f6e1641]: description
+                                      - definition [ref=f6e1642]:
+                                        - paragraph [ref=f6e1643]: Iniciada/passada/cancelada; sem mutação.
+                              - generic [ref=f6e1644]:
+                                - term [ref=f6e1645]: unauthorized
+                                - definition [ref=f6e1646]:
+                                  - generic [ref=f6e1647]:
+                                    - generic [ref=f6e1648]:
+                                      - term [ref=f6e1649]: code
+                                      - definition [ref=f6e1650]:
+                                        - paragraph [ref=f6e1651]: unauthorized
+                                    - generic [ref=f6e1652]:
+                                      - term [ref=f6e1653]: description
+                                      - definition [ref=f6e1654]:
+                                        - paragraph [ref=f6e1655]: Entre novamente; nenhuma mutação.
+                              - generic [ref=f6e1656]:
+                                - term [ref=f6e1657]: unavailable
+                                - definition [ref=f6e1658]:
+                                  - generic [ref=f6e1659]:
+                                    - generic [ref=f6e1660]:
+                                      - term [ref=f6e1661]: code
+                                      - definition [ref=f6e1662]:
+                                        - paragraph [ref=f6e1663]: unavailable
+                                    - generic [ref=f6e1664]:
+                                      - term [ref=f6e1665]: description
+                                      - definition [ref=f6e1666]:
+                                        - paragraph [ref=f6e1667]: Falha recuperável; sem sucesso presumido.
+                              - generic [ref=f6e1668]:
+                                - term [ref=f6e1669]: version conflict
+                                - definition [ref=f6e1670]:
+                                  - generic [ref=f6e1671]:
+                                    - generic [ref=f6e1672]:
+                                      - term [ref=f6e1673]: code
+                                      - definition [ref=f6e1674]:
+                                        - paragraph [ref=f6e1675]: version_conflict
+                                    - generic [ref=f6e1676]:
+                                      - term [ref=f6e1677]: description
+                                      - definition [ref=f6e1678]:
+                                        - paragraph [ref=f6e1679]: Recarregar estado; nunca sobrescrever.
+                        - generic [ref=f6e1680]:
+                          - term [ref=f6e1681]: event schema
+                          - definition [ref=f6e1682]: Not specified
+                        - generic [ref=f6e1683]:
+                          - term [ref=f6e1684]: name
+                          - definition [ref=f6e1685]:
+                            - paragraph [ref=f6e1686]: Persistência de transação
+                        - generic [ref=f6e1687]:
+                          - term [ref=f6e1688]: notes
+                          - definition [ref=f6e1689]:
+                            - paragraph [ref=f6e1690]: Contrato de valores independente de transporte. Mapeamento de códigos para status HTTP pertence exclusivamente ao adaptador HTTP; JSON Schema documenta a forma, não impõe JSON ao domínio.
+                        - generic [ref=f6e1691]:
+                          - term [ref=f6e1692]: participants
+                          - definition:
+                            - list
+                        - generic [ref=f6e1693]:
+                          - term [ref=f6e1694]: protocol
+                          - definition [ref=f6e1695]:
+                            - paragraph [ref=f6e1696]: SQLite
+                        - generic [ref=f6e1697]:
+                          - term [ref=f6e1698]: request schema
+                          - definition [ref=f6e1699]:
+                            - generic [ref=f6e1700]:
+                              - generic [ref=f6e1701]:
+                                - term [ref=f6e1702]: additionalProperties
+                                - definition [ref=f6e1703]: "false"
+                              - generic [ref=f6e1704]:
+                                - term [ref=f6e1705]: properties
+                                - definition [ref=f6e1706]:
+                                  - generic [ref=f6e1707]:
+                                    - generic [ref=f6e1708]:
+                                      - term [ref=f6e1709]: changes
+                                      - definition [ref=f6e1710]:
+                                        - generic [ref=f6e1711]:
+                                          - generic [ref=f6e1712]:
+                                            - term [ref=f6e1713]: items
+                                            - definition [ref=f6e1714]:
+                                              - generic [ref=f6e1716]:
+                                                - term [ref=f6e1717]: type
+                                                - definition [ref=f6e1718]:
+                                                  - paragraph [ref=f6e1719]: object
+                                          - generic [ref=f6e1720]:
+                                            - term [ref=f6e1721]: type
+                                            - definition [ref=f6e1722]:
+                                              - paragraph [ref=f6e1723]: array
+                                    - generic [ref=f6e1724]:
+                                      - term [ref=f6e1725]: transaction id
+                                      - definition [ref=f6e1726]:
+                                        - generic [ref=f6e1727]:
+                                          - generic [ref=f6e1728]:
+                                            - term [ref=f6e1729]: minLength
+                                            - definition [ref=f6e1730]: "1"
+                                          - generic [ref=f6e1731]:
+                                            - term [ref=f6e1732]: type
+                                            - definition [ref=f6e1733]:
+                                              - paragraph [ref=f6e1734]: string
+                              - generic [ref=f6e1735]:
+                                - term [ref=f6e1736]: required
+                                - definition [ref=f6e1737]:
+                                  - list [ref=f6e1738]:
+                                    - listitem [ref=f6e1739]:
+                                      - paragraph [ref=f6e1740]: transaction_id
+                                    - listitem [ref=f6e1741]:
+                                      - paragraph [ref=f6e1742]: changes
+                              - generic [ref=f6e1743]:
+                                - term [ref=f6e1744]: type
+                                - definition [ref=f6e1745]:
+                                  - paragraph [ref=f6e1746]: object
+                        - generic [ref=f6e1747]:
+                          - term [ref=f6e1748]: response schema
+                          - definition [ref=f6e1749]:
+                            - generic [ref=f6e1750]:
+                              - generic [ref=f6e1751]:
+                                - term [ref=f6e1752]: additionalProperties
+                                - definition [ref=f6e1753]: "false"
+                              - generic [ref=f6e1754]:
+                                - term [ref=f6e1755]: properties
+                                - definition [ref=f6e1756]:
+                                  - generic [ref=f6e1758]:
+                                    - term [ref=f6e1759]: committed
+                                    - definition [ref=f6e1760]:
+                                      - generic [ref=f6e1762]:
+                                        - term [ref=f6e1763]: type
+                                        - definition [ref=f6e1764]:
+                                          - paragraph [ref=f6e1765]: boolean
+                              - generic [ref=f6e1766]:
+                                - term [ref=f6e1767]: required
+                                - definition [ref=f6e1768]:
+                                  - list [ref=f6e1769]:
+                                    - listitem [ref=f6e1770]:
+                                      - paragraph [ref=f6e1771]: committed
+                              - generic [ref=f6e1772]:
+                                - term [ref=f6e1773]: type
+                                - definition [ref=f6e1774]:
+                                  - paragraph [ref=f6e1775]: object
+                        - generic [ref=f6e1776]:
+                          - term [ref=f6e1777]: schema ref
+                          - definition [ref=f6e1778]: Not specified
+                  - generic "Classification authoring" [ref=f6e1187]:
+                    - generic [ref=f6e1188]:
+                      - button "Create IR" [ref=f6e1189] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1190] [cursor=pointer]
+                      - button "Context only" [ref=f6e1191] [cursor=pointer]
+                - article [ref=f6e1192]:
+                  - generic [ref=f6e1193]:
+                    - heading "Alterar reserva" [level=4] [ref=f6e1194]
+                    - generic [ref=f6e1195]: Current
+                  - group [ref=f6e1196]:
+                    - generic "Source references" [ref=f6e1197] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1198] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1199]:
+                    - generic [ref=f6e1200]:
+                      - button "Create IR" [ref=f6e1201] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1202] [cursor=pointer]
+                      - button "Context only" [ref=f6e1203] [cursor=pointer]
+                - article [ref=f6e1204]:
+                  - generic [ref=f6e1205]:
+                    - heading "Contrato de invariantes" [level=4] [ref=f6e1206]
+                    - generic [ref=f6e1207]: Current
+                  - group [ref=f6e1208]:
+                    - generic "Source references" [ref=f6e1209] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1210] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1211]:
+                    - generic [ref=f6e1212]:
+                      - button "Create IR" [ref=f6e1213] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1214] [cursor=pointer]
+                      - button "Context only" [ref=f6e1215] [cursor=pointer]
+                - article [ref=f6e1216]:
+                  - generic [ref=f6e1217]:
+                    - heading "Ler histórico da própria reserva" [level=4] [ref=f6e1218]
+                    - generic [ref=f6e1219]: Current
+                  - group [ref=f6e1220]:
+                    - generic "Source references" [ref=f6e1221] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1222] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1223]:
+                    - generic [ref=f6e1224]:
+                      - button "Create IR" [ref=f6e1225] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1226] [cursor=pointer]
+                      - button "Context only" [ref=f6e1227] [cursor=pointer]
+                - article [ref=f6e1228]:
+                  - generic [ref=f6e1229]:
+                    - heading "IdentityProvider" [level=4] [ref=f6e1230]
+                    - generic [ref=f6e1231]: Current
+                  - group [ref=f6e1232]:
+                    - generic "Source references" [ref=f6e1233] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1234] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1235]:
+                    - generic [ref=f6e1236]:
+                      - button "Create IR" [ref=f6e1237] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1238] [cursor=pointer]
+                      - button "Context only" [ref=f6e1239] [cursor=pointer]
+                - article [ref=f6e1240]:
+                  - generic [ref=f6e1241]:
+                    - heading "Criar reserva" [level=4] [ref=f6e1242]
+                    - generic [ref=f6e1243]: Current
+                  - group [ref=f6e1244]:
+                    - generic "Source references" [ref=f6e1245] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1246] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1247]:
+                    - generic [ref=f6e1248]:
+                      - button "Create IR" [ref=f6e1249] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1250] [cursor=pointer]
+                      - button "Context only" [ref=f6e1251] [cursor=pointer]
+                - article [ref=f6e1252]:
+                  - generic [ref=f6e1253]:
+                    - heading "Porta pública de casos de uso" [level=4] [ref=f6e1254]
+                    - generic [ref=f6e1255]: Current
+                  - group [ref=f6e1256]:
+                    - generic "Source references" [ref=f6e1257] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1258] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1259]:
+                    - generic [ref=f6e1260]:
+                      - button "Create IR" [ref=f6e1261] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1262] [cursor=pointer]
+                      - button "Context only" [ref=f6e1263] [cursor=pointer]
+                - article [ref=f6e1264]:
+                  - generic [ref=f6e1265]:
+                    - heading "Consultar disponibilidade" [level=4] [ref=f6e1266]
+                    - generic [ref=f6e1267]: Current
+                  - group [ref=f6e1268]:
+                    - generic "Source references" [ref=f6e1269] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1270] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1271]:
+                    - generic [ref=f6e1272]:
+                      - button "Create IR" [ref=f6e1273] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1274] [cursor=pointer]
+                      - button "Context only" [ref=f6e1275] [cursor=pointer]
+                - article [ref=f6e1276]:
+                  - generic [ref=f6e1277]:
+                    - heading "Listar próprias reservas" [level=4] [ref=f6e1278]
+                    - generic [ref=f6e1279]: Current
+                  - group [ref=f6e1280]:
+                    - generic "Source references" [ref=f6e1281] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1282] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1283]:
+                    - generic [ref=f6e1284]:
+                      - button "Create IR" [ref=f6e1285] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1286] [cursor=pointer]
+                      - button "Context only" [ref=f6e1287] [cursor=pointer]
+                - article [ref=f6e1288]:
+                  - generic [ref=f6e1289]:
+                    - heading "Cancelar reserva" [level=4] [ref=f6e1290]
+                    - generic [ref=f6e1291]: Current
+                  - group [ref=f6e1292]:
+                    - generic "Source references" [ref=f6e1293] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1294] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1295]:
+                    - generic [ref=f6e1296]:
+                      - button "Create IR" [ref=f6e1297] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1298] [cursor=pointer]
+                      - button "Context only" [ref=f6e1299] [cursor=pointer]
+                - article [ref=f6e1300]:
+                  - generic [ref=f6e1301]:
+                    - heading "Injeção de adaptadores" [level=4] [ref=f6e1302]
+                    - generic [ref=f6e1303]: Current
+                  - group [ref=f6e1304]:
+                    - generic "Source references" [ref=f6e1305] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1306] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1307]:
+                    - generic [ref=f6e1308]:
+                      - button "Create IR" [ref=f6e1309] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1310] [cursor=pointer]
+                      - button "Context only" [ref=f6e1311] [cursor=pointer]
+                - article [ref=f6e1312]:
+                  - generic [ref=f6e1313]:
+                    - heading "Clock" [level=4] [ref=f6e1314]
+                    - generic [ref=f6e1315]: Current
+                  - group [ref=f6e1316]:
+                    - generic "Source references" [ref=f6e1317] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1318] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1319]:
+                    - generic [ref=f6e1320]:
+                      - button "Create IR" [ref=f6e1321] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1322] [cursor=pointer]
+                      - button "Context only" [ref=f6e1323] [cursor=pointer]
+                - article [ref=f6e1324]:
+                  - generic [ref=f6e1325]:
+                    - heading "ReservationUnitOfWork" [level=4] [ref=f6e1326]
+                    - generic [ref=f6e1327]: Current
+                  - group [ref=f6e1328]:
+                    - generic "Source references" [ref=f6e1329] [cursor=pointer]
+                  - button "Review decision and contract" [ref=f6e1330] [cursor=pointer]
+                  - generic "Classification authoring" [ref=f6e1331]:
+                    - generic [ref=f6e1332]:
+                      - button "Create IR" [ref=f6e1333] [cursor=pointer]
+                      - button "Associate IR" [ref=f6e1334] [cursor=pointer]
+                      - button "Context only" [ref=f6e1335] [cursor=pointer]
+          - generic [ref=f6e753]:
+            - button "Delete spec" [ref=f6e754] [cursor=pointer]
+            - button "Close" [ref=f6e756] [cursor=pointer]

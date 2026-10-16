@@ -19,6 +19,15 @@ pytestmark = pytest.mark.asyncio
 NOW = datetime(2026, 7, 28, tzinfo=timezone.utc)
 
 
+async def test_sprint_is_not_loaded_by_live_consolidation_adapter() -> None:
+    context = _Context()
+    artifact = await CommunitySqlAlchemyConsolidationPersistence().load_artifact(
+        context, artifact_type="sprint", artifact_id="historical-sprint",
+    )
+    assert artifact is None
+    assert context.query_count == 0
+
+
 class _Result:
     def __init__(self, rows: list[tuple[object, object | None]]) -> None:
         self._rows = rows

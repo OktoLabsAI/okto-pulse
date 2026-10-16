@@ -10,8 +10,14 @@ invoke only those governance operations.
 """
 
 from __future__ import annotations
-from okto_pulse.core.models.delivery_evidence import DeliveryEvidenceInput, DeliveryEvidenceCommand, DeliveryEvidenceQuery
-from okto_pulse.core.application.use_cases.delivery_evidence import GetDeliveryEvidenceUseCase, RecordDeliveryEvidenceUseCase
+from okto_pulse.core.models.delivery_evidence import card_delivery_command, DeliveryBatchEntryError, DeliveryEvidenceInput, DeliveryEvidenceCommand, DeliveryEvidenceReadQuery, DeliveryEvidenceQuery
+from okto_pulse.core.models.delivery_report import CardDeliveryRecordInput, DeliveryReportRejected
+from okto_pulse.core.application.use_cases.delivery_evidence import GetDeliveryEvidenceUseCase, RecordCardDeliveryEvidenceUseCase, RecordDeliveryEvidenceUseCase
+from okto_pulse.core.application.use_cases.decision_review import GetDecisionReviewsUseCase, RecordDecisionReviewsUseCase
+from okto_pulse.core.models.decision_review import DecisionReviewInput, DecisionReviewCommand, DecisionReviewQuery
+from okto_pulse.core.inbound.delivery_readiness_error import READINESS_ERRORS, project_readiness_error
+from okto_pulse.core.ports.delivery_readiness import ReadinessAccessDenied, ReadinessReadError
+from okto_pulse.core.application.delivery_errors import DeliveryGateBlocked
 
 import base64
 from dataclasses import fields, is_dataclass
@@ -20,10 +26,10 @@ from enum import Enum
 import hashlib
 import hmac
 import json
-from typing import Mapping
+from typing import Literal, Mapping
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, create_model
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, create_model
 
 from okto_pulse.community.api.auth_deps import require_principal
 from okto_pulse.community.api.deps import get_unit_of_work
@@ -35,7 +41,6 @@ from okto_pulse.core.application.use_cases.base import (
 )
 from okto_pulse.core.application.use_cases.code_traceability import (
     AcknowledgeImplementationOverlapUseCase,
-    ClassifyLegacyCodeEvidenceUseCase,
     ClearCodeEvidenceDispositionUseCase,
     ClearCodeTraceabilityNotApplicableUseCase,
     CreateImplementationTargetUseCase,
@@ -70,9 +75,8 @@ from okto_pulse.core.application.use_cases.code_traceability import (
 )
 from okto_pulse.core.domain.code_traceability import (
     CodeEvidenceAttestationState,
-    CodeEvidenceLegacyClassificationHumanRequired,
     CodeInvestigationActorKindRequired,
-    CodeInvestigationOutcome,
+    ContextualInvestigationOutcomeV2,
     CodeTraceabilityContextScope,
     CodeTraceabilityLifecycleStatus,
     CodeTraceabilityPage,
@@ -89,18 +93,14 @@ from okto_pulse.core.models.code_traceability import (
     CodeEvidenceSpecLinkInput,
     CodeEvidenceSpecUnlinkInput,
     CodeEvidenceSubmission,
-    CodeEvidenceSubmissionV2,
     CodeEvidenceSupersessionSubmission,
-    CodeEvidenceSupersessionSubmissionV2,
     CodeInvestigationReceiptSubmission,
-    CodeInvestigationReceiptSubmissionV2,
     CodeTraceabilityWaiverClearInput,
     CodeTraceabilityWaiverInput,
     ImplementationTargetCreateInput,
     ImplementationTargetExecutionSubmission,
     ImplementationTargetResolutionSubmission,
     ImplementationTargetUpdateInput,
-    LegacyEvidenceClassificationBatchInput,
     StartCodeInvestigationInput,
     SpecCodeEvidenceRebaseApplyInput,
     SpecCodeEvidenceRebasePreviewInput,
@@ -176,38 +176,15 @@ CodeInvestigationReceiptBody = _transport_body(
     CodeInvestigationReceiptSubmission,
     server_owned=frozenset({"board_id", "request_id"}),
 )
-CodeInvestigationReceiptBodyV2 = _transport_body(
-    "CodeInvestigationReceiptBodyV2",
-    CodeInvestigationReceiptSubmissionV2,
-    server_owned=frozenset({"board_id", "request_id"}),
-    required_fields=frozenset({"contract_version"}),
-)
 CodeEvidenceBody = _transport_body(
     "CodeEvidenceBody",
     CodeEvidenceSubmission,
     server_owned=frozenset({"board_id"}),
 )
-CodeEvidenceBodyV2 = _transport_body(
-    "CodeEvidenceBodyV2",
-    CodeEvidenceSubmissionV2,
-    server_owned=frozenset({"board_id"}),
-    required_fields=frozenset({"contract_version"}),
-)
 CodeEvidenceSupersessionBody = _transport_body(
     "CodeEvidenceSupersessionBody",
     CodeEvidenceSupersessionSubmission,
     server_owned=frozenset({"board_id", "supersedes_evidence_id"}),
-)
-CodeEvidenceSupersessionBodyV2 = _transport_body(
-    "CodeEvidenceSupersessionBodyV2",
-    CodeEvidenceSupersessionSubmissionV2,
-    server_owned=frozenset({"board_id", "supersedes_evidence_id"}),
-    required_fields=frozenset({"contract_version"}),
-)
-LegacyEvidenceClassificationBody = _transport_body(
-    "LegacyEvidenceClassificationBody",
-    LegacyEvidenceClassificationBatchInput,
-    server_owned=frozenset({"board_id"}),
 )
 CodeEvidenceRevokeBody = _transport_body(
     "CodeEvidenceRevokeBody",
@@ -293,11 +270,6 @@ def _require_agent_submission_principal(principal: Principal) -> None:
         raise _http_error(CodeInvestigationActorKindRequired())
 
 
-def _require_classification_principal(principal: Principal) -> None:
-    """Allow authorized human or agent classification; reject system/unknown."""
-
-    if principal.actor_kind not in {"agent", "human", "user"}:
-        raise _http_error(CodeEvidenceLegacyClassificationHumanRequired())
 
 
 def _investigation_service() -> CodeInvestigationService:
@@ -485,15 +457,28 @@ def _native(value: object, *, cursor_binding: str | None = None) -> object:
 
 
 def _http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, READINESS_ERRORS):
+        projected = project_readiness_error(exc)
+        code = projected['code']
+        status_code = {'readiness_query_invalid': 422, 'readiness_scope_mismatch': 404,
+            'readiness_permission_denied': 403, 'readiness_cursor_stale': 409,
+            'readiness_snapshot_changed': 409}.get(code, 503)
+        return HTTPException(status_code=status_code, detail=projected)
+    if isinstance(exc, (DeliveryReportRejected, DeliveryGateBlocked)):
+        return HTTPException(status_code=409, detail=exc.to_error_dict())
+    if isinstance(exc, ValueError) and str(exc).startswith(("decision_review_", "decision_inspection_")):
+        code = str(exc).split(":", 1)[0]
+        return HTTPException(status_code=409 if code.endswith("_conflict") else 422,
+            detail={"code": code, "message": str(exc), "details": {},
+                    "remediation": [{"action": "review_decision_verification", "tool": "okto_pulse_get_decision_reviews"}]})
     if isinstance(exc, ValueError) and str(exc).startswith("delivery_"):
         code = str(exc).split(":", 1)[0]
-        return HTTPException(status_code=409 if code.endswith("_conflict") else 404 if code.endswith("_not_found") else 422, detail={"code": code, "message": str(exc), "remediation": [{"action": "review_delivery_evidence", "tool": "okto_pulse_get_delivery_evidence"}]})
+        return HTTPException(status_code=409 if code.endswith("_conflict") else 404 if code.endswith("_not_found") else 422, detail={"code": code, "message": str(exc), "details": exc.details() if isinstance(exc, DeliveryBatchEntryError) else {}, "remediation": [{"action": "review_delivery_evidence", "tool": "okto_pulse_get_delivery_evidence"}]})
     """Project the same typed envelope exposed by the Core MCP adapter."""
 
     if isinstance(
         exc,
-        CodeInvestigationActorKindRequired
-        | CodeEvidenceLegacyClassificationHumanRequired,
+        CodeInvestigationActorKindRequired,
     ):
         return HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -571,6 +556,7 @@ async def _execute(
         CodeTraceabilityPersistenceError,
         EntityNotFoundError,
         PermissionDeniedError,
+        ReadinessAccessDenied,
         ValueError,
     ) as exc:
         raise _http_error(exc) from exc
@@ -601,7 +587,7 @@ async def start_code_investigation(
 async def submit_code_investigation_receipt(
     board_id: str,
     request_id: str,
-    body: CodeInvestigationReceiptBodyV2 | CodeInvestigationReceiptBody,
+    body: CodeInvestigationReceiptBody,
     principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> object:
@@ -609,11 +595,7 @@ async def submit_code_investigation_receipt(
     return await _execute(
         SubmitCodeInvestigationReceiptUseCase(_investigation_service()),
         _command(
-            (
-                CodeInvestigationReceiptSubmissionV2
-                if isinstance(body, CodeInvestigationReceiptBodyV2)
-                else CodeInvestigationReceiptSubmission
-            ),
+            CodeInvestigationReceiptSubmission,
             body,
             board_id=board_id,
             request_id=request_id,
@@ -630,7 +612,7 @@ async def list_code_investigation_receipts(
     subject_type: CodeTraceabilitySubjectType | None = None,
     subject_id: str | None = None,
     source_ref: str | None = None,
-    outcome: CodeInvestigationOutcome | None = None,
+    outcome: ContextualInvestigationOutcomeV2 | None = None,
     cursor: str | None = None,
     limit: int = Query(50, ge=1, le=200),
     principal: Principal = Depends(require_principal),
@@ -703,7 +685,7 @@ async def revoke_code_investigation_receipt(
 @router.post("/{board_id}/code-evidence", status_code=status.HTTP_201_CREATED)
 async def submit_code_evidence(
     board_id: str,
-    body: CodeEvidenceBodyV2 | CodeEvidenceBody,
+    body: CodeEvidenceBody,
     principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> object:
@@ -714,11 +696,7 @@ async def submit_code_evidence(
             CodeEvidenceService(),
         ),
         _command(
-            (
-                CodeEvidenceSubmissionV2
-                if isinstance(body, CodeEvidenceBodyV2)
-                else CodeEvidenceSubmission
-            ),
+            CodeEvidenceSubmission,
             body,
             board_id=board_id,
         ),
@@ -728,27 +706,6 @@ async def submit_code_evidence(
     )
 
 
-@router.post("/{board_id}/code-evidence/legacy-classifications")
-async def classify_legacy_code_evidence(
-    board_id: str,
-    body: LegacyEvidenceClassificationBody,
-    principal: Principal = Depends(require_principal),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
-) -> object:
-    """Apply an atomic, actor-authored V2 overlay to legacy Evidence."""
-
-    _require_classification_principal(principal)
-    return await _execute(
-        ClassifyLegacyCodeEvidenceUseCase(),
-        _command(
-            LegacyEvidenceClassificationBatchInput,
-            body,
-            board_id=board_id,
-        ),
-        board_id=board_id,
-        principal=principal,
-        uow=uow,
-    )
 
 
 @router.get("/{board_id}/code-evidence")
@@ -822,7 +779,7 @@ async def get_code_evidence(
 async def supersede_code_evidence(
     board_id: str,
     evidence_id: str,
-    body: CodeEvidenceSupersessionBodyV2 | CodeEvidenceSupersessionBody,
+    body: CodeEvidenceSupersessionBody,
     principal: Principal = Depends(require_principal),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ) -> object:
@@ -833,11 +790,7 @@ async def supersede_code_evidence(
             CodeEvidenceService(),
         ),
         _command(
-            (
-                CodeEvidenceSupersessionSubmissionV2
-                if isinstance(body, CodeEvidenceSupersessionBodyV2)
-                else CodeEvidenceSupersessionSubmission
-            ),
+            CodeEvidenceSupersessionSubmission,
             body,
             board_id=board_id,
             supersedes_evidence_id=evidence_id,
@@ -1282,15 +1235,79 @@ async def get_code_traceability_projection(
     )
 
 
+@router.get("/{board_id}/specs/{spec_id}/delivery-readiness-summary")
+async def get_delivery_readiness_summary(board_id: str, spec_id: str, response: Response,
+    principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)):
+    from okto_pulse.core.application.use_cases.delivery_evidence import GetDeliveryReadinessBoardSummaryUseCase
+    response.headers['Cache-Control'] = 'no-store'
+    return await _execute(GetDeliveryReadinessBoardSummaryUseCase(),
+        DeliveryEvidenceQuery(board_id=board_id, spec_id=spec_id),
+        board_id=board_id, principal=principal, uow=uow)
+
+
 @router.get("/{board_id}/specs/{spec_id}/delivery-evidence")
-async def get_delivery_evidence(board_id: str, spec_id: str, principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)) -> object:
-    return await _execute(GetDeliveryEvidenceUseCase(), DeliveryEvidenceQuery(board_id=board_id, spec_id=spec_id), board_id=board_id, principal=principal, uow=uow)
+async def get_delivery_evidence(board_id: str, spec_id: str, response: Response, request: Request,
+    card_id: str | None = Query(default=None, min_length=1, max_length=512),
+    cursor: str | None = Query(default=None, min_length=1, max_length=8192),
+    record_id: str | None = Query(default=None, min_length=1, max_length=512),
+    limit: int = Query(default=20, ge=1, le=20),
+    view: Literal["progress", "ledger", "resume", "readiness"] = Query(default="progress"),
+    edition: int | None = Query(default=None, ge=1),
+    phase: Literal['all', 'implementation', 'verification', 'lifecycle'] = Query(default='all'),
+    issue_id: str | None = Query(default=None, min_length=1, max_length=512),
+    snapshot_id: str | None = Query(default=None, pattern=r'^[0-9a-f]{64}$'),
+    principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)) -> object:
+    response.headers["Cache-Control"] = "no-store"
+    if view == 'readiness' and set(request.query_params) - (DeliveryEvidenceReadQuery.model_fields.keys() - {'board_id', 'spec_id'}):
+        raise _http_error(ReadinessReadError('readiness_query_invalid'))
+    try:
+        command = DeliveryEvidenceReadQuery(board_id=board_id, spec_id=spec_id,
+            card_id=card_id, cursor=cursor, record_id=record_id, limit=limit, view=view, edition=edition,
+            phase=phase, issue_id=issue_id, snapshot_id=snapshot_id)
+    except ValidationError as exc:
+        if view == 'readiness' or any(issue['type'] == 'readiness_query_invalid' for issue in exc.errors()):
+            raise _http_error(ReadinessReadError('readiness_query_invalid')) from exc
+        raise HTTPException(status_code=422, detail='delivery_history_scope_invalid') from exc
+    return await _execute(GetDeliveryEvidenceUseCase(), command, board_id=board_id, principal=principal, uow=uow)
 
 
 @router.post("/{board_id}/specs/{spec_id}/delivery-evidence")
 async def record_delivery_evidence(board_id: str, spec_id: str, body: DeliveryEvidenceInput, principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)) -> object:
+    """Spec-scoped exceptions: waivers and their revocations (human-only)."""
     command = DeliveryEvidenceCommand(board_id=board_id, spec_id=spec_id, **body.model_dump())
     return await _execute(RecordDeliveryEvidenceUseCase(), command, board_id=board_id, principal=principal, uow=uow)
+
+
+@router.get("/{board_id}/specs/{spec_id}/decision-reviews")
+async def get_decision_reviews(board_id: str, spec_id: str, response: Response,
+    principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)) -> object:
+    response.headers["Cache-Control"] = "no-store"
+    return await _execute(GetDecisionReviewsUseCase(), DecisionReviewQuery(board_id=board_id, spec_id=spec_id),
+        board_id=board_id, principal=principal, uow=uow)
+
+
+@router.post("/{board_id}/specs/{spec_id}/decision-reviews")
+async def record_decision_reviews(board_id: str, spec_id: str, body: DecisionReviewInput,
+    principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)) -> object:
+    return await _execute(RecordDecisionReviewsUseCase(),
+        DecisionReviewCommand(board_id=board_id, spec_id=spec_id, **body.model_dump()),
+        board_id=board_id, principal=principal, uow=uow)
+
+
+@router.post("/{board_id}/cards/{card_id}/specs/{spec_id}/delivery-evidence")
+async def record_card_delivery_evidence(board_id: str, card_id: str, spec_id: str, body: CardDeliveryRecordInput, principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)) -> object:
+    """Canonical card-scoped delivery recording surface.
+
+    The task owns its implementation/test bindings; the command carries the
+    card CAS fence. Waivers are not accepted here (BR-3).
+    """
+    command = card_delivery_command(board_id=board_id, card_id=card_id, spec_id=spec_id, evidence=body)
+    entries = getattr(command, "entries", (command,))
+    if any(entry.execution_submission is not None for entry in entries):
+        _require_agent_submission_principal(principal)
+    return await _execute(RecordCardDeliveryEvidenceUseCase(
+        SubmitImplementationTargetExecutionUseCase(_investigation_service(), ImplementationTargetService())
+    ), command, board_id=board_id, principal=principal, uow=uow)
 
 
 __all__ = ["router"]

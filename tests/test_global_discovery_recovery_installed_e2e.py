@@ -1,9 +1,10 @@
-"""Installed-wheel, real-HTTP acceptance for recovery and Global Outbox DLQ.
+"""Installed-wheel internal recovery and real-HTTP public retirement acceptance.
 
 This is intentionally artifact-first.  It builds the current Pulse worktrees plus
-an explicit Grafx 0.0.5 candidate, installs only those wheels into isolated virtual
+the pinned Grafx candidate, installs only those wheels into isolated virtual
 environments, starts the installed CLI's dual API/MCP server on loopback ports, and
-drives the public Streamable HTTP MCP surface.  Controlled fixture injections are
+drives recovery through a test-only local control channel. Public inventory,
+resources and refusal of retired DLQ tools use real Streamable HTTP. Controlled fixture injections are
 declared in the sibling JSON manifest; there are no direct FastMCP ``.fn`` calls in
 this harness.
 """
@@ -13,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -24,6 +26,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import tomllib
 import zipfile
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -39,6 +42,7 @@ from fastmcp import Client
 from okto_pulse.core.application.boundary.repository_checkout import (
     resolve_repository_checkout,
 )
+from packaging.requirements import Requirement
 
 COMMUNITY_REPO = Path(__file__).resolve().parents[1]
 _CORE_CHECKOUT = resolve_repository_checkout(
@@ -58,23 +62,29 @@ FINAL_WHEEL_DIR_ENV = "OKTO_E2E_FINAL_WHEEL_DIR"
 FINAL_CORE_WHEEL_SHA256_ENV = "OKTO_E2E_FINAL_CORE_WHEEL_SHA256"
 FINAL_COMMUNITY_WHEEL_SHA256_ENV = "OKTO_E2E_FINAL_COMMUNITY_WHEEL_SHA256"
 FINAL_GRAFX_WHEEL_SHA256_ENV = "OKTO_E2E_FINAL_GRAFX_WHEEL_SHA256"
-EXPECTED_GRAFX_VERSION = "0.0.5"
-BOARD_CENSUS_SIZE = 1_500
-EXPECTED_TOOL_COUNT = 338
-EXPECTED_CANONICAL_TOOL_COUNT = 330
-EXPECTED_TOOL_INVENTORY_SHA256 = (
-    "0e0afb57b9b0e5fd12522a98c3d3516373aa145dbb112ba2522673c1cc96c16d"
+# Derive the build requirement from the same local project used by this harness.
+_grafx_requirement = next(
+    Requirement(value)
+    for value in tomllib.loads((COMMUNITY_REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"]["dependencies"]
+    if Requirement(value).name == "okto-grafx"
 )
-EXPECTED_TOOL_ALIASES = {
-    "okto_pulse_ask_ideation_question": "okto_pulse_ask",
-    "okto_pulse_ask_question": "okto_pulse_ask",
-    "okto_pulse_ask_refinement_question": "okto_pulse_ask",
-    "okto_pulse_ask_spec_question": "okto_pulse_ask",
-    "okto_pulse_ask_sprint_question": "okto_pulse_ask",
-    "okto_pulse_remove_api_contract": "okto_pulse_remove_spec_entity",
-    "okto_pulse_remove_business_rule": "okto_pulse_remove_spec_entity",
-    "okto_pulse_remove_decision": "okto_pulse_remove_spec_entity",
-}
+_grafx_pins = tuple(_grafx_requirement.specifier)
+assert len(_grafx_pins) == 1 and _grafx_pins[0].operator == "=="
+EXPECTED_GRAFX_VERSION = _grafx_pins[0].version
+EXPECTED_PULSE_VERSION = tomllib.loads(
+    (COMMUNITY_REPO / "pyproject.toml").read_text(encoding="utf-8")
+)["project"]["version"]
+assert tomllib.loads((CORE_REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"] == EXPECTED_PULSE_VERSION
+BOARD_CENSUS_SIZE = 1_500
+# Observe the full 600s product attempt plus bounded polling/shutdown slack.
+# This does not extend the worker budget or reduce the 1,500-Board census.
+PREPARATION_OBSERVER_TIMEOUT = 660
+EXPECTED_TOOL_COUNT = 285
+EXPECTED_CANONICAL_TOOL_COUNT = 285
+EXPECTED_TOOL_INVENTORY_SHA256 = (
+    "6da5fc12f5c20f12f93f18db247c8c5577c137d60852ac732baa31d3f7e24ad1"
+)
+EXPECTED_TOOL_ALIASES = {}
 
 pytestmark = [
     pytest.mark.e2e,
@@ -168,8 +178,8 @@ def _resolve_pulse_wheel_pair(
         assert len(community_candidates) == 1, all_wheels
         core_wheel = core_candidates[0]
         community_wheel = community_candidates[0]
-        assert "-0.3.3-" in core_wheel.name, core_wheel.name
-        assert "-0.3.3-" in community_wheel.name, community_wheel.name
+        assert f"-{EXPECTED_PULSE_VERSION}-" in core_wheel.name, core_wheel.name
+        assert f"-{EXPECTED_PULSE_VERSION}-" in community_wheel.name, community_wheel.name
         expected_core_sha = _expected_sha256(FINAL_CORE_WHEEL_SHA256_ENV)
         expected_community_sha = _expected_sha256(FINAL_COMMUNITY_WHEEL_SHA256_ENV)
         if expected_core_sha is not None:
@@ -260,12 +270,15 @@ def _assert_grafx_candidate_wheel(wheel: Path) -> Path:
         rf"(?m)^Version: {re.escape(EXPECTED_GRAFX_VERSION)}\s*$", metadata
     ), metadata[:2000]
     assert re.search(r"(?m)^Provides-Extra: accel\s*$", metadata), metadata[:2000]
+    # Since Grafx 0.0.7 the accelerated dependencies are base requirements and
+    # ``accel`` is an empty compatibility extra; older candidates carried them
+    # under the extra marker. Accept the pinned release either way.
     assert re.search(
-        r"(?mi)^Requires-Dist: numpy>=1\.24; extra == ['\"]accel['\"]\s*$",
+        r"(?mi)^Requires-Dist: numpy>=1\.24(; extra == ['\"]accel['\"])?\s*$",
         metadata,
     ), metadata[:4000]
     assert re.search(
-        r"(?mi)^Requires-Dist: google-crc32c>=1\.5; extra == ['\"]accel['\"]\s*$",
+        r"(?mi)^Requires-Dist: google-crc32c>=1\.5(; extra == ['\"]accel['\"])?\s*$",
         metadata,
     ), metadata[:4000]
     return resolved
@@ -280,7 +293,7 @@ def _resolve_grafx_candidate_wheel(
     """Use an explicit wheel or build one explicit local Grafx checkout.
 
     The installed acceptance never falls back to an index.  That keeps the
-    Pulse gate on the exact 0.0.5 artifact,
+    Pulse gate on the exact pinned artifact (``EXPECTED_GRAFX_VERSION``),
     while ``OKTO_E2E_FINAL_WHEEL_DIR`` remains the governed Core/Community pair.
     """
 
@@ -314,7 +327,7 @@ def _resolve_grafx_candidate_wheel(
         return staged_wheel
 
     assert repo_raw, (
-        "the okto-grafx 0.0.5 artifact must be explicit: set "
+        f"the okto-grafx {EXPECTED_GRAFX_VERSION} artifact must be explicit: set "
         f"{GRAFX_WHEEL_ENV} to its wheel or {GRAFX_REPO_ENV} to its source checkout"
     )
     source_repo = Path(repo_raw).expanduser().resolve()
@@ -371,12 +384,52 @@ class InstalledRuntime:
     resource_manifest: dict[str, Any]
 
 
+def _isolated_runtime_environment(data_dir: Path) -> dict[str, str]:
+    """Override every storage destination inherited from a parent campaign."""
+    return {
+        **os.environ,
+        "DATA_DIR": str(data_dir),
+        "DATABASE_URL": f"sqlite+aiosqlite:///{(data_dir / 'data' / 'pulse.db').as_posix()}",
+        "KG_BASE_DIR": str(data_dir),
+        "UPLOAD_DIR": str(data_dir / "uploads"),
+        "METRICS_DIR": str(data_dir / "metrics"),
+        "PYTHONUTF8": "1",
+    }
+
+
+def _prove_installed_pair(*, root, python, core_wheel, community_wheel, env):
+    """Use the release gate's full source/wheel/install proof before runtime IO."""
+    spec = importlib.util.spec_from_file_location(
+        "installed_e2e_payload_gate", COMMUNITY_REPO / "scripts/release_artifact_gate.py",
+    )
+    assert spec is not None and spec.loader is not None
+    gate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+    location = _run_checked(
+        [str(python), "-I", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+        cwd=root, env=env,
+    )
+    site_packages = Path(location.stdout.strip())
+    proof = gate._installed_payload_provenance(
+        core_wheel=core_wheel, community_wheel=community_wheel,
+        origin_evidence={"origins": {
+            f"okto_pulse.{edition}": str(site_packages / "okto_pulse" / edition / "__init__.py")
+            for edition in ("core", "community")
+        }},
+    )
+    (root / "installed-pair-provenance.json").write_text(json.dumps(proof, indent=2), encoding="utf-8")
+
+
 @pytest.fixture(scope="module")
 def installed_runtime(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator[InstalledRuntime]:
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
-    assert manifest["transport"] == "real-streamable-http"
+    assert manifest["transport"] == (
+        "real-streamable-http for public inventory/resources/refusals; "
+        "test-only local filesystem channel for internal recovery"
+    )
+    assert any(item["id"] == "internal-recovery-control-channel" for item in manifest["runtime_injections"])
     assert manifest["direct_fastmcp_fn_calls"] == []
 
     uv = shutil.which("uv")
@@ -426,6 +479,8 @@ def installed_runtime(
     assert _sha256(community_wheel) == community_wheel_sha256
     assert _sha256(grafx_wheel) == grafx_wheel_sha256
 
+    _prove_installed_pair(root=root, python=python, core_wheel=core_wheel,
+                         community_wheel=community_wheel, env=build_env)
     data_dir = root / "pulse-home"
     clock_file = root / "confirmation-clock-offset-seconds.txt"
     clock_file.write_text("0", encoding="ascii")
@@ -447,12 +502,11 @@ def installed_runtime(
     submit_gate_release_file = root / "submit-gate-release.txt"
     submit_gate_timeout_marker = root / "submit-gate-timeout-marker.txt"
     runtime_env = {
-        **os.environ,
+        **_isolated_runtime_environment(data_dir),
         "HF_HUB_OFFLINE": "1",
-        "KG_GLOBAL_GRAPH_BACKEND": "ladybug",
-        "KG_GRAPH_BACKEND": "ladybug",
+        "KG_GLOBAL_GRAPH_BACKEND": "grafx",
+        "KG_GRAPH_BACKEND": "grafx",
         "NO_PROXY": "127.0.0.1,localhost",
-        "OKTO_PULSE_HOME": str(data_dir),
         "OKTO_PULSE_METRICS_BEACON_STARTUP_DELAY_SECONDS": "600",
         "OKTO_PULSE_NO_BANNER": "1",
         "OKTO_PULSE_SHUTDOWN_TIMEOUT_SECONDS": "45",
@@ -508,7 +562,7 @@ assert "okto_pulse/community/frontend_dist/index.html" in community_files
 assert "okto_pulse/community/adapters/global_discovery_recovery_worker.py" in community_files
 requirements = [str(requirement).lower() for requirement in (community.requires or ())]
 assert any(
-    row.replace(" ", "") == "okto-grafx[accel]==0.0.5"
+    row.replace(" ", "") == "okto-grafx[accel]==" + os.environ["E2E_EXPECTED_GRAFX_VERSION"]
     for row in requirements
 ), requirements
 for direct_dependency in (
@@ -523,7 +577,7 @@ for direct_dependency in (
 core_requirement = next(
     row for row in requirements if row.startswith("okto-pulse-core")
 )
-assert ">=0.3.3" in core_requirement and "<1.0.0" in core_requirement
+assert core_requirement.replace(" ", "") == "okto-pulse-core==" + os.environ["E2E_EXPECTED_PULSE_VERSION"]
 console_scripts = {
     entry.name: entry.value
     for entry in community.entry_points
@@ -538,7 +592,7 @@ for package_path in community.files or ():
         javascript.append(community.locate_file(package_path).read_text(encoding="utf-8"))
 about = [source for source in javascript if "Community Edition — v" in source]
 assert len(about) == 1
-assert "0.3.3" in about[0]
+assert os.environ["E2E_EXPECTED_PULSE_VERSION"] in about[0]
 assert "Community Edition — v0.2.5" not in "".join(javascript)
 
 print(json.dumps({
@@ -565,6 +619,9 @@ print(json.dumps({
     origin_env = {
         **runtime_env,
         "E2E_GRAFX_WHEEL_URI": grafx_wheel.as_uri(),
+        "E2E_EXPECTED_GRAFX_VERSION": EXPECTED_GRAFX_VERSION,
+        "E2E_EXPECTED_PULSE_VERSION": EXPECTED_PULSE_VERSION,
+        "OKTO_E2E_FENCE_DEBUG_FILE": str(root / "fence-debug.jsonl"),
         "E2E_WORKSPACE_ROOT": str(WORKSPACE_ROOT),
     }
     origin_result = _run_checked(
@@ -573,7 +630,7 @@ print(json.dumps({
         env=origin_env,
     )
     origin_report = json.loads(origin_result.stdout.strip().splitlines()[-1])
-    assert origin_report["versions"] == {"community": "0.3.3", "core": "0.3.3"}
+    assert origin_report["versions"] == {"community": EXPECTED_PULSE_VERSION, "core": EXPECTED_PULSE_VERSION}
     assert origin_report["grafx"]["version"] == EXPECTED_GRAFX_VERSION
     assert origin_report["about_bundle_count"] == 1
 
@@ -612,17 +669,18 @@ with runtime_value_scope(runtime_values):
     version_result = _run_checked(
         [str(console), "--version"], cwd=root, env=runtime_env, timeout=60
     )
-    assert version_result.stdout.strip() == "okto-pulse 0.3.3 (okto-pulse-core 0.3.3)"
+    assert version_result.stdout.strip() == f"okto-pulse {EXPECTED_PULSE_VERSION} (okto-pulse-core {EXPECTED_PULSE_VERSION})"
 
+    handoff_path = root / "bootstrap-api-key"
     initialized = _run_checked(
-        [str(console), "init"],
+        [str(console), "init", "--bootstrap-key-handoff", str(handoff_path)],
         cwd=root,
         env=runtime_env,
         timeout=300,
     )
-    key_match = re.search(r"API Key:\s+(dash_[A-Za-z0-9]+)", initialized.stdout)
-    assert key_match is not None, initialized.stdout[-4000:]
-    api_key = key_match.group(1)
+    api_key = handoff_path.read_text(encoding="utf-8").strip()
+    assert re.fullmatch(r"dash_[A-Za-z0-9]+", api_key)
+    assert api_key not in initialized.stdout
     database_path = data_dir / "data" / "pulse.db"
     assert database_path.is_file(), database_path
 
@@ -636,24 +694,37 @@ with runtime_value_scope(runtime_values):
     # — while the installed server is still stopped — relocate the COMPLETE
     # storage-observed ``global`` directory out of the observed tree (into the
     # isolated runtime root) and recreate it empty.  Moving the whole directory
-    # (never just ``discovery.lbug``) is required: leftover ``discovery.lbug.*``
-    # sidecars would classify as residual/unreadable state instead of the
-    # CONFIRMED_ABSENT total loss this recovery scenario needs.
+    # (never just the Grafx primary identity ``grafx.meta``) is required:
+    # leftover generation sidecars would classify as residual/unreadable state
+    # instead of the CONFIRMED_ABSENT total loss this recovery scenario needs.
     assert "  Global Discovery: materialized" in initialized.stdout, initialized.stdout[
         -4000:
     ]
     global_dir = data_dir / "global"
-    assert sorted(global_dir.rglob("discovery.lbug")), sorted(global_dir.rglob("*"))
+    assert sorted(global_dir.rglob("grafx.meta")), sorted(global_dir.rglob("*"))
     total_loss_backup = root / "global-discovery-total-loss-backup"
     assert not total_loss_backup.exists(), total_loss_backup
     shutil.move(str(global_dir), str(total_loss_backup))
     global_dir.mkdir()
+    # Under the routed Grafx backend the binding document is load-bearing
+    # routing state (backend + generation + page size). Losing it entirely means
+    # "no route at all" and preparation cannot even fingerprint the loss; the
+    # total-loss scenario this harness drives is loss of the PHYSICAL graph
+    # data, so the binding document is restored while every grafx generation
+    # stays in the backup.
+    shutil.copy2(
+        total_loss_backup / "graph_backend_binding.json",
+        global_dir / "graph_backend_binding.json",
+    )
     # The backup preserves the materialized primary (plus any WAL/sidecars); the
-    # freshly observed ``global`` directory is empty => CONFIRMED_ABSENT.
-    assert sorted(total_loss_backup.rglob("discovery.lbug")), sorted(
+    # freshly observed ``global`` directory holds only the routing binding while
+    # every physical grafx generation stays in the backup => CONFIRMED_ABSENT.
+    assert sorted(total_loss_backup.rglob("grafx.meta")), sorted(
         total_loss_backup.rglob("*")
     )
-    assert list(global_dir.iterdir()) == [], sorted(global_dir.iterdir())
+    assert [item.name for item in sorted(global_dir.iterdir())] == [
+        "graph_backend_binding.json"
+    ], sorted(global_dir.iterdir())
 
     peer_api_key = f"dash_{secrets.token_hex(24)}"
     peer_credential_script = r"""
@@ -688,8 +759,8 @@ print(json.dumps({"api_key_hash": key_hash, "api_key_marker": credential_marker(
         connection.execute(
             "INSERT INTO agents "
             "(id, name, description, objective, api_key, api_key_hash, "
-            " is_active, permissions, created_by) "
-            "VALUES (?, ?, ?, ?, ?, ?, 1, NULL, ?)",
+            " is_active, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1, ?)",
             (
                 peer_actor_id,
                 "Installed E2E Peer Global Admin",
@@ -777,25 +848,37 @@ print(json.dumps({"api_key_hash": key_hash, "api_key_marker": credential_marker(
     )
 
 
+def test_installed_runtime_paths_override_parent_campaign(tmp_path, monkeypatch):
+    keys = ("DATA_DIR", "DATABASE_URL", "KG_BASE_DIR", "UPLOAD_DIR", "METRICS_DIR")
+    for key in keys:
+        monkeypatch.setenv(key, "parent-runtime-must-not-be-used")
+    data = tmp_path / "isolated"
+    env = _isolated_runtime_environment(data)
+    for key in keys:
+        assert "parent-runtime" not in env[key]
+        assert str(data).replace("\\", "/") in env[key].replace("\\", "/")
+        assert os.environ[key] == "parent-runtime-must-not-be-used"
+
+
 def test_final_wheel_mode_reuses_pair_and_authenticates_grafx_before_install(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     final_pair = tmp_path / "final-pair"
     final_pair.mkdir()
-    core_wheel = final_pair / "okto_pulse_core-0.3.3-py3-none-any.whl"
-    community_wheel = final_pair / "okto_pulse-0.3.3-py3-none-any.whl"
+    core_wheel = final_pair / f"okto_pulse_core-{EXPECTED_PULSE_VERSION}-py3-none-any.whl"
+    community_wheel = final_pair / f"okto_pulse-{EXPECTED_PULSE_VERSION}-py3-none-any.whl"
     core_wheel.write_bytes(b"governed-core")
     community_wheel.write_bytes(b"governed-community")
-    grafx_wheel = tmp_path / "okto_grafx-0.0.5-py3-none-any.whl"
+    grafx_wheel = tmp_path / f"okto_grafx-{EXPECTED_GRAFX_VERSION}-py3-none-any.whl"
     with zipfile.ZipFile(grafx_wheel, "w") as archive:
         archive.writestr(
-            "okto_grafx-0.0.5.dist-info/METADATA",
+            f"okto_grafx-{EXPECTED_GRAFX_VERSION}.dist-info/METADATA",
             "\n".join(
                 (
                     "Metadata-Version: 2.4",
                     "Name: okto-grafx",
-                    "Version: 0.0.5",
+                    f"Version: {EXPECTED_GRAFX_VERSION}",
                     "Provides-Extra: accel",
                     'Requires-Dist: numpy>=1.24; extra == "accel"',
                     'Requires-Dist: google-crc32c>=1.5; extra == "accel"',
@@ -899,6 +982,8 @@ def test_installed_grafx_candidate_materializes_board_and_global_routes(
     assert _sha256(core_wheel) == core_wheel_sha256
     assert _sha256(community_wheel) == community_wheel_sha256
     assert _sha256(grafx_wheel) == grafx_wheel_sha256
+    _prove_installed_pair(root=root, python=python, core_wheel=core_wheel,
+                         community_wheel=community_wheel, env=build_env)
     _run_checked(
         [uv, "pip", "check", "--python", str(python)],
         cwd=root,
@@ -908,13 +993,12 @@ def test_installed_grafx_candidate_materializes_board_and_global_routes(
 
     data_dir = root / "pulse-home"
     runtime_env = {
-        **os.environ,
+        **_isolated_runtime_environment(data_dir),
         "HF_HUB_OFFLINE": "1",
         "KG_GLOBAL_GRAPH_BACKEND": "grafx",
         "KG_GRAFX_PAGE_SIZE": "8192",
         "KG_GRAPH_BACKEND": "grafx",
         "NO_PROXY": "127.0.0.1,localhost",
-        "OKTO_PULSE_HOME": str(data_dir),
         "OKTO_PULSE_NO_BANNER": "1",
         "OKTO_PULSE_SKIP_DEMO_SEED": "1",
         "OKTO_PULSE_TERMS_ACCEPTED": "1",
@@ -960,6 +1044,7 @@ from okto_pulse.community.adapters.graph_backend_binding import (
     CommunityGraphBackendBindingStore,
 )
 from okto_pulse.community.config import CommunitySettings
+from okto_pulse.community.adapters.grafx_schema_manifest import PULSE_GRAFX_SCHEMA_MANIFEST
 
 venv = Path(sys.prefix).resolve()
 workspace = Path(os.environ["E2E_WORKSPACE_ROOT"]).resolve()
@@ -990,8 +1075,11 @@ def inspect(binding):
 
 board_tables = inspect(board)
 global_tables = inspect(global_route)
-assert len(board_tables) == 81, board_tables
+assert PULSE_GRAFX_SCHEMA_MANIFEST.schema_version == "0.8.0"
+assert board_tables == sorted(table.name for table in PULSE_GRAFX_SCHEMA_MANIFEST.tables)
+assert len(board_tables) == 97, board_tables
 assert {"BoardMeta", "Entity", "Decision"} <= set(board_tables)
+assert {"violates__Bug__Requirement", "violates__Bug__Criterion"} <= set(board_tables)
 assert len(global_tables) == 11, global_tables
 assert {
     "Board",
@@ -1009,7 +1097,7 @@ requirements = [
     str(requirement).lower().replace(" ", "")
     for requirement in (distribution("okto-pulse").requires or ())
 ]
-assert "okto-grafx[accel]==0.0.5" in requirements, requirements
+assert "okto-grafx[accel]==" + os.environ["E2E_EXPECTED_GRAFX_VERSION"] in requirements, requirements
 print(json.dumps({
     "backends": {"board": board.backend, "global": global_route.backend},
     "board_table_count": len(board_tables),
@@ -1030,6 +1118,8 @@ print(json.dumps({
             **runtime_env,
             "E2E_BOARD_ID": board_id,
             "E2E_GRAFX_WHEEL_URI": grafx_wheel.as_uri(),
+            "E2E_EXPECTED_GRAFX_VERSION": EXPECTED_GRAFX_VERSION,
+            "OKTO_E2E_FENCE_DEBUG_FILE": str(root / "fence-debug.jsonl"),
             "E2E_WORKSPACE_ROOT": str(WORKSPACE_ROOT),
         },
         timeout=180,
@@ -1038,7 +1128,7 @@ print(json.dumps({
     assert report["backends"] == {"board": "grafx", "global": "grafx"}
     assert report["grafx_version"] == EXPECTED_GRAFX_VERSION
     assert report["grafx_direct_url"] == grafx_wheel.as_uri()
-    assert report["board_table_count"] == 81
+    assert report["board_table_count"] == 97
     assert report["global_table_count"] == 11
     assert _sha256(core_wheel) == core_wheel_sha256
     assert _sha256(community_wheel) == community_wheel_sha256
@@ -1065,24 +1155,33 @@ def _server_launcher(
 ) -> str:
     statements = ["import os", "import sys"]
     if mode == "building-gate":
-        # Hard-kill fixture: after production's REAL atomic journal write whose
-        # payload carries phase=='building' has returned (durable on disk), the
-        # wrapper records the journal path in the signal file and blocks the
-        # native worker thread forever.  The test then hard-kills this exact
-        # child process; nothing is skipped, mocked or cleaned up.
+        # Hard-kill fixture: after production's REAL durable mid-attempt write
+        # has returned, the wrapper records the path in the signal file and
+        # blocks the native worker thread forever.  The test then hard-kills
+        # this exact child process; nothing is skipped, mocked or cleaned up.
+        # Under the routed Grafx backend the mid-attempt durable boundary is
+        # the ACTIVE GENERATION POINTER switch (layout_version +
+        # pointer_sha256); the legacy flow carried it in a phase='building'
+        # journal.  Both shapes are accepted so the gate fires exactly once at
+        # the cutover boundary.
         statements.extend(
             [
                 "import json as _json",
                 "import time as _time",
                 "from pathlib import Path as _Path",
-                "from okto_pulse.community.adapters import global_discovery_recovery as _recovery",
+                "from okto_pulse.community.adapters import grafx_global_discovery_recovery as _recovery",
+                "from okto_pulse.community.adapters import global_discovery_layout as _layout",
                 "_signal_file = _Path(os.environ['OKTO_E2E_BUILDING_GATE_SIGNAL_FILE'])",
                 "_real_write_json_atomic = _recovery.write_json_atomic",
                 (
                     "def _building_gated_write(path, payload):\n"
                     "    result = _real_write_json_atomic(path, payload)\n"
+                    "    data = dict(payload)\n"
+                    "    pointer_switch = (\n"
+                    "        'layout_version' in data and 'pointer_sha256' in data\n"
+                    "    )\n"
                     "    if (\n"
-                    "        dict(payload).get('phase') == 'building'\n"
+                    "        (data.get('phase') == 'building' or pointer_switch)\n"
                     "        and not _signal_file.exists()\n"
                     "    ):\n"
                     "        _signal_file.write_text(\n"
@@ -1094,6 +1193,7 @@ def _server_launcher(
                     "    return result"
                 ),
                 "_recovery.write_json_atomic = _building_gated_write",
+                "_layout.write_json_atomic = _building_gated_write",
             ]
         )
     elif mode == "paused":
@@ -1260,7 +1360,7 @@ def _server_launcher(
     elif mode == "resume-gate":
         # Cooperative N+1 gate (S4.0R ruling): hold the REAL native operation
         # for the exact target run/epoch AFTER the durable resume admission so
-        # the public resume replay can be exercised strictly before terminal.
+        # the internal resume replay can be exercised strictly before terminal.
         # The claim/heartbeat side stays fully productive during the hold; the
         # release always arrives from the test's finally (or the bounded
         # timeout proceeds WITHOUT fabricating any error, leaving a marker the
@@ -1345,12 +1445,14 @@ def _server_launcher(
                 "_preparation.CommunityGlobalDiscoveryRecoveryPreparationOperation.__call__ = _observable_preparation",
                 "_real_dispatch = _worker.CommunityDurableRecoveryDispatcher.dispatch",
                 (
+                    "class _InjectedDispatchResponseLoss(RuntimeError):\n"
+                    "    code = 'installed_e2e_dispatch_response_lost'\n"
                     "def _fail_once_after_durable_dispatch(self, *args, **kwargs):\n"
                     "    result = _real_dispatch(self, *args, **kwargs)\n"
                     "    kind = kwargs.get('kind')\n"
                     "    if getattr(kind, 'value', kind) == 'recovery' and not _fail_once_marker.exists():\n"
                     "        _fail_once_marker.write_text('1', encoding='ascii')\n"
-                    "        raise RuntimeError('installed_e2e_fail_once_after_durable_dispatch')\n"
+                    "        raise _InjectedDispatchResponseLoss('installed_e2e_fail_once_after_durable_dispatch')\n"
                     "    return result"
                 ),
                 "_worker.CommunityDurableRecoveryDispatcher.dispatch = _fail_once_after_durable_dispatch",
@@ -1368,9 +1470,19 @@ def _server_launcher(
             statements.extend(
                 [
                     "import json as _json",
-                    "from okto_pulse.community.adapters import global_discovery_recovery as _recovery",
+                    "from okto_pulse.community.adapters import grafx_global_discovery_recovery as _recovery",
+                "from okto_pulse.community.adapters import global_discovery_layout as _layout",
                     "_fence_target = _Path(os.environ['OKTO_E2E_FENCE_LOSS_TARGET_FILE'])",
                     "_fence_signal = _Path(os.environ['OKTO_E2E_FENCE_LOSS_SIGNAL_FILE'])",
+                    "_fence_debug = _Path(os.environ.get('OKTO_E2E_FENCE_DEBUG_FILE', ''))",
+                    (
+                        "def _fence_dbg(event, **fields):\n"
+                        "    if not _fence_debug:\n"
+                        "        return\n"
+                        "    import json as _j\n"
+                        "    with _fence_debug.open('a', encoding='utf-8') as _fh:\n"
+                        "        _fh.write(_j.dumps({'event': event, **fields}) + '\\n')"
+                    ),
                     "_captured_leases = []",
                     "_real_lease_acquire = _worker.GlobalDiscoveryWriterLease.acquire",
                     (
@@ -1378,6 +1490,7 @@ def _server_launcher(
                         "    lease = _real_lease_acquire(**kwargs)\n"
                         "    if kwargs.get('operation') == 'global_discovery_recovery':\n"
                         "        _captured_leases.append(lease)\n"
+                        "        _fence_dbg('lease_captured', total=len(_captured_leases))\n"
                         "    return lease"
                     ),
                     "_worker.GlobalDiscoveryWriterLease.acquire = _capturing_acquire",
@@ -1386,16 +1499,32 @@ def _server_launcher(
                         "def _fence_losing_write(path, payload):\n"
                         "    result = _real_write_json_atomic_fence(path, payload)\n"
                         "    data = dict(payload)\n"
+                        "    _fence_dbg(\n"
+                        "        'write',\n"
+                        "        name=_Path(path).name,\n"
+                        "        keys=sorted(data.keys()),\n"
+                        "        phase=data.get('phase'),\n"
+                        "        target_exists=_fence_target.exists(),\n"
+                        "        captured=len(_captured_leases),\n"
+                        "    )\n"
+                        "    pointer_switch = (\n"
+                        "        'layout_version' in data and 'pointer_sha256' in data\n"
+                        "    )\n"
                         "    if (\n"
-                        "        data.get('phase') == 'building'\n"
+                        "        (data.get('phase') == 'building' or pointer_switch)\n"
                         "        and _fence_target.exists()\n"
                         "        and not _fence_signal.exists()\n"
                         "        and _captured_leases\n"
                         "    ):\n"
                         "        target = _json.loads(_fence_target.read_text(encoding='utf-8'))\n"
+                        "        # The legacy flow carried run/epoch in a phase='building'\n"
+                        "        # journal; the Grafx active-pointer document does not, and\n"
+                        "        # this isolated runtime drives exactly one recovery run,\n"
+                        "        # so the first pointer switch after the target file appears\n"
+                        "        # is deterministically THIS run's cutover.\n"
                         "        if (\n"
                         "            str(data.get('run_id')) == str(target['run_id'])\n"
-                        "            and int(data.get('epoch') or 0) == int(target['epoch'])\n"
+                        "            or (pointer_switch and not data.get('run_id'))\n"
                         "        ):\n"
                         "            released = _captured_leases[-1].release()\n"
                         "            _fence_signal.write_text(\n"
@@ -1403,8 +1532,8 @@ def _server_launcher(
                         "                    {\n"
                         "                        'journal_path': str(path),\n"
                         "                        'released': bool(released),\n"
-                        "                        'run_id': str(data.get('run_id')),\n"
-                        "                        'epoch': int(data.get('epoch') or 0),\n"
+                        "                        'run_id': str(data.get('run_id') or target['run_id']),\n"
+                        "                        'epoch': int(data.get('epoch') or target['epoch'] or 0),\n"
                         "                    }\n"
                         "                ),\n"
                         "                encoding='utf-8',\n"
@@ -1412,10 +1541,13 @@ def _server_launcher(
                         "    return result"
                     ),
                     "_recovery.write_json_atomic = _fence_losing_write",
+                    "_layout.write_json_atomic = _fence_losing_write",
                 ]
             )
     statements.extend(
         [
+            "import runpy as _runpy",
+            "_runpy.run_path(os.environ['OKTO_E2E_INTERNAL_CONTROL_HELPER'])['install']()",
             "from okto_pulse.community.cli import main as _main",
             "_main()",
         ]
@@ -1429,11 +1561,27 @@ class RunningServer:
     api_url: str
     mcp_url: str
     log_path: Path
+    control_dir: Path
 
     def log_tail(self, length: int = 12_000) -> str:
         with contextlib.suppress(OSError):
             return self.log_path.read_text(encoding="utf-8", errors="replace")[-length:]
         return ""
+
+
+def _kill_owned_server_tree(server: RunningServer) -> None:
+    """Kill the test's live child tree, including Windows venv launchers."""
+    process = server.process
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            check=True, capture_output=True, text=True, timeout=30,
+        )
+    else:
+        process.kill()
+    process.wait(timeout=30)
 
 
 def _stop_server(server: RunningServer) -> None:
@@ -1447,13 +1595,7 @@ def _stop_server(server: RunningServer) -> None:
             process.terminate()
         process.wait(timeout=90)
     except (OSError, subprocess.TimeoutExpired):
-        with contextlib.suppress(OSError):
-            process.terminate()
-        try:
-            process.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=15)
+        _kill_owned_server_tree(server)
 
 
 @contextmanager
@@ -1476,15 +1618,23 @@ def _running_server(
     while mcp_port == api_port:
         mcp_port = _free_port()
     log_path = runtime.root / f"server-{mode}-{api_port}-{mcp_port}.log"
+    control_dir = runtime.root / f"internal-control-{api_port}-{mcp_port}"
+    control_dir.mkdir()
+    control_helper = control_dir / "driver.py"
+    shutil.copy2(Path(__file__).with_name("installed_recovery_control_channel.py"), control_helper)
     log_stream = log_path.open("w", encoding="utf-8")
     env = {
         **runtime.env,
+        "OKTO_E2E_INTERNAL_CONTROL_HELPER": str(control_helper),
+        "OKTO_E2E_INTERNAL_CONTROL_DIR": str(control_dir),
+        "OKTO_E2E_INTERNAL_CONTROL_ACTORS": json.dumps([runtime.actor_id, runtime.peer_actor_id]),
         "OKTO_E2E_CONFIRMATION_CLOCK_FILE": str(runtime.clock_file),
         "OKTO_E2E_FAIL_ONCE_MARKER": str(runtime.fail_once_marker),
         "OKTO_E2E_PREPARATION_RELEASE_FILE": str(runtime.preparation_release_file),
         "OKTO_E2E_BUILDING_GATE_SIGNAL_FILE": str(runtime.building_gate_signal_file),
         "OKTO_E2E_FENCE_LOSS_TARGET_FILE": str(runtime.fence_loss_target_file),
         "OKTO_E2E_FENCE_LOSS_SIGNAL_FILE": str(runtime.fence_loss_signal_file),
+        "OKTO_E2E_FENCE_DEBUG_FILE": str(runtime.root / "fence-debug.jsonl"),
         "OKTO_E2E_RESUME_GATE_TARGET_FILE": str(runtime.resume_gate_target_file),
         "OKTO_E2E_RESUME_GATE_SIGNAL_FILE": str(runtime.resume_gate_signal_file),
         "OKTO_E2E_RESUME_GATE_RELEASE_FILE": str(runtime.resume_gate_release_file),
@@ -1527,6 +1677,7 @@ def _running_server(
         api_url=f"http://127.0.0.1:{api_port}",
         mcp_url=f"http://127.0.0.1:{mcp_port}/mcp",
         log_path=log_path,
+        control_dir=control_dir,
     )
     try:
         deadline = time.monotonic() + 180
@@ -1577,48 +1728,65 @@ def _authenticated_mcp_url(
     return f"{server.mcp_url}?api_key={quote(credential, safe='')}"
 
 
-async def _tool_payload(
-    client: Client,
-    name: str,
+class _InternalControlClient:
+    """Fixture-owned internal admission plus a real MCP inventory reader."""
+
+    def __init__(self, runtime: InstalledRuntime, server: RunningServer, *, peer=False):
+        self.server = server
+        self.actor_id = runtime.peer_actor_id if peer else runtime.actor_id
+        self.mcp = Client(
+            _authenticated_mcp_url(runtime, server, api_key=runtime.peer_api_key if peer else runtime.api_key),
+            timeout=45, init_timeout=45,
+        )
+
+    async def __aenter__(self):
+        await self.mcp.__aenter__()
+        return self
+
+    async def __aexit__(self, *args):
+        return await self.mcp.__aexit__(*args)
+
+    def __getattr__(self, name):
+        return getattr(self.mcp, name)
+
+
+async def _internal_payload(
+    client: _InternalControlClient, operation: str,
     arguments: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    result = await client.call_tool(
-        name,
-        arguments or {},
-        timeout=45,
-        raise_on_error=False,
-    )
-    envelope = result.data
-    assert isinstance(envelope, dict), (name, result)
-    assert result.structured_content == envelope
-    assert {
-        "outcome",
-        "data",
-        "error_code",
-        "message",
-        "retryable",
-        "next_action",
-        "meta",
-    } <= envelope.keys(), (name, envelope)
-    outcome = envelope["outcome"]
-    assert outcome in {"success", "action_required", "error"}, (name, envelope)
-    assert result.is_error is (outcome == "error"), (name, result, envelope)
-    assert isinstance(envelope["retryable"], bool), (name, envelope)
-    if outcome == "success":
-        assert envelope["error_code"] is None, (name, envelope)
-    else:
-        assert isinstance(envelope["error_code"], str), (name, envelope)
-        assert envelope["error_code"], (name, envelope)
-    assert envelope["message"] is None or isinstance(envelope["message"], str)
-    assert envelope["next_action"] is None or isinstance(envelope["next_action"], dict)
-    assert envelope["meta"] == {
-        "contract": "okto-pulse.mcp-tool-outcome",
-        "contract_version": "2.0",
-        "tool": name,
-    }
-    domain_data = envelope["data"]
-    assert isinstance(domain_data, dict), (name, envelope)
-    return domain_data
+    root = client.server.control_dir
+    identity = secrets.token_hex(16)
+    request = root / f"{identity}.request.json"
+    response = root / f"{identity}.response.json"
+    staged = request.with_suffix('.tmp')
+    staged.write_text(json.dumps({
+        'actor_id': client.actor_id, 'operation': operation, 'arguments': arguments or {},
+    }), encoding='utf-8')
+    staged.replace(request)
+    deadline = time.monotonic() + 45
+    last_read_error = None
+    while time.monotonic() < deadline:
+        if response.exists():
+            try:
+                raw = response.read_text(encoding='utf-8')
+            except PermissionError as exc:
+                # Windows may expose an atomically renamed file before a
+                # competing handle permits reading it. Retry only the read,
+                # never the admitted operation, within the original deadline.
+                last_read_error = exc
+            else:
+                envelope = json.loads(raw)
+                assert 'unexpected_error' not in envelope, envelope
+                result = envelope['result']
+                assert isinstance(result, dict), result
+                return result
+        assert client.server.process.poll() is None, client.server.log_tail()
+        await asyncio.sleep(0.02)
+    raise AssertionError(
+        f'internal {operation} timed out: {client.server.log_tail()}'
+    ) from last_read_error
+
+
 
 
 async def _wait_for_phase(
@@ -1632,9 +1800,9 @@ async def _wait_for_phase(
     deadline = time.monotonic() + timeout
     last: dict[str, Any] | None = None
     while time.monotonic() < deadline:
-        last = await _tool_payload(
+        last = await _internal_payload(
             client,
-            "okto_pulse_kg_global_discovery_recovery_status",
+            'status',
             {"run_id": run_id},
         )
         assert "error" not in last, last
@@ -1691,11 +1859,11 @@ def _mutate_authoritative_board(runtime: InstalledRuntime, index: int) -> None:
         connection.commit()
 
 
-def _seed_terminal_outbox(runtime: InstalledRuntime) -> str:
+def _seed_terminal_outbox(runtime: InstalledRuntime, request) -> str:
     dead_letter_id = "installed-e2e-global-dlq"
     with sqlite3.connect(runtime.database_path, timeout=30) as connection:
         connection.execute(
-            "INSERT OR REPLACE INTO global_update_outbox "
+            "INSERT INTO global_update_outbox "
             "(id, event_id, board_id, session_id, event_type, payload, "
             " created_at, processed_at, retry_count, last_error) "
             "VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, NULL, -1, ?)",
@@ -1710,18 +1878,30 @@ def _seed_terminal_outbox(runtime: InstalledRuntime) -> str:
             ),
         )
         connection.commit()
+        original = connection.execute(
+            "SELECT * FROM global_update_outbox WHERE id = ?", (dead_letter_id,),
+        ).fetchone()
+
+    def remove_owned_injection():
+        # The public-refusal assertions must preserve this entire row. Remove
+        # only our unchanged synthetic injection at test teardown: the next
+        # installed case shares the DB and must not inherit a fabricated DLQ.
+        with sqlite3.connect(runtime.database_path, timeout=30) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            observed = connection.execute(
+                "SELECT * FROM global_update_outbox WHERE id = ?", (dead_letter_id,),
+            ).fetchone()
+            assert observed == original, "terminal outbox fixture changed"
+            deleted = connection.execute(
+                "DELETE FROM global_update_outbox WHERE id = ?", (dead_letter_id,),
+            )
+            assert deleted.rowcount == 1
+            connection.commit()
+
+    request.addfinalizer(remove_owned_injection)
     return dead_letter_id
 
 
-def _mark_outbox_applied(runtime: InstalledRuntime, dead_letter_id: str) -> None:
-    with sqlite3.connect(runtime.database_path, timeout=30) as connection:
-        changed = connection.execute(
-            "UPDATE global_update_outbox SET processed_at = CURRENT_TIMESTAMP "
-            "WHERE id = ?",
-            (dead_letter_id,),
-        )
-        assert changed.rowcount == 1
-        connection.commit()
 
 
 async def _assert_served_about(server: RunningServer) -> None:
@@ -1739,7 +1919,7 @@ async def _assert_served_about(server: RunningServer) -> None:
             bundles.append(response.text)
     about = [source for source in bundles if "Community Edition — v" in source]
     assert len(about) == 1
-    assert "0.3.3" in about[0]
+    assert EXPECTED_PULSE_VERSION in about[0]
     assert "Community Edition — v0.2.5" not in "".join(bundles)
 
 
@@ -1810,7 +1990,7 @@ async def _assert_mcp_inventory(
     names = sorted(tool.name for tool in tools)
     resource = await client.read_resource("okto-pulse://server-manifest")
     manifest = json.loads(resource[0].text)
-    assert client.initialize_result.serverInfo.version == "0.3.3"
+    assert client.initialize_result.serverInfo.version == EXPECTED_PULSE_VERSION
     assert len(names) == EXPECTED_TOOL_COUNT
     assert len(names) == manifest["tool_inventory"]["count"]
     assert manifest["tool_inventory"]["aliases"] == EXPECTED_TOOL_ALIASES
@@ -1829,7 +2009,7 @@ async def _assert_mcp_inventory(
     ).hexdigest()
     assert tool_hash == manifest["tool_inventory"]["sha256"]
     assert tool_hash == EXPECTED_TOOL_INVENTORY_SHA256
-    for required in (
+    for retired in (
         "okto_pulse_kg_global_discovery_recovery_preflight",
         "okto_pulse_kg_global_discovery_recovery_confirm",
         "okto_pulse_kg_global_discovery_recovery_run",
@@ -1840,7 +2020,7 @@ async def _assert_mcp_inventory(
         "okto_pulse_kg_global_outbox_dead_letter_reprocess",
         "okto_pulse_kg_global_outbox_dead_letter_verify",
     ):
-        assert required in names
+        assert retired not in names
     await _assert_resource_manifest_parity(client, resource_manifest)
 
 
@@ -1850,8 +2030,8 @@ async def test_installed_wheels_serve_exact_frozen_resource_manifest_over_real_h
 ) -> None:
     runtime = installed_runtime
     assert runtime.origin_report["versions"] == {
-        "community": "0.3.3",
-        "core": "0.3.3",
+        "community": EXPECTED_PULSE_VERSION,
+        "core": EXPECTED_PULSE_VERSION,
     }
     assert _sha256(runtime.core_wheel) == runtime.core_wheel_sha256
     assert _sha256(runtime.community_wheel) == runtime.community_wheel_sha256
@@ -1866,13 +2046,14 @@ async def test_installed_wheels_serve_exact_frozen_resource_manifest_over_real_h
 
 
 @pytest.mark.asyncio
-async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
+async def test_installed_internal_recovery_and_public_dlq_retirement(
     installed_runtime: InstalledRuntime,
+    request: pytest.FixtureRequest,
 ) -> None:
     runtime = installed_runtime
     assert runtime.origin_report["versions"] == {
-        "community": "0.3.3",
-        "core": "0.3.3",
+        "community": EXPECTED_PULSE_VERSION,
+        "core": EXPECTED_PULSE_VERSION,
     }
     assert _sha256(runtime.core_wheel) == runtime.core_wheel_sha256
     assert _sha256(runtime.community_wheel) == runtime.community_wheel_sha256
@@ -1883,39 +2064,33 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
     with _running_server(runtime, mode="paused") as server:
         await _assert_served_about(server)
         async with (
-            Client(
-                _authenticated_mcp_url(runtime, server), timeout=45, init_timeout=45
-            ) as client,
-            Client(
-                _authenticated_mcp_url(runtime, server, api_key=runtime.peer_api_key),
-                timeout=45,
-                init_timeout=45,
-            ) as peer_client,
+            _InternalControlClient(runtime, server, peer=False) as client,
+            _InternalControlClient(runtime, server, peer=True) as peer_client,
         ):
             await _assert_mcp_inventory(client, runtime.resource_manifest)
-            queued = await _tool_payload(
+            queued = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_preflight",
+                'prepare',
             )
             assert "phase" in queued, queued
             assert queued["phase"] == "queued"
             assert queued["actor_id"] == runtime.actor_id
-            queued_replay = await _tool_payload(
+            queued_replay = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_preflight",
+                'prepare',
             )
             assert queued_replay["run_id"] == queued["run_id"]
             assert queued_replay["idempotent_replay"] is True
             assert queued_replay["actor_id"] == runtime.actor_id
-            peer_status = await _tool_payload(
+            peer_status = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_status",
+                'status',
                 {"run_id": queued["run_id"]},
             )
             assert peer_status["actor_id"] == runtime.actor_id
-            cancelled = await _tool_payload(
+            cancelled = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_cancel",
+                'cancel',
                 {
                     "run_id": queued["run_id"],
                     "expected_epoch": queued["epoch"],
@@ -1932,28 +2107,22 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
     start_arguments: dict[str, Any]
     with _running_server(runtime, mode="controlled-clock-fence-loss") as server:
         async with (
-            Client(
-                _authenticated_mcp_url(runtime, server), timeout=45, init_timeout=45
-            ) as client,
-            Client(
-                _authenticated_mcp_url(runtime, server, api_key=runtime.peer_api_key),
-                timeout=45,
-                init_timeout=45,
-            ) as peer_client,
+            _InternalControlClient(runtime, server, peer=False) as client,
+            _InternalControlClient(runtime, server, peer=True) as peer_client,
         ):
             # Run 1: observe real preparing/prepared replay, then refuse stale
             # fingerprint at confirm and cancel the prepared attempt.
-            first = await _tool_payload(
+            first = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_preflight",
+                'prepare',
             )
             assert first["actor_id"] == runtime.actor_id
             preparing = await _wait_for_phase(
                 peer_client, first["run_id"], {"preparing"}
             )
-            preparing_replay = await _tool_payload(
+            preparing_replay = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_preflight",
+                'prepare',
             )
             assert preparing_replay["run_id"] == first["run_id"]
             assert preparing_replay["phase"] == "preparing"
@@ -1964,22 +2133,22 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
                 peer_client,
                 first["run_id"],
                 {"prepared"},
-                timeout=480,
+                timeout=PREPARATION_OBSERVER_TIMEOUT,
                 poll_interval=1.0,
             )
             assert prepared["counts"]["boards_total"] == BOARD_CENSUS_SIZE
             assert preparing["epoch"] == prepared["epoch"] == 1
             assert prepared["actor_id"] == runtime.actor_id
-            prepared_replay = await _tool_payload(
+            prepared_replay = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_preflight",
+                'prepare',
             )
             assert prepared_replay["run_id"] == first["run_id"]
             assert prepared_replay["phase"] == "prepared"
             _mutate_authoritative_board(runtime, 1)
-            stale_confirm = await _tool_payload(
+            stale_confirm = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_confirm",
+                'confirm',
                 {
                     "run_id": prepared["run_id"],
                     "manifest_ref": prepared["manifest_ref"],
@@ -1988,9 +2157,9 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
             )
             assert stale_confirm["error"] == "manifest_stale"
             prepared_cancel_reason = "installed E2E stale confirm cancellation"
-            prepared_cancel = await _tool_payload(
+            prepared_cancel = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_cancel",
+                'cancel',
                 {
                     "run_id": prepared["run_id"],
                     "expected_epoch": prepared["epoch"],
@@ -2007,20 +2176,20 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
 
             # Run 2: confirmation hash error, confirmation-token TTL expiry at
             # start, then a fresh token refused after source-fingerprint drift.
-            second = await _tool_payload(
+            second = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_preflight",
+                'prepare',
             )
             second_prepared = await _wait_for_phase(
                 client,
                 second["run_id"],
                 {"prepared"},
-                timeout=480,
+                timeout=PREPARATION_OBSERVER_TIMEOUT,
                 poll_interval=1.0,
             )
-            wrong_hash = await _tool_payload(
+            wrong_hash = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_confirm",
+                'confirm',
                 {
                     "run_id": second_prepared["run_id"],
                     "manifest_ref": second_prepared["manifest_ref"],
@@ -2028,9 +2197,9 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
                 },
             )
             assert wrong_hash["error"] == "preflight_hash_mismatch"
-            confirmation = await _tool_payload(
+            confirmation = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_confirm",
+                'confirm',
                 {
                     "run_id": second_prepared["run_id"],
                     "manifest_ref": second_prepared["manifest_ref"],
@@ -2045,18 +2214,18 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
                 "reason": "installed E2E expired confirmation",
             }
             runtime.clock_file.write_text("600", encoding="ascii")
-            expired_start = await _tool_payload(
+            expired_start = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_run",
+                'start',
                 ttl_arguments,
             )
             assert expired_start["error"] == "confirmation_refused"
             assert "expired" in expired_start["reason"]
             runtime.clock_file.write_text("0", encoding="ascii")
 
-            fresh_confirmation = await _tool_payload(
+            fresh_confirmation = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_confirm",
+                'confirm',
                 {
                     "run_id": second_prepared["run_id"],
                     "manifest_ref": second_prepared["manifest_ref"],
@@ -2064,9 +2233,9 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
                 },
             )
             _mutate_authoritative_board(runtime, 2)
-            stale_start = await _tool_payload(
+            stale_start = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_run",
+                'start',
                 {
                     "confirmation_id": fresh_confirmation["confirmation_id"],
                     "manifest_ref": second_prepared["manifest_ref"],
@@ -2076,9 +2245,9 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
             )
             assert stale_start["error"] == "manifest_stale"
             second_cancel_reason = "installed E2E stale start cancellation"
-            second_cancel = await _tool_payload(
+            second_cancel = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_cancel",
+                'cancel',
                 {
                     "run_id": second_prepared["run_id"],
                     "expected_epoch": second_prepared["epoch"],
@@ -2094,15 +2263,15 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
             )
 
             # Run 3: fresh confirmation/start and exact public replay.
-            third = await _tool_payload(
+            third = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_preflight",
+                'prepare',
             )
             third_prepared = await _wait_for_phase(
                 client,
                 third["run_id"],
                 {"prepared"},
-                timeout=480,
+                timeout=PREPARATION_OBSERVER_TIMEOUT,
                 poll_interval=1.0,
             )
             # Exact one-shot fence-loss target (S4.0R v3): only the durable
@@ -2117,9 +2286,9 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
                 ),
                 encoding="utf-8",
             )
-            third_confirmation = await _tool_payload(
+            third_confirmation = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_confirm",
+                'confirm',
                 {
                     "run_id": third_prepared["run_id"],
                     "manifest_ref": third_prepared["manifest_ref"],
@@ -2132,16 +2301,16 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
                 "preflight_hash": third_prepared["preflight_hash"],
                 "reason": "installed E2E fresh recovery",
             }
-            crashed_start = await _tool_payload(
+            crashed_start = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_run",
+                'start',
                 start_arguments,
             )
-            assert crashed_start["error"] == "global_discovery_recovery_run_failed"
+            assert crashed_start["error"] == "installed_e2e_dispatch_response_lost"
             assert runtime.fail_once_marker.read_text(encoding="ascii") == "1"
-            accepted_start = await _tool_payload(
+            accepted_start = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_run",
+                'start',
                 start_arguments,
             )
             assert accepted_start["outcome"] == "accepted"
@@ -2151,9 +2320,9 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
             assert accepted_start["epoch"] == third_prepared["epoch"]
             assert accepted_start["actor_id"] == runtime.actor_id
             assert accepted_start["confirmed_by_actor_id"] == runtime.peer_actor_id
-            replayed_start = await _tool_payload(
+            replayed_start = await _internal_payload(
                 peer_client,
-                "okto_pulse_kg_global_discovery_recovery_run",
+                'start',
                 start_arguments,
             )
             assert replayed_start["run_id"] == accepted_start["run_id"]
@@ -2171,7 +2340,12 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
                 client,
                 accepted_start["run_id"],
                 {"terminal"},
-                timeout=300,
+                # The productive attempt already owns a 600-second budget.
+                # Observe that complete budget plus bounded polling/shutdown
+                # slack; a 300-second harness deadline cut off a still-valid
+                # Grafx cutover before the real fence-loss injection ran.
+                # The partial outcome/reason assertions below remain strict.
+                timeout=660,
                 poll_interval=1.0,
             )
             assert partial["state"] == "partial"
@@ -2188,21 +2362,30 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
             assert fence_evidence["released"] is True
             assert fence_evidence["run_id"] == accepted_start["run_id"]
             assert int(fence_evidence["epoch"]) == int(accepted_start["epoch"])
-            # Capture the exact N journal truth immediately after the typed
+            # Capture the exact N durable truth immediately after the typed
             # PARTIAL: the fenced old owner performed ZERO physical writes
-            # after the loss, so the journal is frozen at durable building.
+            # after the loss. Under the routed Grafx backend the durable
+            # boundary document at the fence-loss moment is the frozen ACTIVE
+            # GENERATION POINTER of the cutover this run performed (the legacy
+            # flow carried run/epoch in a phase='building' journal instead).
             n_journal_path = Path(fence_evidence["journal_path"])
             n_journal_bytes = n_journal_path.read_bytes()
             n_journal_sha = hashlib.sha256(n_journal_bytes).hexdigest()
             fenced_journal = json.loads(n_journal_bytes.decode("utf-8"))
-            assert fenced_journal["phase"] == "building"
-            assert fenced_journal["run_id"] == accepted_start["run_id"]
-            assert int(fenced_journal["epoch"]) == int(accepted_start["epoch"])
+            assert n_journal_path.name == "active_generation.json"
+            assert fenced_journal["layout_version"] == 1
+            for key in (
+                "generation_id",
+                "manifest_sha256",
+                "pointer_sha256",
+            ):
+                assert isinstance(fenced_journal.get(key), str) and fenced_journal[key]
+            assert fenced_journal["generation_id"].startswith("gdr_")
 
     # Restart from the same installed wheels/data directory and prove the
     # durable control-plane state plus public DLQ operations survive it.
     runtime.clock_file.write_text("0", encoding="ascii")
-    dead_letter_id = _seed_terminal_outbox(runtime)
+    dead_letter_id = _seed_terminal_outbox(runtime, request)
     run_id = accepted_start["run_id"]
     partial_epoch = int(accepted_start["epoch"])
     resume_arguments = {
@@ -2219,14 +2402,12 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
         encoding="utf-8",
     )
     with _running_server(runtime, mode="resume-gate") as restarted:
-        async with Client(
-            _authenticated_mcp_url(runtime, restarted), timeout=45, init_timeout=45
-        ) as client:
+        async with _InternalControlClient(runtime, restarted, peer=False) as client:
             try:
-                # Explicit public resume #1 with an auditable reason.
-                resumed = await _tool_payload(
+                # Explicit internal resume #1 with an auditable reason.
+                resumed = await _internal_payload(
                     client,
-                    "okto_pulse_kg_global_discovery_recovery_resume",
+                    'resume',
                     resume_arguments,
                 )
                 assert "error" not in resumed, resumed
@@ -2253,9 +2434,9 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
                 # return without error and preserve the exact persisted N+1
                 # identity; ONLY the documented live-projection fields may
                 # advance (v5 ruling). ZERO epoch N+2.
-                replayed_resume = await _tool_payload(
+                replayed_resume = await _internal_payload(
                     client,
-                    "okto_pulse_kg_global_discovery_recovery_resume",
+                    'resume',
                     resume_arguments,
                 )
                 assert "error" not in replayed_resume, replayed_resume
@@ -2336,8 +2517,13 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
                 hashlib.sha256(n_journal_path.read_bytes()).hexdigest() == n_journal_sha
             )
             successor_attempt_id = str(resumed["attempt_id"])
+            # Grafx layout: attempt journals live under
+            # ``<global>/grafx/quarantine/global-discovery/<run_id>/attempt-N``.
             successor_journal_path = (
-                n_journal_path.parent.parent
+                n_journal_path.parent
+                / "quarantine"
+                / "global-discovery"
+                / run_id
                 / successor_attempt_id.split("/")[-1]
                 / "recovery_journal.json"
             )
@@ -2366,67 +2552,32 @@ async def test_installed_wheels_drive_recovery_and_dlq_over_real_http(
             assert recovery_dispatches[0]["attempt_id"] == successor_attempt_id
             assert recovery_dispatches[0]["state"] == "done"
 
-            invalid_classification = await _tool_payload(
-                client,
-                "okto_pulse_kg_global_outbox_dead_letter_list",
-                {"limit": 10, "classification": "not-a-classification"},
-            )
-            assert invalid_classification["error"] == "invalid_classification"
-            empty_selection = await _tool_payload(
-                client,
-                "okto_pulse_kg_global_outbox_dead_letter_reprocess",
-                {
-                    "dead_letter_ids": [],
-                    "reason": "installed E2E empty selection",
-                    "process_now": False,
-                },
-            )
-            assert empty_selection == {"error": "no_dlq_selected", "mutated": False}
+            # F4 removed manual DLQ commands. The installed public transport
+            # must refuse them without changing the terminal evidence.
+            def terminal_row():
+                with sqlite3.connect(
+                    runtime.database_path.as_uri() + "?mode=ro", uri=True,
+                ) as connection:
+                    return connection.execute(
+                        "SELECT * FROM global_update_outbox WHERE id = ?",
+                        (dead_letter_id,),
+                    ).fetchone()
 
-            listed = await _tool_payload(
-                client,
-                "okto_pulse_kg_global_outbox_dead_letter_list",
-                {"limit": 10},
-            )
-            assert [item["dead_letter_id"] for item in listed["items"]] == [
-                dead_letter_id
-            ]
-            reprocessed = await _tool_payload(
-                client,
-                "okto_pulse_kg_global_outbox_dead_letter_reprocess",
-                {
+            before = terminal_row()
+            assert before is not None
+            for name, arguments in (
+                ("okto_pulse_kg_global_outbox_dead_letter_list", {"limit": 10}),
+                ("okto_pulse_kg_global_outbox_dead_letter_reprocess", {
                     "dead_letter_ids": [dead_letter_id],
-                    "reason": "installed E2E operator replay",
-                    "process_now": False,
-                },
-            )
-            assert reprocessed["requeued_ids"] == [dead_letter_id]
-            assert reprocessed["worker_signaled"] is False
-            replayed = await _tool_payload(
-                client,
-                "okto_pulse_kg_global_outbox_dead_letter_reprocess",
-                {
+                    "reason": "retired transport must not mutate", "process_now": False,
+                }),
+                ("okto_pulse_kg_global_outbox_dead_letter_verify", {
                     "dead_letter_ids": [dead_letter_id],
-                    "reason": "installed E2E operator replay",
-                    "process_now": False,
-                },
-            )
-            assert replayed["already_queued_ids"] == [dead_letter_id]
-            verified = await _tool_payload(
-                client,
-                "okto_pulse_kg_global_outbox_dead_letter_verify",
-                {"dead_letter_ids": [dead_letter_id, "installed-e2e-missing"]},
-            )
-            by_id = {item["dead_letter_id"]: item for item in verified["items"]}
-            assert by_id[dead_letter_id]["state"] == "queued"
-            assert by_id["installed-e2e-missing"]["state"] == "absent"
-            _mark_outbox_applied(runtime, dead_letter_id)
-            applied = await _tool_payload(
-                client,
-                "okto_pulse_kg_global_outbox_dead_letter_verify",
-                {"dead_letter_ids": [dead_letter_id]},
-            )
-            assert applied["items"][0]["state"] == "applied"
+                }),
+            ):
+                refused = await client.mcp.call_tool(name, arguments, raise_on_error=False)
+                assert refused.is_error, (name, refused)
+                assert terminal_row() == before
 
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     assert manifest["direct_fastmcp_fn_calls"] == []
@@ -2452,7 +2603,19 @@ def _relocate_global_for_recovery(runtime: InstalledRuntime, label: str) -> None
     assert global_dir.exists(), global_dir
     shutil.move(str(global_dir), str(backup))
     global_dir.mkdir()
-    assert list(global_dir.iterdir()) == [], sorted(global_dir.iterdir())
+    # Same ruling as the module fixture: the routing binding document is
+    # load-bearing state for the routed Grafx backend.  Losing it entirely
+    # means "no route at all" and recovery preparation cannot fingerprint the
+    # loss; the total-loss scenario is loss of the PHYSICAL graph data, so the
+    # binding document is restored while every grafx generation stays in the
+    # backup.
+    shutil.copy2(
+        backup / "graph_backend_binding.json",
+        global_dir / "graph_backend_binding.json",
+    )
+    assert [item.name for item in sorted(global_dir.iterdir())] == [
+        "graph_backend_binding.json"
+    ], sorted(global_dir.iterdir())
 
 
 def _global_tree_snapshot(runtime: InstalledRuntime) -> dict[str, str]:
@@ -2645,20 +2808,20 @@ async def _prepare_confirm(
     """Drive a fresh admission to prepared + issued confirmation over real
     HTTP and return (prepared_status, confirmation)."""
 
-    admitted = await _tool_payload(
+    admitted = await _internal_payload(
         client,
-        "okto_pulse_kg_global_discovery_recovery_preflight",
+        'prepare',
     )
     prepared = await _wait_for_phase(
         peer_client,
         admitted["run_id"],
         {"prepared"},
-        timeout=480,
+        timeout=PREPARATION_OBSERVER_TIMEOUT,
         poll_interval=1.0,
     )
-    confirmation = await _tool_payload(
+    confirmation = await _internal_payload(
         peer_client,
-        "okto_pulse_kg_global_discovery_recovery_confirm",
+        'confirm',
         {
             "run_id": prepared["run_id"],
             "manifest_ref": prepared["manifest_ref"],
@@ -2701,14 +2864,8 @@ async def test_installed_z2_unusable_worker_inputs_terminalize_failed(
         assert not stale.exists(), stale
     with _running_server(runtime, mode="z2-tamper") as server:
         async with (
-            Client(
-                _authenticated_mcp_url(runtime, server), timeout=45, init_timeout=45
-            ) as client,
-            Client(
-                _authenticated_mcp_url(runtime, server, api_key=runtime.peer_api_key),
-                timeout=45,
-                init_timeout=45,
-            ) as peer_client,
+            _InternalControlClient(runtime, server, peer=False) as client,
+            _InternalControlClient(runtime, server, peer=True) as peer_client,
         ):
             prepared, confirmation = await _prepare_confirm(client, peer_client)
             run_id = prepared["run_id"]
@@ -2722,9 +2879,9 @@ async def test_installed_z2_unusable_worker_inputs_terminalize_failed(
             )
             pre_run_tree = _global_tree_snapshot(runtime)
 
-            accepted = await _tool_payload(
+            accepted = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_run",
+                'start',
                 {
                     "confirmation_id": confirmation["confirmation_id"],
                     "manifest_ref": prepared["manifest_ref"],
@@ -2779,7 +2936,7 @@ async def test_installed_hard_kill_at_building_is_adopted_charged_and_completes(
     installed_runtime: InstalledRuntime,
 ) -> None:
     """Real hard-kill adoption on the SAME installed wheels/data: kill the
-    server child at an atomically durable phase=building journal, restart,
+    server child at the atomically durable Grafx active-generation switch, restart,
     and prove same-run adoption (attempt_count +1, changed worker/token,
     bounded takeover, positive non-double crash charge) through to SUCCESS."""
 
@@ -2791,20 +2948,14 @@ async def test_installed_hard_kill_at_building_is_adopted_charged_and_completes(
 
     with _running_server(runtime, mode="building-gate") as server:
         async with (
-            Client(
-                _authenticated_mcp_url(runtime, server), timeout=45, init_timeout=45
-            ) as client,
-            Client(
-                _authenticated_mcp_url(runtime, server, api_key=runtime.peer_api_key),
-                timeout=45,
-                init_timeout=45,
-            ) as peer_client,
+            _InternalControlClient(runtime, server, peer=False) as client,
+            _InternalControlClient(runtime, server, peer=True) as peer_client,
         ):
             prepared, confirmation = await _prepare_confirm(client, peer_client)
             run_id = prepared["run_id"]
-            accepted = await _tool_payload(
+            accepted = await _internal_payload(
                 client,
-                "okto_pulse_kg_global_discovery_recovery_run",
+                'start',
                 {
                     "confirmation_id": confirmation["confirmation_id"],
                     "manifest_ref": prepared["manifest_ref"],
@@ -2814,7 +2965,10 @@ async def test_installed_hard_kill_at_building_is_adopted_charged_and_completes(
             )
             assert accepted["outcome"] == "accepted"
 
-            deadline = time.monotonic() + 180
+            # The gate fires at the durable cutover boundary of the native
+            # rebuild. Observe the existing 600s product budget plus a bounded
+            # margin; do not fail the harness halfway through that budget.
+            deadline = time.monotonic() + 660
             while not runtime.building_gate_signal_file.exists():
                 assert time.monotonic() < deadline, "building gate never signaled"
                 assert server.process.poll() is None, server.log_tail()
@@ -2827,8 +2981,13 @@ async def test_installed_hard_kill_at_building_is_adopted_charged_and_completes(
         assert journal_path.is_file(), journal_path
         killed_journal_bytes = journal_path.read_bytes()
         killed_journal = json.loads(killed_journal_bytes.decode("utf-8"))
-        assert killed_journal["phase"] == "building"
-        killed_journal_sha = hashlib.sha256(killed_journal_bytes).hexdigest()
+        # Routed Grafx: the durable mid-attempt boundary is the active
+        # generation pointer (the legacy flow carried a phase='building'
+        # journal).  The gated document is the frozen pointer of the cutover
+        # the killed attempt had already durably switched.
+        assert journal_path.name == "active_generation.json"
+        assert killed_journal["layout_version"] == 1
+        assert killed_journal["generation_id"].startswith("gdr_")
 
         pre_dispatches = _recovery_dispatch_rows(runtime, run_id)
         recovery_pre = [
@@ -2864,8 +3023,7 @@ async def test_installed_hard_kill_at_building_is_adopted_charged_and_completes(
         assert Path(runtime.root).is_absolute()
         assert "global-recovery-installed-e2e" in runtime.root.as_posix()
         assert server.process.poll() is None
-        server.process.kill()
-        server.process.wait(timeout=30)
+        _kill_owned_server_tree(server)
 
     claim_expires_raw = str(pre["claim_expires_at"])
     claim_expires = datetime.fromisoformat(claim_expires_raw.replace(" ", "T"))
@@ -3030,9 +3188,7 @@ async def test_installed_hard_kill_at_building_is_adopted_charged_and_completes(
         finally:
             runtime.submit_gate_release_file.write_text("release", encoding="ascii")
 
-        async with Client(
-            _authenticated_mcp_url(runtime, restarted), timeout=45, init_timeout=45
-        ) as client:
+        async with _InternalControlClient(runtime, restarted, peer=False) as client:
             terminal = await _wait_for_phase(
                 client, run_id, {"terminal"}, timeout=600, poll_interval=1.0
             )
@@ -3068,9 +3224,27 @@ async def test_installed_hard_kill_at_building_is_adopted_charged_and_completes(
         int(pre["attempt_count"]) + 1
     ]
 
-    final_journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    # Routed Grafx: the adopted successor completes the SAME attempt identity,
+    # so the completed truth lands in the canonical attempt journal while the
+    # active pointer stays on the generation the killed attempt had already
+    # durably adopted (legacy flow proved completion as phase='completed' on
+    # the gated journal path itself).
+    attempt_journal_path = (
+        journal_path.parent
+        / "quarantine"
+        / "global-discovery"
+        / run_id
+        / str(accepted["attempt_id"]).split("/")[-1]
+        / "recovery_journal.json"
+    )
+    assert attempt_journal_path.is_file(), attempt_journal_path
+    final_journal = json.loads(attempt_journal_path.read_text(encoding="utf-8"))
+    assert final_journal["kind"] == "grafx_global_discovery_terminal"
     assert final_journal["phase"] == "completed"
-    assert hashlib.sha256(journal_path.read_bytes()).hexdigest() != killed_journal_sha
+    assert final_journal["outcome"] == "completed"
+    assert final_journal["run_id"] == run_id
+    assert int(final_journal["epoch"]) == 1
+    assert final_journal["attempt_id"] == str(accepted["attempt_id"])
     # Orphan/quarantine inventory for the evidence packet: the killed building
     # candidate must not survive outside the quarantine/generations discipline.
     tree = _global_tree_snapshot(runtime)

@@ -9,21 +9,15 @@ import pytest
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 
-import okto_pulse.core.infra.database as database_module
-from okto_pulse.community.adapters.relational_schema_steps import (
-    _migrate_guideline_impact_substrate,
-    _migrate_guideline_impact_v1_schema,
-)
+from test_skb_b08_guideline_impact_persistence import _fresh_database
 from okto_pulse.community.adapters.sqlalchemy_database import (
-    get_engine,
     get_session_factory,
 )
+from okto_pulse.core.domain.guideline_lifecycle import guideline_revision_content_digest_v2
 from okto_pulse.community.adapters.sqlalchemy_guideline_policy import (
     CommunitySqlAlchemyGuidelinePolicy,
-    guideline_revision_content_digest,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
-    Base,
     Board,
     BoardErasurePermit,
     DefaultBoardConfiguration,
@@ -52,14 +46,6 @@ NOW = datetime(2026, 7, 29, 19, 0, tzinfo=timezone.utc)
 BOARD_ID = "board-b14-materialization"
 
 
-async def _fresh_database(path: Path) -> None:
-    database_module.create_database(f"sqlite+aiosqlite:///{path.as_posix()}")
-    async with get_engine().begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-    assert await _migrate_guideline_impact_substrate() == "skipped"
-    assert await _migrate_guideline_impact_v1_schema() is None
-
-
 def _revision(
     guideline_id: str,
     revision_id: str,
@@ -76,7 +62,7 @@ def _revision(
         semantic_version=f"{number}.0.0",
         title=title,
         content=content,
-        revision_digest=guideline_revision_content_digest(
+        revision_digest=guideline_revision_content_digest_v2(
             title=title,
             content=content,
             tags=(),
@@ -141,6 +127,7 @@ async def test_b14_inline_default_materialization_is_atomic_closed_and_erasable(
         session.add(
             Board(
                 id=BOARD_ID,
+                realm_id="local",
                 name="B14 materialization",
                 owner_id="agent-b14",
                 default_config_snapshot={

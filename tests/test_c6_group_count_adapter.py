@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
@@ -98,23 +99,18 @@ async def _seed(engine: AsyncEngine) -> None:
             text(
                 "INSERT INTO specs "
                 "(id, board_id, ideation_id, refinement_id, title, status, version, "
-                "created_by, archived) VALUES "
-                "('s1', 'b1', 'i1', 'r1', 'Spec', 'draft', 1, 'u', 0)"
-            )
-        )
-        await connection.execute(
-            text(
-                "INSERT INTO sprints "
-                "(id, spec_id, board_id, title, spec_version, status, lane_type, "
-                "version, created_by, archived) VALUES "
-                "('sp1', 's1', 'b1', 'Sprint', 1, 'draft', 'normal', 1, 'u', 0)"
-            )
+                "created_by, archived, architecture_adoption) VALUES "
+                "('s1', 'b1', 'i1', 'r1', 'Spec', 'draft', 1, 'u', 0, :architecture_adoption)"
+            ),
+            {"architecture_adoption": ArchitectureAdoptionScope(
+                board_id="b1", spec_id="s1", adopted_in_edition=1,
+                actor_id="u", inherited_resource_ids=(),
+            ).model_dump_json()}
         )
         for table, parent_field, parent_id in (
             ("ideation_qa_items", "ideation_id", "i1"),
             ("refinement_qa_items", "refinement_id", "r1"),
             ("spec_qa_items", "spec_id", "s1"),
-            ("sprint_qa_items", "sprint_id", "sp1"),
         ):
             await connection.execute(
                 text(
@@ -284,7 +280,6 @@ async def test_open_qa_count_is_a_correlated_single_statement_projection(rig) ->
         ("ideation", "i1"),
         ("refinement", "r1"),
         ("spec", "s1"),
-        ("sprint", "sp1"),
     ),
 )
 async def test_all_qa_families_count_only_answered_at_null_in_one_statement(

@@ -39,7 +39,7 @@ async def test_active_snapshot_separates_ready_scheduled_and_overdue_claims(
             await connection.run_sync(Base.metadata.create_all)
 
         async with factory() as session:
-            session.add(Board(id=board_id, name="Queue", owner_id="owner"))
+            session.add(Board(id=board_id, name="Queue", owner_id="owner", realm_id="local"))
             session.add_all(
                 [
                     ConsolidationQueue(

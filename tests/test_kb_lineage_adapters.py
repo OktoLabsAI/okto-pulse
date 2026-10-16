@@ -102,23 +102,8 @@ async def test_effective_resource_legacy_root_fallback_never_promotes_parent() -
     assert payloads[0]["immediate_parent_resource_id"] == "kb-parent"
 
 
-@pytest.mark.asyncio
-async def test_spec_resource_store_transports_revision_and_resolved_hash() -> None:
-    row = _legacy_row()
-    store = CommunitySqlAlchemySpecResourcePropagationStore()
-
-    facts = await store.list_spec_knowledge_bases(
-        _RowsContext([row]),
-        spec_id="spec-1",
-    )
-
-    assert len(facts) == 1
-    fact = facts[0]
-    assert fact.source_version == 7
-    assert fact.source_kb_id == "kb-parent"
-    assert fact.root_source_kb_id == "kb-root"
-    assert fact.immediate_parent_kb_id == "kb-parent"
-    assert fact.content_hash == knowledge_content_sha256(row)
+def test_spec_resource_store_has_no_retired_knowledge_copy_reader() -> None:
+    assert not hasattr(CommunitySqlAlchemySpecResourcePropagationStore(), "list_spec_knowledge_bases")
 
 
 @pytest.mark.asyncio
@@ -148,7 +133,7 @@ async def test_resource_gate_relational_refs_emit_legacy_and_neutral_fields() ->
 
 
 @pytest.mark.asyncio
-async def test_resource_gate_card_ref_derives_legacy_root_without_rewriting() -> None:
+async def test_resource_gate_ignores_retired_card_inline_knowledge_without_rewriting() -> None:
     item = vars(
         _legacy_row(
             id="cardkb-child",
@@ -165,12 +150,8 @@ async def test_resource_gate_card_ref_derives_legacy_root_without_rewriting() ->
 
     refs = await adapter._knowledge_refs(owner)
 
-    ref = refs[0]
-    assert "root_source_kb_id" not in ref
-    assert ref["source_kb_id"] == "kb-parent"
-    assert ref["root_resource_id"] == "cardkb-child"
-    assert ref["immediate_parent_resource_id"] == "kb-parent"
-    assert ref["source_content_sha256"] == knowledge_content_sha256(item)
+    assert refs == []
+    assert owner.entity.knowledge_bases == [item]
     assert item["root_source_kb_id"] is None
 
 

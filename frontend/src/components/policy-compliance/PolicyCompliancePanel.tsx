@@ -91,7 +91,7 @@ export interface PolicyCompliancePanelProps {
   /** Human validation edition used only by the opt-in Spec lifecycle view. */
   subjectEdition?: number;
   /** Preserve the established technical UI unless a Spec explicitly opts in. */
-  presentationMode?: 'legacy' | 'lifecycle-edition';
+  presentationMode?: 'subject-version' | 'lifecycle-edition';
   /** Suppresses the repeated title inside the unified Spec workspace. */
   embedded?: boolean;
   /**
@@ -238,8 +238,6 @@ function toneForAssessment(
 ): string {
   if (
     assessment.currentness === 'stale'
-    || !assessment.confidence_admissible
-    || !assessment.assessor_independent
   ) {
     return 'border-amber-300 bg-amber-50/50 dark:border-amber-800 dark:bg-amber-950/20';
   }
@@ -296,7 +294,6 @@ function primarySemanticState(
   view: SemanticPolicyViewModel,
 ): SemanticPolicyUiState {
   if (view.currentness === 'stale') return 'stale';
-  if (view.contractVersion === 'v1') return 'legacy';
   const priority: SemanticPolicyUiState[] = [
     'fail',
     'waived_fail_finding',
@@ -323,8 +320,6 @@ function SemanticStateChip({ state }: { state: SemanticPolicyUiState }) {
       ? 'Warning · Passed'
       : state === 'waived_fail_finding'
         ? 'Waiver active'
-        : state === 'legacy'
-          ? 'V1 · Read-only'
           : state.split('_').join(' ');
   return (
     <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${tone}`}>
@@ -503,12 +498,14 @@ function EvidenceRefs({
 
 function AssessmentCard({
   assessment,
+  historical = false,
   activeSkip,
   canManageSkips,
   onCreateSkip,
   onRevokeSkip,
 }: {
   assessment: SemanticAssessmentDetail;
+  historical?: boolean;
   activeSkip: SemanticSkipDetail | null;
   canManageSkips: boolean;
   onCreateSkip: (assessment: SemanticAssessmentDetail) => void;
@@ -526,18 +523,15 @@ function AssessmentCard({
           </h5>
           <p className="mt-1 text-[11px] text-surface-500 dark:text-surface-400">
             Binding {shortIdentity(assessment.binding_id)} · revision{' '}
-            {assessment.binding_revision} · {assessment.enforcement}
+            {assessment.binding_revision}
           </p>
           <p className="mt-1 text-[11px] text-surface-500 dark:text-surface-400">
             Assessed by {assessment.assessor_agent_id}
-            {assessment.assessor_model_id
-              ? ` (${assessment.assessor_model_id})`
-              : ''}
             {' '}at {formatTimestamp(assessment.recorded_at)}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <CurrentnessBadge currentness={assessment.currentness} />
+          {historical ? <span className="rounded-full bg-surface-200 px-2 py-0.5 text-[10px] font-semibold uppercase text-surface-700 dark:bg-surface-700 dark:text-surface-200">Previous</span> : <CurrentnessBadge currentness={assessment.currentness} />}
           <span
             className={
               assessment.state === 'passed'
@@ -555,9 +549,7 @@ function AssessmentCard({
         </div>
       </header>
 
-      {(assessment.currentness === 'stale'
-        || !assessment.confidence_admissible
-        || !assessment.assessor_independent) && (
+      {!historical && assessment.currentness === 'stale' && (
         <div
           role="alert"
           className="mt-3 rounded-lg border border-amber-300 bg-white/70 p-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-surface-950/30 dark:text-amber-200"
@@ -567,29 +559,13 @@ function AssessmentCard({
               Stale: {assessment.currentness_reasons.join(', ')}.
             </p>
           )}
-          {!assessment.confidence_admissible && (
-            <p>
-              Confidence is below the binding minimum; this receipt is
-              inadmissible for a gate.
-            </p>
-          )}
-          {!assessment.assessor_independent && (
-            <p>
-              Assessor separation was not satisfied; this receipt is
-              inadmissible for a gate.
-            </p>
-          )}
         </div>
       )}
 
       <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <MetricScoreRing
-          label="Confidence"
-          value={assessment.confidence}
-          direction="higher-is-better"
-          threshold={assessment.minimum_confidence}
-          testId="semantic-confidence-ring"
-        />
+        <MetricScoreRing label="Confidence" value={assessment.confidence}
+          direction="higher-is-better" testId="semantic-confidence-score"
+          unavailableThresholdLabel="Threshold not recorded in this assessment" />
         {assessment.metric_results.map((metric) => (
           <MetricScoreRing
             key={metric.metric_result_id}
@@ -651,17 +627,23 @@ function AssessmentCard({
                 </p>
                 <ul className="space-y-2">
                   {metric.pinpoints.map((pinpoint) => (
-                    <li
-                      key={`${pinpoint.anchor_type}:${pinpoint.anchor_ref ?? ''}:${pinpoint.input_digest}`}
-                      className="rounded-lg border border-surface-200 bg-surface-50 p-2 text-surface-600 dark:border-surface-700 dark:bg-surface-900/60 dark:text-surface-300"
-                    >
-                      <span className="font-semibold">
-                        {pinpoint.anchor_type}
-                      </span>
-                      {pinpoint.anchor_ref ? ` · ${pinpoint.anchor_ref}` : ''}
-                      <code className="mt-1 block break-all text-[10px] text-surface-500 dark:text-surface-400">
-                        input sha256:{pinpoint.input_digest}
-                      </code>
+                    <li key={pinpoint.pinpoint_key}>
+                      <ActionablePinpoint
+                        metricLabel={metric.metric_code}
+                        policyState={assessment.currentness === 'stale' ? 'stale' : metric.outcome === 'fail' ? 'fail' : pinpoint.kind === 'issue' ? 'non_blocking_warning' : 'positive_evidence'}
+                        pinpoint={{
+                          contractVersion: 'v2',
+                          state: pinpoint.anchor_snapshot.availability_at_seal,
+                          kind: pinpoint.kind, title: pinpoint.title, detail: pinpoint.detail,
+                          severity: pinpoint.severity, remediation: pinpoint.remediation,
+                          blocking: pinpoint.blocking,
+                          categoryLabel: pinpoint.anchor.anchor_type.replace(/_/g, ' '),
+                          locationLabel: pinpoint.anchor_snapshot.label,
+                          locationReference: pinpoint.anchor_snapshot.availability_at_seal === 'inaccessible' ? null : pinpoint.anchor.anchor_ref,
+                          excerpt: pinpoint.anchor_snapshot.excerpt,
+                          navigationTarget: null, unavailableMessage: null, technicalDetails: null,
+                        }}
+                      />
                     </li>
                   ))}
                 </ul>
@@ -741,10 +723,12 @@ function Findings({
               <ul className="space-y-1 text-surface-600 dark:text-surface-300">
                 {finding.pinpoints.map((pinpoint) => (
                   <li
-                    key={`${pinpoint.anchor_type}:${pinpoint.anchor_ref ?? ''}:${pinpoint.input_digest}`}
+                    key={pinpoint.pinpoint_key}
                   >
-                    {pinpoint.anchor_type}
-                    {pinpoint.anchor_ref ? ` · ${pinpoint.anchor_ref}` : ''}
+                    <strong>{pinpoint.title}</strong>
+                    <span> · {pinpoint.anchor_snapshot.label}</span>
+                    <p>{pinpoint.detail}</p>
+                    {pinpoint.remediation && <p>{pinpoint.remediation}</p>}
                   </li>
                 ))}
               </ul>
@@ -1258,7 +1242,7 @@ export function PolicyCompliancePanel({
   subjectId,
   subjectVersion,
   subjectEdition,
-  presentationMode = 'legacy',
+  presentationMode = 'subject-version',
   embedded = false,
   transitionPreview,
   lifecycleSnapshot,
@@ -1819,8 +1803,9 @@ export function PolicyCompliancePanel({
         data-testid="policy-compliance-panel"
       >
         <p role="alert" className="text-sm text-red-700 dark:text-red-300">
-          Semantic guideline evidence is unavailable because effective
-          authority could not be verified. The panel is fail-closed.
+          {permissions.error
+            ? 'Could not load access permissions. Check the Pulse connection and refresh Validation to try again. Guideline evidence remains unavailable until access is verified.'
+            : 'Access requires an owner review of the permission configuration. Guideline evidence remains unavailable until access is verified.'}
         </p>
       </section>
     );
@@ -1852,9 +1837,7 @@ export function PolicyCompliancePanel({
     && currentResolution.items.length > 0
     && currentResolution.items.every(
       (assessment) =>
-        assessment.currentness === 'current'
-        && assessment.confidence_admissible
-        && assessment.assessor_independent,
+        assessment.currentness === 'current',
     );
   const currentLifecycleReceiptIds = new Set(
     Object.values(currentSemantic.responses).map(
@@ -2267,7 +2250,7 @@ export function PolicyCompliancePanel({
           <PreviousResultsSection
             expanded={historyExpanded}
             onToggle={() => setHistoryExpanded((value) => !value)}
-            count={assessments.loaded && !assessments.hasMore
+            count={assessments.loaded && !assessments.hasMore && !assessments.error
               ? previousLifecycleAssessments.length
               : undefined}
             description="Earlier policy evaluations from this and prior editions."
@@ -2277,7 +2260,7 @@ export function PolicyCompliancePanel({
               <p role="status" className="text-xs text-surface-500 dark:text-surface-400">
                 Loading previous results…
               </p>
-            ) : previousLifecycleAssessments.length === 0 ? (
+            ) : previousLifecycleAssessments.length === 0 && !assessments.error ? (
               <p className="text-xs text-surface-500 dark:text-surface-400">
                 No previous policy results are available.
               </p>
@@ -2286,8 +2269,11 @@ export function PolicyCompliancePanel({
                 {previousLifecycleAssessments.map((assessment) => (
                   <li
                     key={assessment.receipt_id}
-                    className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-surface-200 bg-surface-50/70 p-3 text-xs dark:border-surface-700 dark:bg-surface-800/40"
+                    className="rounded-lg border border-surface-200 bg-surface-50/70 text-xs dark:border-surface-700 dark:bg-surface-800/40"
                   >
+                    <details className="group/history">
+                    <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-3 p-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-violet-600 [&::-webkit-details-marker]:hidden" aria-label={`View policy evaluation from ${assessment.validation_edition == null ? 'history' : `edition ${assessment.validation_edition}`} at ${formatTimestamp(assessment.recorded_at)}`}>
+                    <span aria-hidden="true" className="transition-transform group-open/history:rotate-90">›</span>
                     <span>
                       <span className="font-semibold text-surface-800 dark:text-surface-100">
                         {assessment.validation_edition == null
@@ -2305,6 +2291,12 @@ export function PolicyCompliancePanel({
                         ? 'passed'
                         : 'needs_attention'}
                     />
+                    </summary>
+                    <div className="border-t border-surface-200 p-3 dark:border-surface-700">
+                      <AssessmentCard assessment={assessment} historical activeSkip={null}
+                        canManageSkips={false} onCreateSkip={() => {}} onRevokeSkip={() => {}} />
+                    </div>
+                    </details>
                   </li>
                 ))}
               </ol>

@@ -10,6 +10,12 @@ from okto_pulse.community.adapters.board_rebuild_ingestion import (
 
 def test_rebuild_ingestion_enqueue_preserves_adapter_coverage(tmp_path: Path) -> None:
     db_path = _queue_db(tmp_path)
+    # This queue-focused fixture must supply the current Card source closure;
+    # an ID alone cannot authorize ordering or stand in for a missing source.
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE cards(id TEXT PRIMARY KEY, board_id TEXT NOT NULL)")
+        conn.execute("CREATE TABLE card_dependencies(card_id TEXT, depends_on_id TEXT)")
+        conn.execute("INSERT INTO cards VALUES ('test-card', 'board-1')")
     adapter = CommunityBoardRebuildIngestionAdapter(db_path=db_path)
 
     counts = adapter.enqueue_sources(

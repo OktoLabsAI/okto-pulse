@@ -32,7 +32,6 @@ def test_community_relational_adapter_preserves_local_first_preset_and_auth_flow
                         api_key="sha256:local-first",
                         api_key_hash=hashlib.sha256(b"local-first").hexdigest(),
                         created_by="community-adapter-agent",
-                        permissions=[],
                     )
                 )
                 await session.commit()

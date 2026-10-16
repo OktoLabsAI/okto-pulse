@@ -17,7 +17,7 @@ import { Check, HelpCircle, RotateCw, FileText } from 'lucide-react';
 import type { TestScenario, TestScenarioEvidence, EvidenceClass } from '@/types';
 
 interface EvidenceBadgeProps {
-  scenario: Pick<TestScenario, 'status' | 'evidence' | 'latest_evidence'>;
+  scenario: Pick<TestScenario, 'status' | 'evidence'>;
 }
 
 const GATED_STATUSES = new Set(['automated', 'passed', 'failed']);
@@ -31,6 +31,7 @@ const REPLAYABLE_CLASSES = new Set<EvidenceClass>([
 ]);
 
 const CLASS_LABELS: Record<EvidenceClass, string> = {
+  verification_report: 'verification report',
   automated_test_pointer: 'auto test',
   replay_command: 'replay cmd',
   mcp_replay_manifest: 'MCP replay',
@@ -52,6 +53,11 @@ function buildTooltip(evidence: TestScenarioEvidence | null): string {
   if (evidence.execution_attestation) {
     parts.push(`attestation: v${evidence.execution_attestation.schema_version}`);
     parts.push(`run: ${evidence.execution_attestation.run_id}`);
+    const basis = evidence.execution_attestation.execution_basis;
+    if (basis) {
+      parts.push(`runner: ${basis.runner_ref}`, `source: ${basis.source_ref}`, `revision: ${basis.revision}`);
+      parts.push(`tests: ${basis.test_ids.join(', ')}`);
+    }
     parts.push(
       `product runtime: ${evidence.execution_attestation.product_runtime_exercised ? 'exercised' : 'NOT exercised'}`,
     );
@@ -60,8 +66,6 @@ function buildTooltip(evidence: TestScenarioEvidence | null): string {
         ? 'installation receipt: attached'
         : 'installation receipt: MISSING (unverified)',
     );
-  } else if (evidence.mcp_replay_manifest) {
-    parts.push('legacy manifest: unverified');
   }
   if (evidence.manual_checklist_ref) parts.push(`checklist: ${evidence.manual_checklist_ref}`);
   if (evidence.last_run_at) parts.push(`last run: ${evidence.last_run_at}`);
@@ -82,9 +86,9 @@ function buildTooltip(evidence: TestScenarioEvidence | null): string {
 }
 
 function getScenarioEvidence(
-  scenario: Pick<TestScenario, 'evidence' | 'latest_evidence'>,
+  scenario: Pick<TestScenario, 'evidence'>,
 ): TestScenarioEvidence | null {
-  return scenario.evidence ?? scenario.latest_evidence ?? null;
+  return scenario.evidence ?? null;
 }
 
 function hasAnyEvidence(evidence: TestScenarioEvidence | null): boolean {
@@ -97,7 +101,6 @@ function hasAnyEvidence(evidence: TestScenarioEvidence | null): boolean {
         evidence.output_snippet ||
         evidence.evidence_class ||
         evidence.replay_command ||
-        evidence.mcp_replay_manifest ||
         evidence.manifest_ref ||
         evidence.execution_attestation ||
         evidence.execution_receipt ||
@@ -117,11 +120,19 @@ export function EvidenceBadge({ scenario }: EvidenceBadgeProps) {
   const tooltip = buildTooltip(evidence);
   const evidenceClass = evidence?.evidence_class ?? null;
 
-  // Historical manifest strings/objects remain readable, but they are not a
-  // verified execution and must never look green in the UI.
+  if (evidenceClass === 'verification_report') {
+    const report = evidence?.verification_report;
+    return <span data-testid="evidence-badge-report" data-replayable="false"
+      className="inline-flex rounded border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10px] text-blue-700"
+      title={`${report?.method || 'Unknown method'} · ${report?.report_id || 'Missing report'} · author: ${evidence?.report_author_id || 'unknown'} · ${report?.conclusion || ''} · ${evidence?.execution_receipt ? 'Submission receipt attached; approval remains separate.' : 'Missing submission receipt; unverified.'}`}>
+      {report?.method?.replace(/_/g, ' ') || 'verification report'}{!evidence?.execution_receipt && ' · unverified'}
+    </span>;
+  }
+
+  // An incomplete current replay claim must not look verified.
   const unverifiedManifest = Boolean(
     evidence &&
-      (evidence.mcp_replay_manifest || evidenceClass === 'mcp_replay_manifest') &&
+      evidenceClass === 'mcp_replay_manifest' &&
       (!evidence.manifest_ref ||
         !evidence.execution_attestation ||
         !evidence.execution_receipt),
@@ -130,13 +141,13 @@ export function EvidenceBadge({ scenario }: EvidenceBadgeProps) {
     return (
       <span
         title={tooltip}
-        data-testid="evidence-badge-legacy-unverified"
+        data-testid="evidence-badge-manifest-unverified"
         data-evidence-class="mcp_replay_manifest"
         data-replayable="false"
         className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800/50"
       >
         <HelpCircle size={10} aria-hidden="true" />
-        {evidence?.mcp_replay_manifest ? 'legacy unverified' : 'manifest unverified'}
+        manifest unverified
       </span>
     );
   }
@@ -144,7 +155,8 @@ export function EvidenceBadge({ scenario }: EvidenceBadgeProps) {
   // Re-executable contract: reflect the real class + replayability when set.
   if (hasEvidence && evidenceClass) {
     const replayable = REPLAYABLE_CLASSES.has(evidenceClass);
-    const label = CLASS_LABELS[evidenceClass] ?? evidenceClass;
+    const label = evidence?.execution_attestation?.execution_basis
+      ? 'External test run' : CLASS_LABELS[evidenceClass] ?? evidenceClass;
     const Icon = replayable ? RotateCw : FileText;
     const className = replayable
       ? 'inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/50'

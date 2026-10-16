@@ -101,9 +101,11 @@ def test_f09_community_owns_graph_ddl_pool_and_concrete_search_adapter() -> None
         / "kg_chaos_executor.py",
     }
     assert all(path.exists() for path in community_sources.values())
-    ddl = community_sources["graph_ddl"].read_text(encoding="utf-8")
-    assert "CREATE NODE TABLE" in ddl
-    assert "CREATE REL TABLE" in ddl
+    from okto_pulse.community.adapters.grafx_schema_manifest import build_grafx_schema_manifest
+    manifest = build_grafx_schema_manifest()
+    assert manifest.nodes and manifest.relationships
+    assert all(table.ddl().startswith("CREATE NODE TABLE ") for table in manifest.nodes)
+    assert all(table.ddl().startswith("CREATE REL TABLE ") for table in manifest.relationships)
     assert not (
         CORE_ROOT / "src" / "okto_pulse" / "core" / "kg" / "connection_pool.py"
     ).exists()

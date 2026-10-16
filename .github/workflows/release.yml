@@ -121,14 +121,9 @@ jobs:
           pip install -e ./okto-pulse-core
           pip install pytest pytest-asyncio psutil httpx
 
-      # No pytest gate. Post-Ladybug migration the kg test suite has
-      # pre-existing failures (gc-call counters, WAL handle release on
-      # Linux) that aren't blockers for deployability. The container
-      # smoke test + MCP replay below ARE the gates: if the built image
-      # boots clean and serves real recorded MCP calls without
-      # SIGBUS/SIGSEGV/ResourceWarning, the artifact is shippable.
-      # Reinstate a pytest step here if/when test_kg_file_handles is
-      # green on Linux runners.
+      # Main promotion runs the full selected Community suite and isolated-wheel
+      # checks in CI. This workflow additionally checks the exact tagged image
+      # through native MCP HTTP calls, health and crash/handle diagnostics.
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -262,30 +257,20 @@ jobs:
           echo "key=$API_KEY" >> "$GITHUB_OUTPUT"
           echo "Reveal-once API key consumed (masked)"
 
-      - name: Checkout mcp-replay-test (replay tool + trace fixtures)
-        # The replay script and the 2.6 MB long trace live in their own repo
-        # so okto-pulse stays small. Audit Phase 4d.
-        uses: actions/checkout@v7
-        with:
-          repository: OktoLabsAI/mcp-replay-test
-          path: mcp-replay-test
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Run MCP replay smoke test
-        # Behavioral mode = compare only success/failure, not response content.
-        # No-strict = ignore dynamic field mismatches.
-        # Any replay failure blocks publication; the log + health gate below
-        # adds crash/file-handle diagnostics rather than replacing this gate.
+      - name: Run native MCP release smoke test
+        # 0.4.0 has no legacy contract. The old trace contains successful Sprint
+        # and retired-tool calls, so replaying it would require compatibility.
+        # The current smoke checks real responses and persisted native data;
+        # any failure still blocks publication, before the log/health gate.
         env:
           API_KEY: ${{ steps.apikey.outputs.key }}
+          TAG_VERSION: ${{ steps.version.outputs.version }}
         run: |
-          python mcp-replay-test/tools/mcp_replay.py \
-            --trace-file mcp-replay-test/mcp-traces/session_3893d86c53d34716b9f53d358936f5db_20260428T012243.jsonl \
-            --api-key "$API_KEY" \
-            --host 127.0.0.1 \
-            --port 8101 \
-            --behavioral \
-            --no-strict
+          python okto-pulse/scripts/release_mcp_smoke.py \
+            --url http://127.0.0.1:8101/mcp \
+            --version "$TAG_VERSION" \
+            --report native-release-smoke.json
+          cat native-release-smoke.json >> "$GITHUB_STEP_SUMMARY"
 
       - name: Replay gate (logs + container health)
         run: |

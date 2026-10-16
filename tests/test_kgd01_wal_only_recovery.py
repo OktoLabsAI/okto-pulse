@@ -22,11 +22,12 @@ Cobre os cenários do test card 1b403fc2-23a4-41ad-ade3-47787615035e:
   (b) estático — varredura AST dos módulos adapters do community por call
       sites destrutivos (os.remove/os.replace/os.rename/shutil.move/
       shutil.rmtree/.unlink/.rename/.replace) cujo texto referencie o main
-      ``graph.lbug`` (literal, ``GRAPH_DB_FILENAME`` ou ``board_kuzu_path(``)
+      ``graph.lbug`` (literal, ``GRAPH_DB_FILENAME`` ou ``board_ladybug_path(``)
       sem sufixo de sidecar, fora dos módulos sancionados (allowlist com
       justificativa). Um call site destrutivo novo sobre o main falha o teste.
 
-NOTA DE MEDIÇÃO (empírico, ladybug 0.16.x win_amd64): o close de um Database
+NOTA DE MEDIÇÃO (empírico, runtime de grafo legado 0.16.x win_amd64): o
+close de um Database
 aberto com SUCESSO checkpointa e REESCREVE o main file — inclusive em boards
 100% saudáveis sem nenhum recovery (verificado em experimento: open+close de
 um board íntegro muda o sha256 do graph.lbug, de forma não-determinística).
@@ -115,7 +116,7 @@ _SANCTIONED_MAIN_DESTRUCTIVE_MODULES: dict[str, str] = {
     # Purge explícito de rebuild/erasure: purge_board_graph_storage move o
     # main via KGQuarantineService (quarantine-then-clear auditado, FR7 do
     # KG-01.4) apenas sob comando explícito de operador/rebuild; o módulo
-    # também referencia board_kuzu_path/GRAPH_DB_FILENAME em quarentenas
+    # também referencia board_ladybug_path/GRAPH_DB_FILENAME em quarentenas
     # SOMENTE de sidecars (interrupted-checkpoint / wal-only degrau 2).
     "kg_runtime.py": "purge explícito de rebuild via KGQuarantineService",
     # Restore de quarentena (KGD-01 FR4): o backup-swap do apply move o main
@@ -125,7 +126,7 @@ _SANCTIONED_MAIN_DESTRUCTIVE_MODULES: dict[str, str] = {
 }
 
 _DESTRUCTIVE_ATTRS = {"remove", "replace", "rename", "unlink", "move", "rmtree"}
-_MAIN_MARKERS = ("graph.lbug", "GRAPH_DB_FILENAME", "board_kuzu_path(")
+_MAIN_MARKERS = ("graph.lbug", "GRAPH_DB_FILENAME", "board_ladybug_path(")
 _SIDECAR_SUFFIXED = (
     "graph.lbug.wal",
     "graph.lbug.shadow",
@@ -139,7 +140,7 @@ def _destructive_main_call_sites(source: str, filename: str) -> list[str]:
 
     Heurística do TC3: o texto integral da chamada (receiver + argumentos)
     precisa conter um marcador do main ('graph.lbug' literal, a constante
-    GRAPH_DB_FILENAME ou um board_kuzu_path(...)) que NÃO esteja imediatamente
+    GRAPH_DB_FILENAME ou um board_ladybug_path(...)) que NÃO esteja imediatamente
     sufixado como sidecar (.wal/.shadow/.checkpoint). Chamadas destrutivas
     sobre variáveis opacas não são flagadas (cobertas pelo teste dinâmico);
     o alvo aqui é o call site NOVO e textual sobre o main.
@@ -181,8 +182,8 @@ def test_s6_static_scanner_detects_synthetic_regression():
     """Auto-teste do scanner: um call site destrutivo sintético sobre o main
     PRECISA ser flagado — garante que o gate não é inócuo."""
     bad_snippets = [
-        "board_kuzu_path(board_id).unlink()",
-        "os.remove(str(board_kuzu_path(bid)))",
+        "board_ladybug_path(board_id).unlink()",
+        "os.remove(str(board_ladybug_path(bid)))",
         "shutil.move(str(path / 'graph.lbug'), dst)",
         "os.replace(path.parent / GRAPH_DB_FILENAME, target)",
     ]
@@ -193,7 +194,7 @@ def test_s6_static_scanner_detects_synthetic_regression():
     ok_snippets = [
         "wal.rename(quarantine_dir / wal.name)",
         "shutil.move(str(path) + '.wal', dst)",
-        "os.remove(str(board_kuzu_path(bid)) + '.wal')",
+        "os.remove(str(board_ladybug_path(bid)) + '.wal')",
     ]
     for snippet in ok_snippets:
         assert not _destructive_main_call_sites(snippet, "<synthetic>"), (

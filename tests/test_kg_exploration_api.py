@@ -1,13 +1,13 @@
 """HTTP contracts/denials and real Grafx retrieval through optional Core ports."""
 
 from types import SimpleNamespace
-from contextlib import contextmanager
 from unittest.mock import AsyncMock, Mock
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from okto_pulse.community.api import kg_exploration as api
 from okto_pulse.core.kg.interfaces.graph_errors import GraphUnavailable
+from graph_observation_fixtures import prepare_fixture_index, enable_fixture_history, routed_fixture_database
 from test_grafx_ranked_search import ranked  # noqa: F401
 from test_grafx_graph_store import BOARD_ID, real_store  # noqa: F401
 
@@ -24,12 +24,9 @@ def client(monkeypatch):
         embedding_provider=SimpleNamespace(encode=lambda _: [1.0] + [0.0] * 383),
     )
 
-    @contextmanager
-    def guarded(*args, **kwargs):
-        yield SimpleNamespace(ensure_durable=lambda: None)
-
-    monkeypatch.setattr(api, "guarded_board_write", guarded)
     monkeypatch.setattr(api, "get_kg_registry", lambda: registry)
+    from okto_pulse.core.ports.kg_query_policy import KGQueryPolicy
+    monkeypatch.setattr(api.ReadKGQueryPolicyUseCase, "execute", AsyncMock(return_value=KGQueryPolicy()))
     monkeypatch.setattr(api.kg, "_require_kg_operation", AsyncMock())
     monkeypatch.setattr(
         api.kg,
@@ -48,11 +45,8 @@ def client(monkeypatch):
 def test_real_native_text_and_hybrid_from_http(client, request):
     http, registry, _ = client
     registry.ranked_graph_search = request.getfixturevalue("ranked")[0]
-    result = http.post(
-        ROOT + "/search/prepare",
-        json={"node_type": "Decision", "reason": "HTTP qualification"},
-    )
-    assert result.status_code == 200, result.text
+    # Index preparation is fixture setup, never a public HTTP operation.
+    prepare_fixture_index(request.getfixturevalue("ranked")[2])
     for mode in ("text", "hybrid"):
         result = http.post(
             ROOT + "/search",
@@ -96,11 +90,6 @@ def test_other_adapters_can_explicitly_decline(client, name, path, body):
     [
         ("/search", {"node_type": "Decision", "query": "x", "limit": True}),
         ("/search", {"node_type": "Decision", "query": "x", "vector": [1]}),
-        ("/history/activate", {"node_types": ["Decision"], "reason": "x"}),
-        (
-            "/history/prune",
-            {"node_types": ["Decision"], "reason": "x", "before": "0" * 49},
-        ),
         (
             "/analytics",
             {"node_types": ["Decision"], "algorithm": "cycles", "max_edges": 0},
@@ -169,15 +158,6 @@ def test_analytics_filters_server_ct_authority_and_history_denies_unfiltered_acc
     "path,method,body",
     [
         (
-            "/history/activate",
-            "activate",
-            {
-                "node_types": ["Decision"],
-                "reason": "qualification",
-                "acknowledge_one_way": True,
-            },
-        ),
-        (
             "/history/as-of",
             "as_of",
             {"node_types": ["Decision"], "at": "a" * 32 + ":" + "0" * 15 + "1"},
@@ -189,16 +169,6 @@ def test_analytics_filters_server_ct_authority_and_history_denies_unfiltered_acc
                 "node_types": ["Decision"],
                 "at": "a" * 32 + ":" + "0" * 15 + "2",
                 "before": "a" * 32 + ":" + "0" * 15 + "1",
-            },
-        ),
-        (
-            "/history/prune",
-            "prune",
-            {
-                "node_types": ["Decision"],
-                "reason": "qualification",
-                "before": "a" * 32 + ":" + "0" * 15 + "2",
-                "acknowledge_history_loss": True,
             },
         ),
     ],
@@ -213,45 +183,6 @@ def test_history_dispatches_bounded_explicit_contract(client, path, method, body
     assert getattr(provider, method).call_args.args[0] == BOARD_ID
 
 
-def test_admin_guard_order_and_fail_closed_lifecycle(client, monkeypatch):
-    http, _, provider = client
-    events = []
-
-    @contextmanager
-    def guarded(board, **kwargs):
-        events.append("acquire")
-
-        def durable():
-            events.append("durable")
-
-        try:
-            yield SimpleNamespace(ensure_durable=durable)
-        finally:
-            events.append("release")
-
-    monkeypatch.setattr(api, "guarded_board_write", guarded)
-    provider.prepare.side_effect = lambda *args, **kwargs: (
-        events.append("native") or {"ready": True}
-    )
-    response = http.post(
-        ROOT + "/search/prepare", json={"node_type": "Decision", "reason": "test"}
-    )
-    assert response.status_code == 200
-    assert events == ["acquire", "native", "durable", "release"]
-    events.clear()
-
-    @contextmanager
-    def lost(*args, **kwargs):
-        raise api.GuardedWriteError("lock_contention", "busy", retryable=True)
-        yield
-
-    monkeypatch.setattr(api, "guarded_board_write", lost)
-    provider.prepare.reset_mock()
-    response = http.post(
-        ROOT + "/search/prepare", json={"node_type": "Decision", "reason": "test"}
-    )
-    assert response.status_code == 503
-    provider.prepare.assert_not_called()
 
 
 def test_history_requires_audit_permission_before_native_access(client, monkeypatch):
@@ -263,21 +194,10 @@ def test_history_requires_audit_permission_before_native_access(client, monkeypa
 
     monkeypatch.setattr(api.kg, "_require_kg_operation", authorize)
     assert http.get(ROOT + "/history/commits").status_code == 403
-    assert (
-        http.post(
-            ROOT + "/history/activate",
-            json={
-                "node_types": ["Decision"],
-                "reason": "test",
-                "acknowledge_one_way": True,
-            },
-        ).status_code
-        == 403
-    )
     assert not provider.mock_calls
 
 
-def test_real_routed_history_activation_with_core_guard_and_native_lifecycle(
+def test_real_routed_reads_preserve_preexisting_history_and_index(
     client, tmp_path, monkeypatch
 ):
     from okto_pulse.community.adapters.routed_graph_composition import (
@@ -333,7 +253,6 @@ def test_real_routed_history_activation_with_core_guard_and_native_lifecycle(
             board, **kwargs, writer_lock=lock, lifecycle=lifecycle
         )
 
-    monkeypatch.setattr(api, "guarded_board_write", guard)
     registry.graph_history = bundle.board.graph_history
     registry.ranked_graph_search = bundle.board.ranked_graph_search
     try:
@@ -342,15 +261,11 @@ def test_real_routed_history_activation_with_core_guard_and_native_lifecycle(
         ) as lease:
             bundle.board.graph_store.bootstrap(BOARD_ID)
             lease.ensure_durable()
-        response = http.post(
-            ROOT + "/history/activate",
-            json={
-                "node_types": ["Decision"],
-                "reason": "routed qualification",
-                "acknowledge_one_way": True,
-            },
-        )
-        assert response.status_code == 200, response.text
+        # Preexisting native history is a fixture prerequisite, not HTTP setup.
+        with guard(BOARD_ID, operation="fixture_history", owner_id="test", mutation_ref="test") as lease:
+            with routed_fixture_database(bundle, BOARD_ID) as database:
+                enable_fixture_history(database)
+            lease.ensure_durable()
         assert not owner["held"]
         with guard(
             BOARD_ID, operation="qualification", owner_id="test", mutation_ref="test"
@@ -367,11 +282,10 @@ def test_real_routed_history_activation_with_core_guard_and_native_lifecycle(
         )
         assert response.status_code == 200, response.text
         assert response.json()["nodes"][0]["id"] == "routed"
-        response = http.post(
-            ROOT + "/search/prepare",
-            json={"node_type": "Decision", "reason": "routed index"},
-        )
-        assert response.status_code == 200, response.text
+        with guard(BOARD_ID, operation="fixture_index", owner_id="test", mutation_ref="test") as lease:
+            with routed_fixture_database(bundle, BOARD_ID) as database:
+                prepare_fixture_index(database)
+            lease.ensure_durable()
         response = http.post(
             ROOT + "/search", json={"node_type": "Decision", "query": "durable"}
         )

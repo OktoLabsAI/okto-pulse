@@ -1,3 +1,4 @@
+import { resolveDeliveryGateMode } from './deliveryGateSettings';
 // Administrative panel for the default board-configuration template
 // (spec 9df814bc / card 7da43521 / FR8). Opened from Menu > Board > Global Default.
 //
@@ -12,9 +13,9 @@ import { AlertTriangle, CheckCircle2, GitCompare, HelpCircle, ListChecks, Palett
 
 import {
   BoardSettingsForm,
-  normalizeDesignSystemGateMode,
+  normalizeDesignSystemGateMode, resolveImpactEvidenceMode,
 } from '@/components/board/BoardSettingsForm';
-import { normalizeCodeTraceabilitySettings } from '@/components/board/codeTraceabilitySettings';
+import { resolveCodeTraceabilitySettings } from '@/components/board/codeTraceabilitySettings';
 import { normalizeReviewerSeparationMode } from '@/components/board/reviewerSeparationSettings';
 import { ChecklistModeSelector } from '@/components/board/ChecklistModeSelector';
 import {
@@ -59,7 +60,6 @@ const DEFAULT_TEMPLATE_SETTINGS: Record<string, unknown> = {
   skip_cognitive_consolidation: false,
   allow_agent_self_answering: false,
   require_full_context_for_critical_actions: true,
-  qa_require_role_separation: false,
   reviewer_separation_mode: 'enforce',
   design_system_gate_mode: 'off',
   require_task_validation: true,
@@ -146,8 +146,7 @@ function toBoardSettings(raw: Record<string, unknown>): BoardSettings {
     skip_cognitive_consolidation: bool('skip_cognitive_consolidation', false),
     allow_agent_self_answering: bool('allow_agent_self_answering', false),
     require_full_context_for_critical_actions: bool('require_full_context_for_critical_actions', true),
-    qa_require_role_separation: bool('qa_require_role_separation', false),
-    reviewer_separation_mode: normalizeReviewerSeparationMode(raw.reviewer_separation_mode),
+    reviewer_separation_mode: raw.reviewer_separation_mode as BoardSettings['reviewer_separation_mode'],
     skip_test_evidence_global: bool('skip_test_evidence_global', false),
     require_task_validation: bool('require_task_validation', true),
     min_confidence: num('min_confidence', 70),
@@ -169,7 +168,9 @@ function toBoardSettings(raw: Record<string, unknown>): BoardSettings {
       ? (raw.auto_derive_spec_resource_types as SpecResourceAutoDeriveType[])
       : [],
     design_system_gate_mode: normalizeDesignSystemGateMode(raw.design_system_gate_mode),
-    code_traceability: normalizeCodeTraceabilitySettings(raw.code_traceability),
+    code_traceability: raw.code_traceability as BoardSettings['code_traceability'],
+    delivery_evidence_gate: raw.delivery_evidence_gate as BoardSettings['delivery_evidence_gate'],
+    impact_evidence_mode: raw.impact_evidence_mode as BoardSettings['impact_evidence_mode'],
   };
 }
 
@@ -362,6 +363,18 @@ export function DefaultBoardConfigPanel({
     ...DEFAULT_TEMPLATE_SETTINGS,
     ...(activeTemplate?.settings_payload ?? {}),
   };
+  if (!resolveCodeTraceabilitySettings(mergedSettings.code_traceability)) {
+    return <div role="alert">Code Traceability settings are incompatible. Template cannot be edited.</div>;
+  }
+  if (!normalizeReviewerSeparationMode(mergedSettings.reviewer_separation_mode)) {
+    return <div role="alert">Reviewer separation policy is incompatible. Template cannot be edited.</div>;
+  }
+  if (!resolveDeliveryGateMode(mergedSettings.delivery_evidence_gate)) {
+    return <div role="alert">Delivery Evidence policy is incompatible. Template cannot be edited.</div>;
+  }
+  if (!resolveImpactEvidenceMode(mergedSettings.impact_evidence_mode)) {
+    return <div role="alert">Impact Evidence policy is incompatible. Template cannot be edited.</div>;
+  }
   // The persisted baselines; the editors stage local drafts on top of them.
   const baseSettings = toBoardSettings(mergedSettings);
   let baseGuidelineRefs: DefaultBoardConfigGuidelineRef[] = [];
@@ -506,7 +519,7 @@ export function DefaultBoardConfigPanel({
   );
   const guidelineDefaultCount = activeTemplate?.guideline_default_refs.length ?? 0;
   const dsGate = ds?.gate_mode ?? (mergedSettings.design_system_gate_mode as string | undefined) ?? 'off';
-  const isLegacy = diff?.snapshot_state === 'legacy_no_snapshot';
+  const hasNoTemplateSnapshot = diff?.snapshot_state === 'no_template_snapshot';
   const hasOverrides = (diff?.fields.length ?? 0) > 0;
   const canDeactivateActiveTemplate = canDeactivateDefaultConfig
     && (
@@ -869,9 +882,9 @@ export function DefaultBoardConfigPanel({
               <p data-testid="dbc-diff-unavailable" className="text-xs text-gray-500 dark:text-gray-400">
                 Board diff requires <code>default_board_config.diff_read</code>.
               </p>
-            ) : isLegacy ? (
-              <div data-testid="dbc-legacy" className="rounded border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-800/50 dark:text-gray-300">
-                Legacy board - no applied template snapshot.
+            ) : hasNoTemplateSnapshot ? (
+              <div data-testid="dbc-no-template-snapshot" className="rounded border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-800/50 dark:text-gray-300">
+                No template snapshot was applied when this board was created.
               </div>
             ) : diff ? (
               <div data-testid="dbc-diff" className="space-y-3">

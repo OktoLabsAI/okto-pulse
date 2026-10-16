@@ -29,15 +29,13 @@ import type {
 const CURRENTNESS_REASONS =
   new Set<SemanticAssessmentCurrentnessReason>([
     'current_snapshot_missing',
+    'subject_edition_changed',
     'subject_version_changed',
     'subject_content_changed',
     'guideline_revision_changed',
     'guideline_revision_digest_changed',
     'binding_revision_changed',
     'binding_configuration_changed',
-    'policy_set_changed',
-    'binding_head_changed',
-    'input_digest_changed',
   ]);
 
 const ASSESSMENT_DETAIL_FIELDS = [
@@ -52,20 +50,15 @@ const ASSESSMENT_DETAIL_FIELDS = [
   'binding_id',
   'guideline_id',
   'guideline_revision_id',
-  'enforcement',
   'state',
   'currentness',
   'currentness_reasons',
   'confidence',
-  'minimum_confidence',
   'metric_count',
   'failed_metric_count',
   'recorded_at',
   'binding_revision',
   'assessor_agent_id',
-  'assessor_model_id',
-  'assessor_independent',
-  'confidence_admissible',
   'metric_results',
 ] as const;
 
@@ -89,13 +82,6 @@ const EVIDENCE_FIELDS = [
   'source_id',
   'source_version',
   'content_hash',
-] as const;
-
-const PINPOINT_FIELDS = [
-  'anchor_type',
-  'anchor_ref',
-  'excerpt_hash',
-  'input_digest',
 ] as const;
 
 const FINDING_DETAIL_FIELDS = [
@@ -437,30 +423,6 @@ function uniqueBy<T>(
   return values;
 }
 
-function parsePinpoint(value: unknown): SemanticPinpoint {
-  if (!isRecord(value)) {
-    throw new Error('Semantic guideline pinpoint is invalid.');
-  }
-  exactFields(value, PINPOINT_FIELDS, 'pinpoint');
-  if (
-    value.anchor_type !== 'whole_artifact'
-    && value.anchor_type !== 'field'
-    && value.anchor_type !== 'structured_child'
-    && value.anchor_type !== 'qa'
-  ) {
-    throw new Error('Semantic guideline pinpoint anchor type is invalid.');
-  }
-  return {
-    anchor_type: value.anchor_type,
-    anchor_ref: nullableText(value.anchor_ref, 'pinpoint anchor reference'),
-    excerpt_hash: nullableSha256(
-      value.excerpt_hash,
-      'pinpoint excerpt hash',
-    ),
-    input_digest: sha256(value.input_digest, 'pinpoint input digest'),
-  };
-}
-
 function parseMetricResult(value: unknown): SemanticMetricResultDetail {
   if (!isRecord(value)) {
     throw new Error('Semantic guideline metric result is invalid.');
@@ -531,9 +493,8 @@ function parseMetricResult(value: unknown): SemanticMetricResultDetail {
       'metric evidence references',
     ),
     pinpoints: uniqueBy(
-      value.pinpoints.map(parsePinpoint),
-      (item) =>
-        `${item.anchor_type}:${item.anchor_ref ?? ''}:${item.excerpt_hash ?? ''}:${item.input_digest}`,
+      value.pinpoints.map((pinpoint) => parseV2Pinpoint(pinpoint, computed)),
+      (item) => item.pinpoint_key,
       'metric pinpoints',
     ),
   };
@@ -551,20 +512,11 @@ export function parseSemanticAssessmentDetail(
     throw new Error('Semantic guideline assessment projection is not detail.');
   }
   matchesSubject(value, expected);
-  if (value.enforcement !== 'advisory' && value.enforcement !== 'blocking') {
-    throw new Error('Semantic guideline enforcement is invalid.');
-  }
   if (
     value.state !== 'passed'
     && value.state !== 'metric_threshold_failed'
   ) {
     throw new Error('Semantic guideline assessment state is invalid.');
-  }
-  if (
-    typeof value.assessor_independent !== 'boolean'
-    || typeof value.confidence_admissible !== 'boolean'
-  ) {
-    throw new Error('Semantic guideline assessor admission is invalid.');
   }
   const resolvedCurrentness = currentness(value);
   const validationEdition = value.validation_edition === null
@@ -573,13 +525,10 @@ export function parseSemanticAssessmentDetail(
   if (
     value.lifecycle_state !== 'current'
     && value.lifecycle_state !== 'previous'
-    && value.lifecycle_state !== 'history_only'
   ) {
     throw new Error('Semantic guideline assessment lifecycle state is invalid.');
   }
-  const expectedLifecycleState = validationEdition === null
-    ? 'history_only'
-    : resolvedCurrentness.currentness === 'current'
+  const expectedLifecycleState = resolvedCurrentness.currentness === 'current'
       ? 'current'
       : 'previous';
   if (value.lifecycle_state !== expectedLifecycleState) {
@@ -596,15 +545,6 @@ export function parseSemanticAssessmentDetail(
     );
   }
   const confidence = boundedScore(value.confidence, 'confidence');
-  const minimumConfidence = boundedScore(
-    value.minimum_confidence,
-    'minimum confidence',
-  );
-  if (value.confidence_admissible !== (confidence >= minimumConfidence)) {
-    throw new Error(
-      'Semantic guideline confidence admission contradicts its threshold.',
-    );
-  }
   if (!Array.isArray(value.metric_results)) {
     throw new Error('Semantic guideline metric results are invalid.');
   }
@@ -655,12 +595,10 @@ export function parseSemanticAssessmentDetail(
       value.guideline_revision_id,
       'guideline revision identity',
     ),
-    enforcement: value.enforcement,
     state: value.state,
     currentness: resolvedCurrentness.currentness,
     currentness_reasons: resolvedCurrentness.reasons,
     confidence,
-    minimum_confidence: minimumConfidence,
     metric_count: metricCount,
     failed_metric_count: failedMetricCount,
     recorded_at: timestamp(value.recorded_at, 'recorded timestamp'),
@@ -672,12 +610,6 @@ export function parseSemanticAssessmentDetail(
       value.assessor_agent_id,
       'assessor identity',
     ),
-    assessor_model_id: nullableText(
-      value.assessor_model_id,
-      'assessor model identity',
-    ),
-    assessor_independent: value.assessor_independent,
-    confidence_admissible: value.confidence_admissible,
     metric_results: metricResults,
   };
 }
@@ -695,11 +627,15 @@ export function parseSemanticFindingDetail(
   }
   matchesSubject(value, expected);
   const resolvedCurrentness = currentness(value);
-  const placement = lifecyclePlacement(
-    value,
-    resolvedCurrentness.currentness,
-    'finding',
-  );
+  const validationEdition = value.validation_edition === null
+    ? null : positiveInteger(value.validation_edition, 'finding validation edition');
+  const lifecycleState = resolvedCurrentness.currentness === 'current' ? 'current' : 'previous';
+  if (value.lifecycle_state !== lifecycleState) {
+    throw new Error('Semantic guideline finding lifecycle state is inconsistent.');
+  }
+  if (expected.validationEdition !== undefined && expected.validationEdition !== validationEdition) {
+    throw new Error('Semantic guideline finding does not match the active validation edition.');
+  }
   if (!Array.isArray(value.evidence_refs) || value.evidence_refs.length === 0) {
     throw new Error('Semantic guideline finding evidence is missing.');
   }
@@ -714,8 +650,8 @@ export function parseSemanticFindingDetail(
     entity_type: expected.entityType,
     subject_id: expected.subjectId,
     subject_version: value.subject_version as number,
-    validation_edition: placement.validationEdition,
-    lifecycle_state: placement.lifecycleState,
+    validation_edition: validationEdition,
+    lifecycle_state: lifecycleState,
     guideline_id: requiredText(value.guideline_id, 'finding guideline'),
     guideline_revision_id: requiredText(
       value.guideline_revision_id,
@@ -743,9 +679,8 @@ export function parseSemanticFindingDetail(
       'finding evidence references',
     ),
     pinpoints: uniqueBy(
-      value.pinpoints.map(parsePinpoint),
-      (item) =>
-        `${item.anchor_type}:${item.anchor_ref ?? ''}:${item.excerpt_hash ?? ''}:${item.input_digest}`,
+      value.pinpoints.map((item) => parseV2Pinpoint(item, 'fail')),
+      (item) => item.pinpoint_key,
       'finding pinpoints',
     ),
   };
@@ -782,11 +717,15 @@ export function parseSemanticWaiverDetail(
     throw new Error('Semantic guideline waiver lifecycle is invalid.');
   }
   const resolvedCurrentness = currentness(value);
-  const placement = lifecyclePlacement(
-    value,
-    resolvedCurrentness.currentness,
-    'waiver',
-  );
+  const validationEdition = value.validation_edition === null
+    ? null : positiveInteger(value.validation_edition, 'waiver validation edition');
+  const lifecycleState = resolvedCurrentness.currentness === 'current' ? 'current' : 'previous';
+  if (value.lifecycle_state !== lifecycleState) {
+    throw new Error('Semantic guideline waiver lifecycle state is inconsistent.');
+  }
+  if (expected.validationEdition !== undefined && expected.validationEdition !== validationEdition) {
+    throw new Error('Semantic guideline waiver does not match the active validation edition.');
+  }
   if (!Array.isArray(value.evidence_refs) || value.evidence_refs.length === 0) {
     throw new Error('Semantic guideline waiver evidence is missing.');
   }
@@ -836,8 +775,8 @@ export function parseSemanticWaiverDetail(
     entity_type: expected.entityType,
     subject_id: expected.subjectId,
     subject_version: value.subject_version as number,
-    validation_edition: placement.validationEdition,
-    lifecycle_state: placement.lifecycleState,
+    validation_edition: validationEdition,
+    lifecycle_state: lifecycleState,
     finding_id: requiredText(value.finding_id, 'waiver finding identity'),
     receipt_id: requiredText(value.receipt_id, 'waiver receipt identity'),
     guideline_id: requiredText(value.guideline_id, 'waiver guideline identity'),
@@ -1396,12 +1335,6 @@ export function parseCurrentSemanticAssessmentResponse(
     throw new Error('Semantic guideline current response is invalid.');
   }
   exactFields(value, CURRENT_RESPONSE_FIELDS, 'current response');
-  if (value.contract_version === 'v1') {
-    return {
-      contract_version: 'v1',
-      assessment: parseSemanticAssessmentDetail(value.assessment, expected),
-    };
-  }
   if (value.contract_version === 'v2') {
     return {
       contract_version: 'v2',
@@ -1417,7 +1350,6 @@ export type SemanticPolicyUiState =
   | 'non_blocking_warning'
   | 'waived_fail_finding'
   | 'stale'
-  | 'legacy'
   | 'removed'
   | 'inaccessible'
   | 'loading'
@@ -1447,9 +1379,9 @@ export interface SemanticPinpointTechnicalDetails {
 }
 
 export interface SemanticPinpointViewModel {
-  contractVersion: 'v1' | 'v2';
-  state: 'available' | 'removed' | 'inaccessible' | 'legacy';
-  kind: 'evidence' | 'issue' | 'legacy';
+  contractVersion: 'v2';
+  state: 'available' | 'removed' | 'inaccessible';
+  kind: 'evidence' | 'issue';
   title: string;
   detail: string;
   severity: SemanticPinpointV2['severity'];
@@ -1491,7 +1423,7 @@ export interface SemanticPolicyMetricViewModel {
 }
 
 export interface SemanticPolicyViewModel {
-  contractVersion: 'v1' | 'v2';
+  contractVersion: 'v2';
   currentness: PolicyCurrentness;
   uiStates: SemanticPolicyUiState[];
   confidence: number;
@@ -1507,26 +1439,11 @@ export interface SemanticPolicyResolverOptions {
   waivedMetricCodes?: ReadonlySet<string>;
 }
 
-const OPAQUE_ID = /^(?:[0-9a-f]{8}-[0-9a-f-]{27,}|[0-9a-f]{32,})$/iu;
-
 function stableAnchorReference(anchorRef: string | null): string | null {
   const trimmed = anchorRef?.trim();
   if (!trimmed) return null;
   const stableReference = trimmed.split('.').at(-1)?.trim();
   return stableReference || trimmed;
-}
-
-function bestEffortLegacyLabel(pinpoint: SemanticPinpoint): string {
-  if (pinpoint.anchor_type === 'whole_artifact') return 'Whole artifact';
-  if (pinpoint.anchor_type === 'qa') return 'Question or answer';
-  if (!pinpoint.anchor_ref || OPAQUE_ID.test(pinpoint.anchor_ref)) {
-    return pinpoint.anchor_type === 'field'
-      ? 'Referenced field'
-      : 'Referenced item';
-  }
-  return pinpoint.anchor_ref
-    .replace(/[_-]+/gu, ' ')
-    .replace(/\b\p{L}/gu, (letter) => letter.toUpperCase());
 }
 
 function safeResolution(
@@ -1598,62 +1515,6 @@ function v2PinpointView(
   };
 }
 
-function legacyPinpointView(
-  pinpoint: SemanticPinpoint,
-  rationale: string,
-  outcome: SemanticMetricOutcome,
-  options: SemanticPolicyResolverOptions,
-): SemanticPinpointViewModel {
-  const resolution = safeResolution(options.resolveAnchor, pinpoint);
-  const inaccessible = resolution.state === 'inaccessible';
-  const removed = resolution.state === 'removed';
-  const locationReference = inaccessible
-    ? null
-    : resolution.state === 'available'
-      ? resolution.stableReference ?? stableAnchorReference(pinpoint.anchor_ref)
-      : stableAnchorReference(pinpoint.anchor_ref);
-  return {
-    contractVersion: 'v1',
-    state: inaccessible || removed ? resolution.state : 'legacy',
-    kind: 'legacy',
-    title: 'Legacy assessment evidence',
-    detail: rationale,
-    severity: null,
-    remediation: null,
-    blocking: outcome === 'fail',
-    categoryLabel: anchorCategoryLabel(pinpoint.anchor_type),
-    locationLabel: inaccessible
-      ? 'Restricted assessment location'
-      : resolution.state === 'available' && resolution.displayText?.trim()
-        ? resolution.displayText.trim()
-        : removed
-          ? 'Referenced item'
-          : bestEffortLegacyLabel(pinpoint),
-    locationReference,
-    excerpt: null,
-    navigationTarget: resolution.state === 'available'
-      ? resolution.navigationTarget
-      : null,
-    unavailableMessage: removed
-      ? 'Referenced element is no longer available.'
-      : inaccessible
-        ? 'Location unavailable with your current access.'
-        : null,
-    technicalDetails: options.canViewTechnicalDetails
-      ? {
-          anchorType: pinpoint.anchor_type,
-          ...(!inaccessible && pinpoint.anchor_ref
-            ? { anchorReference: pinpoint.anchor_ref }
-            : {}),
-          ...(!inaccessible && pinpoint.excerpt_hash
-            ? { excerptHash: pinpoint.excerpt_hash }
-            : {}),
-          ...(!inaccessible ? { inputDigest: pinpoint.input_digest } : {}),
-        }
-      : null,
-  };
-}
-
 function uniqueStates(states: SemanticPolicyUiState[]): SemanticPolicyUiState[] {
   return [...new Set(states)];
 }
@@ -1663,39 +1524,6 @@ export function resolveSemanticPolicyViewModel(
   response: SemanticCurrentAssessmentResponse,
   options: SemanticPolicyResolverOptions = {},
 ): SemanticPolicyViewModel {
-  if (response.contract_version === 'v1') {
-    const metrics = response.assessment.metric_results.map((metric) => ({
-      metricCode: metric.metric_code,
-      score: metric.score,
-      direction: metric.direction,
-      effectiveThreshold: metric.effective_threshold,
-      outcome: metric.outcome,
-      uiState: response.assessment.currentness === 'stale'
-        ? 'stale' as const
-        : 'legacy' as const,
-      rationale: metric.rationale,
-      pinpoints: metric.pinpoints.map((pinpoint) => legacyPinpointView(
-        pinpoint,
-        metric.rationale,
-        metric.outcome,
-        options,
-      )),
-    }));
-    return {
-      contractVersion: 'v1',
-      currentness: response.assessment.currentness,
-      uiStates: uniqueStates([
-        response.assessment.currentness === 'stale' ? 'stale' : 'legacy',
-        ...metrics.flatMap((metric) => metric.pinpoints
-          .filter((pinpoint) => pinpoint.state !== 'legacy')
-          .map((pinpoint) => pinpoint.state as 'removed' | 'inaccessible')),
-      ]),
-      confidence: response.assessment.confidence,
-      recordedAt: response.assessment.recorded_at,
-      metrics,
-    };
-  }
-
   const metrics = response.assessment.metrics.map((metric) => {
     const waived = options.waivedMetricCodes?.has(metric.metric_code) ?? false;
     const uiState: SemanticPolicyUiState = metric.outcome === 'fail'
@@ -1736,13 +1564,12 @@ export type SemanticPolicyRenderOutcome =
   | 'stale'
   | 'waived'
   | 'unavailable'
-  | 'legacy'
   | 'system_error';
 
 export interface SemanticPolicyRenderTelemetry {
   metric: 'pulse_policy_compliance_render_total';
   labels: {
-    contract_version: 'v1' | 'v2' | 'none';
+    contract_version: 'v2' | 'none';
     outcome: SemanticPolicyRenderOutcome;
   };
 }
@@ -1750,14 +1577,12 @@ export interface SemanticPolicyRenderTelemetry {
 /** Closed, payload-free telemetry labels safe for any frontend sink. */
 export function semanticPolicyRenderTelemetry(
   state: SemanticPolicyUiState,
-  contractVersion: 'v1' | 'v2' | 'none',
+  contractVersion: 'v2' | 'none',
 ): SemanticPolicyRenderTelemetry {
   const outcome: SemanticPolicyRenderOutcome = state === 'stale'
     ? 'stale'
     : state === 'waived_fail_finding'
       ? 'waived'
-      : state === 'legacy'
-        ? 'legacy'
         : state === 'removed'
           || state === 'inaccessible'
           || state === 'no_assessment'

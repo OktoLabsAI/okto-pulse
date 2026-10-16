@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 import sqlite3
 from pathlib import Path
 
@@ -66,7 +67,7 @@ def _read_fence(connection: sqlite3.Connection) -> tuple[int, str]:
 
 def test_qa_tables_and_normative_columns_are_in_the_closed_source_census() -> None:
     assert GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION == (
-        "gdsr-trigger-manifest-v8"
+        "gdsr-trigger-manifest-v9"
     )
     for table_name, parent_column, _parent_id in _QA_BINDINGS:
         assert table_name in GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES
@@ -74,6 +75,8 @@ def test_qa_tables_and_normative_columns_are_in_the_closed_source_census() -> No
         assert _REQUIRED_SOURCE_COLUMNS[table_name] == (
             _NORMATIVE_QA_COLUMNS | {parent_column}
         )
+    assert "sprint_qa_items" not in GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES
+    assert "sprint_qa_items" not in _REQUIRED_SOURCE_TABLES
 
 
 def test_each_qa_insert_update_delete_rotates_revision_and_nonce(
@@ -86,8 +89,8 @@ def test_each_qa_insert_update_delete_rotates_revision_and_nonce(
     connection.execute("PRAGMA foreign_keys = ON")
     try:
         connection.execute(
-            "INSERT INTO boards (id, name, owner_id) VALUES (?, ?, ?)",
-            ("board-c8", "C8 Q&A fence", "agent-c8"),
+            "INSERT INTO boards (id, name, owner_id, realm_id) VALUES (?, ?, ?, ?)",
+            ("board-c8", "C8 Q&A fence", "agent-c8", "local"),
         )
         connection.execute(
             "INSERT INTO ideations "
@@ -119,7 +122,7 @@ def test_each_qa_insert_update_delete_rotates_revision_and_nonce(
         connection.execute(
             "INSERT INTO specs "
             "(id, board_id, ideation_id, refinement_id, title, status, "
-            "version, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "version, created_by, architecture_adoption) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 "spec-c8",
                 "board-c8",
@@ -129,6 +132,10 @@ def test_each_qa_insert_update_delete_rotates_revision_and_nonce(
                 "draft",
                 1,
                 "agent-c8",
+                ArchitectureAdoptionScope(
+                    board_id="board-c8", spec_id="spec-c8", actor_id="agent-c8",
+                    adopted_in_edition=1, inherited_resource_ids=(),
+                ).model_dump_json(),
             ),
         )
         connection.commit()

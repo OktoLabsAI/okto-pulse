@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import toast from 'react-hot-toast';
 
 import { ImportExportButtons } from './ImportExportButtons';
 import type {
@@ -27,6 +28,29 @@ const envelope = (id: string, kind = 'design_systems'): ImportExportEnvelope => 
 describe('ImportExportButtons', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.clearAllMocks();
+  });
+
+  it('stops a rejected legacy preset preview without retry, replacement or success', async () => {
+    const message = 'Retired Sprint permissions cannot be imported as an active preset.';
+    const onImport = vi.fn().mockRejectedValue(new Error(message));
+    const onImported = vi.fn();
+    const confirm = vi.spyOn(window, 'confirm');
+    render(<ImportExportButtons kind="presets" onExport={vi.fn()} onImport={onImport}
+      onImported={onImported} confirmReplacements />);
+    const original = { schema_version: '1', kind: 'presets', items: [
+      { name: 'Historical preset', flags: { sprint: { entity: { read: true } } } },
+    ] };
+    fireEvent.change(screen.getByTestId('presets-import-input'), { target: { files: [
+      new File([JSON.stringify(original)], 'historical.json', { type: 'application/json' }),
+    ] } });
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(message));
+    expect(onImport).toHaveBeenCalledTimes(1);
+    expect(onImport).toHaveBeenCalledWith(original, { dryRun: true });
+    expect(confirm).not.toHaveBeenCalled();
+    expect(onImported).not.toHaveBeenCalled();
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(screen.getByTestId('presets-import')).toBeEnabled();
   });
 
   it('merges one or many selected envelopes into one bulk import', async () => {

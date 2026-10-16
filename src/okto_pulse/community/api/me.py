@@ -50,10 +50,9 @@ async def get_my_permissions(
     checks. Board overrides that restrict flags (ceiling model) appear as
     ``False``.
 
-    Legacy agents (``permissions`` column non-null, flat list) are mapped
-    through ``map_legacy_permissions`` first. Versioned permission
-    introductions remain fail-closed when absent. Agents with no permission
-    data at all retain the historical trusted/local Full Control path.
+    Only native flags and preset lineage are resolved. Missing introduced
+    permissions remain fail-closed. The explicit local Full Control sentinel
+    remains available for agents without a preset or direct override.
     """
     try:
         result = await GetMyPermissionsUseCase().execute(

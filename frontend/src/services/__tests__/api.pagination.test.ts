@@ -24,7 +24,29 @@ describe('paginated list API surface', () => {
     });
   });
 
-  it('opts all five list surfaces into envelopes with offset, limit, filters and cancellation', async () => {
+  it('uses bounded column batches and preserves filters in continuation requests', async () => {
+    const controller = new AbortController();
+    const { result } = renderHook(() => useDashboardApi());
+    const options = { perColumnLimit: 7, search: 'review work', includeArchived: true, signal: controller.signal };
+    const batch = { board_id: 'board-1', columns: {}, columns_meta: { columns: {}, facets: { assignee: [] } } };
+    const page = { board_id: 'board-1', column: 'done', items: [], meta: { has_more: false }, offset: 7, limit: 7, next_offset: null };
+    mockApiClient.fetchJson.mockResolvedValueOnce(batch).mockResolvedValueOnce(page);
+    expect(await result.current.getBoardColumns('board-1', options)).toEqual(batch);
+    expect(await result.current.getBoardColumnPage('board-1', 'done', 7, options)).toEqual(page);
+    const paths = mockApiClient.fetchJson.mock.calls.map(([path]) => new URL(path, 'https://pulse.test'));
+    for (const path of paths) {
+      expect(path.pathname).toBe('/boards/board-1/columns');
+      expect(path.searchParams.get('per_column_limit')).toBe('7');
+      expect(path.searchParams.get('search')).toBe('review work');
+      expect(path.searchParams.get('include_archived')).toBe('true');
+    }
+    expect(paths[0].searchParams.has('column')).toBe(false);
+    expect(paths[1].searchParams.get('column')).toBe('done');
+    expect(paths[1].searchParams.get('offset')).toBe('7');
+    expect(mockApiClient.fetchJson.mock.calls.every(([, options]) => options.signal === controller.signal)).toBe(true);
+  });
+
+  it('requests list envelopes with offset, limit, filters and cancellation', async () => {
     const controller = new AbortController();
     const { result } = renderHook(() => useDashboardApi());
 
@@ -64,14 +86,7 @@ describe('paginated list API surface', () => {
       labels: ['api', 'ux'],
       signal: controller.signal,
     });
-    await result.current.listBoardSprintsPage('board-1', {
-      offset: 25,
-      limit: 25,
-      status: 'in_progress',
-      specId: 'spec-1',
-      search: 'sprint query',
-      signal: controller.signal,
-    });
+
 
     expect(mockApiClient.fetchJson).toHaveBeenNthCalledWith(
       1,
@@ -93,10 +108,43 @@ describe('paginated list API surface', () => {
       '/boards/board-1/refinements?offset=0&limit=25&status=done&search=needle&derivation_pending=true&labels=api%2Cux',
       { signal: controller.signal },
     );
-    expect(mockApiClient.fetchJson).toHaveBeenNthCalledWith(
-      5,
-      '/boards/board-1/sprints?offset=25&limit=25&status=in_progress&spec_id=spec-1&search=sprint+query',
-      { signal: controller.signal },
-    );
+  });
+
+  it.each(['spec', 'ideation', 'story', 'refinement'] as const)(
+    'loads every %s candidate through the native page contract', async (kind) => {
+      const first = Array.from({ length: 100 }, (_, index) => ({ id: `item-${index}` }));
+      const last = { id: 'item-100' };
+      mockApiClient.fetchJson
+        .mockResolvedValueOnce({ items: first, offset: 0, limit: 100, total_filtered: 101, total_overall: 150 })
+        .mockResolvedValueOnce({ items: [last], offset: 100, limit: 100, total_filtered: 101, total_overall: 150 });
+      const { result } = renderHook(() => useDashboardApi());
+      const items = kind === 'spec' ? await result.current.listSpecs('board-1', 'approved')
+        : kind === 'ideation' ? await result.current.listIdeations('board-1', 'draft')
+          : kind === 'story' ? await result.current.listStories('board-1', { linked: false })
+            : await result.current.listRefinements('idea-1');
+      expect(items).toEqual([...first, last]);
+      expect(mockApiClient.fetchJson).toHaveBeenCalledTimes(2);
+      const paths = mockApiClient.fetchJson.mock.calls.map(([path]) => new URL(path, 'https://pulse.test'));
+      expect(paths.map((path) => path.searchParams.get('offset'))).toEqual(['0', '100']);
+      expect(paths.every((path) => path.searchParams.get('limit') === '100')).toBe(true);
+      if (kind === 'spec' || kind === 'ideation') {
+        expect(paths.map((path) => path.searchParams.get('status')))
+          .toEqual(kind === 'spec' ? ['approved', 'approved'] : ['draft', 'draft']);
+      }
+      if (kind === 'story') expect(paths.every((path) => path.searchParams.get('linked') === 'false')).toBe(true);
+    },
+  );
+
+  it('rejects an old array response instead of silently truncating selector options', async () => {
+    mockApiClient.fetchJson.mockResolvedValue([{ id: 'old' }]);
+    const { result } = renderHook(() => useDashboardApi());
+    await expect(result.current.listSpecs('board-1')).rejects.toThrow('Invalid list page response');
+    expect(mockApiClient.fetchJson).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports an incomplete page instead of returning a partial selector list', async () => {
+    mockApiClient.fetchJson.mockResolvedValue({ items: [], offset: 0, limit: 100, total_filtered: 1 });
+    const { result } = renderHook(() => useDashboardApi());
+    await expect(result.current.listIdeations('board-1')).rejects.toThrow('Incomplete list page response');
   });
 });

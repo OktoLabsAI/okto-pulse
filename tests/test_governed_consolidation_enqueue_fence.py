@@ -20,7 +20,9 @@ from okto_pulse.community.adapters.sqlalchemy_consolidation import (
 from okto_pulse.community.adapters.sqlalchemy_database import (
     install_community_sqlite_pragmas,
 )
-from okto_pulse.community.adapters.sqlalchemy_base import Base
+from okto_pulse.community.adapters.current_relational_schema import (
+    current_schema_contract, initialize_current_schema,
+)
 from okto_pulse.community.adapters.sqlalchemy_models import (
     ArtifactDeletionTombstone,
     Board,
@@ -38,10 +40,9 @@ async def _database(tmp_path):
     )
     install_community_sqlite_pragmas(engine)
     factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
+    await initialize_current_schema(engine, current_schema_contract())
     async with factory() as session:
-        session.add(Board(id="board-1", name="Board", owner_id="agent"))
+        session.add(Board(id="board-1", name="Board", owner_id="agent", realm_id="local"))
         await session.commit()
     return engine, factory
 
@@ -337,7 +338,7 @@ async def test_tombstone_for_another_artifact_does_not_block_admission(tmp_path)
     adapter = CommunitySqlAlchemyRelationalEffects()
     try:
         async with factory() as session:
-            session.add(Board(id="board-2", name="Other Board", owner_id="agent"))
+            session.add(Board(id="board-2", name="Other Board", owner_id="agent", realm_id="local"))
             await session.flush()
             session.add_all(
                 [

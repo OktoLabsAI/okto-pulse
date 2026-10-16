@@ -11,7 +11,7 @@ const tours: GuidedHelpTour[] = [
       {
         id: 'board.navigation.tabs',
         title: 'Move across work areas',
-        body: 'Use the main tabs to switch between stories, discovery, specs, sprints, and task execution.',
+        body: 'Use the main tabs to switch between stories, ideations, refinements, specs, and task execution.',
         anchor: 'board.tabs',
         kind: 'navigation',
         placement: 'bottom',
