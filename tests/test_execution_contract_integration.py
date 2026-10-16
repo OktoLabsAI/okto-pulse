@@ -30,7 +30,9 @@ async def adopt_fixture(db, tmp_path, monkeypatch):
     monkeypatch.setattr(signed, "SCENARIO_SHA256", digest)
     manifest = signed._manifest
     monkeypatch.setattr(signed, "_manifest", lambda **kwargs: manifest(scenario_sha256=digest, **kwargs))
-    evidence_ledger, _, evidence = await signed._produce(tmp_path / "joint")
+    original = await db.get(Spec, signed.SPEC_ID)
+    basis = copy.deepcopy(original.test_scenarios[0]["evidence"]["execution_attestation"]["execution_basis"])
+    evidence_ledger, _, evidence = await signed._produce(tmp_path / "joint", execution_basis=basis)
     register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger))
     fields = {field: [] for _, field in COLLECTIONS}
     fields.update(functional_requirements=[{

@@ -213,11 +213,12 @@ def test_active_pointer_rejects_unsafe_generation_id_before_path_resolution(tmp_
         resolve_active_graph_path(live)
 
 
-def test_community_workflow_adds_candidate_before_similarity_and_proposal():
-    workflow = (
-        Path(__file__).parents[1]
-        / "src/okto_pulse/community/resources/operational/workflows/kg.md"
-    ).read_text(encoding="utf-8")
+def test_community_workflow_adds_candidate_before_similarity_and_proposal(active_runtime_registry):
+    from okto_pulse.community.adapters.resources import register_and_freeze_community_resource_catalog
+    transaction = register_and_freeze_community_resource_catalog(active_runtime_registry)
+    frozen, _ = transaction.require_frozen_projection()
+    workflow = next(spec.read() for spec in frozen.specs() if spec.uri == "okto-pulse://workflows/kg")
+    transaction.commit()
     block = workflow.split("**Consolidation workflow:**", 1)[1].split("```", 2)[1]
     assert (
         block.index("okto_pulse_kg_add_node_candidate")

@@ -22,7 +22,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     DomainEventRow,
 )
 from okto_pulse.community.adapters.test_evidence import (
-    CommunityHttpManifestExecutor, run_manifest_and_build_evidence_v2,
+    CommunityHttpManifestExecutor,
 )
 from okto_pulse.core.application.use_cases.delivery_evidence import RecordCardDeliveryEvidenceUseCase
 from okto_pulse.core.kg.cognitive_readiness import CognitiveReadinessService
@@ -59,18 +59,20 @@ async def test_signed_test_closeout_separates_product_proof_from_projection(
         'text': f'Health reports {settings.app_version}'}])
     issued = []
 
-    async def produce(path):
-        evidence_ledger = signed._ledger(path)
-        manifest = signed._manifest(expected=settings.app_version)
-        (evidence_ledger.manifest_root / 'product.json').write_text(json.dumps(manifest), encoding='utf-8')
-        evidence = await run_manifest_and_build_evidence_v2(
-            manifest_ref='product.json', board_id=BOARD, spec_id=SPEC,
-            scenario_id=signed.SCENARIO_ID, scenario_sha256=signed.SCENARIO_SHA256,
-            status='passed', actor_id=signed.ACTOR_ID, environment='pytest-asgi',
-            ledger=evidence_ledger, executor=CommunityHttpManifestExecutor(
-                base_url='http://127.0.0.1', transport=httpx.ASGITransport(app=app)))
+    original_produce = signed._produce
+
+    async def produce(path, *, execution_basis):
+        async def probe(_native_manifest, _manifest_ref):
+            executor = CommunityHttpManifestExecutor(
+                base_url='http://127.0.0.1', transport=httpx.ASGITransport(app=app))
+            return await executor(signed._manifest(expected=settings.app_version), 'product.json')
+
+        # Retain the accepted source/revision binding while obtaining the actual
+        # ASGI product observation; no authenticated/verified flag is fabricated.
+        evidence_ledger, calls, evidence = await original_produce(
+            path, execution_basis=execution_basis, executor=probe)
         issued.append(copy.deepcopy(evidence))
-        return evidence_ledger, [], evidence
+        return evidence_ledger, calls, evidence
 
     monkeypatch.setattr(signed, '_produce', produce)
     session = None

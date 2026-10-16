@@ -43,6 +43,28 @@ repositories v0.4.0. No branch-protection bypass or failing-gate exemption.
 
 ## Resume
 
+Run 38852126320 failed after 1431 passed / 4 skipped on authenticated delivery:
+the adopted fixture replaced a valid source-bound attestation with an unbound
+one. Preserve its execution basis and use the actual ASGI observation through
+the native signed-manifest path; no production admission predicate changed.
+
+The diagnostic tail had ten failures (2416 passed before its ten-failure stop).
+An earlier progress-tail-only status missed failures already written in the log;
+subsequent monitoring scans all FAILED/ERROR lines. All ten were reproduced:
+three delivery cases above; old table count/fingerprint; DDL text checked in the
+former file instead of the native manifest; KG workflow checked only Community
+notes instead of the composed frozen resource; four vector fixtures missing the
+current `source_status` column. Fixtures now use the native contracts.
+
+Reviewed ORM delta since the previous pinned fingerprint: exactly the validation
+source revision and Spec conclusion receipt tables, plus `decision_review` in
+the existing delivery-kind constraint. Pinned 153 tables and hash
+`6e8e6c32a7165dfd2fb7c06dd5c23613ff9e2dc5208ae80a7ddf4dc860fea35e`;
+runtime schema/migration behavior unchanged. First focused run: 61 passed, one
+stale fingerprint failure. After updating that audited pin: all 13 schema/vector
+matrix tests pass. Remaining diagnostic tail resumes after the vector matrix;
+the complete remote suite must still pass before merge.
+
 CI time budget increased from 75 to 180 minutes: run 38848655415 reached 19%
 of the full selection after about 20 minutes before a reviewed fix superseded
 it. Allow time for native storage/concurrency cases and subsequent artifact
