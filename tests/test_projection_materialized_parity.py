@@ -85,7 +85,7 @@ def relationship_set(graph):
         reader.close()
 
 
-async def materialize(root, *, incremental, card_type=None, final_unlinked=False, final_empty=False, exercise=None, seed=None, native_schema=False):
+async def materialize(root, *, incremental, card_type=None, final_unlinked=False, final_empty=False, exercise=None, seed=None, native_schema=True):
     root.mkdir()
     path = root / 'source.sqlite3'
     settings = CommunitySettings(database_url=f'sqlite+aiosqlite:///{path}',

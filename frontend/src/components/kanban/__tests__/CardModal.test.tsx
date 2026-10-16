@@ -1416,6 +1416,31 @@ describe('CardModal', () => {
     expect(screen.getByText('Remote title')).toBeInTheDocument();
   });
 
+  it('keeps the Card and its draft when only the linked Spec loses access', async () => {
+    render(<CardModal boardId="board-1" />);
+    await screen.findByRole('tablist', { name: 'Card sections' });
+    fireEvent.click(screen.getByText(bugCard.title));
+    fireEvent.change(screen.getByPlaceholderText('Card title'), { target: { value: 'Unsaved authorized Card title' } });
+    workspace.refreshPermissions.mockImplementation(async () => {
+      permissionsMock.has.mockImplementation(permission => permission !== 'spec.entity.read');
+      return { board_id: 'board-1', flags: { card: { entity: { read: true } }, spec: { entity: { read: false } } } };
+    });
+    await act(async () => workspace.options!.onAccessLost());
+    await waitFor(() => expect(apiMock.getCard).toHaveBeenCalledTimes(2));
+    expect(storeMock.closeCardModal).not.toHaveBeenCalled();
+    expect(screen.getByPlaceholderText('Card title')).toHaveValue('Unsaved authorized Card title');
+    expect(workspace.options!.subjects).toEqual([{ subject_type: 'card', subject_id: bugCard.id }]);
+  });
+
+  it('still clears the Card after its own read permission is confirmed lost', async () => {
+    render(<CardModal boardId="board-1" />);
+    await screen.findByRole('tablist', { name: 'Card sections' });
+    workspace.refreshPermissions.mockResolvedValue({ board_id: 'board-1', flags: { card: { entity: { read: false } } } });
+    await act(async () => workspace.options!.onAccessLost());
+    await waitFor(() => expect(storeMock.closeCardModal).toHaveBeenCalled());
+    expect(screen.queryByText(bugCard.title)).not.toBeInTheDocument();
+  });
+
   it('queues external invalidation while the original threshold read is pending', async () => {
     const spec = deferred<Spec>();
     apiMock.getSpec.mockReturnValueOnce(spec.promise);

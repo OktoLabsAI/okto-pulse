@@ -94,22 +94,57 @@ export class WorkspaceRevisionWatch {
     const subjects = [...new Map([...this.subscriptions].flatMap(item =>
       item.subjects.map(subject => [keyOf(subject), subject] as const))).values()];
     const incoming = new Map<string, string>();
+    const denied = new Set<string>();
     let authority: string | undefined;
+    const readBatch = async (batch: WorkspaceSubjectRef[]): Promise<void> => {
+      if (!current()) return;
+      let result: WorkspaceRevisions;
+      try {
+        result = await this.read(this.boardId, batch, controller.signal);
+      } catch (error) {
+        if (!current()) return;
+        // A scope denial rejects the whole batch, not necessarily every subject.
+        // Keep ordinary polls batched; isolate only refused scopes. A 401 still
+        // invalidates the authenticated session and is handled globally below.
+        if (!(error instanceof AuthenticatedFetchError) || ![403, 404].includes(error.status)) throw error;
+        if (batch.length === 1) {
+          denied.add(keyOf(batch[0]));
+          return;
+        }
+        const middle = Math.ceil(batch.length / 2);
+        await readBatch(batch.slice(0, middle));
+        await readBatch(batch.slice(middle));
+        return;
+      }
+      if (!current()) return;
+      if (result.board_id !== this.boardId || result.subjects.length !== batch.length
+        || result.subjects.some((item, index) => keyOf(item) !== keyOf(batch[index]))) {
+        throw new Error('Workspace revisions do not match the requested scope.');
+      }
+      const nextAuthority = tokenOf(result.authority);
+      if (authority !== undefined && authority !== nextAuthority) {
+        throw new Error('Workspace authority changed during the batch.');
+      }
+      authority = nextAuthority;
+      for (const item of result.subjects) incoming.set(keyOf(item), tokenOf(item.token));
+    };
+    const affectedByDenial = (subscriber: WorkspaceSubscription) =>
+      subscriber.subjects.some(subject => denied.has(keyOf(subject)));
+    const publishDenials = () => {
+      if (!current() || denied.size === 0) return;
+      for (const key of denied) this.tokens.delete(key);
+      for (const subscriber of this.subscriptions) {
+        if (!current()) return;
+        if (affectedByDenial(subscriber)) {
+          subscriber.onState('access-lost');
+          subscriber.onAccessLost();
+        }
+      }
+      this.onAccessLost?.(current);
+    };
     try {
       for (let start = 0; start < subjects.length; start += 50) {
-        const batch = subjects.slice(start, start + 50);
-        const result = await this.read(this.boardId, batch, controller.signal);
-        if (!current()) return;
-        if (result.board_id !== this.boardId || result.subjects.length !== batch.length
-          || result.subjects.some((item, index) => keyOf(item) !== keyOf(batch[index]))) {
-          throw new Error('Workspace revisions do not match the requested scope.');
-        }
-        const nextAuthority = tokenOf(result.authority);
-        if (authority !== undefined && authority !== nextAuthority) {
-          throw new Error('Workspace authority changed during the batch.');
-        }
-        authority = nextAuthority;
-        for (const item of result.subjects) incoming.set(keyOf(item), tokenOf(item.token));
+        await readBatch(subjects.slice(start, start + 50));
       }
       if (!current()) return;
       const initial = this.authority === undefined;
@@ -117,13 +152,16 @@ export class WorkspaceRevisionWatch {
       const changed = new Set([...incoming].filter(([key, token]) => this.tokens.get(key) !== token).map(([key]) => key));
       this.tokens = incoming;
       this.authority = authority;
-      this.failures = 0;
-      this.state('current');
+      this.failures = denied.size ? this.failures + 1 : 0;
       // Publish only after every chunk was verified; stale responses never notify.
       for (const subscriber of this.subscriptions) {
+        if (!current()) return;
+        if (affectedByDenial(subscriber)) continue;
+        subscriber.onState('current');
         const affected = subscriber.subjects.filter(subject => authorityChanged || changed.has(keyOf(subject)));
         if (affected.length) subscriber.onChange({ subjects: affected, authorityChanged, initial });
       }
+      publishDenials();
     } catch (error) {
       if (!current()) return;
       this.failures += 1;
@@ -133,7 +171,11 @@ export class WorkspaceRevisionWatch {
         this.state('access-lost');
         for (const subscriber of this.subscriptions) subscriber.onAccessLost();
         this.onAccessLost?.(current);
-      } else this.state(navigator.onLine === false ? 'offline' : 'unavailable');
+      } else {
+        this.state(navigator.onLine === false ? 'offline' : 'unavailable');
+        // A later technical failure must not conceal an already confirmed denial.
+        publishDenials();
+      }
     } finally {
       if (current()) {
         this.request = undefined;

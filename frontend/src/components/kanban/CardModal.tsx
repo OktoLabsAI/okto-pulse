@@ -1137,15 +1137,9 @@ export function CardModal({
     validationTab,
   ]);
 
-  const syncState = useWorkspaceRevisions({
-    boardId: isOpen && selectedCardId ? boardId : undefined,
-    subjects: selectedCardId ? [
-      { subject_type: 'card', subject_id: selectedCardId },
-      ...(card?.id === selectedCardId && card.spec_id && perms.has('spec.entity.read')
-        ? [{ subject_type: 'spec' as const, subject_id: card.spec_id }] : []),
-    ] : [],
-    onAccessLost: () => loseCardAccessRef.current(),
-    onChange: async ({ initial, authorityChanged }) => {
+  const handleWorkspaceRevision = async ({ initial, authorityChanged }: {
+    initial: boolean; authorityChanged: boolean;
+  }) => {
       if (initial) return;
       const requestedCard = selectedCardId;
       const generation = ++syncGeneration.current;
@@ -1172,7 +1166,19 @@ export function CardModal({
       authorizationRequired.current = false;
       setSyncAuthorizing(false);
       setLiveRevision(value => value + 1);
-    },
+  };
+
+  const syncState = useWorkspaceRevisions({
+    boardId: isOpen && selectedCardId ? boardId : undefined,
+    subjects: selectedCardId ? [
+      { subject_type: 'card', subject_id: selectedCardId },
+      ...(card?.id === selectedCardId && card.spec_id && perms.has('spec.entity.read')
+        ? [{ subject_type: 'spec' as const, subject_id: card.spec_id }] : []),
+    ] : [],
+    // The linked Spec can lose access while the Card remains readable. Recheck
+    // the Card's own authority; its native refresh still refuses lost Card access.
+    onAccessLost: () => { void handleWorkspaceRevision({ initial: false, authorityChanged: true }); },
+    onChange: handleWorkspaceRevision,
   });
 
   useEffect(() => {

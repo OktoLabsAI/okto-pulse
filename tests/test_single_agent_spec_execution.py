@@ -1,6 +1,7 @@
 """BASE T01 / AC-INT-04: broad or independent review from Draft through Done."""
 import copy
 import json
+import subprocess
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -19,6 +20,7 @@ from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import C
 from okto_pulse.community.adapters.sqlalchemy_quality_assessment import CommunitySqlAlchemyQualityAssessmentPreflightReader
 from okto_pulse.community.adapters.sqlalchemy_structured_spec import CommunitySqlAlchemyStructuredSpecStore
 from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWorkFactory
+from okto_pulse.community.adapters.sqlalchemy_validation_cycle import CommunitySqlAlchemyValidationCycleReader
 from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.mcp import server
 from okto_pulse.core.ports import McpCredential
@@ -26,6 +28,7 @@ from okto_pulse.core.ports.mcp_resources import freeze_mcp_resource_catalog
 from okto_pulse.core.ports.permission_policy import builtin_permission_presets
 from okto_pulse.core.ports.quality_assessment import register_quality_assessment_preflight_reader
 from okto_pulse.core.ports.structured_spec import register_structured_spec_store
+from okto_pulse.core.ports.validation_cycle import register_validation_cycle_reader
 from okto_pulse.core.runtime_registry import register_unit_of_work_factory
 from okto_pulse.core.services.main import AgentService
 
@@ -35,7 +38,7 @@ from test_delivery_reused_impact import register_report_adapters
 adopted_context = source_context
 
 
-async def seed_external_implementation(db):
+async def seed_external_implementation(db, revision):
     """Fixture for an already-admitted external technical execution receipt."""
     from test_code_traceability_persistence import _attestation_bundle
     from okto_pulse.community.adapters.sqlalchemy_code_traceability import _receipt_row, _request_row
@@ -46,13 +49,13 @@ async def seed_external_implementation(db):
     from okto_pulse.core.domain.code_traceability import code_investigation_observation_sha256_v2
     now = datetime.now(timezone.utc)
     issued, consumed, receipt, _, workspace = _attestation_bundle(now, subject_id='task')
-    workspace = replace(workspace, declared_revision='a' * 40)
+    workspace = replace(workspace, declared_revision=revision)
     request = replace(issued, board_id='board')
     observation = code_investigation_observation_sha256_v2(source_ref=receipt.source_ref,
         selector_scope_digest=receipt.selector_scope_digest, delivery_context=receipt.delivery_context, outcome=receipt.contextual_outcome,
         capabilities=receipt.capabilities, source_identity_digest=receipt.source_identity_digest,
         declared_revision=workspace.declared_revision, workspace_state=workspace, omission_manifest=())
-    receipt = replace(receipt, board_id='board', declared_revision='a' * 40,
+    receipt = replace(receipt, board_id='board', declared_revision=revision,
         workspace_state=workspace, observation_sha256=observation)
     await db.execute(insert(CodeInvestigationRequestRow).values(**_request_row(request)))
     await db.execute(insert(CodeInvestigationReceiptRow).values(**_receipt_row(receipt)))
@@ -73,7 +76,7 @@ async def seed_external_implementation(db):
     await db.flush()
     db.add(ImplementationTargetExecutionRecordRow(id='execution', board_id='board', card_id='task',
         target_id='target', target_revision=1, result_investigation_receipt_id=receipt.id,
-        source_ref=receipt.source_ref, disposition='touched', result_declared_revision='a' * 40,
+        source_ref=receipt.source_ref, disposition='touched', result_declared_revision=revision,
         result_workspace_state_id=workspace.workspace_state_id, actual_relative_path='src/file.py',
         justification='External implementation receipt fixture', submitted_by='solo', received_at=now,
         payload_sha256='b' * 64, idempotency_key='execution'))
@@ -82,7 +85,7 @@ async def seed_external_implementation(db):
 
 async def call(client, name, **arguments):
     result = await client.call_tool(name, arguments, raise_on_error=False)
-    assert not result.is_error, result.content
+    assert not result.is_error, '\n'.join(getattr(item, 'text', str(item)) for item in result.content)
     body = json.loads(result.content[0].text)
     assert not body.get('error') and body.get('outcome') != 'error', body
     return body['data'] if 'outcome' in body else body
@@ -114,6 +117,7 @@ async def read_execution_resources(client, *, reviewer=False, card_review=False)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('adopted_context', ['native_schema'], indirect=True)
 @pytest.mark.parametrize('separate_review', [False, True], ids=['broad-agent', 'separate-reviewer'])
 @pytest.mark.parametrize('late_requirement_link', [False, True])
 async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
@@ -139,9 +143,13 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
     from okto_pulse.community.adapters.composition import configure_community_kg_registry
     from okto_pulse.community.config import CommunitySettings
     from okto_pulse.community.adapters.sqlalchemy_resource_gate_service import CommunitySqlAlchemyResourceGateAdapter
-    configure_community_kg_registry(factory, settings=CommunitySettings(
+    from okto_pulse.core import configure_settings
+    settings = CommunitySettings(
         data_dir=str(tmp_path / 'runtime'), kg_base_dir=str(tmp_path / 'kg'),
-        kg_embedding_mode='stub', kg_embedding_dim=8))
+        kg_embedding_mode='stub', kg_embedding_dim=8,
+        guideline_policy_cursor_signing_key='native-flow-test-installation-key-000000000')
+    configure_settings(settings)
+    configure_community_kg_registry(factory, settings=settings)
     resources = CommunitySqlAlchemyResourceGateAdapter(db)
     for identity in ('task', 'test'):
         for resource in ('architecture', 'mockup'):
@@ -195,6 +203,7 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
     await db.close()
     register_unit_of_work_factory(CommunityUnitOfWorkFactory(factory))
     register_quality_assessment_preflight_reader(CommunitySqlAlchemyQualityAssessmentPreflightReader(factory))
+    register_validation_cycle_reader(CommunitySqlAlchemyValidationCycleReader(factory))
     server.register_mcp_authenticator(make_community_mcp_authenticator(session_factory=factory))
     server._permission_cache.clear()
     identity = 'solo'
@@ -237,6 +246,32 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
         return {'steps': steps}
 
     evidence_ledger = _ledger(tmp_path / 'external-evidence')
+    # Host-authorized external tests run against an immutable Git snapshot.
+    # HTTP replay remains below for the stale semantic-association refusal case.
+    from okto_pulse.community.adapters.external_test_runner import register_profile, profile_root
+    project_root = tmp_path / 'procedure-project'
+    project_root.mkdir()
+    (project_root / 'procedure.py').write_text(
+        'def procedure_steps():\n    return ' + repr(steps) + '\n', encoding='utf-8')
+    (project_root / 'test_procedure.py').write_text(
+        'import unittest\nfrom procedure import procedure_steps\n'
+        'class Procedure(unittest.TestCase):\n'
+        '    def test_required_steps(self):\n'
+        '        self.assertEqual(procedure_steps(), ' + repr(steps) + ')\n', encoding='utf-8')
+
+    def git(*args):
+        return subprocess.check_output(['git', '-C', str(project_root), *args],
+            stderr=subprocess.DEVNULL).decode().strip()
+
+    git('init')
+    git('add', 'procedure.py', 'test_procedure.py')
+    git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+        'commit', '-m', 'Native procedure fixture')
+    revision = git('rev-parse', 'HEAD')
+    register_profile(root=profile_root(evidence_ledger), name='procedure',
+        workspace=str(project_root), source_ref='source-main', board_id='board',
+        spec_id='spec', scenario_id='scenario',
+        test_ids=['test_procedure.py::Procedure.test_required_steps'])
     register_test_evidence_execution_issuer(CommunityTestEvidenceExecutionIssuer(
         ledger=evidence_ledger, executor=CommunityHttpManifestExecutor(
             base_url='http://127.0.0.1', transport=httpx.ASGITransport(app=project)),
@@ -310,14 +345,20 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
         for metric in ('confidence', 'clarity', 'assertiveness', 'decidability', 'ambiguity'):
             metrics[metric] = 0 if metric == 'ambiguity' else 95
             metrics[metric + '_justification'] = 'Inspected observable requirements, linked criteria and explicit task allocations'
-        await review_call(client, 'okto_pulse_submit_spec_validation', **scope, **fence, **metrics, recommendation='approve')
-        await review_call(client, 'okto_pulse_submit_spec_evaluation', **scope,
+        cycle = await review_call(client, 'okto_pulse_get_spec_validation_cycle', **scope,
+            include_planning=True)
+        decomposition = dict(
             breakdown_completeness=95, breakdown_justification='All requirements have explicit task contributions',
             granularity=95, granularity_justification='Implementation and verification are separately allocated',
             dependency_coherence=95, dependency_justification='No unresolved dependency is required for this procedure',
             test_coverage_quality=95, test_coverage_justification='The procedure scenario covers the observable criterion',
             overall_score=95, overall_justification='The complete plan is executable with explicit proof obligations',
             recommendation='approve')
+        conclusion = await review_call(client, 'okto_pulse_submit_spec_validation', **scope,
+            **fence, **metrics, recommendation='approve', decomposition=decomposition,
+            idempotency_key='solo-planning-conclusion',
+            expected_planning_manifest=cycle['planning_manifest'])
+        assert conclusion['planning_result'] == 'ready', conclusion
         async with factory() as reader:
             current = await reader.get(Spec, 'spec')
             assert current.status == 'validated'
@@ -341,14 +382,16 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
             assert not list(await reader.scalars(select(CardDeliveryEvidenceRecordRow).where(
                 CardDeliveryEvidenceRecordRow.kind.in_(['implementation', 'test']))))
         async with factory() as writer:
-            await seed_external_implementation(writer)
+            await seed_external_implementation(writer, revision)
         resume = await call(client, 'okto_pulse_get_delivery_evidence', **scope, card_id='task', view='resume')
         report = dict(contract_version='card-delivery-report/v1', expected_card_status='in_progress',
             batch=dict(contract_version='card-delivery-batch/v1', expected_card_version=resume['card_version'],
                 expected_spec_edition=resume['edition'], expected_delivery_revision=resume['delivery_revision'],
                 idempotency_key='solo-report', entries=[dict(client_ref='implementation', kind='implementation',
                     execution_id='execution', justification='Procedure implementation at the accepted revision',
-                    bindings=[dict(obligation_ref=ref, contribution='complete') for ref in ('fr:fr', 'br:br', 'ac:ac-procedure', 'decision:decision')])]),
+                    # Decision verification derives from its authored fr:fr
+                    # link; it is not a second implementation/test obligation.
+                    bindings=[dict(obligation_ref=ref, contribution='complete') for ref in ('fr:fr', 'br:br', 'ac:ac-procedure')])]),
             report=dict(status='validation', conclusion='Procedure view displays every required step', completeness=100,
                 completeness_justification='All allocated implementation is present', drift=0,
                 drift_justification='Matches the approved procedure scope'))
@@ -365,7 +408,12 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
         # T07 in the same continuous flow: accepted implementation and task
         # review still cannot replace the independent test-phase evidence.
         refused = await client.call_tool('okto_pulse_move_spec', {**scope, 'status': 'done'}, raise_on_error=False)
-        assert 'delivery_test_result_missing' in str(refused), refused.content
+        refusal = json.loads(refused.content[0].text)
+        assert refused.is_error and refusal['error_code'] == 'delivery_evidence_incomplete', refusal
+        readiness = await call(client, 'okto_pulse_get_delivery_evidence', **scope, view='readiness')
+        assert readiness['implementation']['percent'] == 100
+        assert readiness['verification']['percent'] == 0
+        assert 'verification_not_run' in json.dumps(readiness), json.dumps(readiness)
         async with factory() as reader:
             current = await reader.get(Spec, 'spec')
             assert current.status == 'in_progress'
@@ -377,9 +425,9 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
         for state in ('started', 'in_progress'):
             await call(client, 'okto_pulse_move_card', board_id='board', card_id='test', status=state)
         executed = await call(client, 'okto_pulse_execute_test_scenario_evidence', **scope,
-            scenario_id='scenario', status='passed', replay=json.dumps({'description': 'Verify every procedure step',
-                'steps': [{'name': 'procedure', 'path': '/procedure', 'expected_status': 200,
-                    'assertions': [{'name': 'all-required-steps', 'kind': 'json_equals', 'path': 'steps', 'expected': steps}]}]}))
+            scenario_id='scenario', status='passed',
+            replay=json.dumps({'runner_ref': 'procedure', 'revision': revision}))
+        assert executed['evidence']['execution_attestation']['execution_basis']['revision'] == revision
         await call(client, 'okto_pulse_update_test_scenario_status', **scope,
             scenario_id='scenario', status='passed', evidence=json.dumps(executed['evidence']))
         resume_test = await call(client, 'okto_pulse_get_delivery_evidence', **scope, card_id='test', view='resume')
@@ -388,8 +436,8 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
                 expected_spec_edition=resume_test['edition'], expected_delivery_revision=resume_test['delivery_revision'],
                 idempotency_key='solo-test-report', entries=[dict(client_ref='test-proof', kind='test',
                     scenario_id='scenario', implementation_ids=[delivered['entries'][0]['id']],
-                    obligation_refs=['fr:fr', 'br:br', 'ac:ac-procedure', 'decision:decision'],
-                    justification='Authenticated GET replay verifies all required procedure steps')]),
+                    obligation_refs=['fr:fr', 'br:br', 'ac:ac-procedure'],
+                    justification='Authenticated external test verifies every step at the implemented revision')]),
             report=dict(status='done', conclusion='Procedure verification passed', completeness=100,
                 completeness_justification='All assigned observable assertions passed', drift=0,
                 drift_justification='Within the planned verification scope'))

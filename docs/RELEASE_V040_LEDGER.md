@@ -15,6 +15,44 @@ repositories v0.4.0. No branch-protection bypass or failing-gate exemption.
 
 ## Qualification corrections
 
+### Shared access watcher and native workflow qualification
+
+PR #117 review identified a shared revision batch that treated one denied Spec
+as loss of access to every subscribed Card. Refused 403/404 batches now isolate
+the denied subjects; 401 still clears the authenticated session. CardModal
+rechecks its own read authority before closing. Scope, authority consistency,
+cancellation and technical-failure checks remain enforced.
+
+Validation: 18 watcher/hook tests and 95 CardModal tests pass; targeted ESLint,
+TypeScript and production build pass. Regenerated the packaged SPA. Browser
+inspection with isolated mocked API confirmed that revoking Spec access keeps
+the Card and its unsaved title visible, while revoking Card access closes the
+modal. Screenshots: `output/playwright/release-spec-denied-card-retained.png`
+and `release-card-denied-modal-closed.png` (local evidence, not release assets).
+Unimplemented mock endpoints were refused; this was not a backend E2E claim.
+
+CI 38865739572 stopped at the resume/tick race's two-second handoff wait.
+All 24 coordination tests passed unchanged in the local reproduction. The two
+handoff fixtures now use bounded scheduling deadlines (10s admission, 30s
+release); writer-latency assertions, exclusion and zero-effect checks remain.
+
+The diagnostic tail exposed stale full-flow fixtures: planning submission lacked
+the current manifest/idempotency contract, Decision references were still sent
+as standalone implementation/test obligations, and failure causes were read
+from the compact closeout error instead of readiness. Updated the test to read
+the native validation cycle, submit both independent assessments atomically,
+and follow the public readiness remediation. Projection fixtures now initialize
+native storage by default and register the actual structured/architecture ports;
+the raw SQL seed explicitly initializes project_structure_revision to zero.
+All eight Draft-to-Done variants pass (four classification modes and four
+direct flows, including changed criterion links). They now use an actual scoped
+external unittest runner at the exact Git revision of the implementation fixture.
+Readiness proves 100% implementation / 0% verification before the run; the Spec
+remains blocked until authenticated verification. All 42 delivery/execution
+integration tests pass. The two Learning lifecycle cases and native chronology/
+event-order regressions pass; the broader projection suite is still running.
+No production governance gate was changed.
+
 - Core permission manifest omitted `get_spec_validation_cycle`; registered its
   existing Board/Spec/component visibility without changing runtime authority.
   Updated exact counts to 285 tools / 282 policies / 3 exemptions.

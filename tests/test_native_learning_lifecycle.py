@@ -42,6 +42,10 @@ def configure_graph(factory, tmp_path):
     from okto_pulse.community.adapters.graph_backend_binding import CommunityGraphBackendBindingStore
     from okto_pulse.community.adapters.sqlalchemy_consolidation import CommunitySqlAlchemyConsolidationPersistence
     from okto_pulse.community.adapters.sqlalchemy_canonical_debt import CommunitySqlAlchemyCanonicalDebtStore
+    from okto_pulse.community.adapters.sqlalchemy_structured_spec import CommunitySqlAlchemyStructuredSpecStore
+    from okto_pulse.core.ports.structured_spec import register_structured_spec_store
+    from okto_pulse.community.adapters.sqlalchemy_architecture_persistence import CommunitySqlAlchemyArchitecturePersistence
+    from okto_pulse.core.ports.architecture_persistence import register_architecture_persistence_port
     from logical_transfer_matrix_support import one_node_corpus, seed_generation
 
     settings = CommunitySettings(data_dir=str(tmp_path / "runtime"), kg_base_dir=str(tmp_path / "kg"),
@@ -51,6 +55,8 @@ def configure_graph(factory, tmp_path):
     register_coordination_providers(write_lock_port=build_root_bound_community_write_lock_port(tmp_path / "kg"))
     register_consolidation_persistence_port(CommunitySqlAlchemyConsolidationPersistence())
     register_canonical_debt_store(CommunitySqlAlchemyCanonicalDebtStore())
+    register_structured_spec_store(CommunitySqlAlchemyStructuredSpecStore())
+    register_architecture_persistence_port(CommunitySqlAlchemyArchitecturePersistence())
     from okto_pulse.core.ports.kg_health import register_kg_health_read_port
     from okto_pulse.community.adapters.sqlalchemy_kg_health import CommunitySqlAlchemyKGHealthReader
     register_kg_health_read_port(CommunitySqlAlchemyKGHealthReader())
