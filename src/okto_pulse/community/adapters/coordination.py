@@ -242,6 +242,7 @@ class CommunityLocalWriteLockPort(WriteLockPort):
         self,
         *,
         kg_base_dir: str | os.PathLike[str] | None = None,
+        persistent_kernel_fence: bool = False,
     ) -> None:
         self._async_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._sync_locks: dict[tuple[str, str], threading.Lock] = {}
@@ -250,6 +251,10 @@ class CommunityLocalWriteLockPort(WriteLockPort):
         self._single_writer_process_mutexes: dict[
             str, _InProcessBoardRecoveryMutex
         ] = {}
+        self._single_writer_kernel_holds: dict[
+            tuple[str, str, str], _PersistentKernelFileMutex
+        ] = {}
+        self._persistent_kernel_fence = persistent_kernel_fence
         self._registry_lock = threading.Lock()
         self._bound_kg_base_dir = self._canonical_bound_kg_base_dir(kg_base_dir)
 
@@ -375,13 +380,84 @@ class CommunityLocalWriteLockPort(WriteLockPort):
 
     def reset_for_tests(self) -> None:
         with self._registry_lock:
+            kernel_holds = tuple(self._single_writer_kernel_holds.values())
+            self._single_writer_kernel_holds.clear()
             self._async_locks.clear()
             self._sync_locks.clear()
             self._async_handles.clear()
             self._sync_handles.clear()
             self._single_writer_process_mutexes.clear()
+        for hold in kernel_holds:
+            hold.__exit__(None, None, None)
 
     def acquire_single_writer_sync(
+        self,
+        *,
+        board_id: str,
+        artifact_id: str,
+        operation: str,
+        owner_id: str,
+        ttl_seconds: int,
+        admin_lane: bool = False,
+        base_dir_hint: str | None = None,
+        board_dir_resolver: Any | None = None,
+    ):
+        """Keep a kernel lock through the complete graph writer lifetime.
+
+        The manifest TTL supports crash recovery, while the persistent kernel
+        lock prevents a paused live process from being replaced as writer.
+        """
+
+        if not self._persistent_kernel_fence:
+            return self._acquire_single_writer_manifest_sync(
+                board_id=board_id, artifact_id=artifact_id,
+                operation=operation, owner_id=owner_id,
+                ttl_seconds=ttl_seconds, admin_lane=admin_lane,
+                base_dir_hint=base_dir_hint,
+                board_dir_resolver=board_dir_resolver,
+            )
+
+        board_dir = self._single_writer_board_dir(
+            board_id, base_dir_hint=base_dir_hint,
+            board_dir_resolver=board_dir_resolver,
+        )
+        path = self._single_writer_path(board_dir, artifact_id)
+        # Board erasure removes board_dir while holding this writer guard.
+        # A live Windows file handle inside that directory would make the
+        # physical deletion fail, so keep the rendezvous in its parent root.
+        kernel_name = str(uuid.uuid5(
+            uuid.NAMESPACE_URL, f"pulse:writer:{board_id}:{artifact_id}"
+        )) + ".lock"
+        hold = _PersistentKernelFileMutex(
+            board_dir.parent / ".pulse-writer-kernel" / kernel_name
+        )
+        try:
+            hold.__enter__()
+        except _SingleWriterRecoveryMutexBusy:
+            return self._single_writer_contention(path)
+        retained = False
+        try:
+            result = self._acquire_single_writer_manifest_sync(
+                board_id=board_id,
+                artifact_id=artifact_id,
+                operation=operation,
+                owner_id=owner_id,
+                ttl_seconds=ttl_seconds,
+                admin_lane=admin_lane,
+                base_dir_hint=base_dir_hint,
+                board_dir_resolver=board_dir_resolver,
+            )
+            if result.acquired and result.owner_token:
+                key = (board_id, artifact_id, result.owner_token)
+                with self._registry_lock:
+                    self._single_writer_kernel_holds[key] = hold
+                retained = True
+            return result
+        finally:
+            if not retained:
+                hold.__exit__(None, None, None)
+
+    def _acquire_single_writer_manifest_sync(
         self,
         *,
         board_id: str,
@@ -564,6 +640,41 @@ class CommunityLocalWriteLockPort(WriteLockPort):
         )
 
     def release_single_writer_sync(
+        self,
+        *,
+        board_id: str,
+        artifact_id: str,
+        owner_token: str,
+        base_dir_hint: str | None = None,
+        board_dir_resolver: Any | None = None,
+    ) -> bool:
+        if not self._persistent_kernel_fence:
+            return self._release_single_writer_manifest_sync(
+                board_id=board_id, artifact_id=artifact_id,
+                owner_token=owner_token, base_dir_hint=base_dir_hint,
+                board_dir_resolver=board_dir_resolver,
+            )
+        key = (board_id, artifact_id, owner_token)
+        with self._registry_lock:
+            hold = self._single_writer_kernel_holds.get(key)
+        if hold is None:
+            return False
+        try:
+            return self._release_single_writer_manifest_sync(
+                board_id=board_id,
+                artifact_id=artifact_id,
+                owner_token=owner_token,
+                base_dir_hint=base_dir_hint,
+                board_dir_resolver=board_dir_resolver,
+            )
+        finally:
+            # Board erasure can remove the manifest and its parent directory
+            # under this very guard. The kernel hold must still end on exit.
+            with self._registry_lock:
+                self._single_writer_kernel_holds.pop(key, None)
+            hold.__exit__(None, None, None)
+
+    def _release_single_writer_manifest_sync(
         self,
         *,
         board_id: str,
@@ -1091,11 +1202,13 @@ def build_root_bound_community_write_lock_port(
     explicitly rooted port instead of consulting a registry after composition.
     """
 
-    return CommunityLocalWriteLockPort(kg_base_dir=kg_base_dir)
+    return CommunityLocalWriteLockPort(
+        kg_base_dir=kg_base_dir, persistent_kernel_fence=True
+    )
 
 
 _lease_provider = CommunityLocalLeaseProvider()
-_write_lock_port = CommunityLocalWriteLockPort()
+_write_lock_port = CommunityLocalWriteLockPort(persistent_kernel_fence=True)
 _claim_repository = CommunitySqlAlchemyClaimRepository()
 
 

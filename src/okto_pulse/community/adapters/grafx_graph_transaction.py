@@ -7,6 +7,7 @@ resolver so one scope cannot accidentally close a handle shared by readers.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import re
@@ -15,7 +16,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import Any, NoReturn, Self
 
-from okto_grafx import Database, Timestamp, Transaction, VectorValue
+from okto_grafx import CommitId, Database, Timestamp, Transaction, VectorValue
 from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphCapabilityUnavailable,
     GraphError,
@@ -358,6 +359,7 @@ class _GrafxTransactionScope:
         relationship_pairs: tuple[RelationshipPair, ...],
         relationship_table_resolver: RelationshipTableResolver,
         on_terminal: ScopeTerminalCallback | None = None,
+        start_commit_token: str | None = None,
     ) -> None:
         self._board_id = board_id
         self._database = database
@@ -367,6 +369,7 @@ class _GrafxTransactionScope:
         self._relationship_pairs = relationship_pairs
         self._relationship_table_resolver = relationship_table_resolver
         self._on_terminal = on_terminal
+        self.start_commit_token = start_commit_token
         # One public catalog snapshot per scope.  ``Database.catalog`` builds a complete,
         # linearized copy of the catalog on every access and its ``CatalogView`` answers
         # ``table()``/``space()`` by linear scan; a single Pulse operation used to pay that
@@ -3625,9 +3628,15 @@ class CommunityGrafxGraphTransaction:
         else:
             self._relationship_table_resolver = _default_relationship_table
 
-    async def begin(self, board_id: str) -> _GrafxTransactionScope:
+    async def begin(
+        self, board_id: str, *, operation_id: str | None = None
+    ) -> _GrafxTransactionScope:
         if type(board_id) is not str or not board_id:
             raise ValueError("board_id must be non-empty text")
+        if operation_id is not None and (
+            type(operation_id) is not str or not operation_id or len(operation_id) > 255
+        ):
+            raise ValueError("operation_id must be non-empty text of at most 255 characters")
         self._revalidate_fence(board_id, "begin")
         try:
             resolved = self._database_resolver(board_id)
@@ -3638,9 +3647,26 @@ class CommunityGrafxGraphTransaction:
             raise mapped from exc
         database, release = _resolved_database(resolved)
         transaction = None
+        start_commit_token = None
         try:
+            if operation_id is not None:
+                # A recoverable operation requires native commit provenance.
+                # Both upgrades are one-way and idempotent in pinned Grafx;
+                # begin_board_write refuses a metadata-free fallback below.
+                if not isinstance(database, Database):
+                    raise GraphCapabilityUnavailable(
+                        "projection_commit_history_requires_native_grafx"
+                    )
+                database.ensure_identity_indexes()
+                database.enable_commit_history()
+                history = database.commit_history(limit=1)
+                start_commit_token = CommitId(
+                    history.database_uuid, history.read_sequence
+                ).to_token()
             from okto_pulse.community.adapters.grafx_commit_provenance import begin_board_write
-            transaction = begin_board_write(database, board_id, "graph_transaction")
+            transaction = begin_board_write(
+                database, board_id, "graph_transaction", operation_id=operation_id
+            )
         except BaseException as exc:
             # The pin was taken before this ran, so it is this path's job to
             # give it back -- but only if the engine left no transaction behind.
@@ -3699,7 +3725,31 @@ class CommunityGrafxGraphTransaction:
             relationship_pairs=self._relationship_pairs,
             relationship_table_resolver=self._relationship_table_resolver,
             on_terminal=on_terminal,
+            start_commit_token=start_commit_token,
         )
+
+    async def projection_commit_receipt(
+        self, board_id: str, operation_id: str, *, after: str
+    ) -> str | None:
+        """Inspect a pinned graph in one stable native history snapshot."""
+
+        def inspect() -> str | None:
+            from okto_pulse.community.adapters.grafx_commit_provenance import (
+                projection_commit_receipt,
+            )
+
+            resolved = self._database_resolver(board_id)
+            database, release = _resolved_database(resolved)
+            try:
+                return projection_commit_receipt(
+                    database, board_id=board_id, operation_id=operation_id,
+                    after=after,
+                )
+            finally:
+                if release is not None:
+                    release()
+
+        return await asyncio.to_thread(inspect)
 
 
 __all__ = ["CommunityGrafxGraphTransaction"]

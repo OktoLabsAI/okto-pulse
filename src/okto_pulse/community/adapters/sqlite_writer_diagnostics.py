@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 def install_sqlite_writer_diagnostics(engine) -> None:
-    """Track successful DML until transaction end; never log SQL or values.
+    """Track writer ownership until transaction end; never log SQL or values.
 
     This is diagnostic evidence of a write transaction, not a global lock
     oracle: other processes/engines and writes hidden inside CTEs are not tracked.
@@ -28,7 +28,14 @@ def install_sqlite_writer_diagnostics(engine) -> None:
     def after_write(conn, cursor, statement, parameters, context, many):
         tokens = statement.lstrip().split(None, 1)
         operation = tokens[0].upper() if tokens else ""
-        if operation not in {"INSERT", "UPDATE", "DELETE", "REPLACE"}:
+        if operation == "BEGIN":
+            # HTTP writes explicitly reserve the writer before their first
+            # SELECT. Starting at first DML hides that potentially long span.
+            mode = tokens[1].strip().upper().rstrip(";") if len(tokens) > 1 else ""
+            if mode not in {"IMMEDIATE", "EXCLUSIVE"}:
+                return
+            operation = f"BEGIN {mode}"
+        elif operation not in {"INSERT", "UPDATE", "DELETE", "REPLACE"}:
             return
         key = id(conn)
         if key in active:

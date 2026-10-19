@@ -92,5 +92,5 @@ def test_r13_sqlite_pragma_union_on_real_connection(tmp_path) -> None:
 
     assert journal_mode.lower() == "wal"
     assert busy_timeout == 30000
-    assert synchronous == 1
+    assert synchronous == 2
     assert foreign_keys == 1

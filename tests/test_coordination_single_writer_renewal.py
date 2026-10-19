@@ -736,26 +736,31 @@ def test_release_refuses_foreign_and_repeated_tokens_but_cleans_exact_expired(
 def test_expired_predecessor_release_cannot_remove_reclaimed_successor(
     tmp_path: Path,
 ) -> None:
-    port = CommunityLocalWriteLockPort()
+    port = CommunityLocalWriteLockPort(persistent_kernel_fence=True)
     predecessor = _acquire(port, tmp_path, ttl_seconds=1)
     time.sleep(1.05)
-    successor = _acquire(port, tmp_path, ttl_seconds=30)
-    assert successor.stale_recovered is True
-    successor_manifest = _manifest(port, tmp_path)
-    assert successor_manifest is not None
-
-    assert (
-        port.release_single_writer_sync(
-            board_id=_BOARD_ID,
-            artifact_id=_ARTIFACT_ID,
-            owner_token=str(predecessor.owner_token),
-            base_dir_hint=str(tmp_path),
-        )
-        is False
+    denied = port.acquire_single_writer_sync(
+        board_id=_BOARD_ID,
+        artifact_id=_ARTIFACT_ID,
+        operation="renewal-test",
+        owner_id="successor",
+        ttl_seconds=30,
+        base_dir_hint=str(tmp_path),
     )
+    assert denied.acquired is False
+    predecessor_manifest = _manifest(port, tmp_path)
+    assert predecessor_manifest is not None
     current = _manifest(port, tmp_path)
     assert current is not None
-    assert current.to_disk_dict() == successor_manifest.to_disk_dict()
+    assert current.to_disk_dict() == predecessor_manifest.to_disk_dict()
+    assert port.release_single_writer_sync(
+        board_id=_BOARD_ID,
+        artifact_id=_ARTIFACT_ID,
+        owner_token=str(predecessor.owner_token),
+        base_dir_hint=str(tmp_path),
+    )
+    successor = _acquire(port, tmp_path, ttl_seconds=30)
+    assert successor.acquired
     assert port.release_single_writer_sync(
         board_id=_BOARD_ID,
         artifact_id=_ARTIFACT_ID,
@@ -764,6 +769,27 @@ def test_expired_predecessor_release_cannot_remove_reclaimed_successor(
     )
     assert _manifest(port, tmp_path) is None
     _assert_no_debris(_board_dir(port, tmp_path))
+
+
+def test_persistent_kernel_hold_allows_board_directory_erasure(tmp_path: Path) -> None:
+    import shutil
+
+    port = CommunityLocalWriteLockPort(persistent_kernel_fence=True)
+    acquired = _acquire(port, tmp_path, ttl_seconds=30)
+    board_dir = _board_dir(port, tmp_path)
+    kernel_dir = board_dir.parent / ".pulse-writer-kernel"
+    assert kernel_dir.is_dir()
+    assert any(kernel_dir.iterdir())
+
+    shutil.rmtree(board_dir)
+    assert not board_dir.exists()
+    assert port.release_single_writer_sync(
+        board_id=_BOARD_ID,
+        artifact_id=_ARTIFACT_ID,
+        owner_token=str(acquired.owner_token),
+        base_dir_hint=str(tmp_path),
+    ) is False
+    assert port._single_writer_kernel_holds == {}
 
 
 def test_replace_denial_exhaustion_is_bounded_and_raises_the_original(

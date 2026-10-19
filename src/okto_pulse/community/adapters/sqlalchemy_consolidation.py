@@ -1517,6 +1517,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
         source: str,
         generation: int,
         delete_event_id: str | None,
+        reserve_writer: bool = True,
     ) -> bool:
         """Atomically re-check claim ownership and its deletion fence."""
 
@@ -1578,15 +1579,205 @@ class CommunitySqlAlchemyConsolidationPersistence:
         # statement, and keeps the delete UoW serialized until the worker ACK
         # commits.  A concurrent delete that already won makes the predicate
         # return no row (or the write upgrade fail), both fail-closed outcomes.
-        statement = (
-            update(ConsolidationQueue)
-            .where(*claim_predicates, deletion_fence)
-            .values(claim_token=ConsolidationQueue.claim_token)
-            .returning(ConsolidationQueue.id)
-            .execution_options(synchronize_session=False)
-        )
+        if reserve_writer:
+            statement = (
+                update(ConsolidationQueue)
+                .where(*claim_predicates, deletion_fence)
+                .values(claim_token=ConsolidationQueue.claim_token)
+                .returning(ConsolidationQueue.id)
+                .execution_options(synchronize_session=False)
+            )
+        else:
+            # This is only a preflight. The short prepared-operation write
+            # repeats the CAS before the native graph transaction can commit.
+            statement = select(ConsolidationQueue.id).where(
+                *claim_predicates, deletion_fence
+            )
         matched = (await context.execute(statement)).scalar_one_or_none()
         return matched is not None
+
+    async def prepare_projection_operation(
+        self,
+        context: Any,
+        *,
+        operation_id: str,
+        entry_id: str,
+        claim_token: str,
+        board_id: str,
+        artifact_type: str,
+        artifact_id: str,
+        source: str,
+        graph_after: str,
+        output: dict[str, Any],
+    ) -> bool:
+        """Stage the output before graph commit; caller commits immediately.
+
+        The existing queue CAS is used only for this brief SQLite transaction.
+        Internal operation events have no dispatcher executions and are retained
+        independently of subsequent queue coalescing.
+        """
+
+        try:
+            parsed_id = uuid.UUID(operation_id)
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValueError("projection_operation_id_invalid") from exc
+        if str(parsed_id) != operation_id or type(output) is not dict or not graph_after:
+            raise ValueError("projection_operation_payload_invalid")
+        # Round-trip before taking a writer slot; arbitrary ORM / graph objects
+        # cannot become an unrecoverable JSON journal entry.
+        payload = json.loads(json.dumps({
+            "protocol": 1,
+            "operation_id": operation_id,
+            "queue_id": entry_id,
+            "claim_token": claim_token,
+            "artifact_type": artifact_type,
+            "artifact_id": artifact_id,
+            "source": source,
+            "graph_after": graph_after,
+            "output": output,
+        }, sort_keys=True, separators=(",", ":")))
+        if not await self.queue_claim_is_current_and_unfenced(
+            context,
+            entry_id=entry_id,
+            claim_token=claim_token,
+            board_id=board_id,
+            artifact_type=artifact_type,
+            artifact_id=artifact_id,
+            work_kind="consolidate",
+            source=source,
+            generation=0,
+            delete_event_id=None,
+        ):
+            return False
+        result = await context.execute(
+            sqlite_insert(DomainEventRow).values(
+                id=operation_id,
+                event_type="kg.projection.operation.prepared",
+                board_id=board_id,
+                actor_type="system",
+                payload_json=payload,
+            ).on_conflict_do_nothing(index_elements=[DomainEventRow.id])
+        )
+        if int(result.rowcount or 0) == 0:
+            prior = await context.get(DomainEventRow, operation_id)
+            if (prior is None or prior.event_type != "kg.projection.operation.prepared"
+                    or prior.board_id != board_id or prior.payload_json != payload):
+                raise ValueError("projection_operation_identity_conflict")
+        return True
+
+    async def finalize_projection_operation(
+        self,
+        context: Any,
+        *,
+        operation_id: str,
+        board_id: str,
+        graph_commit: str,
+    ) -> None:
+        """Stage a deterministic completion event in the caller's ACK UOW."""
+
+        if not graph_commit:
+            raise ValueError("projection_graph_commit_required")
+        prepared = await context.get(DomainEventRow, operation_id)
+        if (prepared is None or prepared.board_id != board_id
+                or prepared.event_type != "kg.projection.operation.prepared"):
+            raise ValueError("projection_prepared_operation_missing")
+        marker_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"pulse:projection:final:{operation_id}"))
+        payload = {"protocol": 1, "operation_id": operation_id,
+                   "graph_commit": graph_commit}
+        result = await context.execute(
+            sqlite_insert(DomainEventRow).values(
+                id=marker_id,
+                event_type="kg.projection.operation.finalized",
+                board_id=board_id,
+                actor_type="system",
+                payload_json=payload,
+            ).on_conflict_do_nothing(index_elements=[DomainEventRow.id])
+        )
+        if int(result.rowcount or 0) == 0:
+            prior = await context.get(DomainEventRow, marker_id)
+            if (prior is None or prior.event_type != "kg.projection.operation.finalized"
+                    or prior.board_id != board_id or prior.payload_json != payload):
+                raise ValueError("projection_finalization_identity_conflict")
+
+    async def abandon_projection_operation(
+        self, context: Any, *, operation_id: str, board_id: str
+    ) -> None:
+        prepared = await context.get(DomainEventRow, operation_id)
+        if (prepared is None or prepared.board_id != board_id
+                or prepared.event_type != "kg.projection.operation.prepared"):
+            raise ValueError("projection_prepared_operation_missing")
+        marker_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"pulse:projection:absent:{operation_id}"))
+        await context.execute(
+            sqlite_insert(DomainEventRow).values(
+                id=marker_id,
+                event_type="kg.projection.operation.absent",
+                board_id=board_id,
+                actor_type="system",
+                payload_json={"protocol": 1, "operation_id": operation_id},
+            ).on_conflict_do_nothing(index_elements=[DomainEventRow.id])
+        )
+
+    async def list_unsettled_projection_operations(
+        self, context: Any, *, board_id: str | None = None, limit: int = 100
+    ) -> tuple[dict[str, Any], ...]:
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("projection_operation_limit_invalid")
+        marker = aliased(DomainEventRow)
+        settled = exists(select(1).where(
+            marker.board_id == DomainEventRow.board_id,
+            marker.event_type.in_((
+                "kg.projection.operation.finalized",
+                "kg.projection.operation.absent",
+            )),
+            marker.payload_json["operation_id"].as_string() == DomainEventRow.id,
+        ))
+        statement = select(DomainEventRow).where(
+            DomainEventRow.event_type == "kg.projection.operation.prepared",
+            ~settled,
+        )
+        if board_id is not None:
+            statement = statement.where(DomainEventRow.board_id == board_id)
+        rows = (await context.execute(statement.order_by(
+            DomainEventRow.occurred_at, DomainEventRow.id
+        ).limit(limit))).scalars().all()
+        return tuple({"operation_id": row.id, "board_id": row.board_id,
+                      **dict(row.payload_json)} for row in rows)
+
+    async def has_unsettled_projection_operation(
+        self,
+        context: Any,
+        *,
+        board_id: str,
+        artifact_type: str | None = None,
+        artifact_id: str | None = None,
+    ) -> bool:
+        marker = aliased(DomainEventRow)
+        settled = exists(select(1).where(
+            marker.board_id == DomainEventRow.board_id,
+            marker.event_type.in_((
+                "kg.projection.operation.finalized",
+                "kg.projection.operation.absent",
+            )),
+            marker.payload_json["operation_id"].as_string() == DomainEventRow.id,
+        ))
+        predicates = [
+            DomainEventRow.board_id == board_id,
+            DomainEventRow.event_type == "kg.projection.operation.prepared",
+            ~settled,
+        ]
+        if artifact_type is not None:
+            predicates.append(
+                DomainEventRow.payload_json["artifact_type"].as_string()
+                == artifact_type
+            )
+        if artifact_id is not None:
+            predicates.append(
+                DomainEventRow.payload_json["artifact_id"].as_string()
+                == artifact_id
+            )
+        return (await context.execute(select(DomainEventRow.id).where(
+            *predicates
+        ).limit(1))).scalar_one_or_none() is not None
 
     async def ack_claimed_queue_entry(
         self,

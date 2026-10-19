@@ -213,6 +213,56 @@ def test_opt_in_provenance_does_not_retry_other_failures():
     db.begin.assert_called_once()
 
 
+def test_projection_operation_requires_native_commit_receipt():
+    from unittest.mock import Mock
+    from okto_grafx import Database
+    from okto_grafx.errors import GrafxUnsupportedOperation
+    from okto_pulse.community.adapters.grafx_commit_provenance import begin_board_write
+
+    db = Mock(spec=Database)
+    db.begin.side_effect = GrafxUnsupportedOperation(
+        "history disabled", field="commit_catalog", remedy="enable_commit_history"
+    )
+    with pytest.raises(GrafxUnsupportedOperation):
+        begin_board_write(db, BOARD_ID, "graph_transaction", operation_id="op-42")
+    db.begin.assert_called_once()
+    metadata = db.begin.call_args.kwargs["metadata"]
+    assert metadata.correlation_id == "op-42"
+    assert metadata.attributes["board_id"] == BOARD_ID
+
+
+def test_projection_commit_receipt_survives_native_reopen(tmp_path):
+    from okto_grafx import CommitId, connect
+    from okto_pulse.community.adapters.grafx_commit_provenance import (
+        begin_board_write,
+        projection_commit_receipt,
+    )
+
+    path = tmp_path / "projection-receipt"
+    with connect(path, page_size=4096) as db:
+        db.ensure_identity_indexes()
+        db.enable_commit_history()
+        baseline = db.commit_history(limit=1)
+        after = CommitId(baseline.database_uuid, baseline.read_sequence).to_token()
+        with begin_board_write(
+            db, BOARD_ID, "graph_transaction", operation_id="projection-op-1"
+        ) as transaction:
+            transaction.execute(
+                "CREATE NODE TABLE ProjectionReceiptProbe(id STRING, PRIMARY KEY(id))"
+            )
+        expected = projection_commit_receipt(
+            db, board_id=BOARD_ID, operation_id="projection-op-1", after=after
+        )
+        assert expected is not None
+        assert projection_commit_receipt(
+            db, board_id=BOARD_ID, operation_id="missing", after=after
+        ) is None
+    with connect(path, page_size=4096) as reopened:
+        assert projection_commit_receipt(
+            reopened, board_id=BOARD_ID, operation_id="projection-op-1", after=after
+        ) == expected
+
+
 def test_visible_payload_memory_bound_is_a_refusal(observed, monkeypatch):
     from okto_pulse.community.adapters import grafx_observations as module
 

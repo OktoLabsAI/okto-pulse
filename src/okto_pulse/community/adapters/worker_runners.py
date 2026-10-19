@@ -368,6 +368,16 @@ class ConsolidationRunner:
             await asyncio.gather(*dangling, return_exceptions=True)
         self._tasks.clear()
         self._shutdown_drained = False
+        recover_projections = getattr(
+            self.processor, "recover_projection_operations", None
+        )
+        if callable(recover_projections):
+            try:
+                await recover_projections()
+            except Exception:
+                # An expired manifest can remain after a crash until its TTL.
+                # Periodic recovery retries while unrelated boards keep moving.
+                logger.exception("consolidation projection recovery deferred")
         await self.processor.recover_stale_claims()
         self._notify_loop = asyncio.get_running_loop()
         self._wake_event = asyncio.Event()
@@ -428,6 +438,11 @@ class ConsolidationRunner:
             while self._running:
                 await asyncio.sleep(self.recovery_interval_seconds)
                 try:
+                    recover_projections = getattr(
+                        self.processor, "recover_projection_operations", None
+                    )
+                    if callable(recover_projections):
+                        await recover_projections()
                     await self.processor.recover_stale_claims()
                 except asyncio.CancelledError:
                     raise
