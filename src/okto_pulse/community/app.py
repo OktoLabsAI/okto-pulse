@@ -560,6 +560,7 @@ def create_app(
     from fastapi.responses import JSONResponse
 
     from okto_pulse.core.services.design_system import DesignSystemError
+    from okto_pulse.core.services import ProjectionOperationInFlight
     from okto_pulse.core.domain.human_validation_cycle import (
         LifecycleTransitionConflictError,
         SubjectEditRequiresDraftError,
@@ -571,6 +572,20 @@ def create_app(
     @app.exception_handler(DesignSystemError)
     async def _design_system_error_handler(_request, exc: DesignSystemError):
         return JSONResponse(status_code=exc.status_code, content=exc.to_dict())
+
+    @app.exception_handler(ProjectionOperationInFlight)
+    async def _projection_operation_in_flight_handler(
+        _request, exc: ProjectionOperationInFlight
+    ):
+        return JSONResponse(
+            status_code=409,
+            content={"code": "projection_operation_in_flight",
+                     "message": "A graph projection is finishing; retry this deletion.",
+                     "retryable": True,
+                     "board_id": exc.board_id,
+                     "artifact_type": exc.artifact_type,
+                     "artifact_id": exc.artifact_id},
+        )
 
     @app.exception_handler(SubjectEditRequiresDraftError)
     async def _subject_edit_requires_draft_handler(

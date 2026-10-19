@@ -115,6 +115,7 @@ def build_community_worker_registry(
         heartbeat_seconds=kg_queue_heartbeat_seconds,
         clock=clock,
         blocking_execution=consolidation_blocking_execution,
+        durable_projection_protocol=True,
     )
     consolidation_runner = ConsolidationRunner(
         consolidation_processor,

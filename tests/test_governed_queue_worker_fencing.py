@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -20,6 +21,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ArtifactDeletionTombstone,
     Board,
     ConsolidationQueue,
+    DomainEventRow,
 )
 from okto_pulse.core.ports.consolidation import (
     ConsolidationClaimScope,
@@ -57,6 +59,401 @@ async def test_worker_fence_blocks_investigation_on_an_unrelated_board(queue_sto
         await worker.rollback()
         assert (await author.execute(admission, {"board_id": "unrelated-board"})).rowcount == 1
         await author.rollback()
+
+
+@pytest.mark.asyncio
+async def test_prepared_projection_releases_writer_and_survives_claim_replacement(queue_store):
+    factory, adapter = queue_store
+    operation_id = "80f7de89-6d3b-48c4-b00c-7bf6c764e47a"
+    async with factory() as seed:
+        seed.add(Board(realm_id="local", id="projection-other-board",
+                       name="Other", owner_id="tester"))
+        seed.add(_queue_row(row_id="projection-queue", work_kind="consolidate",
+                            generation=0, delete_event_id=None,
+                            claim_token="projection-claim"))
+        await seed.commit()
+    async with factory() as worker, factory() as author:
+        assert await adapter.prepare_projection_operation(
+            worker, operation_id=operation_id, entry_id="projection-queue",
+            claim_token="projection-claim", board_id=BOARD_ID,
+            artifact_type="spec", artifact_id=ARTIFACT_ID, source="test",
+            graph_after="baseline-token", output={"session_id": "session-1"},
+        )
+        await worker.commit()
+        pending = await adapter.list_unsettled_projection_operations(
+            worker, board_id=BOARD_ID
+        )
+        assert len(pending) == 1
+        assert pending[0]["operation_id"] == operation_id
+        assert await adapter.has_unsettled_projection_operation(
+            worker, board_id=BOARD_ID, artifact_type="spec", artifact_id=ARTIFACT_ID
+        )
+        await worker.rollback()
+        await author.execute(text("PRAGMA busy_timeout=50"))
+        result = await author.execute(text(
+            "UPDATE boards SET id = id WHERE id = 'projection-other-board'"
+        ))
+        assert result.rowcount == 1
+        await author.commit()
+        row = await worker.get(ConsolidationQueue, "projection-queue")
+        row.status = "pending"
+        row.claim_token = None
+        await worker.commit()
+        await adapter.finalize_projection_operation(
+            worker, operation_id=operation_id, board_id=BOARD_ID,
+            graph_commit="durable-graph-commit",
+        )
+        await worker.commit()
+    async with factory() as reopened:
+        prepared = await reopened.get(DomainEventRow, operation_id)
+        assert prepared is not None
+        assert prepared.payload_json["output"] == {"session_id": "session-1"}
+        assert (await reopened.get(ConsolidationQueue, "projection-queue")).status == "pending"
+        events = (await reopened.execute(select(DomainEventRow).where(
+            DomainEventRow.board_id == BOARD_ID,
+            DomainEventRow.event_type == "kg.projection.operation.finalized",
+        ))).scalars().all()
+        assert len(events) == 1
+        assert events[0].payload_json["graph_commit"] == "durable-graph-commit"
+        assert not await adapter.list_unsettled_projection_operations(
+            reopened, board_id=BOARD_ID
+        )
+        assert not await adapter.has_unsettled_projection_operation(
+            reopened, board_id=BOARD_ID, artifact_type="spec", artifact_id=ARTIFACT_ID
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corruption", ["future_protocol", "identity_mismatch"])
+async def test_unknown_or_corrupt_projection_journal_blocks_recovery(
+    queue_store, corruption,
+):
+    factory, adapter = queue_store
+    operation_id = "80f7de89-6d3b-48c4-b00c-7bf6c764e47b"
+    async with factory() as db:
+        db.add(_queue_row(
+            row_id="unknown-protocol-queue", work_kind="consolidate",
+            generation=0, delete_event_id=None, claim_token="claim",
+        ))
+        await db.commit()
+        assert await adapter.prepare_projection_operation(
+            db, operation_id=operation_id, entry_id="unknown-protocol-queue",
+            claim_token="claim", board_id=BOARD_ID,
+            artifact_type="spec", artifact_id=ARTIFACT_ID, source="test",
+            graph_after="baseline-token", output={"session_id": "session-1"},
+        )
+        await db.commit()
+        event = await db.get(DomainEventRow, operation_id)
+        assert event.payload_json["projector_version"]
+        payload = dict(event.payload_json)
+        if corruption == "future_protocol":
+            payload["protocol"] = 2
+            expected = "projection_operation_protocol_incompatible"
+        else:
+            payload["operation_id"] = "different-operation"
+            expected = "projection_operation_journal_corrupt"
+        event.payload_json = payload
+        await db.commit()
+
+    async with factory() as reopened:
+        with pytest.raises(RuntimeError, match=expected):
+            await adapter.list_unsettled_projection_operations(
+                reopened, board_id=BOARD_ID,
+            )
+        with pytest.raises(RuntimeError, match=expected):
+            await adapter.finalize_projection_operation(
+                reopened, operation_id=operation_id, board_id=BOARD_ID,
+                graph_commit="native-commit-token",
+            )
+        assert await adapter.has_unsettled_projection_operation(
+            reopened, board_id=BOARD_ID,
+        )
+
+
+@pytest.mark.asyncio
+async def test_projection_preflight_does_not_reserve_sqlite_writer(queue_store):
+    factory, adapter = queue_store
+    async with factory() as seed:
+        seed.add(Board(realm_id="local", id="preflight-other-board",
+                       name="Other", owner_id="tester"))
+        seed.add(_queue_row(row_id="preflight-queue", work_kind="consolidate",
+                            generation=0, delete_event_id=None,
+                            claim_token="preflight-claim"))
+        await seed.commit()
+    async with factory() as worker, factory() as author:
+        assert await adapter.queue_claim_is_current_and_unfenced(
+            worker, entry_id="preflight-queue", claim_token="preflight-claim",
+            board_id=BOARD_ID, artifact_type="spec", artifact_id=ARTIFACT_ID,
+            work_kind="consolidate", source="test", generation=0,
+            delete_event_id=None, reserve_writer=False,
+        )
+        await author.execute(text("PRAGMA busy_timeout=50"))
+        result = await author.execute(text(
+            "UPDATE boards SET id = id WHERE id = 'preflight-other-board'"
+        ))
+        assert result.rowcount == 1
+        await author.commit()
+        await worker.rollback()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("graph_receipt, progress_kind, newer_pending", [
+    (None, "complete", False),
+    ("native-commit-token", "complete", False),
+    ("native-commit-token", "complete", True),
+    ("native-commit-token", "removal_progress", False),
+])
+async def test_prepared_projection_recovers_after_restart(
+    queue_store, monkeypatch, graph_receipt, progress_kind, newer_pending,
+):
+    from types import SimpleNamespace
+    from okto_pulse.core.application.processors import consolidation
+
+    factory, adapter = queue_store
+    operation_id = "45bd7e65-e439-4a53-abbe-d4e5364cc5ae"
+    async with factory() as db:
+        db.add(_queue_row(
+            row_id="recovery-queue", work_kind="consolidate", generation=0,
+            delete_event_id=None, claim_token="recovery-claim",
+        ))
+        await db.commit()
+        assert await adapter.prepare_projection_operation(
+            db, operation_id=operation_id, entry_id="recovery-queue",
+            claim_token="recovery-claim", board_id=BOARD_ID,
+            artifact_type="spec", artifact_id=ARTIFACT_ID, source="test",
+            graph_after="baseline-token",
+            output={"progress_kind": progress_kind, "nodes_superseded": 0},
+        )
+        await db.commit()
+        if newer_pending:
+            row = await db.get(ConsolidationQueue, "recovery-queue")
+            row.status = "pending"
+            row.claim_token = None
+            await db.commit()
+
+    class Lease:
+        def ensure_owned(self, **_kwargs):
+            return None
+
+    @contextmanager
+    def guarded(*_args, **_kwargs):
+        yield Lease()
+
+    @asynccontextmanager
+    async def advisory(*_args, **_kwargs):
+        yield
+
+    class Graph:
+        async def projection_commit_receipt(self, board_id, op_id, *, after):
+            assert (board_id, op_id, after) == (
+                BOARD_ID, operation_id, "baseline-token"
+            )
+            return graph_receipt
+
+    async def durable(**_kwargs):
+        return None
+
+    staged = []
+
+    async def stage(_db, *, operation_id, output):
+        staged.append((operation_id, output))
+
+    monkeypatch.setattr(consolidation, "guarded_board_write", guarded)
+    monkeypatch.setattr(consolidation, "advisory_lock", advisory)
+    monkeypatch.setattr(consolidation, "_ensure_board_graph_durable", durable)
+    monkeypatch.setattr(consolidation, "get_kg_registry", lambda: SimpleNamespace(
+        graph_transaction=Graph()
+    ), raising=False)
+    monkeypatch.setattr(consolidation, "stage_recovered_projection_output", stage)
+    register_consolidation_persistence_port(adapter)
+    try:
+        processor = consolidation.ConsolidationProcessor(
+            factory, durable_projection_protocol=True
+        )
+        assert await processor.recover_projection_operations() == 1
+        assert await processor.recover_projection_operations() == 0
+    finally:
+        reset_consolidation_persistence_port_for_tests()
+
+    async with factory() as db:
+        queue = await db.get(ConsolidationQueue, "recovery-queue")
+        markers = (await db.execute(select(DomainEventRow).where(
+            DomainEventRow.board_id == BOARD_ID,
+            DomainEventRow.event_type.like("kg.projection.operation.%"),
+        ))).scalars().all()
+        assert len(markers) == 2
+        if graph_receipt is None:
+            assert queue is not None and queue.status == "pending"
+            assert queue.claim_token is None
+            assert staged == []
+            assert any(m.event_type.endswith("absent") for m in markers)
+        else:
+            if progress_kind == "complete":
+                if newer_pending:
+                    assert queue is not None and queue.status == "pending"
+                    assert queue.claim_token is None
+                else:
+                    assert queue is None
+                assert staged == [(operation_id, {
+                    "progress_kind": "complete", "nodes_superseded": 0
+                })]
+            else:
+                assert queue is not None and queue.status == "pending"
+                assert queue.claim_token is None
+                assert staged == []
+            assert any(m.event_type.endswith("finalized") for m in markers)
+
+
+@pytest.mark.asyncio
+async def test_worker_graph_pause_does_not_hold_sqlite_writer(queue_store, monkeypatch):
+    from types import SimpleNamespace
+    from okto_pulse.core.application.processors import consolidation
+    from okto_pulse.core.kg.interfaces import registry as graph_registry
+
+    factory, adapter = queue_store
+    async with factory() as seed:
+        seed.add(Board(realm_id="local", id="other-during-graph",
+                       name="Other", owner_id="tester"))
+        seed.add(_queue_row(
+            row_id="paused-graph-queue", work_kind="consolidate", generation=0,
+            delete_event_id=None, claim_token="paused-claim",
+        ))
+        await seed.commit()
+
+    prepared = asyncio.Event()
+    proceed = asyncio.Event()
+
+    async def graph_commit(_request, **kwargs):
+        await kwargs["projection_precommit"]({
+            "graph_after": "baseline-token",
+            "output": {"session_id": "paused-session"},
+        })
+        prepared.set()
+        await proceed.wait()
+        return SimpleNamespace(session_id="paused-session")
+
+    async def durable(**_kwargs):
+        return None
+
+    class Graph:
+        async def projection_commit_receipt(self, *_args, **_kwargs):
+            return "native-commit-token"
+
+    class Lease:
+        pass
+
+    monkeypatch.setattr(consolidation, "commit_consolidation", graph_commit)
+    monkeypatch.setattr(consolidation, "_ensure_board_graph_durable", durable)
+    monkeypatch.setattr(graph_registry, "get_kg_registry", lambda: SimpleNamespace(
+        graph_transaction=Graph()
+    ))
+    register_consolidation_persistence_port(adapter)
+    try:
+        async with factory() as worker, factory() as author:
+            entry = SimpleNamespace(
+                id="paused-graph-queue", board_id=BOARD_ID,
+                artifact_type="spec", artifact_id=ARTIFACT_ID,
+                source="test", work_kind="consolidate", generation=0,
+                delete_event_id=None, claim_token="paused-claim",
+            )
+            prepared_ids = []
+            receipts = []
+            task = asyncio.create_task(
+                consolidation._commit_consolidation_with_board_graph_lifecycle(
+                    entry=entry, session_id="paused-session", summary_text="test",
+                    db=worker, enter_graph_write=lambda _ref: Lease(),
+                    journaled_prepared=prepared_ids,
+                    journaled_receipts=receipts,
+                )
+            )
+            ready = asyncio.create_task(prepared.wait())
+            done, _ = await asyncio.wait(
+                {ready, task}, timeout=5,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if task in done:
+                await task
+            assert ready in done
+            await author.execute(text("PRAGMA busy_timeout=50"))
+            result = await author.execute(text(
+                "UPDATE boards SET id = id WHERE id = 'other-during-graph'"
+            ))
+            assert result.rowcount == 1
+            await author.commit()
+            proceed.set()
+            await asyncio.wait_for(task, timeout=5)
+            assert len(prepared_ids) == 1
+            assert receipts == [(prepared_ids[0], "native-commit-token")]
+    finally:
+        proceed.set()
+        reset_consolidation_persistence_port_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_journaled_worker_stages_output_after_receipt_and_acks(
+    queue_store, monkeypatch,
+):
+    from okto_pulse.core.application.processors import consolidation
+
+    factory, adapter = queue_store
+    operation_id = "f0b2c538-461a-45f0-9fd2-745c52c877e5"
+    async with factory() as db:
+        row = _queue_row(
+            row_id="journaled-worker-queue", work_kind="consolidate",
+            generation=0, delete_event_id=None, claim_token=None,
+        )
+        row.status = "pending"
+        db.add(row)
+        await db.commit()
+
+    async def process(db, entry, **kwargs):
+        assert kwargs["journaled_prepared"] == []
+        assert await adapter.prepare_projection_operation(
+            db, operation_id=operation_id, entry_id=entry.id,
+            claim_token=entry.claim_token, board_id=entry.board_id,
+            artifact_type=entry.artifact_type, artifact_id=entry.artifact_id,
+            source=entry.source, graph_after="baseline-token",
+            output={"progress_kind": "complete", "nodes_superseded": 0},
+        )
+        await adapter.commit(db)
+        kwargs["journaled_prepared"].append(operation_id)
+        kwargs["journaled_receipts"].append(
+            (operation_id, "native-commit-token")
+        )
+        return True
+
+    staged = []
+
+    async def stage(_db, *, operation_id, output):
+        staged.append((operation_id, output))
+
+    async def no_reservation(_db, *, board_id):
+        assert board_id == BOARD_ID
+        return None
+
+    monkeypatch.setattr(consolidation, "_process_queue_entry_serialized", process)
+    monkeypatch.setattr(consolidation, "stage_recovered_projection_output", stage)
+    monkeypatch.setattr(adapter, "board_administrative_rebuild_source", no_reservation)
+    register_consolidation_persistence_port(adapter)
+    try:
+        processor = consolidation.ConsolidationProcessor(
+            factory, batch_size=1, durable_projection_protocol=True
+        )
+        assert await processor.process_batch() == 1
+    finally:
+        reset_consolidation_persistence_port_for_tests()
+
+    assert staged == [(operation_id, {
+        "progress_kind": "complete", "nodes_superseded": 0
+    })]
+    async with factory() as db:
+        assert await db.get(ConsolidationQueue, "journaled-worker-queue") is None
+        markers = (await db.execute(select(DomainEventRow).where(
+            DomainEventRow.board_id == BOARD_ID,
+            DomainEventRow.event_type == "kg.projection.operation.finalized",
+        ))).scalars().all()
+        assert len(markers) == 1
+        assert markers[0].payload_json["operation_id"] == operation_id
 
 
 @pytest_asyncio.fixture

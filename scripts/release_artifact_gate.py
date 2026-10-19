@@ -30,7 +30,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-EXPECTED_VERSION = "0.4.0"
+EXPECTED_VERSION = "0.4.1"
 EXPECTED_GRAFX_VERSION = "0.0.7"
 # DV2 (Core 437ea9d0) added the two native Decision review tools before
 # the readiness plan baseline; readiness itself adds no new MCP tool.
@@ -913,7 +913,10 @@ def _free_loopback_port() -> int:
 
 
 def _wait_for_listener(process: subprocess.Popen[str], port: int) -> None:
-    deadline = time.monotonic() + 60
+    # The installed Windows/Python 3.11 MCP inventory can take just over a
+    # minute to cold-start after the runtime matrix has exercised the wheels.
+    readiness_timeout_s = 120
+    deadline = time.monotonic() + readiness_timeout_s
     while time.monotonic() < deadline:
         if process.poll() is not None:
             stdout, stderr = process.communicate()
@@ -927,7 +930,8 @@ def _wait_for_listener(process: subprocess.Popen[str], port: int) -> None:
         except OSError:
             time.sleep(0.1)
     raise ReleaseArtifactGateError(
-        f"installed MCP server did not listen on 127.0.0.1:{port} within 60s"
+        f"installed MCP server did not listen on 127.0.0.1:{port} "
+        f"within {readiness_timeout_s}s"
     )
 
 

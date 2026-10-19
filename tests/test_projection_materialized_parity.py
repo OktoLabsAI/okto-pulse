@@ -1,9 +1,12 @@
 """K2: compare persisted relationship sets after churn and a clean rebuild."""
+import asyncio
 from collections import Counter
 from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
 import json
+from threading import Event
+from time import perf_counter
 
 import pytest
 from okto_grafx import connect
@@ -23,13 +26,14 @@ from okto_pulse.community.adapters.composition import configure_community_kg_reg
 from okto_pulse.community.adapters.coordination import register_community_coordination_providers, build_root_bound_community_write_lock_port
 from okto_pulse.community.adapters.relational_effects import register_community_relational_effects
 from okto_pulse.community.adapters.graph_backend_binding import CommunityGraphBackendBindingStore
+from okto_pulse.community.adapters.grafx_graph_transaction import CommunityGrafxGraphTransaction
 from okto_pulse.community.adapters.board_source_reader import CommunityBoardSourceReader
 from okto_pulse.community.adapters.board_rebuild_ingestion import (
     CommunityBoardRebuildIngestionAdapter, _resolve_evidence_dependency_closure,
 )
 from okto_pulse.community.adapters.sqlalchemy_kg_cognitive_source import CommunitySqlAlchemyCognitiveSourceStore
 from okto_pulse.community.adapters.sqlalchemy_consolidation import CommunitySqlAlchemyConsolidationPersistence
-from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, Spec, Card, ConsolidationQueue, ConsolidationAudit
+from okto_pulse.community.adapters.sqlalchemy_models import Base, Board, Spec, Card, ConsolidationQueue, ConsolidationAudit, DomainEventRow
 from okto_pulse.community.adapters.sqlalchemy_models import SpecDependency
 from okto_pulse.core.ports.projection_findings import ProjectionFindingSnapshot
 from okto_pulse.community.adapters.recovery_runtime_fence import offline_recovery_window
@@ -249,6 +253,162 @@ async def materialize(root, *, incremental, card_type=None, final_unlinked=False
         for pool in (*bundle.board.grafx_read_pools, *bundle.board.grafx_query_pools):
             pool.close_all()
         await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(480)
+async def test_native_spec_projection_uses_durable_journal_and_short_ack(
+    tmp_path, monkeypatch, record_property,
+):
+    async def exercise(factory, _graph):
+        async with factory() as session:
+            spec = await session.get(Spec, 'spec')
+            spec.title = 'Spec after journaled edit'
+            # Mirror an aggregate 570 KB authored Spec while keeping each
+            # property below Grafx's 65,536-character per-value limit.
+            spec.context = 'x' * (48 * 1024)
+            spec.acceptance_criteria = [
+                *spec.acceptance_criteria,
+                *({'id': f'ac_bulk_{index}', 'text': 'x' * (52 * 1024)}
+                  for index in range(10)),
+            ]
+            spec.version += 1
+            session.add(ConsolidationQueue(
+                id='journaled-native-spec', board_id='board',
+                artifact_type='spec', artifact_id='spec', source='state_transition',
+            ))
+            await session.commit()
+
+        processor = ConsolidationProcessor(
+            relational_scope_factory=factory,
+            durable_projection_protocol=True,
+        )
+        entered_commit = Event()
+        release_commit = Event()
+        original_begin = CommunityGrafxGraphTransaction.begin
+
+        class PausedCommitScope:
+            def __init__(self, inner):
+                self.inner = inner
+
+            def __getattr__(self, name):
+                return getattr(self.inner, name)
+
+            async def commit(self):
+                entered_commit.set()
+                if not await asyncio.to_thread(release_commit.wait, 30):
+                    raise TimeoutError('native graph commit pause was not released')
+                return await self.inner.commit()
+
+        async def pause_native_commit(self, *args, **kwargs):
+            return PausedCommitScope(await original_begin(self, *args, **kwargs))
+
+        monkeypatch.setattr(CommunityGrafxGraphTransaction, 'begin', pause_native_commit)
+        worker_started = perf_counter()
+        worker = asyncio.create_task(processor.process_batch())
+        try:
+            assert await asyncio.to_thread(entered_commit.wait, 30)
+            started = perf_counter()
+            async with factory() as session:
+                session.add(Board(
+                    id='parallel-board', name='Unrelated writer',
+                    owner_id='owner', realm_id='local',
+                ))
+                await asyncio.wait_for(session.commit(), timeout=10)
+            writer_seconds = perf_counter() - started
+            record_property('unrelated_sqlite_write_seconds', round(writer_seconds, 3))
+            assert writer_seconds < 10
+        finally:
+            release_commit.set()
+            monkeypatch.setattr(CommunityGrafxGraphTransaction, 'begin', original_begin)
+        assert await worker == 1
+        record_property('large_spec_projection_seconds', round(
+            perf_counter() - worker_started, 3,
+        ))
+        async with factory() as session:
+            assert await session.get(ConsolidationQueue, 'journaled-native-spec') is None
+            audits = (await session.execute(select(ConsolidationAudit).where(
+                ConsolidationAudit.board_id == 'board',
+                ConsolidationAudit.artifact_type == 'spec',
+                ConsolidationAudit.artifact_id == 'spec',
+            ))).scalars().all()
+            assert audits
+            events = (await session.execute(select(DomainEventRow).where(
+                DomainEventRow.board_id == 'board',
+                DomainEventRow.event_type.like('kg.projection.operation.%'),
+            ))).scalars().all()
+            assert sorted(event.event_type for event in events) == [
+                'kg.projection.operation.finalized',
+                'kg.projection.operation.prepared',
+            ]
+
+        # Crash window: the native graph has committed, while SQLite's audit,
+        # queue ACK and finalization still share an uncommitted transaction.
+        async with factory() as session:
+            spec = await session.get(Spec, 'spec')
+            spec.title = 'Spec committed before SQLite ACK'
+            spec.version += 1
+            session.add(ConsolidationQueue(
+                id='journaled-native-crash', board_id='board',
+                artifact_type='spec', artifact_id='spec', source='state_transition',
+            ))
+            await session.commit()
+
+        original_finalize = CommunitySqlAlchemyConsolidationPersistence.finalize_projection_operation
+
+        async def fail_before_ack_commit(self, *args, **kwargs):
+            raise RuntimeError('injected_after_native_commit')
+
+        monkeypatch.setattr(
+            CommunitySqlAlchemyConsolidationPersistence,
+            'finalize_projection_operation', fail_before_ack_commit,
+        )
+        assert await processor.process_batch() == 0
+        monkeypatch.setattr(
+            CommunitySqlAlchemyConsolidationPersistence,
+            'finalize_projection_operation', original_finalize,
+        )
+        async with factory() as session:
+            assert await session.get(ConsolidationQueue, 'journaled-native-crash') is not None
+            prepared = (await session.execute(select(DomainEventRow).where(
+                DomainEventRow.board_id == 'board',
+                DomainEventRow.event_type == 'kg.projection.operation.prepared',
+            ))).scalars().all()
+            assert len(prepared) == 2
+
+        recovery_started = perf_counter()
+        assert await processor.recover_projection_operations() == 1
+        record_property('post_commit_recovery_seconds', round(
+            perf_counter() - recovery_started, 3,
+        ))
+        async with factory() as session:
+            assert await session.get(ConsolidationQueue, 'journaled-native-crash') is None
+            events = (await session.execute(select(DomainEventRow).where(
+                DomainEventRow.board_id == 'board',
+                DomainEventRow.event_type.like('kg.projection.operation.%'),
+            ))).scalars().all()
+            assert [event.event_type for event in events].count(
+                'kg.projection.operation.finalized'
+            ) == 2
+            audits = (await session.execute(select(ConsolidationAudit).where(
+                ConsolidationAudit.board_id == 'board',
+                ConsolidationAudit.artifact_type == 'spec',
+                ConsolidationAudit.artifact_id == 'spec',
+            ))).scalars().all()
+            assert len(audits) >= 2
+            audit_count = len(audits)
+        assert await processor.recover_projection_operations() == 0
+        async with factory() as session:
+            assert len((await session.execute(select(ConsolidationAudit).where(
+                ConsolidationAudit.board_id == 'board',
+                ConsolidationAudit.artifact_type == 'spec',
+                ConsolidationAudit.artifact_id == 'spec',
+            ))).scalars().all()) == audit_count
+
+    await materialize(
+        tmp_path / 'native-journal', incremental=False,
+        native_schema=True, exercise=exercise,
+    )
 
 
 @pytest.mark.asyncio

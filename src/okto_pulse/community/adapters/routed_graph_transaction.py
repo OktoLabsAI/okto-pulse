@@ -181,8 +181,14 @@ class CommunityRoutedGraphTransaction:
         self._grafx_pool = grafx_pool
         self._operation_window = operation_window
 
+    def _acquire_board_snapshot(self, board_id: str) -> CommunityGraphRouteSnapshot:
+        snapshot = self._resolver.acquire_board_route(board_id)
+        _require_board_snapshot(snapshot, board_id=board_id)
+        return snapshot
 
-    async def begin(self, board_id: str) -> GraphTransactionScope:
+    async def begin(
+        self, board_id: str, *, operation_id: str | None = None
+    ) -> GraphTransactionScope:
         if type(board_id) is not str or not board_id:
             raise ValueError("board_id must be non-empty text")
 
@@ -193,8 +199,7 @@ class CommunityRoutedGraphTransaction:
             # This is the sole route acquisition.  Persisted binding state is
             # authoritative; neither settings nor the other provider are ever
             # consulted as a fallback.
-            snapshot = self._resolver.acquire_board_route(board_id)
-            _require_board_snapshot(snapshot, board_id=board_id)
+            snapshot = self._acquire_board_snapshot(board_id)
 
             # The route validator above proves this for type checkers and for
             # runtime safety before the pool sees persisted geometry.
@@ -246,7 +251,7 @@ class CommunityRoutedGraphTransaction:
                 database_resolver=resolve_database,
                 revalidate_fence=revalidate_fence,
             )
-            return await provider.begin(board_id)
+            return await provider.begin(board_id, operation_id=operation_id)
         except BaseException as failure:
             if lease is None:
                 _release_during_failure(
@@ -271,6 +276,38 @@ class CommunityRoutedGraphTransaction:
             # after it observes an inactive engine.  If rollback failed and the
             # engine remains active, deliberately retain both pin and window.
             raise
+
+    async def projection_commit_receipt(
+        self, board_id: str, operation_id: str, *, after: str
+    ) -> str | None:
+        """Inspect commit history under the same persisted Board route guard."""
+
+        from okto_pulse.community.adapters.grafx_commit_provenance import (
+            projection_commit_receipt,
+        )
+
+        if type(board_id) is not str or not board_id:
+            raise ValueError("board_id must be non-empty text")
+        with self._operation_window(board_id):
+            snapshot = self._acquire_board_snapshot(board_id)
+            assert snapshot.page_size is not None
+            lease = self._grafx_pool.acquire(
+                snapshot.active_path, page_size=snapshot.page_size
+            )
+            try:
+                self._resolver.admit_grafx_route(
+                    snapshot,
+                    lease.database,
+                    operation="projection_commit_receipt",
+                )
+                return projection_commit_receipt(
+                    lease.database,
+                    board_id=board_id,
+                    operation_id=operation_id,
+                    after=after,
+                )
+            finally:
+                lease.release()
 
 
 __all__ = ["CommunityRoutedGraphTransaction"]

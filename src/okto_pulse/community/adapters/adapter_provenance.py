@@ -120,6 +120,7 @@ _CROSS_EDITION_CONTRACT_EXPECTATION: tuple[str, ...] = (
     "okto_pulse.core.repositories",
     "okto_pulse.core.repositories.interfaces",
     "okto_pulse.core.runtime_registry",
+    "okto_pulse.core.services.ProjectionOperationInFlight",
     "okto_pulse.core.services.amendment_revision",
     "okto_pulse.core.services.amendment_revision_api",
     "okto_pulse.core.services.analytics_contract",
