@@ -124,6 +124,53 @@ async def test_prepared_projection_releases_writer_and_survives_claim_replacemen
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("corruption", ["future_protocol", "identity_mismatch"])
+async def test_unknown_or_corrupt_projection_journal_blocks_recovery(
+    queue_store, corruption,
+):
+    factory, adapter = queue_store
+    operation_id = "80f7de89-6d3b-48c4-b00c-7bf6c764e47b"
+    async with factory() as db:
+        db.add(_queue_row(
+            row_id="unknown-protocol-queue", work_kind="consolidate",
+            generation=0, delete_event_id=None, claim_token="claim",
+        ))
+        await db.commit()
+        assert await adapter.prepare_projection_operation(
+            db, operation_id=operation_id, entry_id="unknown-protocol-queue",
+            claim_token="claim", board_id=BOARD_ID,
+            artifact_type="spec", artifact_id=ARTIFACT_ID, source="test",
+            graph_after="baseline-token", output={"session_id": "session-1"},
+        )
+        await db.commit()
+        event = await db.get(DomainEventRow, operation_id)
+        assert event.payload_json["projector_version"]
+        payload = dict(event.payload_json)
+        if corruption == "future_protocol":
+            payload["protocol"] = 2
+            expected = "projection_operation_protocol_incompatible"
+        else:
+            payload["operation_id"] = "different-operation"
+            expected = "projection_operation_journal_corrupt"
+        event.payload_json = payload
+        await db.commit()
+
+    async with factory() as reopened:
+        with pytest.raises(RuntimeError, match=expected):
+            await adapter.list_unsettled_projection_operations(
+                reopened, board_id=BOARD_ID,
+            )
+        with pytest.raises(RuntimeError, match=expected):
+            await adapter.finalize_projection_operation(
+                reopened, operation_id=operation_id, board_id=BOARD_ID,
+                graph_commit="native-commit-token",
+            )
+        assert await adapter.has_unsettled_projection_operation(
+            reopened, board_id=BOARD_ID,
+        )
+
+
+@pytest.mark.asyncio
 async def test_projection_preflight_does_not_reserve_sqlite_writer(queue_store):
     factory, adapter = queue_store
     async with factory() as seed:

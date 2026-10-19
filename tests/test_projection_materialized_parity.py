@@ -256,12 +256,22 @@ async def materialize(root, *, incremental, card_type=None, final_unlinked=False
 
 
 @pytest.mark.asyncio
-@pytest.mark.timeout(240)
-async def test_native_spec_projection_uses_durable_journal_and_short_ack(tmp_path, monkeypatch):
+@pytest.mark.timeout(480)
+async def test_native_spec_projection_uses_durable_journal_and_short_ack(
+    tmp_path, monkeypatch, record_property,
+):
     async def exercise(factory, _graph):
         async with factory() as session:
             spec = await session.get(Spec, 'spec')
             spec.title = 'Spec after journaled edit'
+            # Mirror an aggregate 570 KB authored Spec while keeping each
+            # property below Grafx's 65,536-character per-value limit.
+            spec.context = 'x' * (48 * 1024)
+            spec.acceptance_criteria = [
+                *spec.acceptance_criteria,
+                *({'id': f'ac_bulk_{index}', 'text': 'x' * (52 * 1024)}
+                  for index in range(10)),
+            ]
             spec.version += 1
             session.add(ConsolidationQueue(
                 id='journaled-native-spec', board_id='board',
@@ -294,6 +304,7 @@ async def test_native_spec_projection_uses_durable_journal_and_short_ack(tmp_pat
             return PausedCommitScope(await original_begin(self, *args, **kwargs))
 
         monkeypatch.setattr(CommunityGrafxGraphTransaction, 'begin', pause_native_commit)
+        worker_started = perf_counter()
         worker = asyncio.create_task(processor.process_batch())
         try:
             assert await asyncio.to_thread(entered_commit.wait, 30)
@@ -304,11 +315,16 @@ async def test_native_spec_projection_uses_durable_journal_and_short_ack(tmp_pat
                     owner_id='owner', realm_id='local',
                 ))
                 await asyncio.wait_for(session.commit(), timeout=10)
-            assert perf_counter() - started < 10
+            writer_seconds = perf_counter() - started
+            record_property('unrelated_sqlite_write_seconds', round(writer_seconds, 3))
+            assert writer_seconds < 10
         finally:
             release_commit.set()
             monkeypatch.setattr(CommunityGrafxGraphTransaction, 'begin', original_begin)
         assert await worker == 1
+        record_property('large_spec_projection_seconds', round(
+            perf_counter() - worker_started, 3,
+        ))
         async with factory() as session:
             assert await session.get(ConsolidationQueue, 'journaled-native-spec') is None
             audits = (await session.execute(select(ConsolidationAudit).where(
@@ -360,7 +376,11 @@ async def test_native_spec_projection_uses_durable_journal_and_short_ack(tmp_pat
             ))).scalars().all()
             assert len(prepared) == 2
 
+        recovery_started = perf_counter()
         assert await processor.recover_projection_operations() == 1
+        record_property('post_commit_recovery_seconds', round(
+            perf_counter() - recovery_started, 3,
+        ))
         async with factory() as session:
             assert await session.get(ConsolidationQueue, 'journaled-native-crash') is None
             events = (await session.execute(select(DomainEventRow).where(

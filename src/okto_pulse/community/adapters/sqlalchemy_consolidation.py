@@ -14,6 +14,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased, selectinload
 from okto_pulse.core.ports.projection_effects import validated_projection_effect_extension
+from okto_pulse.community import __version__ as community_version
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     AmendmentHotfixRevision,
@@ -116,6 +117,31 @@ _MODELS = {
 
 
 _DELETION_INTENT_SCHEMA_VERSION = 1
+_PROJECTION_OPERATION_PROTOCOL = 1
+
+
+def _require_projection_operation_protocol(payload: Any) -> dict[str, Any]:
+    """Keep unknown journal formats quarantined for an explicit migration."""
+
+    if type(payload) is not dict or type(payload.get("protocol")) is not int or (
+        payload["protocol"] != _PROJECTION_OPERATION_PROTOCOL
+    ):
+        raise RuntimeError("projection_operation_protocol_incompatible")
+    return payload
+
+
+def _unsettled_projection_record(row: DomainEventRow) -> dict[str, Any]:
+    payload = _require_projection_operation_protocol(row.payload_json)
+    if (
+        payload.get("operation_id") != row.id
+        or any(type(payload.get(key)) is not str or not payload[key] for key in (
+            "queue_id", "claim_token", "artifact_type", "artifact_id",
+            "source", "graph_after",
+        ))
+        or type(payload.get("output")) is not dict
+    ):
+        raise RuntimeError("projection_operation_journal_corrupt")
+    return {"operation_id": row.id, "board_id": row.board_id, **payload}
 _GOVERNED_DELETION_ARTIFACT_TYPES = frozenset(
     {"card", "spec", "ideation", "refinement"}
 )
@@ -1626,7 +1652,8 @@ class CommunitySqlAlchemyConsolidationPersistence:
         # Round-trip before taking a writer slot; arbitrary ORM / graph objects
         # cannot become an unrecoverable JSON journal entry.
         payload = json.loads(json.dumps({
-            "protocol": 1,
+            "protocol": _PROJECTION_OPERATION_PROTOCOL,
+            "projector_version": community_version,
             "operation_id": operation_id,
             "queue_id": entry_id,
             "claim_token": claim_token,
@@ -1681,8 +1708,9 @@ class CommunitySqlAlchemyConsolidationPersistence:
         if (prepared is None or prepared.board_id != board_id
                 or prepared.event_type != "kg.projection.operation.prepared"):
             raise ValueError("projection_prepared_operation_missing")
+        _unsettled_projection_record(prepared)
         marker_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"pulse:projection:final:{operation_id}"))
-        payload = {"protocol": 1, "operation_id": operation_id,
+        payload = {"protocol": _PROJECTION_OPERATION_PROTOCOL, "operation_id": operation_id,
                    "graph_commit": graph_commit}
         result = await context.execute(
             sqlite_insert(DomainEventRow).values(
@@ -1706,6 +1734,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
         if (prepared is None or prepared.board_id != board_id
                 or prepared.event_type != "kg.projection.operation.prepared"):
             raise ValueError("projection_prepared_operation_missing")
+        _unsettled_projection_record(prepared)
         marker_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"pulse:projection:absent:{operation_id}"))
         await context.execute(
             sqlite_insert(DomainEventRow).values(
@@ -1713,7 +1742,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
                 event_type="kg.projection.operation.absent",
                 board_id=board_id,
                 actor_type="system",
-                payload_json={"protocol": 1, "operation_id": operation_id},
+                payload_json={"protocol": _PROJECTION_OPERATION_PROTOCOL, "operation_id": operation_id},
             ).on_conflict_do_nothing(index_elements=[DomainEventRow.id])
         )
 
@@ -1740,8 +1769,7 @@ class CommunitySqlAlchemyConsolidationPersistence:
         rows = (await context.execute(statement.order_by(
             DomainEventRow.occurred_at, DomainEventRow.id
         ).limit(limit))).scalars().all()
-        return tuple({"operation_id": row.id, "board_id": row.board_id,
-                      **dict(row.payload_json)} for row in rows)
+        return tuple(_unsettled_projection_record(row) for row in rows)
 
     async def has_unsettled_projection_operation(
         self,
