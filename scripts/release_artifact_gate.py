@@ -30,7 +30,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-EXPECTED_VERSION = "0.4.0"
+EXPECTED_VERSION = "0.4.1"
 EXPECTED_GRAFX_VERSION = "0.0.7"
 # DV2 (Core 437ea9d0) added the two native Decision review tools before
 # the readiness plan baseline; readiness itself adds no new MCP tool.

@@ -65,7 +65,7 @@ def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> No
     for repo in (REPO, module.CORE_REPO):
         with (repo / "pyproject.toml").open("rb") as stream:
             assert module.EXPECTED_VERSION == tomllib.load(stream)["project"]["version"]
-    assert module.EXPECTED_VERSION == "0.4.0"
+    assert module.EXPECTED_VERSION == "0.4.1"
     assert module.EXPECTED_GRAFX_VERSION == "0.0.7"
     assert module.GRAFX_WHEEL_ENV == "OKTO_E2E_GRAFX_WHEEL"
     assert module.GRAFX_REPO_ENV == "OKTO_E2E_GRAFX_REPO"
@@ -248,7 +248,7 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     evidence = json.loads(results[0])
 
     assert evidence["status"] == "passed"
-    assert evidence["expected_version"] == "0.4.0"
+    assert evidence["expected_version"] == "0.4.1"
     assert evidence["installed"]["runtime_version"]["python_major_minor"] == [3, 11]
     assert evidence["installed"]["runtime_version"]["required_major_minor"] == [3, 11]
     assert evidence["installed"]["runtime_version"]["pydantic"]
@@ -263,7 +263,7 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     assert origin["grafx_direct_url"]["url"].endswith(
         "/" + evidence["wheels"]["grafx"]["name"]
     )
-    assert origin["about_version"] == "0.4.0"
+    assert origin["about_version"] == "0.4.1"
     assert origin["ska_contract_manifests"]["tool_count"] == 13
     assert origin["ska_contract_manifests"]["resource_count"] == 22
     assert origin["semantic_v2_reader_contract"]["compatible"] is True
@@ -271,7 +271,7 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     assert len(origin["required_core_resources"]) == 2
     for distribution in ("core", "community"):
         provenance = evidence["installed"]["payload_provenance"][distribution]
-        assert provenance["version"] == "0.4.0"
+        assert provenance["version"] == "0.4.1"
         assert provenance["commit"]
         assert provenance["repository_root"]
         assert provenance["wheel"]["sha256"]
@@ -322,7 +322,7 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     assert kg_parity["ska"]["quality"] == "covered"
     assert kg_parity["ska"]["research_decision_ledger"] == "covered"
     assert evidence["installed"]["cli_version"] == (
-        "okto-pulse 0.4.0 (okto-pulse-core 0.4.0)"
+        "okto-pulse 0.4.1 (okto-pulse-core 0.4.1)"
     )
     mcp_http = evidence["installed"]["mcp_http"]
     assert mcp_http["transport"] == "streamable-http-loopback"
