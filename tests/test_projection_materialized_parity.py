@@ -332,6 +332,70 @@ async def test_journaled_card_findings_survive_json_and_recovery_shape(
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(180)
+async def test_native_commit_exception_after_success_recovers_open_session(
+    tmp_path, monkeypatch,
+):
+    from okto_pulse.core.kg.interfaces.registry import get_kg_registry
+
+    async def exercise(factory, _graph):
+        async with factory() as session:
+            spec = await session.get(Spec, 'spec')
+            spec.title = 'Native commit succeeded before exception'
+            session.add(ConsolidationQueue(
+                id='ambiguous-native-commit', board_id='board',
+                artifact_type='spec', artifact_id='spec', source='state_transition',
+            ))
+            await session.commit()
+
+        original_begin = CommunityGrafxGraphTransaction.begin
+
+        class AmbiguousCommitScope:
+            def __init__(self, inner):
+                self.inner = inner
+
+            def __getattr__(self, name):
+                return getattr(self.inner, name)
+
+            async def commit(self):
+                await self.inner.commit()
+                raise RuntimeError('injected_after_native_commit')
+
+        async def ambiguous_begin(self, *args, **kwargs):
+            return AmbiguousCommitScope(await original_begin(self, *args, **kwargs))
+
+        processor = ConsolidationProcessor(
+            relational_scope_factory=factory, durable_projection_protocol=True,
+        )
+        monkeypatch.setattr(CommunityGrafxGraphTransaction, 'begin', ambiguous_begin)
+        try:
+            assert await processor.process_batch() == 0
+        finally:
+            monkeypatch.setattr(CommunityGrafxGraphTransaction, 'begin', original_begin)
+
+        async with factory() as session:
+            prepared = (await session.execute(select(DomainEventRow).where(
+                DomainEventRow.event_type == 'kg.projection.operation.prepared',
+            ))).scalars().all()
+            assert len(prepared) == 1
+            session_id = prepared[0].payload_json['output']['session_id']
+            assert await session.get(ConsolidationQueue, 'ambiguous-native-commit')
+        live_session = await get_kg_registry().require_session_store().get(session_id)
+        assert live_session is not None and live_session.pending_commit is None
+
+        assert await processor.recover_projection_operations() == 1
+        assert await get_kg_registry().require_session_store().get(session_id) is None
+        async with factory() as session:
+            assert await session.get(ConsolidationQueue, 'ambiguous-native-commit') is None
+            assert (await session.execute(select(DomainEventRow).where(
+                DomainEventRow.event_type == 'kg.projection.operation.finalized',
+            ))).scalars().all()
+
+    await materialize(tmp_path / 'ambiguous-native-commit', incremental=False,
+                      exercise=exercise)
+
+
+@pytest.mark.asyncio
 @pytest.mark.timeout(480)
 async def test_native_spec_projection_uses_durable_journal_and_short_ack(
     tmp_path, monkeypatch, record_property,

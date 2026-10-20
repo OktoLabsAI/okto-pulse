@@ -367,6 +367,48 @@ async def test_projection_receipt_scan_keeps_event_loop_responsive(
 
 
 @pytest.mark.asyncio
+async def test_cancelled_projection_receipt_waits_for_native_scan_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, _events, window, resolver, _legacy, transaction, _database, lease, _pool = (
+        _assembly(tmp_path, backend="grafx")
+    )
+    transaction.active = False
+    monkeypatch.setattr(resolver, "admit_grafx_route", lambda *_args, **_kwargs: None)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_scan(*_args: object, **_kwargs: object) -> str:
+        entered.set()
+        assert release.wait(timeout=3)
+        return "receipt"
+
+    monkeypatch.setattr(
+        "okto_pulse.community.adapters.grafx_commit_provenance.projection_commit_receipt",
+        slow_scan,
+    )
+    timer = threading.Timer(2, release.set)
+    timer.start()
+    task = asyncio.create_task(facade.projection_commit_receipt(
+        BOARD_ID, "operation", after="baseline",
+    ))
+    try:
+        await asyncio.wait_for(asyncio.to_thread(entered.wait), timeout=2)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert window.active
+        assert not lease.released
+    finally:
+        release.set()
+        timer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not window.active
+    assert lease.released
+
+
+@pytest.mark.asyncio
 async def test_grafx_context_commit_failure_cleans_up_once(
     tmp_path: Path,
 ) -> None:
