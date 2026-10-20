@@ -368,6 +368,16 @@ class ConsolidationRunner:
             await asyncio.gather(*dangling, return_exceptions=True)
         self._tasks.clear()
         self._shutdown_drained = False
+        recover_projections = getattr(
+            self.processor, "recover_projection_operations", None
+        )
+        if callable(recover_projections):
+            try:
+                await recover_projections()
+            except Exception:
+                # An expired manifest can remain after a crash until its TTL.
+                # Periodic recovery retries while unrelated boards keep moving.
+                logger.exception("consolidation projection recovery deferred")
         await self.processor.recover_stale_claims()
         self._notify_loop = asyncio.get_running_loop()
         self._wake_event = asyncio.Event()
@@ -428,12 +438,22 @@ class ConsolidationRunner:
             while self._running:
                 await asyncio.sleep(self.recovery_interval_seconds)
                 try:
+                    recover_projections = getattr(
+                        self.processor, "recover_projection_operations", None
+                    )
+                    if callable(recover_projections):
+                        await recover_projections()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # An incompatible journal stays fenced on its own board;
+                    # it must not starve stale claims on unrelated boards.
+                    logger.exception("consolidation projection recovery failed")
+                try:
                     await self.processor.recover_stale_claims()
                 except asyncio.CancelledError:
                     raise
                 except Exception:
-                    # A transient SQLite lock must not permanently kill stale
-                    # claim recovery while the processing task remains alive.
                     logger.exception("consolidation stale-claim recovery failed")
         except asyncio.CancelledError:
             raise

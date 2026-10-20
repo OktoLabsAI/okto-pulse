@@ -421,7 +421,10 @@ def install_community_sqlite_pragmas(engine: AsyncEngine) -> None:
             install_delivery_contract_function(dbapi_conn)
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA busy_timeout=30000")
-            cursor.execute("PRAGMA synchronous=NORMAL")
+            # The source mutation and its durable consolidation intent commit
+            # together.  NORMAL is consistent after process crashes, but can
+            # lose an acknowledged WAL commit after an OS/power failure.
+            cursor.execute("PRAGMA synchronous=FULL")
             cursor.execute("PRAGMA foreign_keys=ON")
         finally:
             cursor.close()

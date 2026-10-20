@@ -88,6 +88,37 @@ class _TransientRecoveryFailureProcessor(_Processor):
         return 0
 
 
+class _ProjectionRecoveryFailureProcessor(_Processor):
+    def __init__(self) -> None:
+        super().__init__()
+        self.stale_claim_recovered = asyncio.Event()
+
+    async def recover_projection_operations(self) -> int:
+        raise RuntimeError("unknown projection protocol on another board")
+
+    async def recover_stale_claims(self) -> int:
+        self.stale_claim_recovered.set()
+        return 1
+
+
+@pytest.mark.asyncio
+async def test_projection_recovery_failure_does_not_starve_stale_claims() -> None:
+    processor = _ProjectionRecoveryFailureProcessor()
+    runner = ConsolidationRunner(
+        processor, blocking_execution=_BlockingExecution(),
+        heartbeat_seconds=60, recovery_interval_seconds=0.01,
+        max_concurrent_workers=1,
+    )
+    runner._running = True
+    task = asyncio.create_task(runner.run_recovery_forever())
+    try:
+        await asyncio.wait_for(processor.stale_claim_recovered.wait(), timeout=1)
+    finally:
+        runner._running = False
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 async def _assert_notify_is_marshaled_to_event_loop(runner, processor) -> None:
     await runner.start()
     await asyncio.wait_for(processor.first_call.wait(), timeout=1)

@@ -6,7 +6,7 @@ runtime:
   - Local First pool sizing and fail-closed URL validation;
   - session factory kwargs (``class_=AsyncSession`` + ``expire_on_commit=False``);
   - the SQLite PRAGMA union — WAL + busy_timeout=30000 +
-    synchronous=NORMAL + foreign_keys=ON — proven against a REAL connection;
+    synchronous=FULL + foreign_keys=ON — proven against a REAL connection;
   - pool observability listeners installed (status snapshot);
   - configure_community_database injects the live runtime into the core facade.
 """
@@ -76,7 +76,7 @@ def test_ac1_session_factory_kwargs(tmp_path):
 
 def test_ac1_sqlite_pragma_union_on_real_connection(tmp_path):
     """The single-owner listener sets WAL + busy_timeout=30000 +
-    synchronous=NORMAL + foreign_keys=ON on a REAL pooled connection (TR5)."""
+    synchronous=FULL + foreign_keys=ON on a REAL pooled connection (TR5)."""
     eng = build_community_engine(f"sqlite+aiosqlite:///{tmp_path / 'pragma.db'}")
     install_community_sqlite_pragmas(eng)
 
@@ -92,7 +92,7 @@ def test_ac1_sqlite_pragma_union_on_real_connection(tmp_path):
     jm, bt, sy, fk = asyncio.run(read())
     assert str(jm).lower() == "wal"  # journal_mode=WAL
     assert int(bt) == 30000  # busy_timeout=30000
-    assert int(sy) == 1  # synchronous=NORMAL (1)
+    assert int(sy) == 2  # synchronous=FULL (2)
     assert int(fk) == 1  # foreign_keys=ON (1)
 
 
