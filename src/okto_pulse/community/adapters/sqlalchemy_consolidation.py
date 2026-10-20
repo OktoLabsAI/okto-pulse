@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import uuid
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
@@ -15,7 +16,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased, selectinload
 from okto_pulse.core.ports.projection_effects import validated_projection_effect_extension
 from okto_pulse.community import __version__ as community_version
-
 from okto_pulse.community.adapters.sqlalchemy_models import (
     AmendmentHotfixRevision,
     AppSetting,
@@ -104,6 +104,8 @@ from okto_pulse.core.ports.stale_sweep import (
     StaleSweepScheduleReceipt,
     StaleSweepScheduleRequest,
 )
+
+logger = logging.getLogger(__name__)
 
 
 _MODELS = {
@@ -1766,10 +1768,32 @@ class CommunitySqlAlchemyConsolidationPersistence:
         )
         if board_id is not None:
             statement = statement.where(DomainEventRow.board_id == board_id)
-        rows = (await context.execute(statement.order_by(
-            DomainEventRow.occurred_at, DomainEventRow.id
-        ).limit(limit))).scalars().all()
-        return tuple(_unsettled_projection_record(row) for row in rows)
+        ordered = statement.order_by(DomainEventRow.occurred_at, DomainEventRow.id)
+        page_size = max(100, limit)
+        offset = 0
+        valid: list[dict[str, Any]] = []
+        while len(valid) < limit:
+            rows = (await context.execute(
+                ordered.offset(offset).limit(page_size)
+            )).scalars().all()
+            if not rows:
+                break
+            for row in rows:
+                try:
+                    valid.append(_unsettled_projection_record(row))
+                except RuntimeError as exc:
+                    # Keep the offending operation unsettled and its board
+                    # fenced, but let healthy boards later in the scan recover.
+                    logger.error(
+                        "projection journal quarantined board=%s operation=%s: %s",
+                        row.board_id, row.id, exc,
+                    )
+                if len(valid) == limit:
+                    break
+            offset += len(rows)
+            if len(rows) < page_size:
+                break
+        return tuple(valid)
 
     async def has_unsettled_projection_operation(
         self,

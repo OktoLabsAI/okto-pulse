@@ -9,6 +9,7 @@ the terminal order is therefore engine, pool lease, operation window.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import AbstractContextManager
 from typing import Any, Protocol
@@ -288,26 +289,29 @@ class CommunityRoutedGraphTransaction:
 
         if type(board_id) is not str or not board_id:
             raise ValueError("board_id must be non-empty text")
-        with self._operation_window(board_id):
-            snapshot = self._acquire_board_snapshot(board_id)
-            assert snapshot.page_size is not None
-            lease = self._grafx_pool.acquire(
-                snapshot.active_path, page_size=snapshot.page_size
-            )
-            try:
-                self._resolver.admit_grafx_route(
-                    snapshot,
-                    lease.database,
-                    operation="projection_commit_receipt",
+        def inspect() -> str | None:
+            with self._operation_window(board_id):
+                snapshot = self._acquire_board_snapshot(board_id)
+                assert snapshot.page_size is not None
+                lease = self._grafx_pool.acquire(
+                    snapshot.active_path, page_size=snapshot.page_size
                 )
-                return projection_commit_receipt(
-                    lease.database,
-                    board_id=board_id,
-                    operation_id=operation_id,
-                    after=after,
-                )
-            finally:
-                lease.release()
+                try:
+                    self._resolver.admit_grafx_route(
+                        snapshot,
+                        lease.database,
+                        operation="projection_commit_receipt",
+                    )
+                    return projection_commit_receipt(
+                        lease.database,
+                        board_id=board_id,
+                        operation_id=operation_id,
+                        after=after,
+                    )
+                finally:
+                    lease.release()
+
+        return await asyncio.to_thread(inspect)
 
 
 __all__ = ["CommunityRoutedGraphTransaction"]

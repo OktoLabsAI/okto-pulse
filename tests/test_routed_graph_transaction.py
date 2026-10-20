@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Self
@@ -323,6 +324,46 @@ def _assembly(
         lease,
         pool,
     )
+
+
+@pytest.mark.asyncio
+async def test_projection_receipt_scan_keeps_event_loop_responsive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    facade, _events, _window, resolver, _legacy, transaction, _database, _lease, _pool = (
+        _assembly(tmp_path, backend="grafx")
+    )
+    transaction.active = False
+    monkeypatch.setattr(resolver, "admit_grafx_route", lambda *_args, **_kwargs: None)
+    entered = threading.Event()
+    release = threading.Event()
+    loop_progress = threading.Event()
+
+    def slow_scan(*_args: object, **_kwargs: object) -> str:
+        entered.set()
+        assert release.wait(timeout=2)
+        return "receipt"
+
+    monkeypatch.setattr(
+        "okto_pulse.community.adapters.grafx_commit_provenance.projection_commit_receipt",
+        slow_scan,
+    )
+    timer = threading.Timer(1, release.set)
+    timer.start()
+    try:
+        task = asyncio.create_task(facade.projection_commit_receipt(
+            BOARD_ID, "operation", after="baseline",
+        ))
+        await asyncio.wait_for(asyncio.to_thread(entered.wait), timeout=2)
+        await asyncio.sleep(0)
+        loop_progress.set()
+        assert not release.is_set()
+        release.set()
+        assert await task == "receipt"
+    finally:
+        release.set()
+        timer.cancel()
+    assert loop_progress.is_set()
 
 
 @pytest.mark.asyncio

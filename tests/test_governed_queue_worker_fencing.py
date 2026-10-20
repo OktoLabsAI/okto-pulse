@@ -156,10 +156,11 @@ async def test_unknown_or_corrupt_projection_journal_blocks_recovery(
         await db.commit()
 
     async with factory() as reopened:
-        with pytest.raises(RuntimeError, match=expected):
-            await adapter.list_unsettled_projection_operations(
-                reopened, board_id=BOARD_ID,
-            )
+        # Quarantine only this board. Other prepared operations may still be
+        # listed and recovered, even when this row sorts first in the page.
+        assert await adapter.list_unsettled_projection_operations(
+            reopened, board_id=BOARD_ID,
+        ) == ()
         with pytest.raises(RuntimeError, match=expected):
             await adapter.finalize_projection_operation(
                 reopened, operation_id=operation_id, board_id=BOARD_ID,
@@ -168,6 +169,45 @@ async def test_unknown_or_corrupt_projection_journal_blocks_recovery(
         assert await adapter.has_unsettled_projection_operation(
             reopened, board_id=BOARD_ID,
         )
+
+
+@pytest.mark.asyncio
+async def test_corrupt_projection_journal_does_not_starve_other_board(queue_store):
+    factory, adapter = queue_store
+    bad_id = "10f7de89-6d3b-48c4-b00c-7bf6c764e47b"
+    good_id = "90f7de89-6d3b-48c4-b00c-7bf6c764e47b"
+    async with factory() as db:
+        db.add(Board(realm_id="local", id="healthy-board", name="Healthy", owner_id="tester"))
+        db.add(_queue_row(row_id="bad-journal-queue", work_kind="consolidate",
+                          generation=0, delete_event_id=None, claim_token="bad-claim"))
+        await db.commit()
+        assert await adapter.prepare_projection_operation(
+            db, operation_id=bad_id, entry_id="bad-journal-queue",
+            claim_token="bad-claim", board_id=BOARD_ID,
+            artifact_type="spec", artifact_id=ARTIFACT_ID, source="test",
+            graph_after="baseline-token", output={"session_id": "bad"},
+        )
+        await db.commit()
+        bad = await db.get(DomainEventRow, bad_id)
+        bad.payload_json = {**bad.payload_json, "protocol": 2}
+        await db.commit()
+        db.add(ConsolidationQueue(
+            id="good-journal-queue", board_id="healthy-board",
+            artifact_type="spec", artifact_id="good-spec", source="test",
+            status="claimed", claim_token="good-claim",
+        ))
+        await db.commit()
+        assert await adapter.prepare_projection_operation(
+            db, operation_id=good_id, entry_id="good-journal-queue",
+            claim_token="good-claim", board_id="healthy-board",
+            artifact_type="spec", artifact_id="good-spec", source="test",
+            graph_after="baseline-token", output={"session_id": "good"},
+        )
+        await db.commit()
+    async with factory() as db:
+        listed = await adapter.list_unsettled_projection_operations(db, limit=1)
+        assert [item["operation_id"] for item in listed] == [good_id]
+        assert await adapter.has_unsettled_projection_operation(db, board_id=BOARD_ID)
 
 
 @pytest.mark.asyncio
@@ -222,7 +262,8 @@ async def test_prepared_projection_recovers_after_restart(
             claim_token="recovery-claim", board_id=BOARD_ID,
             artifact_type="spec", artifact_id=ARTIFACT_ID, source="test",
             graph_after="baseline-token",
-            output={"progress_kind": progress_kind, "nodes_superseded": 0},
+            output={"progress_kind": progress_kind, "nodes_superseded": 0,
+                    "session_id": "recovery-session", "agent_id": "recovery-agent"},
         )
         await db.commit()
         if newer_pending:
@@ -254,9 +295,18 @@ async def test_prepared_projection_recovers_after_restart(
         return None
 
     staged = []
+    finalized_sessions = []
 
     async def stage(_db, *, operation_id, output):
         staged.append((operation_id, output))
+
+    async def finalize(session_id, *, agent_id):
+        async with factory() as check:
+            markers = (await check.execute(select(DomainEventRow).where(
+                DomainEventRow.event_type == "kg.projection.operation.finalized",
+            ))).scalars().all()
+            assert len(markers) == 1
+        finalized_sessions.append((session_id, agent_id))
 
     monkeypatch.setattr(consolidation, "guarded_board_write", guarded)
     monkeypatch.setattr(consolidation, "advisory_lock", advisory)
@@ -265,6 +315,7 @@ async def test_prepared_projection_recovers_after_restart(
         graph_transaction=Graph()
     ), raising=False)
     monkeypatch.setattr(consolidation, "stage_recovered_projection_output", stage)
+    monkeypatch.setattr(consolidation, "finalize_deferred_consolidation", finalize)
     register_consolidation_persistence_port(adapter)
     try:
         processor = consolidation.ConsolidationProcessor(
@@ -286,6 +337,7 @@ async def test_prepared_projection_recovers_after_restart(
             assert queue is not None and queue.status == "pending"
             assert queue.claim_token is None
             assert staged == []
+            assert finalized_sessions == []
             assert any(m.event_type.endswith("absent") for m in markers)
         else:
             if progress_kind == "complete":
@@ -295,13 +347,82 @@ async def test_prepared_projection_recovers_after_restart(
                 else:
                     assert queue is None
                 assert staged == [(operation_id, {
-                    "progress_kind": "complete", "nodes_superseded": 0
+                    "progress_kind": "complete", "nodes_superseded": 0,
+                    "session_id": "recovery-session", "agent_id": "recovery-agent",
                 })]
             else:
                 assert queue is not None and queue.status == "pending"
                 assert queue.claim_token is None
                 assert staged == []
             assert any(m.event_type.endswith("finalized") for m in markers)
+            assert finalized_sessions == [("recovery-session", "recovery-agent")]
+
+
+@pytest.mark.asyncio
+async def test_recovery_durability_failure_preserves_prepared_claim(
+    queue_store, monkeypatch,
+):
+    from types import SimpleNamespace
+    from okto_pulse.core.application.processors import consolidation
+
+    factory, adapter = queue_store
+    operation_id = "55bd7e65-e439-4a53-abbe-d4e5364cc5ae"
+    async with factory() as db:
+        db.add(_queue_row(
+            row_id="durability-queue", work_kind="consolidate", generation=0,
+            delete_event_id=None, claim_token="durability-claim",
+        ))
+        await db.commit()
+        assert await adapter.prepare_projection_operation(
+            db, operation_id=operation_id, entry_id="durability-queue",
+            claim_token="durability-claim", board_id=BOARD_ID,
+            artifact_type="spec", artifact_id=ARTIFACT_ID, source="test",
+            graph_after="baseline-token", output={"session_id": "session-1"},
+        )
+        await db.commit()
+
+    @contextmanager
+    def guarded(*_args, **_kwargs):
+        yield SimpleNamespace(ensure_owned=lambda **_kwargs: None)
+
+    @asynccontextmanager
+    async def advisory(*_args, **_kwargs):
+        yield
+
+    class Graph:
+        async def projection_commit_receipt(self, *_args, **_kwargs):
+            return "native-commit-token"
+
+    async def failed_durability(**_kwargs):
+        raise RuntimeError("injected_fsync_failure")
+
+    monkeypatch.setattr(consolidation, "guarded_board_write", guarded)
+    monkeypatch.setattr(consolidation, "advisory_lock", advisory)
+    monkeypatch.setattr(consolidation, "_ensure_board_graph_durable", failed_durability)
+    monkeypatch.setattr(consolidation, "get_kg_registry", lambda: SimpleNamespace(
+        graph_transaction=Graph()
+    ), raising=False)
+    register_consolidation_persistence_port(adapter)
+    try:
+        processor = consolidation.ConsolidationProcessor(
+            factory, durable_projection_protocol=True
+        )
+        with pytest.raises(RuntimeError, match="injected_fsync_failure"):
+            await processor.recover_projection_operations()
+    finally:
+        reset_consolidation_persistence_port_for_tests()
+
+    async with factory() as db:
+        queue = await db.get(ConsolidationQueue, "durability-queue")
+        assert queue is not None and queue.status == "claimed"
+        assert [item["operation_id"] for item in
+                await adapter.list_unsettled_projection_operations(db)] == [operation_id]
+        markers = (await db.execute(select(DomainEventRow).where(
+            DomainEventRow.event_type.like("kg.projection.operation.%"),
+        ))).scalars().all()
+        assert [item.event_type for item in markers] == [
+            "kg.projection.operation.prepared"
+        ]
 
 
 @pytest.mark.asyncio
