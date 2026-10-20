@@ -263,7 +263,8 @@ async def test_prepared_projection_recovers_after_restart(
             artifact_type="spec", artifact_id=ARTIFACT_ID, source="test",
             graph_after="baseline-token",
             output={"progress_kind": progress_kind, "nodes_superseded": 0,
-                    "session_id": "recovery-session", "agent_id": "recovery-agent"},
+                    "session_id": "recovery-session", "agent_id": "recovery-agent",
+                    "graph_write_records": []},
         )
         await db.commit()
         if newer_pending:
@@ -291,12 +292,25 @@ async def test_prepared_projection_recovers_after_restart(
             )
             return graph_receipt
 
-    async def durable(**_kwargs):
-        return None
+    durability_barriers = []
+
+    async def durable(**kwargs):
+        durability_barriers.append(kwargs["mutation_ref"])
 
     staged = []
     finalized_sessions = []
     maintained_sessions = []
+    compensated = []
+    aborted_sessions = []
+
+    async def compensate(board_id, session_id, records, **_kwargs):
+        assert (board_id, session_id, records) == (BOARD_ID, "recovery-session", [])
+        compensated.append(session_id)
+
+    async def abort(session_id, *, agent_id, compensation_already_applied,
+                    **_kwargs):
+        assert compensation_already_applied is True
+        aborted_sessions.append((session_id, agent_id))
 
     async def stage(_db, *, operation_id, output):
         staged.append((operation_id, output))
@@ -324,6 +338,8 @@ async def test_prepared_projection_recovers_after_restart(
     monkeypatch.setattr(consolidation, "stage_recovered_projection_output", stage)
     monkeypatch.setattr(consolidation, "finalize_deferred_consolidation", finalize)
     monkeypatch.setattr(consolidation, "_run_post_commit_maintenance", maintain)
+    monkeypatch.setattr(consolidation, "compensate_recovered_projection", compensate)
+    monkeypatch.setattr(consolidation, "abort_deferred_consolidation", abort)
     register_consolidation_persistence_port(adapter)
     try:
         processor = consolidation.ConsolidationProcessor(
@@ -347,8 +363,17 @@ async def test_prepared_projection_recovers_after_restart(
             assert staged == []
             assert finalized_sessions == []
             assert maintained_sessions == []
+            assert compensated == ["recovery-session"]
+            assert aborted_sessions == [("recovery-session", "recovery-agent")]
+            assert durability_barriers == [
+                f"projection-recover:{operation_id}",
+                f"projection-recover-abort:{operation_id}",
+            ]
             assert any(m.event_type.endswith("absent") for m in markers)
         else:
+            assert compensated == []
+            assert aborted_sessions == []
+            assert durability_barriers == [f"projection-recover:{operation_id}"]
             if progress_kind == "complete":
                 if newer_pending:
                     assert queue is not None and queue.status == "pending"
@@ -358,6 +383,7 @@ async def test_prepared_projection_recovers_after_restart(
                 assert staged == [(operation_id, {
                     "progress_kind": "complete", "nodes_superseded": 0,
                     "session_id": "recovery-session", "agent_id": "recovery-agent",
+                    "graph_write_records": [],
                 })]
             else:
                 assert queue is not None and queue.status == "pending"
