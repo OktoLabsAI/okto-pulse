@@ -56,3 +56,8 @@ Date: 2026-10-19. Plan: [SQLITE_TRANSACT_LOCK_PLAN.md](SQLITE_TRANSACT_LOCK_PLAN
 - New regression evidence: Core deferred finalization suite 5 passed, Community receipt/recovery suite 7 passed, and an actual Grafx commit that succeeded before raising recovered its OPEN session and queue ACK (1 integration test passed). Cancelling a routed receipt scan now waits until its Board window and pool lease are released.
 - Protected `main` still requires current GitHub Actions checks. Runs Core `39346891611` and Community `39346943824` have remained `queued` since 00:18/00:19 UTC; no runner or test result is yet available. Merges and tags remain pending these checks.
 - At approximately 01:05 UTC, both release PRs remained open with `mergeStateStatus=BLOCKED`, both CI runs remained queued, and no `v0.4.1` tag existed remotely. Do not force the protected merges or create release tags before the required checks pass.
+
+## Release CI recheck — 2026-10-20
+
+- Core release PR #112 passed its protected checks and merged to `main` as `e24cc1aed1d1a74375e8d5e1eda1b8f885d7722b`; Core's remote `v0.4.1` tag peels to that commit. Community PR #138 remains open with auto-squash-merge enabled, gated by its required CI.
+- Community CI run `39352770130` completed with 6,968 passed, 22 skipped, 13 deselected and one failure after 2h20m. The sole failing AF42 documentation oracle expected the executable Community→Core public import inventory `1155`, while `docs/ARCHITECTURE.md` still said `1154`. Updated both total and public classification to `1155`; the exact failed test then passed locally (1 passed, 3 deselected). A follow-up PR and new required release check are pending.
