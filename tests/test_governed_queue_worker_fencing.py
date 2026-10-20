@@ -296,6 +296,7 @@ async def test_prepared_projection_recovers_after_restart(
 
     staged = []
     finalized_sessions = []
+    maintained_sessions = []
 
     async def stage(_db, *, operation_id, output):
         staged.append((operation_id, output))
@@ -308,6 +309,11 @@ async def test_prepared_projection_recovers_after_restart(
             assert len(markers) == 1
         finalized_sessions.append((session_id, agent_id))
 
+    async def maintain(_db, *, entry, session_id):
+        assert finalized_sessions == [("recovery-session", "recovery-agent")]
+        assert entry.artifact_id == ARTIFACT_ID
+        maintained_sessions.append(session_id)
+
     monkeypatch.setattr(consolidation, "guarded_board_write", guarded)
     monkeypatch.setattr(consolidation, "advisory_lock", advisory)
     monkeypatch.setattr(consolidation, "_ensure_board_graph_durable", durable)
@@ -316,6 +322,7 @@ async def test_prepared_projection_recovers_after_restart(
     ), raising=False)
     monkeypatch.setattr(consolidation, "stage_recovered_projection_output", stage)
     monkeypatch.setattr(consolidation, "finalize_deferred_consolidation", finalize)
+    monkeypatch.setattr(consolidation, "_run_post_commit_maintenance", maintain)
     register_consolidation_persistence_port(adapter)
     try:
         processor = consolidation.ConsolidationProcessor(
@@ -338,6 +345,7 @@ async def test_prepared_projection_recovers_after_restart(
             assert queue.claim_token is None
             assert staged == []
             assert finalized_sessions == []
+            assert maintained_sessions == []
             assert any(m.event_type.endswith("absent") for m in markers)
         else:
             if progress_kind == "complete":
@@ -356,6 +364,9 @@ async def test_prepared_projection_recovers_after_restart(
                 assert staged == []
             assert any(m.event_type.endswith("finalized") for m in markers)
             assert finalized_sessions == [("recovery-session", "recovery-agent")]
+            assert maintained_sessions == (
+                ["recovery-session"] if progress_kind == "complete" else []
+            )
 
 
 @pytest.mark.asyncio
