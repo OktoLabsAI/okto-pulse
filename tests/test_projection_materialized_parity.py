@@ -256,6 +256,82 @@ async def materialize(root, *, incremental, card_type=None, final_unlinked=False
 
 
 @pytest.mark.asyncio
+@pytest.mark.timeout(180)
+async def test_journaled_card_findings_survive_json_and_recovery_shape(
+    tmp_path, monkeypatch,
+):
+    async def exercise(factory, _graph):
+        async with factory() as session:
+            session.add(ConsolidationQueue(
+                id='journaled-card-findings', board_id='board',
+                artifact_type='card', artifact_id='card', source='state_transition',
+            ))
+            await session.commit()
+        processor = ConsolidationProcessor(
+            relational_scope_factory=factory, durable_projection_protocol=True,
+        )
+        assert await processor.process_batch() == 1
+        async with factory() as session:
+            prepared = (await session.execute(select(DomainEventRow).where(
+                DomainEventRow.event_type == 'kg.projection.operation.prepared',
+            ))).scalars().all()
+            assert len(prepared) == 1
+            output = prepared[0].payload_json['output']
+            snapshot = ProjectionFindingSnapshot.from_payload(output['reference_findings'])
+            assert [finding.reason_code for finding in snapshot.findings] == [
+                'source_disagreement'
+            ]
+            assert not (await session.execute(select(ConsolidationQueue).where(
+                ConsolidationQueue.id == 'journaled-card-findings',
+            ))).scalars().all()
+
+        async with factory() as session:
+            card = await session.get(Card, 'card')
+            card.title = 'Card committed before SQLite ACK'
+            session.add(ConsolidationQueue(
+                id='journaled-card-recovery', board_id='board',
+                artifact_type='card', artifact_id='card', source='state_transition',
+            ))
+            await session.commit()
+        original_finalize = (
+            CommunitySqlAlchemyConsolidationPersistence.finalize_projection_operation
+        )
+
+        async def fail_before_ack(self, *args, **kwargs):
+            raise RuntimeError('injected_after_card_native_commit')
+
+        monkeypatch.setattr(
+            CommunitySqlAlchemyConsolidationPersistence,
+            'finalize_projection_operation', fail_before_ack,
+        )
+        try:
+            assert await processor.process_batch() == 0
+        finally:
+            monkeypatch.setattr(
+                CommunitySqlAlchemyConsolidationPersistence,
+                'finalize_projection_operation', original_finalize,
+            )
+        assert await processor.recover_projection_operations() == 1
+        async with factory() as session:
+            assert await session.get(ConsolidationQueue, 'journaled-card-recovery') is None
+            audits = (await session.execute(select(ConsolidationAudit).where(
+                ConsolidationAudit.board_id == 'board',
+                ConsolidationAudit.artifact_type == 'card',
+                ConsolidationAudit.artifact_id == 'card',
+            ))).scalars().all()
+            assert len(audits) >= 2
+            snapshot = ProjectionFindingSnapshot.from_payload(audits[-1].reference_findings)
+            assert [finding.reason_code for finding in snapshot.findings] == [
+                'source_disagreement'
+            ]
+
+    await materialize(
+        tmp_path / 'journaled-card', incremental=False, card_type='normal',
+        exercise=exercise,
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.timeout(480)
 async def test_native_spec_projection_uses_durable_journal_and_short_ack(
     tmp_path, monkeypatch, record_property,

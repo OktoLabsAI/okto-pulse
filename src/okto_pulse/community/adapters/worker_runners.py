@@ -443,12 +443,17 @@ class ConsolidationRunner:
                     )
                     if callable(recover_projections):
                         await recover_projections()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # An incompatible journal stays fenced on its own board;
+                    # it must not starve stale claims on unrelated boards.
+                    logger.exception("consolidation projection recovery failed")
+                try:
                     await self.processor.recover_stale_claims()
                 except asyncio.CancelledError:
                     raise
                 except Exception:
-                    # A transient SQLite lock must not permanently kill stale
-                    # claim recovery while the processing task remains alive.
                     logger.exception("consolidation stale-claim recovery failed")
         except asyncio.CancelledError:
             raise
