@@ -301,7 +301,8 @@ async def test_prepared_projection_recovers_after_restart(
     async def stage(_db, *, operation_id, output):
         staged.append((operation_id, output))
 
-    async def finalize(session_id, *, agent_id):
+    async def finalize(session_id, *, agent_id, recovered_native_commit=False):
+        assert recovered_native_commit
         async with factory() as check:
             markers = (await check.execute(select(DomainEventRow).where(
                 DomainEventRow.event_type == "kg.projection.operation.finalized",

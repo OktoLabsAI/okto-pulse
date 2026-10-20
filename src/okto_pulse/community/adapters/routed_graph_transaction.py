@@ -311,7 +311,22 @@ class CommunityRoutedGraphTransaction:
                 finally:
                     lease.release()
 
-        return await asyncio.to_thread(inspect)
+        scan = asyncio.create_task(asyncio.to_thread(inspect))
+        try:
+            return await asyncio.shield(scan)
+        except asyncio.CancelledError:
+            # A native scan keeps the Board window and Grafx pool lease.
+            # Shutdown must not tear either resource down before it exits.
+            while not scan.done():
+                try:
+                    await asyncio.shield(scan)
+                except asyncio.CancelledError:
+                    continue
+                except BaseException:
+                    break
+            if scan.done() and not scan.cancelled():
+                scan.exception()
+            raise
 
 
 __all__ = ["CommunityRoutedGraphTransaction"]
