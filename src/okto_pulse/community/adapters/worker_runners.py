@@ -445,10 +445,15 @@ class ConsolidationRunner:
                         await recover_projections()
                 except asyncio.CancelledError:
                     raise
-                except Exception:
+                except Exception as exc:
                     # An incompatible journal stays fenced on its own board;
                     # it must not starve stale claims on unrelated boards.
-                    logger.exception("consolidation projection recovery failed")
+                    if not (
+                        getattr(exc, "code", None) == "lock_contention"
+                        and getattr(exc, "retryable", False) is True
+                    ):
+                        logger.exception("consolidation projection recovery failed")
+                    # A busy board writer is retried on the next tick.
                 try:
                     await self.processor.recover_stale_claims()
                 except asyncio.CancelledError:
