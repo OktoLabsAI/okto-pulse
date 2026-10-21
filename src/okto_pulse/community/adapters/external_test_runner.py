@@ -27,6 +27,8 @@ from .test_evidence import (
 )
 
 SCHEMA = "okto-pulse-external-unittest/v1"
+_LONG_TIMEOUT_AUTHORIZATION = "local-long-running/v1"
+_MAX_LONG_TIMEOUT_SECONDS = 3600
 _NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}")
 _REVISION = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 _TEST = re.compile(r"[a-zA-Z0-9_/.-]+\.py::[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*")
@@ -51,7 +53,7 @@ def _profile_path(root, name):
 
 
 def register_profile(*, root, name, workspace, source_ref, board_id, spec_id,
-                     scenario_id, test_ids, timeout_seconds=60):
+                     scenario_id, test_ids, timeout_seconds=60, allow_long_running=False):
     path = _profile_path(Path(root), name)
     workspace = Path(workspace)
     if not workspace.is_absolute() or not workspace.is_dir():
@@ -60,6 +62,10 @@ def register_profile(*, root, name, workspace, source_ref, board_id, spec_id,
     data = dict(schema_version=SCHEMA, workspace=str(workspace), source_ref=source_ref,
                 board_id=board_id, spec_id=spec_id, scenario_id=scenario_id,
                 test_ids=test_ids, timeout_seconds=timeout_seconds)
+    if type(allow_long_running) is not bool:
+        _fail("timeout_authorization_invalid")
+    if allow_long_running:
+        data["timeout_authorization"] = _LONG_TIMEOUT_AUTHORIZATION
     _validate_profile(data)
     path.parent.mkdir(parents=True, exist_ok=True)
     # A local operator must explicitly remove a profile to replace its authority.
@@ -71,12 +77,17 @@ def register_profile(*, root, name, workspace, source_ref, board_id, spec_id,
 def _validate_profile(data):
     keys = {"schema_version", "workspace", "source_ref", "board_id", "spec_id",
             "scenario_id", "test_ids", "timeout_seconds"}
-    if not isinstance(data, dict) or set(data) != keys or data["schema_version"] != SCHEMA:
+    if (not isinstance(data, dict) or set(data) not in (keys, keys | {"timeout_authorization"})
+            or data["schema_version"] != SCHEMA):
         _fail("profile_invalid")
     if any(not isinstance(data[k], str) or not data[k].strip()
            for k in ("workspace", "source_ref", "board_id", "spec_id", "scenario_id")):
         _fail("profile_invalid")
-    if type(data["timeout_seconds"]) is not int or not 1 <= data["timeout_seconds"] <= 120:
+    authorization = data.get("timeout_authorization")
+    if "timeout_authorization" in data and authorization != _LONG_TIMEOUT_AUTHORIZATION:
+        _fail("timeout_authorization_invalid")
+    ceiling = _MAX_LONG_TIMEOUT_SECONDS if authorization is not None else 120
+    if type(data["timeout_seconds"]) is not int or not 1 <= data["timeout_seconds"] <= ceiling:
         _fail("timeout_invalid")
     ids = data["test_ids"]
     if not isinstance(ids, list) or not 1 <= len(ids) <= 100 or any(not isinstance(v, str) for v in ids):
