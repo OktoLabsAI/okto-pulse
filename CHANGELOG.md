@@ -19,6 +19,9 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 - Test Card completion now checks current cross-card verification evidence. The
   Kanban cover marks Done Cards with pending Delivery and labels the execution
   completeness report separately from the verification percentage.
+- Done Tasks with complete implementation and pending tests now explicitly say
+  `Implementation done · Verification pending`; their implementation-only Done
+  gate remains separate from the Spec's full delivery qualification.
 - Snapshot reads used by the completion gate skip per-Card display summaries,
   reducing database work during the transition.
 

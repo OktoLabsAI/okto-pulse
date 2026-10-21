@@ -51,6 +51,7 @@ it('U02: 100/100 remains closure pending while native lifecycle is open', () => 
 it('U04: Done remains historical when current qualification diverges', () => {
   const value = readiness(); value.lifecycle.stored_status = 'done';
   value.summary.message_code = 'historical_completion_diverged';
+  value.implementation = metric(75, 6);
   render(<DeliveryReadinessView value={value} />);
   expect(screen.getByText('Status: done')).toBeVisible();
   expect(screen.getByText('Historical completion · current qualification pending')).toBeVisible();
@@ -71,6 +72,17 @@ it('Done Test Card cover distinguishes its execution report from pending Deliver
   expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '0');
   expect(screen.getByText('Execution report: 100%')).toBeVisible();
   expect(screen.queryByText('100% complete')).not.toBeInTheDocument();
+});
+
+it('Done Task with complete implementation identifies verification as the remaining work', () => {
+  const value = readiness(); value.lifecycle.stored_status = 'done';
+  value.summary.message_code = 'historical_completion_diverged';
+  value.verification = metric(0, 0);
+  render(<><KanbanCard card={{ ...task, status: 'done' }} nameMap={{}} onClick={vi.fn()}
+    deliveryReadiness={{ value }} /><DeliveryReadinessView value={value} /></>);
+  expect(screen.getByRole('status')).toHaveTextContent('Implementation done · Verification pending');
+  expect(screen.getByText('Implementation complete · verification pending')).toBeVisible();
+  expect(screen.getAllByRole('progressbar', { name: 'Verification' })).toHaveLength(2);
 });
 
 it('Test Card shows verification alone and scenario counts with failure text even when Done', () => {
