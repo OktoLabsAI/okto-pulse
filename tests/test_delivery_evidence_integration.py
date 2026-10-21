@@ -460,7 +460,7 @@ async def test_gate_accepts_chain_valid_proof_recorded_before_done(ledger):
     register_relational_application_adapter(CommunityRelationalApplicationAdapter())
     session, store, _ = ledger
     await session.execute(
-        update(Card).where(Card.id == "task").values(status="in_progress")
+        update(Card).where(Card.id.in_(["task", "test"])).values(status="in_progress")
     )
     await session.commit()
     card = await session.get(Card, "task")
@@ -471,6 +471,8 @@ async def test_gate_accepts_chain_valid_proof_recorded_before_done(ledger):
 
     result = await record(store, command(idempotency_key="pre-done-impl"))
     assert result["replayed"] is False
+    with pytest.raises(ValueError, match="delivery_evidence_incomplete"):
+        await require_card_delivery(session, card=card, spec=spec, board=None)
     # Passing authenticated test evidence still cannot give final credit to an
     # implementation Card that has not reached Done.
     await record(store, command("test", implementation_ids=[result["id"]]))
@@ -487,7 +489,7 @@ async def test_gate_accepts_chain_valid_proof_recorded_before_done(ledger):
     assert not (await store.projection(BOARD_ID, SPEC_ID))["allowed"]
     # Controlled lifecycle stimulus isolates rollup's status predicate; actual
     # governed transitions are exercised by the complete lifecycle suites.
-    await session.execute(update(Card).where(Card.id == "task").values(status="done"))
+    await session.execute(update(Card).where(Card.id.in_(["task", "test"])).values(status="done"))
     await session.commit()
     assert (await store.projection(BOARD_ID, SPEC_ID))["allowed"]
 

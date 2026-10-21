@@ -219,7 +219,7 @@ export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 
         <div className="mb-3 flex items-center justify-between gap-3">
           <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Delivery Evidence (Definition of Done)</h3>
           <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide ${unproven.length ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'}`} data-testid="dod-gate-pill">
-            {gateMode === null ? 'Unknown' : gateMode === 'advisory' ? 'Advisory' : 'Blocking'} · {unproven.length} of {obligations.length || selectableRefs.length} unproven
+            {gateMode === null ? 'Unknown' : gateMode === 'advisory' ? 'Advisory' : 'Blocking'} · {unproven.length} of {obligations.length || selectableRefs.length} implementation obligations unproven
           </span>
         </div>
         {obligations.length === 0 && !isTest && (
@@ -243,7 +243,7 @@ export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 
         <p className="mt-3 text-xs text-gray-400 dark:text-gray-500">
           {isTest
             ? 'Save authenticated passed or failed results during execution. Verification requires current passing evidence for every required criterion on the delivered base. Closing cards is a separate workflow step.'
-            : "Test-phase verification is aggregated at the Spec rollup; this card's DoD requires implementation proof only."}
+            : 'Move to Done requires accepted implementation proof and current verification from linked tests. The Spec rollup also checks Card lifecycle.'}
         </p>
       </div>}
 

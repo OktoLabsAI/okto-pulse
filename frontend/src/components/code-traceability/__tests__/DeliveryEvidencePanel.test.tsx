@@ -171,9 +171,9 @@ it('renders per-card grouping with proof counts and DoD statuses', async () => {
   expect(screen.getByText('1/2 obligations with proof · 1 unproven')).toBeTruthy();
   expect(screen.getByText('TEST-21 — DoD rejection scenario')).toBeTruthy();
   expect(screen.getByText('Test card · records authenticated outcomes; delivery requires current passing evidence for every required criterion')).toBeTruthy();
-  expect(screen.getAllByText('Satisfied').length).toBe(1);
-  expect(screen.getByText('In progress')).toBeTruthy();
-  expect(screen.getByText('Excluded from DoD gate')).toBeTruthy();
+  expect(screen.getAllByText('Implementation proven').length).toBe(1);
+  expect(screen.getByText('Implementation pending')).toBeTruthy();
+  expect(screen.getByText('Verification gate')).toBeTruthy();
 });
 
 it('keeps a mixed report partial when only its functional criterion passes', async () => {

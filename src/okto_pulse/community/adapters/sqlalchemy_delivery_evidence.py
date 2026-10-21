@@ -439,13 +439,16 @@ class CommunityDeliveryEvidenceStore:
             rejection_reasons=tuple(reasons),
         )
 
-    async def load_snapshot(self, scope):
+    async def load_snapshot(self, scope, *, prospective_card_id=None, prospective_report=None):
+        if (prospective_card_id is None) != (prospective_report is None):
+            raise ValueError("delivery_prospective_report_scope_invalid")
         spec = await self._spec(scope.board_id, scope.spec_id)
         execution_contract(spec)
         if int(spec.edition) != scope.edition:
             raise ValueError("delivery_edition_conflict")
         return (await self.load_rollup_snapshot(
-            scope.board_id, scope.spec_id, include_card_summaries=False))[0]
+            scope.board_id, scope.spec_id, include_card_summaries=False,
+            prospective_card_id=prospective_card_id, prospective_report=prospective_report))[0]
 
     async def projection(self, board_id, spec_id):
         spec = await self._spec(board_id, spec_id)
@@ -1467,7 +1470,8 @@ class CommunityDeliveryEvidenceStore:
         return waivers
 
     async def load_rollup_snapshot(self, board_id, spec_id, *, include_reviews=True,
-                                   include_card_summaries=True):
+                                   include_card_summaries=True,
+                                   prospective_card_id=None, prospective_report=None):
         """Aggregate the card-ledger snapshots of a spec into one snapshot.
 
         Returns ``(DeliveryEvidenceSnapshot, per_card)`` where per_card carries
@@ -1482,11 +1486,16 @@ class CommunityDeliveryEvidenceStore:
         implementations, tests, per_card, rejected_records = [], [], [], []
         complete = True
         facts_complete = True
+        prospective_seen = prospective_card_id is None
         for card in await self._linked_cards(board_id, spec_id):
             card_scope = CardDeliveryScope(
                 board_id, card.id, spec_id, int(spec.edition)
             )
-            snapshot = await self.load_card_snapshot(card_scope, plan=plan, native_verification=native_verification)
+            is_prospective = card.id == prospective_card_id
+            prospective_seen = prospective_seen or is_prospective
+            snapshot = await self.load_card_snapshot(card_scope, plan=plan,
+                native_verification=native_verification,
+                prospective_report=prospective_report if is_prospective else None)
             complete = complete and snapshot.complete is True
             facts_complete = facts_complete and snapshot.facts_complete is True
             implementations.extend(snapshot.implementations)
@@ -1524,6 +1533,8 @@ class CommunityDeliveryEvidenceStore:
                         and all(row.implementation_satisfied for row in evaluation.rows),
                     }
                 )
+        if not prospective_seen:
+            raise ValueError("delivery_prospective_report_scope_invalid")
         waivers = await self._rollup_waivers(scope)
         snapshot = DeliveryEvidenceSnapshot(
             scope,

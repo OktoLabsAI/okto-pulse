@@ -227,7 +227,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
                   </div>
                 </div>
                 <span className={`shrink-0 text-xs font-medium ${isTest ? 'text-gray-400 dark:text-gray-500' : card.satisfied ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'}`}>
-                  {isTest ? 'Excluded from DoD gate' : card.satisfied ? 'Satisfied' : 'In progress'}
+                  {isTest ? 'Verification gate' : card.satisfied ? 'Implementation proven' : 'Implementation pending'}
                 </span>
               </div>;
             })}
