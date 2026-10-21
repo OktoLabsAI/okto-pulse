@@ -7,6 +7,22 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ---
 
+## [0.4.2] - 2026-10-21
+
+### Fixed
+
+- A Card awaiting a graph prerequisite no longer repeats a failed consolidation
+  when there are no old graph links to remove. The pending work remains visible
+  and can resume when its prerequisite is available.
+- Community 0.4.2 pairs with Core 0.4.2, which contains the corrected native
+  commit receipt and writer guard handling.
+
+### Upgrade
+
+- Stop all 0.4.1 Pulse processes before starting the paired 0.4.2 packages
+  against the same data home. Existing 0.4.1 data remains in place; this patch
+  does not require a fresh data home.
+
 ## [0.4.0] - 2026-10-16
 
 ### BREAKING CHANGE — no compatibility with earlier Pulse versions
