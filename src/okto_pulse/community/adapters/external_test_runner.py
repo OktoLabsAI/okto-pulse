@@ -28,6 +28,8 @@ from .test_evidence import (
 
 SCHEMA = "okto-pulse-external-unittest/v1"
 PAIRED_PROFILE_SCHEMA = "okto-pulse-external-unittest-profile/v2"
+_LONG_TIMEOUT_AUTHORIZATION = "local-long-running/v1"
+_MAX_LONG_TIMEOUT_SECONDS = 3600
 _NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}")
 _REVISION = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 _TEST = re.compile(r"[a-zA-Z0-9_/.-]+\.py::[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*")
@@ -53,7 +55,7 @@ def _profile_path(root, name):
 
 def register_profile(*, root, name, workspace, source_ref, board_id, spec_id,
                      scenario_id, test_ids, timeout_seconds=60,
-                     workspace_role=None, companions=None):
+                     workspace_role=None, companions=None, allow_long_running=False):
     path = _profile_path(Path(root), name)
     workspace = Path(workspace)
     if not workspace.is_absolute() or not workspace.is_dir():
@@ -68,6 +70,10 @@ def register_profile(*, root, name, workspace, source_ref, board_id, spec_id,
         data["companions"] = companions
     elif workspace_role is not None:
         _fail("companion_required_for_workspace_role")
+    if type(allow_long_running) is not bool:
+        _fail("timeout_authorization_invalid")
+    if allow_long_running:
+        data["timeout_authorization"] = _LONG_TIMEOUT_AUTHORIZATION
     _validate_profile(data)
     path.parent.mkdir(parents=True, exist_ok=True)
     # A local operator must explicitly remove a profile to replace its authority.
@@ -84,7 +90,7 @@ def _validate_profile(data):
     paired = data.get("schema_version") == PAIRED_PROFILE_SCHEMA
     if paired:
         keys |= {"workspace_role", "companions"}
-    if set(data) != keys or data["schema_version"] not in {SCHEMA, PAIRED_PROFILE_SCHEMA}:
+    if set(data) not in (keys, keys | {"timeout_authorization"}) or data["schema_version"] not in {SCHEMA, PAIRED_PROFILE_SCHEMA}:
         _fail("profile_invalid")
     if any(not isinstance(data[k], str) or not data[k].strip()
            for k in ("workspace", "source_ref", "board_id", "spec_id", "scenario_id")):
@@ -93,7 +99,11 @@ def _validate_profile(data):
     if not workspace.is_absolute() or not workspace.is_dir():
         _fail("absolute_workspace_required")
     _assert_no_reparse_chain(workspace, allow_missing=False)
-    if type(data["timeout_seconds"]) is not int or not 1 <= data["timeout_seconds"] <= 120:
+    authorization = data.get("timeout_authorization")
+    if "timeout_authorization" in data and authorization != _LONG_TIMEOUT_AUTHORIZATION:
+        _fail("timeout_authorization_invalid")
+    ceiling = _MAX_LONG_TIMEOUT_SECONDS if authorization is not None else 120
+    if type(data["timeout_seconds"]) is not int or not 1 <= data["timeout_seconds"] <= ceiling:
         _fail("timeout_invalid")
     ids = data["test_ids"]
     if not isinstance(ids, list) or not 1 <= len(ids) <= 100 or any(not isinstance(v, str) for v in ids):

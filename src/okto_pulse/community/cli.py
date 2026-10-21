@@ -1359,6 +1359,8 @@ def main():
                         metavar=("ROLE", "WORKSPACE", "SOURCE_REF", "REVISION"),
                         help="Locally authorize a second immutable Core/Community checkout")
     runner.add_argument("--timeout", type=int, default=60)
+    runner.add_argument("--allow-long-running", action="store_true",
+                        help="Locally authorize a scoped runner timeout up to 3600 seconds (default ceiling: 120)")
     runner.set_defaults(func=cmd_test_runner)
 
     # status
@@ -1556,7 +1558,8 @@ def cmd_test_runner(args):
             name=args.name, workspace=args.workspace, source_ref=args.source_ref,
             board_id=args.board_id, spec_id=args.spec_id, scenario_id=args.scenario_id,
             test_ids=args.test, timeout_seconds=args.timeout,
-            workspace_role=args.workspace_role, companions=companions)
+            workspace_role=args.workspace_role, companions=companions,
+            allow_long_running=getattr(args, "allow_long_running", False))
     except (OSError, ValueError) as exc:
         print(f"Cannot register test runner: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
