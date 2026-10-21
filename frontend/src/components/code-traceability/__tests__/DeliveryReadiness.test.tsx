@@ -57,6 +57,22 @@ it('U04: Done remains historical when current qualification diverges', () => {
   expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');
 });
 
+it('Done Test Card cover distinguishes its execution report from pending Delivery proof', () => {
+  const value = readiness(); value.scope.card_type = 'test'; value.lifecycle.stored_status = 'done';
+  value.summary.message_code = 'historical_completion_diverged';
+  value.implementation = { ...metric(0, 0), status: 'not_applicable', percent: null };
+  value.verification = { ...metric(0, 0), unit: 'scenario' };
+  render(<KanbanCard card={{ ...task, card_type: 'test', status: 'done',
+    conclusions: [{ text: 'Execution finished', author_id: 'agent', created_at: '2026-10-21',
+      completeness: 100, completeness_justification: 'All execution steps ran', drift: 0,
+      drift_justification: 'No drift reported', source: 'move_to_done' }] }}
+    nameMap={{}} onClick={vi.fn()} deliveryReadiness={{ value }} />);
+  expect(screen.getByRole('status')).toHaveTextContent('Execution done · Delivery pending');
+  expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '0');
+  expect(screen.getByText('Execution report: 100%')).toBeVisible();
+  expect(screen.queryByText('100% complete')).not.toBeInTheDocument();
+});
+
 it('Test Card shows verification alone and scenario counts with failure text even when Done', () => {
   const value = readiness(); value.scope.card_type = 'test'; value.lifecycle.stored_status = 'done';
   value.implementation = { ...metric(100, 8), status: 'not_applicable', percent: null, total: 0, applicable: 0, satisfied: 0, unresolved: 0, counts_by_state: emptyCounts };

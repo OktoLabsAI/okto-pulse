@@ -16,6 +16,11 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
   and can resume when its prerequisite is available.
 - Community 0.4.2 pairs with Core 0.4.2, which contains the corrected native
   commit receipt and writer guard handling.
+- Test Card completion now checks current cross-card verification evidence. The
+  Kanban cover marks Done Cards with pending Delivery and labels the execution
+  completeness report separately from the verification percentage.
+- Snapshot reads used by the completion gate skip per-Card display summaries,
+  reducing database work during the transition.
 
 ### Upgrade
 

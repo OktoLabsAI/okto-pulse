@@ -56,6 +56,9 @@ export function DeliveryReadinessView({ value, loading, error, compact = false, 
     : current?.delivery_state === 'delivered' || current?.delivery_state === 'delivered_with_exceptions' ? 'View evidence' : 'What is missing?';
   if (compact) return <section aria-label="Delivery readiness" aria-busy={loading || undefined}
     className="relative mt-2 min-w-0 rounded-md py-1" title={title || (loading ? 'Loading delivery readiness' : 'Current readiness is unavailable. Open Delivery to retry.')}>
+    {historical && <p role="status" className="mb-1 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+      Execution done · Delivery pending
+    </p>}
     <div className={`grid ${verificationOnly ? 'grid-cols-1' : 'grid-cols-2'} gap-3`}>
       {!verificationOnly && <Metric label="Implementation" value={current?.implementation} loading={loading} compact />}
       <Metric label="Verification" value={current?.verification} loading={loading} compact />

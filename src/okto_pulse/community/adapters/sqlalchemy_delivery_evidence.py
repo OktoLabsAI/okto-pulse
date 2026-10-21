@@ -444,7 +444,8 @@ class CommunityDeliveryEvidenceStore:
         execution_contract(spec)
         if int(spec.edition) != scope.edition:
             raise ValueError("delivery_edition_conflict")
-        return (await self.load_rollup_snapshot(scope.board_id, scope.spec_id))[0]
+        return (await self.load_rollup_snapshot(
+            scope.board_id, scope.spec_id, include_card_summaries=False))[0]
 
     async def projection(self, board_id, spec_id):
         spec = await self._spec(board_id, spec_id)
@@ -1465,7 +1466,8 @@ class CommunityDeliveryEvidenceStore:
                 )
         return waivers
 
-    async def load_rollup_snapshot(self, board_id, spec_id, *, include_reviews=True):
+    async def load_rollup_snapshot(self, board_id, spec_id, *, include_reviews=True,
+                                   include_card_summaries=True):
         """Aggregate the card-ledger snapshots of a spec into one snapshot.
 
         Returns ``(DeliveryEvidenceSnapshot, per_card)`` where per_card carries
@@ -1490,37 +1492,38 @@ class CommunityDeliveryEvidenceStore:
             implementations.extend(snapshot.implementations)
             tests.extend(snapshot.tests)
             rejected_records.extend(snapshot.rejected_records)
-            evaluation = evaluate_delivery_coverage(snapshot)
-            per_card.append(
-                {
-                    "card_id": card.id,
-                    "complete": snapshot.complete,
-                    "delivery_completeness": None,
-                    "title": card.title,
-                    "card_version": card.policy_version,
-                    "delivery_revision": await self._delivery_revision(card_scope),
-                    "selection": await self._selection_summary(card_scope),
-                    "accumulated_impact": await self._accumulated_impact(card_scope),
-                    "report_impact": await self.report_impact_status(card_scope),
-                    "progress": await self._progress_summary(card_scope),
-                    "card_type": str(
-                        getattr(card.card_type, "value", card.card_type)
-                    ),
-                    "status": str(getattr(card.status, "value", card.status)),
-                    "obligations": [
-                        {
-                            "ref": row.obligation.binding.obligation_ref,
-                            "title": row.obligation.title,
-                            "implementation_satisfied": (
-                                row.implementation_satisfied
-                            ),
-                        }
-                        for row in evaluation.rows
-                    ],
-                    "satisfied": snapshot.complete is True and bool(evaluation.rows)
-                    and all(row.implementation_satisfied for row in evaluation.rows),
-                }
-            )
+            if include_card_summaries:
+                evaluation = evaluate_delivery_coverage(snapshot)
+                per_card.append(
+                    {
+                        "card_id": card.id,
+                        "complete": snapshot.complete,
+                        "delivery_completeness": None,
+                        "title": card.title,
+                        "card_version": card.policy_version,
+                        "delivery_revision": await self._delivery_revision(card_scope),
+                        "selection": await self._selection_summary(card_scope),
+                        "accumulated_impact": await self._accumulated_impact(card_scope),
+                        "report_impact": await self.report_impact_status(card_scope),
+                        "progress": await self._progress_summary(card_scope),
+                        "card_type": str(
+                            getattr(card.card_type, "value", card.card_type)
+                        ),
+                        "status": str(getattr(card.status, "value", card.status)),
+                        "obligations": [
+                            {
+                                "ref": row.obligation.binding.obligation_ref,
+                                "title": row.obligation.title,
+                                "implementation_satisfied": (
+                                    row.implementation_satisfied
+                                ),
+                            }
+                            for row in evaluation.rows
+                        ],
+                        "satisfied": snapshot.complete is True and bool(evaluation.rows)
+                        and all(row.implementation_satisfied for row in evaluation.rows),
+                    }
+                )
         waivers = await self._rollup_waivers(scope)
         snapshot = DeliveryEvidenceSnapshot(
             scope,
@@ -1546,7 +1549,8 @@ class CommunityDeliveryEvidenceStore:
             snapshot = await CommunityDecisionReviews(self).attach(spec, snapshot)
         # Test evidence belongs to other Cards; calculate only after assembling
         # the complete selected and authenticated Spec population.
-        for row in per_card:
-            if row["card_type"] == CardType.NORMAL.value:
-                row["delivery_completeness"] = asdict(calculate_delivery_completeness(snapshot, row["card_id"]))
+        if include_card_summaries:
+            for row in per_card:
+                if row["card_type"] == CardType.NORMAL.value:
+                    row["delivery_completeness"] = asdict(calculate_delivery_completeness(snapshot, row["card_id"]))
         return snapshot, per_card
