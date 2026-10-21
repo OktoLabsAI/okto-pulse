@@ -42,6 +42,7 @@ from okto_pulse.core.domain.delivery_evidence import (
     implementation_binding_proof_issue,
     implementation_binding_ready,
 )
+from okto_pulse.core.domain.delivery_assessment import MetricStatus, UnitState, aggregate_delivery_metrics
 from okto_pulse.core.domain.enums import CardType, CardStatus, TestScenarioStatus
 from okto_pulse.core.domain.execution_contract import execution_contract
 from okto_pulse.core.domain.verification_plan import required_verification_scenarios
@@ -50,7 +51,8 @@ from okto_pulse.core.domain.verification_report import (
 )
 from okto_pulse.core.domain.delivery_verification import verification_sources_issue
 from okto_pulse.core.domain.effective_delivery_coverage import (
-    EffectiveDeliveryContext, ScopedTestFact, read_scoped_implementation, implementation_scope_current,
+    EffectiveDeliveryContext, EvaluatedDeliverySnapshot, ScopedTestFact, read_scoped_implementation,
+    implementation_scope_current,
 )
 from okto_pulse.core.domain.delivery_progress import DeliveryProgress, progress_blocks_execution, require_delivery_progress_mutable
 from okto_pulse.core.domain.delivery_selection import current_delivery_selection, seal_delivery_selection, current_delivery_report, report_reuses_impact, submitted_report_receipt
@@ -456,6 +458,10 @@ class CommunityDeliveryEvidenceStore:
         # Spec-scoped READ derives the rollup from the native Card ledgers.
         snapshot, per_card = await self.load_rollup_snapshot(board_id, spec_id)
         evaluation = evaluate_delivery_coverage(snapshot)
+        # Use the exact readiness assessment for the table's current-proof marks.
+        # The delivery verdict below still requires Done Cards.
+        current_assessment = EvaluatedDeliverySnapshot(snapshot).obligations()
+        current_metric = aggregate_delivery_metrics(current_assessment).implementation
         records = await self._records(scope)
         revoked = {r.payload.get("record_id") for r in records if r.kind == "revoke"}
         candidates = []
@@ -554,6 +560,13 @@ class CommunityDeliveryEvidenceStore:
                 }
                 for row in evaluation.rows
             ],
+            "current_proof_rows": [{
+                "obligation_ref": row.binding.obligation_ref,
+                "semantic_sha256": row.binding.semantic_sha256,
+                "implementation_ids": list(row.implementation.evidence_ids),
+                "implementation_satisfied": row.implementation.state == UnitState.SATISFIED,
+            } for row in current_assessment.obligations]
+            if current_metric.status != MetricStatus.UNKNOWN else None,
             "implementations": [{
                 **asdict(fact),
                 "executions": [{**asdict(proof),

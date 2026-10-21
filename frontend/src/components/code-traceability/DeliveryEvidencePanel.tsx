@@ -21,16 +21,18 @@ interface Props {
   focusExceptionId?: string | null;
 }
 
-function ObligationEvidenceDetails({ data, row }: {
+function ObligationEvidenceDetails({ data, row, currentRow }: {
   data: DeliveryEvidenceProjection; row: DeliveryEvidenceProjection['rows'][number];
+  currentRow?: NonNullable<DeliveryEvidenceProjection['current_proof_rows']>[number];
 }) {
-  const ids = new Set([...row.implementation_ids, ...row.test_ids,
+  const implementationIds = currentRow?.implementation_ids ?? row.implementation_ids;
+  const ids = new Set([...implementationIds, ...row.test_ids,
     ...row.implementation_waiver_ids, ...row.test_waiver_ids]);
   return <div className="space-y-4 break-words">
     <section aria-label="Implementation evidence" className="space-y-2">
       <h4 className="font-semibold">Implementation evidence</h4>
-      {row.implementation_ids.length === 0 && <p>No admitted implementation evidence.</p>}
-      {row.implementation_ids.map(id => {
+      {implementationIds.length === 0 && <p>{currentRow ? 'No current implementation proof.' : 'Current implementation proof unavailable.'}</p>}
+      {implementationIds.map(id => {
         const proof = data.implementations.find(item => item.id === id);
         return <div key={id} className="space-y-1 rounded border border-gray-200 p-2 dark:border-gray-700">
           <p className="break-all">Record: {id}</p>
@@ -92,6 +94,8 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
   }, [api, boardId, specId, revision, reload, focusExceptionId]);
 
   const missingImplementation = data?.rows.filter(row => !row.implementation_satisfied).length ?? 0;
+  const currentProofRows = new Map((data?.current_proof_rows ?? []).map(row =>
+    [`${row.obligation_ref}:${row.semantic_sha256}`, row]));
   const missingTest = data?.rows.filter(row => !row.test_satisfied && !row.decision_verification_status).length ?? 0;
   const pendingDecisions = data?.rows.filter(row => row.decision_verification_status && !row.test_satisfied).length ?? 0;
   const summary = !data ? '' : data.allowed
@@ -160,6 +164,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
     {data && <>
       <div>
         <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Coverage by obligation</h3>
+        <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">Implementation marks use the same current proof assessment as the percentage above. Delivery qualification also requires its contributing Cards to reach Done.</p>
         <div className="overflow-x-auto">
           <table className="w-full text-sm" data-testid="delivery-coverage-table">
             <thead>
@@ -175,6 +180,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
                 const waivedImpl = row.implementation_waiver_ids.length > 0;
                 const waivedTest = row.test_waiver_ids.length > 0;
                 const decision = !!row.decision_verification_status;
+                const currentProof = currentProofRows.get(`${ref}:${row.obligation.binding.semantic_sha256}`);
                 return <tr key={ref}>
                   <td className="min-w-0 py-1.5 pr-4 text-gray-700 dark:text-gray-200">
                     <details className="group py-2">
@@ -189,12 +195,19 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
                     {decision ? <div className="space-y-2"><p>{decisionStatusLabel(row.decision_verification_status!)}</p>
                       <p>Adherence reuses selected obligation evidence and any required inspection. No separate implementation Card is required.</p>
                       {onOpenDecisions && <button type="button" className="btn btn-secondary text-xs" onClick={onOpenDecisions}>Review in Decisions</button>}
-                    </div> : <ObligationEvidenceDetails data={data} row={row} />}
+                    </div> : <ObligationEvidenceDetails data={data} row={row} currentRow={currentProof} />}
                     </div>
                     </details>
                   </td>
-                  <td className="px-2 text-green-600 dark:text-green-400" title={decision ? 'Decisions do not require their own implementation' : waivedImpl ? 'Explicitly waived — human authorization' : row.implementation_satisfied ? 'Accepted proof recorded' : 'No accepted proof'}>
-                    {decision ? <span className="text-xs text-gray-500">Not applicable</span> : waivedImpl ? <span className="text-xs text-amber-600 dark:text-amber-400">Waived</span> : row.implementation_satisfied ? '✓' : <span className="text-amber-500">◌</span>}
+                  <td className="px-2 text-xs" title={decision ? 'Decisions do not require their own implementation' : 'Current proof and delivery qualification are separate stages'}>
+                    {decision ? <span className="text-gray-500">Not applicable</span> : <div className="space-y-1">
+                      <div className={currentProof?.implementation_satisfied ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'}>
+                        {currentProof ? currentProof.implementation_satisfied ? '✓ Current proof' : '◌ Current proof missing' : 'Current proof unavailable'}
+                      </div>
+                      <div className={row.implementation_satisfied && !waivedImpl ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'}>
+                        {waivedImpl ? 'Waived' : row.implementation_satisfied ? <><span>✓</span> Delivery qualified</> : <><span>◌</span> Delivery pending</>}
+                      </div>
+                    </div>}
                   </td>
                   <td className="px-2 text-green-600 dark:text-green-400" title={waivedTest ? 'Explicitly waived — human authorization' : row.test_satisfied ? 'Current passing evidence for this obligation' : 'Missing / stale'}>
                     {decision ? <span className="text-xs">{decisionStatusLabel(row.decision_verification_status!)}</span> : waivedTest ? <span className="text-xs text-amber-600 dark:text-amber-400">Waived</span> : row.test_satisfied ? '✓' : <span className="text-amber-500">◌</span>}
@@ -222,8 +235,8 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
                       : card.obligations.length === 0
                         ? 'No derived obligations'
                         : proven === card.obligations.length
-                          ? `${proven} obligation${proven === 1 ? '' : 's'} with accepted proof`
-                          : `${proven}/${card.obligations.length} obligations with proof · ${card.obligations.length - proven} unproven`}
+                          ? `${proven} obligation${proven === 1 ? '' : 's'} with delivery-qualified proof`
+                          : `${proven}/${card.obligations.length} obligations with delivery-qualified proof · ${card.obligations.length - proven} pending qualification`}
                   </div>
                 </div>
                 <span className={`shrink-0 text-xs font-medium ${isTest ? 'text-gray-400 dark:text-gray-500' : card.satisfied ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'}`}>

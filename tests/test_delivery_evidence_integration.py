@@ -477,7 +477,10 @@ async def test_gate_accepts_chain_valid_proof_recorded_before_done(ledger):
     # implementation Card that has not reached Done.
     await record(store, command("test", implementation_ids=[result["id"]]))
     await session.commit()
-    assert not (await store.projection(BOARD_ID, SPEC_ID))["allowed"]
+    before_done = await store.projection(BOARD_ID, SPEC_ID)
+    assert not before_done["allowed"]
+    assert any(result["id"] in row["implementation_ids"] for row in before_done["current_proof_rows"])
+    assert all(result["id"] not in row["implementation_ids"] for row in before_done["rows"])
     await require_card_delivery(session, card=card, spec=spec, board=None)
     await session.execute(update(Card).where(Card.id == "task").values(status="validation"))
     await session.commit()
@@ -491,7 +494,9 @@ async def test_gate_accepts_chain_valid_proof_recorded_before_done(ledger):
     # governed transitions are exercised by the complete lifecycle suites.
     await session.execute(update(Card).where(Card.id.in_(["task", "test"])).values(status="done"))
     await session.commit()
-    assert (await store.projection(BOARD_ID, SPEC_ID))["allowed"]
+    after_done = await store.projection(BOARD_ID, SPEC_ID)
+    assert after_done["allowed"]
+    assert any(result["id"] in row["implementation_ids"] for row in after_done["rows"])
 
 
 @pytest.mark.asyncio
@@ -555,6 +560,7 @@ async def test_waiver_is_human_scoped_phase_specific_revocable_and_preserves_don
     waived = await store.projection(BOARD_ID, SPEC_ID)
     assert waived["allowed"]
     assert all(not row["implementation_ids"] and not row["test_ids"] for row in waived["rows"])
+    assert all(not row["implementation_satisfied"] for row in waived["current_proof_rows"])
     revoke = spec_exception_command("revoke", record_id=first["id"])
     for human, granted, error in [(True, False, "permission"), (False, True, "human_authorization")]:
         with pytest.raises(PermissionDeniedError, match=error):
