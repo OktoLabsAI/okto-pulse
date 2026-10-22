@@ -335,7 +335,8 @@ async def test_concurrent_startups_normalize_each_card_once(tmp_path):
 
 @pytest.mark.asyncio
 async def test_normalization_event_is_delivered_and_deduplicated(tmp_path):
-    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'dispatch.db'}")
+    url = f"sqlite+aiosqlite:///{tmp_path / 'dispatch.db'}"
+    engine = create_async_engine(url)
     try:
         await initialize_current_schema(engine, current_schema_contract())
         sessions = build_community_session_factory(engine)
@@ -359,6 +360,13 @@ async def test_normalization_event_is_delivered_and_deduplicated(tmp_path):
                              created_by="owner", status=CardStatus.STARTED, position=0))
             await session.commit()
         assert await normalize_legacy_card_status(engine) == 1
+
+        # Simulate a process crash after the SQLite commit, before dispatch.
+        await engine.dispose()
+        engine = create_async_engine(url)
+        await initialize_current_schema(engine, current_schema_contract())
+        assert await normalize_legacy_card_status(engine) == 0
+        sessions = build_community_session_factory(engine)
 
         # The persisted event still names the old parent when dispatch runs.
         async with sessions() as session:
