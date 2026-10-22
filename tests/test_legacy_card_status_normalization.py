@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -301,6 +302,36 @@ async def test_large_legacy_column_keeps_order_and_durable_projection_intent():
                 "WHERE status='pending'"
             )).scalar_one() == count
         assert await normalize_legacy_card_status(engine) == 0
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(120)
+async def test_ten_thousand_cards_commit_without_kg_and_restart_is_noop(caplog):
+    caplog.set_level(logging.INFO, logger="okto_pulse.community.legacy_card_status_normalization")
+    engine = await _engine()
+    try:
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(
+                "INSERT INTO cards VALUES (?, 'board', NULL, 'started', ?, "
+                "1, 0, NULL, 'old', 'old')",
+                [(f"legacy-{index:05d}", index) for index in range(10_000)],
+            )
+        started = time.perf_counter()
+        assert await normalize_legacy_card_status(engine) == 10_000
+        elapsed = time.perf_counter() - started
+        assert elapsed < 120
+        assert await normalize_legacy_card_status(engine) == 0
+        async with engine.connect() as connection:
+            assert (await connection.exec_driver_sql(
+                "SELECT COUNT(*) FROM cards WHERE status='started'"
+            )).scalar_one() == 0
+            for table in ("activity_logs", "domain_events", "domain_event_handler_executions"):
+                assert (await connection.exec_driver_sql(f"SELECT COUNT(*) FROM {table}")).scalar_one() == 10_000
+        assert "outcome=committed cards=10000" in caplog.text
+        assert "outcome=noop cards=0" in caplog.text
+        assert "duration_ms=" in caplog.text
     finally:
         await engine.dispose()
 
