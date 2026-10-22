@@ -90,6 +90,47 @@ async def test_atomic_report_manifest_replay_and_later_rework_do_not_resubmit(db
 
 
 @pytest.mark.asyncio
+async def test_pre_upgrade_started_report_only_replays_identical_receipt(db, monkeypatch):
+    session, uow, _ = await setup(db)
+    actor = ActorContext(actor_id="owner", actor_kind="agent", source="mcp", board_id="b",
+        permissions=["card.conclusion.write", "card.entity.read"])
+    try:
+        use_case = RecordCardDeliveryEvidenceUseCase()
+        original = request()
+        canonical_actor = ActorContext(actor_id="owner", actor_kind="agent", source="mcp", board_id="b",
+            permissions=["card.conclusion.write", transition_permission_requirement("card", "in_progress", "validation").operation])
+        store = uow.services.delivery_evidence
+        digest = store.inventory.payload_digest
+
+        def historical_report_digest(value):
+            # Simulate the immutable digest left by a pre-upgrade report. The
+            # historical row cannot be UPDATEd: its audit trigger forbids it.
+            if isinstance(value, dict) and value.get("contract_version") == "card-delivery-report/v1":
+                value = {**value, "expected_card_status": "started"}
+            return digest(value)
+
+        monkeypatch.setattr(store.inventory, "payload_digest", historical_report_digest)
+        saved = await use_case.execute(original, actor=canonical_actor, uow=uow)
+        monkeypatch.setattr(store.inventory, "payload_digest", digest)
+        historical = request(expected_card_status="started")
+        before_events = await session.scalar(select(func.count()).select_from(DomainEventRow))
+        replay = await use_case.execute(historical, actor=actor, uow=uow)
+        assert replay == {**saved, "replayed": True}
+        assert await session.scalar(select(func.count()).select_from(Record)) == 1
+        assert await session.scalar(select(func.count()).select_from(DomainEventRow)) == before_events
+        changed = historical.model_dump(exclude={"board_id", "card_id", "spec_id"})
+        changed["report"]["conclusion"] = "Different report"
+        with pytest.raises(ValueError, match="delivery_idempotency_conflict"):
+            await use_case.execute(card_delivery_command(board_id="b", card_id="c", spec_id="s", evidence=changed), actor=actor, uow=uow)
+        unseen = historical.model_copy(update={"batch": historical.batch.model_copy(update={"idempotency_key": "new-key"})})
+        with pytest.raises(ValueError, match="delivery_legacy_started_replay_only"):
+            await use_case.execute(unseen, actor=actor, uow=uow)
+        assert await session.scalar(select(func.count()).select_from(Record)) == 1
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["impact", "selection", "permission", "state", "late"])
 async def test_report_rejection_cannot_leave_batch_or_outbox_after_outer_commit(db, case):
     session, uow, actor = await setup(db, require_impact=case == "impact")

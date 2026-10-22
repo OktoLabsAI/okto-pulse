@@ -1013,6 +1013,18 @@ class CommunityDeliveryEvidenceStore:
         scope = CardDeliveryScope(command.board_id, command.card_id, command.spec_id, batch.expected_spec_edition)
         await self.lock_scope(DeliveryScope(scope.board_id, scope.spec_id, scope.spec_edition))
         async with self.session.begin_nested():
+            if command.expected_card_status == "started":
+                # The parser retains this value only for exact historical
+                # replay. A missing head must fail before any batch/report
+                # writer can run, even if a legacy card has not migrated yet.
+                head_id = await self.session.scalar(select(CardRecord.id).where(
+                    CardRecord.board_id == scope.board_id,
+                    CardRecord.card_id == scope.card_id,
+                    CardRecord.actor_id == actor_id,
+                    CardRecord.idempotency_key == batch.idempotency_key,
+                ).limit(1))
+                if head_id is None:
+                    raise ValueError("delivery_legacy_started_replay_only")
             result = await self._record_card_batch(batch, actor_id=actor_id, actor_kind=actor_kind,
                 execution_submitter=execution_submitter, submission_digest=self.inventory.payload_digest(command.model_dump()),
                 expected_status=command.expected_card_status)
