@@ -1353,6 +1353,11 @@ def main():
     runner.add_argument("--scenario-id", required=True)
     runner.add_argument("--test", action="append", required=True,
                         help="Tracked file.py::TestCase.test_method (repeatable)")
+    runner.add_argument("--workspace-role", choices=("core", "community"),
+                        help="Role of the primary checkout when pairing sources")
+    runner.add_argument("--companion", action="append", nargs=4,
+                        metavar=("ROLE", "WORKSPACE", "SOURCE_REF", "REVISION"),
+                        help="Locally authorize a second immutable Core/Community checkout")
     runner.add_argument("--timeout", type=int, default=60)
     runner.set_defaults(func=cmd_test_runner)
 
@@ -1545,10 +1550,13 @@ def cmd_test_runner(args):
     from okto_pulse.community.config import CommunitySettings
     from okto_pulse.community.adapters.external_test_runner import register_profile
     try:
+        companions = [dict(zip(("role", "workspace", "source_ref", "revision"), values))
+                      for values in (args.companion or [])]
         path = register_profile(root=Path(CommunitySettings().data_dir) / "test-runners",
             name=args.name, workspace=args.workspace, source_ref=args.source_ref,
             board_id=args.board_id, spec_id=args.spec_id, scenario_id=args.scenario_id,
-            test_ids=args.test, timeout_seconds=args.timeout)
+            test_ids=args.test, timeout_seconds=args.timeout,
+            workspace_role=args.workspace_role, companions=companions)
     except (OSError, ValueError) as exc:
         print(f"Cannot register test runner: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc

@@ -136,3 +136,55 @@ async def test_missing_method_cannot_be_authenticated_as_a_failing_test(tmp_path
     with pytest.raises(CommunityTestEvidenceError, match="runner_setup_failed"):
         await issuer.execute(replace(request, status="failed"))
     assert not ledger.receipt_root.exists()
+
+
+@pytest.mark.asyncio
+async def test_paired_source_runner_snapshots_both_commits_and_attests_companion(tmp_path, project):
+    root, _ = project
+    (root / "test_paired.py").write_text('''import unittest
+from pulse_companion_marker import VALUE
+class PairedCases(unittest.TestCase):
+    def test_companion(self): self.assertEqual(VALUE, 41)
+''', encoding="utf-8")
+
+    def git(workspace, *args):
+        return subprocess.check_output(["git", "-C", str(workspace), *args],
+                                       stderr=subprocess.DEVNULL).decode().strip()
+
+    git(root, "add", ".")
+    git(root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+        "commit", "-m", "paired test")
+    primary_revision = git(root, "rev-parse", "HEAD")
+    companion = tmp_path / "companion"
+    (companion / "src").mkdir(parents=True)
+    marker = companion / "src" / "pulse_companion_marker.py"
+    marker.write_text("VALUE = 41\n", encoding="utf-8")
+    git(companion, "init")
+    git(companion, "add", ".")
+    git(companion, "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+        "commit", "-m", "companion fixture")
+    companion_revision = git(companion, "rev-parse", "HEAD")
+    ledger = CommunityEvidenceLedger(evidence_root=tmp_path / "paired-evidence")
+    register_profile(
+        root=profile_root(ledger), name="paired", workspace=str(root),
+        source_ref="source-core", board_id="board", spec_id="spec",
+        scenario_id="scenario", test_ids=["test_paired.py::PairedCases.test_companion"],
+        workspace_role="core", companions=[{
+            "role": "community", "workspace": str(companion),
+            "source_ref": "source-community", "revision": companion_revision,
+        }],
+    )
+    marker.write_text("raise RuntimeError('dirty companion must be ignored')\n", encoding="utf-8")
+    issuer = CommunityTestEvidenceExecutionIssuer(ledger=ledger, executor=lambda *_: None)
+    request = Request(board_id="board", spec_id="spec", scenario_id="scenario", status="passed",
+        manifest_ref=None, actor_id="agent", scenario_sha256="sha256:" + "a" * 64,
+        inline_replay={"runner_ref": "paired", "revision": primary_revision})
+    result = await issuer.execute(request)
+    evidence = Evidence.model_validate(result.evidence).model_dump(exclude_none=True)
+    assert verify(ledger, request, evidence).verified
+    assert evidence["execution_attestation"]["execution_basis"]["companion_sources"] == [{
+        "role": "community", "source_ref": "source-community", "revision": companion_revision,
+    }]
+    tampered = deepcopy(evidence)
+    tampered["execution_attestation"]["execution_basis"]["companion_sources"][0]["revision"] = "b" * 40
+    assert not verify(ledger, request, tampered).verified
