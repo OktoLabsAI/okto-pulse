@@ -3,7 +3,7 @@
 import asyncio
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from okto_pulse.community.adapters.card_status_permission_reconciliation import (
@@ -155,5 +155,39 @@ async def test_concurrent_permission_startups_do_not_duplicate_conversion(tmp_pa
             assert (await session.scalar(select(func.count(PermissionIntroductionAudit.id)))) == 1
             custom = await session.get(PermissionPreset, "custom")
             assert get_permission_flag(custom.flags, "card.move.in_progress_to_not_started") is False
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_permission_conversion_failure_rolls_back_before_readiness(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'rollback-permissions.db'}")
+    try:
+        await initialize_current_schema(engine, current_schema_contract())
+        sessions = build_community_session_factory(engine)
+        async with sessions() as session:
+            session.add(PermissionPreset(
+                id="custom", name="Custom", owner_id="owner",
+                is_builtin=False,
+                flags={"card": {"move": {
+                    "in_progress_to_started": True,
+                    "started_to_not_started": True,
+                }}},
+            ))
+            await session.commit()
+        async with engine.begin() as connection:
+            await connection.execute(text(
+                "CREATE TRIGGER fail_conversion BEFORE INSERT ON permission_introduction_audit "
+                "BEGIN SELECT RAISE(FAIL, 'injected_permission_audit_failure'); END"
+            ))
+        with pytest.raises(Exception, match="injected_permission_audit_failure"):
+            await reconcile_card_status_permission_documents(session_factory=sessions)
+        async with sessions() as session:
+            row = await session.get(PermissionPreset, "custom")
+            assert get_permission_flag(row.flags, "card.move.in_progress_to_not_started") is None
+            assert await session.scalar(select(func.count(PermissionIntroductionAudit.id))) == 0
+        async with engine.begin() as connection:
+            await connection.execute(text("DROP TRIGGER fail_conversion"))
+        assert await reconcile_card_status_permission_documents(session_factory=sessions) == 1
     finally:
         await engine.dispose()

@@ -556,6 +556,11 @@ class CommunityRelationalApplicationAdapter:
     def permission_presets(self, session: AsyncSession) -> CommunityPermissionPresetGateway:
         return CommunityPermissionPresetGateway(session, self._permission_policy)
 
+    def card_status_migration(self, session: AsyncSession):
+        from .card_status_migration_read import CommunityCardStatusMigrationRead
+
+        return CommunityCardStatusMigrationRead(session)
+
     def quality_assessments(
         self,
         session: AsyncSession,
