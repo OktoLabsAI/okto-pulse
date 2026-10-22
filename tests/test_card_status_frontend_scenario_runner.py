@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+from typing import get_args
 import unittest
 
 
@@ -92,3 +93,14 @@ class CardStatusFrontendScenarios(unittest.TestCase):
         self.assertNotIn("  | 'started'", types.split("// Card priority", 1)[0])
         self.assertIn("Historical", doc)
         self.assertIn("REST and MCP", doc)
+        core_root = os.environ.get("OKTO_PULSE_CORE_REPO")
+        self.assertIsNotNone(core_root, "paired Core snapshot required")
+        from okto_pulse.core.models.schemas import CardCreate, CardMoveTargetStatus
+
+        self.assertNotIn("started", {status.value for status in get_args(CardMoveTargetStatus)})
+        self.assertEqual(
+            {status.value for status in get_args(CardCreate.model_fields["status"].annotation)},
+            {"not_started"},
+        )
+        mcp = (Path(core_root) / "src/okto_pulse/core/mcp/server.py").read_text(encoding="utf-8")
+        self.assertIn("not_started/in_progress/validation/rejected/on_hold/done/cancelled/open", mcp)
