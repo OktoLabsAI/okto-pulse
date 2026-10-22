@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
@@ -376,14 +377,34 @@ async def test_normalization_event_is_delivered_and_deduplicated(tmp_path):
 
         register_relational_effects_port(CommunitySqlAlchemyRelationalEffects())
         register_application_persistence_port(CommunitySqlAlchemyApplicationPersistence())
+        class FailOnceEnqueuer(ConsolidationEnqueuer):
+            calls = 0
+
+            async def handle(self, event, session):
+                type(self).calls += 1
+                if type(self).calls == 1:
+                    raise RuntimeError("temporary projection dispatch failure")
+                await super().handle(event, session)
+
+        current_time = datetime.now(timezone.utc)
         processor = DomainEventDeliveryProcessor(
             CommunitySqlAlchemyDomainEventDeliveryStore(sessions),
-            handler_resolver=lambda _name, _event: ConsolidationEnqueuer,
+            handler_resolver=lambda _name, _event: FailOnceEnqueuer,
+            clock=lambda: current_time,
         )
         assert await processor.process_batch() == 1
         async with sessions() as session:
             execution = (await session.execute(select(DomainEventHandlerExecution))).scalar_one()
+            assert execution.status == "pending"
+            assert execution.attempts == 1
+            assert execution.last_error == "temporary projection dispatch failure"
+            assert not (await session.execute(select(ConsolidationQueue))).scalars().all()
+            current_time = execution.next_attempt_at.replace(tzinfo=timezone.utc) + timedelta(microseconds=1)
+        assert await processor.process_batch() == 1
+        async with sessions() as session:
+            execution = (await session.execute(select(DomainEventHandlerExecution))).scalar_one()
             assert execution.status == "done"
+            assert execution.attempts == 2
             targets = (await session.execute(select(ConsolidationQueue))).scalars().all()
             assert {(row.artifact_type, row.artifact_id) for row in targets} == {
                 ("card", "legacy"), ("spec", "spec"), ("spec", "current-spec"),
