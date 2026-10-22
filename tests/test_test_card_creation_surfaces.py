@@ -27,6 +27,107 @@ from test_knowledge_propagation_parent_adapter import _native_spec
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('transport', ['rest', 'mcp'])
+@pytest.mark.parametrize('card_type', ['normal', 'test', 'bug'])
+@pytest.mark.parametrize('initial_status', [None, 'not_started'])
+async def test_public_create_enters_planning_once(
+    tmp_path, monkeypatch, transport, card_type, initial_status,
+):
+    engine = build_community_engine(f"sqlite+aiosqlite:///{tmp_path / 'planned-create.db'}")
+    sessions = build_community_session_factory(engine)
+    register_report_adapters()
+    register_spec_resource_propagation_store(CommunitySqlAlchemySpecResourcePropagationStore())
+    factory = CommunityUnitOfWorkFactory(sessions)
+    store = CommunitySqlAlchemyKnowledgePropagationStore(sessions)
+    register_knowledge_propagation_port(store)
+    register_knowledge_mutation_audit_sink(store)
+    from okto_pulse.community.adapters.sqlalchemy_models import PermissionPreset
+    from okto_pulse.core.ports.permission_policy import registered_permission_flags, set_permission_flag
+
+    permissions = ['card.entity.create', 'card.entity.create_test']
+    flags = registered_permission_flags()
+
+    def deny(tree):
+        for key, value in tree.items():
+            if isinstance(value, dict):
+                deny(value)
+            else:
+                tree[key] = False
+
+    deny(flags)
+    for operation in permissions:
+        set_permission_flag(flags, operation, True)
+    principal = Principal('owner', realm_id='local', actor_kind='agent', claims={'permissions': permissions})
+    context = SimpleNamespace(agent_id='owner', agent_name='Author', board_id='board',
+                              realm_id='local', permissions=permissions)
+    try:
+        await initialize_current_schema(engine, current_schema_contract())
+        async with sessions() as db:
+            db.add(Board(id='board', realm_id='local', name='Board', owner_id='owner'))
+            db.add(PermissionPreset(id='planned-author', name='Author', owner_id='owner', flags=flags))
+            db.add(Agent(id='owner', name='Author', api_key='fixture',
+                         api_key_hash=AgentService.hash_api_key('fixture'), created_by='owner',
+                         preset_id='planned-author', permission_flags={}))
+            db.add(AgentBoard(id='grant', board_id='board', agent_id='owner', granted_by='owner'))
+            db.add(_native_spec(id='spec', board_id='board', title='Spec', created_by='owner',
+                                status='approved', test_scenarios=[
+                                    {'id': 'one', 'title': 'One', 'status': 'draft', 'linked_task_ids': []},
+                                ]))
+            if card_type == 'bug':
+                db.add(Card(id='origin', board_id='board', spec_id='spec', title='Origin',
+                            card_type='normal', status='not_started', created_by='owner'))
+            await db.commit()
+        data = {'title': 'Planned Card', 'spec_id': 'spec', 'card_type': card_type}
+        if card_type == 'test':
+            data['test_scenario_ids'] = ['one']
+        if card_type == 'bug':
+            data.update(origin_task_id='origin', severity='major',
+                        expected_behavior='Expected output', observed_behavior='Different output')
+        if initial_status is not None:
+            data['status'] = initial_status
+        if transport == 'rest':
+            app = FastAPI()
+            app.state.runtime_composition = SimpleNamespace(uow_factory=factory)
+            app.include_router(router, prefix='/boards')
+            app.dependency_overrides[require_principal] = lambda: principal
+
+            async def unit():
+                actor = RESTAdapterContract.actor_from_principal(principal, board_id='board')
+                async with factory(actor=actor) as uow:
+                    yield uow
+
+            app.dependency_overrides[get_unit_of_work] = unit
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                         base_url='http://test') as client:
+                response = await client.post('/boards/board/cards', json=data)
+            assert response.status_code == 201, response.text
+        else:
+            async def actor(board_id):
+                assert board_id == 'board'
+                return context
+
+            monkeypatch.setattr(server, '_get_agent_ctx', actor)
+            monkeypatch.setattr(server, 'get_unit_of_work_factory_for_mcp', lambda: factory)
+            response = json.loads(await server.okto_pulse_create_card.fn(board_id='board', **data))
+            assert 'error' not in response, response
+        async with sessions() as db:
+            cards = (await db.scalars(select(Card))).all()
+            events = (await db.scalars(select(DomainEventRow))).all()
+            spec = await db.get(Spec, 'spec')
+            assert len(cards) == (2 if card_type == 'bug' else 1)
+            created = next(card for card in cards if card.title == 'Planned Card')
+            assert created.card_type.value == card_type
+            assert created.status.value == 'not_started'
+            assert [event.event_type for event in events].count('card.created') == 1
+            assert all(event.event_type != 'card.moved' for event in events)
+            if card_type == 'test':
+                assert created.test_scenario_ids == ['one']
+                assert spec.test_scenarios[0]['linked_task_ids'] == [created.id]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('transport', ['rest', 'mcp'])
 @pytest.mark.parametrize('case', ['valid', 'foreign_spec', 'foreign_board', 'denied'])
 @pytest.mark.parametrize('knowledge_v2', [False, True])
 @pytest.mark.parametrize('initial_status', [None, 'not_started'])
