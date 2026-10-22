@@ -5,6 +5,7 @@ specialized reports are issued and checked through the real evidence ledger.
 """
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select, update
@@ -280,3 +281,48 @@ async def test_automated_authentication_does_not_prove_an_absent_or_incompatible
     assert all(row['scenario_findings'][0]['reason']['code'] == expected for row in projected['rows'])
     with pytest.raises(ValueError, match='delivery_current_verified_test_and_implementation_required'):
         await delivery.record(store, delivery.command('test', implementation_ids=[implementation['id']]))
+
+
+@pytest.mark.asyncio
+async def test_authenticated_paired_run_observes_both_committed_sources(tmp_path):
+    from test_evidence_v2_adapter import (
+        _produce, ACCEPTANCE_CRITERIA, BOARD_ID, SCENARIO, SPEC_ID,
+    )
+    from okto_pulse.community.adapters.delivery_verification import native_scenario_run
+    from okto_pulse.core.domain.delivery_verification import verification_sources_issue
+    from okto_pulse.core.ports.test_evidence import reset_test_evidence_write_verifier_for_tests
+
+    core = ('source_core', 'a' * 40)
+    community = ('source_community', 'b' * 40)
+    ledger, _, evidence = await _produce(tmp_path, execution_basis={
+        'source_ref': core[0], 'revision': core[1],
+        'runner_ref': 'paired-regression', 'test_ids': ['tests.test_status.Cases.test_pair'],
+        'companion_sources': [{
+            'role': 'community', 'source_ref': community[0], 'revision': community[1],
+        }],
+    })
+    spec = SimpleNamespace(board_id=BOARD_ID, id=SPEC_ID, edition=1,
+        acceptance_criteria=ACCEPTANCE_CRITERIA)
+    scenario = {**SCENARIO, 'status': 'passed', 'evidence': evidence}
+    verifier = CommunityTestEvidenceWriteVerifier(ledger=ledger)
+    register_test_evidence_write_verifier(verifier)
+    try:
+        run = native_scenario_run(spec, scenario, verifier=verifier)
+        assert run.authenticated
+        observed = tuple((source.source_ref, source.revision) for source in run.sources)
+        assert observed == (core, community)
+        assert verification_sources_issue(observed, (core,)) is None
+        assert verification_sources_issue(observed, (community,)) is None
+
+        tampered = {**evidence, 'execution_attestation': {
+            **evidence['execution_attestation'], 'execution_basis': {
+                **evidence['execution_attestation']['execution_basis'],
+                'companion_sources': [{
+                    'role': 'community', 'source_ref': community[0], 'revision': 'c' * 40,
+                }],
+            },
+        }}
+        assert not native_scenario_run(spec, {**scenario, 'evidence': tampered},
+            verifier=verifier).authenticated
+    finally:
+        reset_test_evidence_write_verifier_for_tests()
