@@ -51,7 +51,7 @@ request. Refresh and review conflicting versions instead of silently rebasing a
 draft. At most 50 new entries and 200 selected records are accepted; the report
 also has an aggregate size limit enforced by the server.
 
-This mode is available from started/in_progress for transitions requiring an
+This mode is available from in_progress for transitions requiring an
 execution report. Test Card→Validation continues through its existing flow without
 an execution report. The UI associates existing proofs; creating source execution
 receipts inline remains available through the canonical REST/MCP contract. None
