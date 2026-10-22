@@ -29,7 +29,8 @@ from test_knowledge_propagation_parent_adapter import _native_spec
 @pytest.mark.parametrize('transport', ['rest', 'mcp'])
 @pytest.mark.parametrize('case', ['valid', 'foreign_spec', 'foreign_board', 'denied'])
 @pytest.mark.parametrize('knowledge_v2', [False, True])
-async def test_public_create_rejects_foreign_scenarios_without_partial_writes(tmp_path, monkeypatch, transport, case, knowledge_v2):
+@pytest.mark.parametrize('initial_status', [None, 'not_started'])
+async def test_public_create_rejects_foreign_scenarios_without_partial_writes(tmp_path, monkeypatch, transport, case, knowledge_v2, initial_status):
     engine = build_community_engine(f"sqlite+aiosqlite:///{tmp_path / 'surfaces.db'}")
     sessions = build_community_session_factory(engine)
     register_report_adapters()
@@ -71,6 +72,8 @@ async def test_public_create_rejects_foreign_scenarios_without_partial_writes(tm
             await db.commit()
         data = dict(title='Public Test Card', spec_id='spec', card_type='test',
                     test_scenario_ids=['one', 'alien'] if case.startswith('foreign') else ['one'])
+        if initial_status is not None:
+            data['status'] = initial_status
         if knowledge_v2:
             data['knowledge_propagation'] = dict(contract_version=2, selection_state='omitted',
                                                   knowledge_ids=[], idempotency_key='create-test-card')
@@ -110,6 +113,7 @@ async def test_public_create_rejects_foreign_scenarios_without_partial_writes(tm
             spec = await db.get(Spec, 'spec')
             if case == 'valid':
                 assert len(cards) == 1
+                assert cards[0].status.value == 'not_started'
                 assert cards[0].test_scenario_ids == ['one']
                 assert spec.test_scenarios[0]['linked_task_ids'] == [cards[0].id]
             else:
