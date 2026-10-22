@@ -792,9 +792,9 @@ describe('CardModal', () => {
     const status = await screen.findByRole('combobox', {
       name: 'Card status',
     });
-    expect(
+    await waitFor(() => expect(
       within(status).getAllByRole('option').map((option) => option.textContent),
-    ).toEqual(['Not Started', 'In Progress', 'Cancelled']);
+    ).toEqual(['Not Started', 'In Progress', 'Cancelled']));
     expect(apiMock.getAllowedTransitions).toHaveBeenCalledWith('board-1', {
       entity_type: 'card',
       entity_id: 'bug-1',
