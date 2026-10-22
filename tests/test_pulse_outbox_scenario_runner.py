@@ -40,6 +40,7 @@ class PulseOutboxScenarioTests(unittest.TestCase):
         self._run_cases(
             "tests/test_legacy_card_status_normalization.py::test_normalization_appends_in_old_position_order_and_replays_exactly_once",
             "tests/test_legacy_card_status_normalization.py::test_normalization_rolls_back_board_when_outbox_insert_fails",
+            "tests/test_legacy_card_status_normalization.py::test_normalization_event_is_delivered_and_deduplicated",
         )
 
     def test_sc15_redelivery_and_late_event(self) -> None:
