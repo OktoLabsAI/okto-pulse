@@ -13,7 +13,7 @@ import json
 import uuid
 from collections.abc import Mapping
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from okto_pulse.core.domain.permissions import (
@@ -120,6 +120,10 @@ async def reconcile_card_status_permission_documents(
     changed = 0
     async with factory() as session:
         async with session.begin():
+            # Serialize separate startup processes before reading sparse
+            # documents; the second process sees committed leaves and skips.
+            await session.execute(text("PRAGMA busy_timeout = 120000"))
+            await session.execute(text("BEGIN IMMEDIATE"))
             presets = list((await session.execute(
                 select(PermissionPreset).order_by(PermissionPreset.id)
             )).scalars().all())
