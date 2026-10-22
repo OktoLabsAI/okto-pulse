@@ -299,7 +299,7 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
     if (targetStatus === 'done') return true;
     if (targetStatus !== 'validation') return false;
     if (card?.card_type === 'test') return false;
-    return sourceStatus !== null && ['not_started', 'started', 'in_progress', 'on_hold'].includes(sourceStatus);
+    return sourceStatus !== null && ['not_started', 'in_progress', 'on_hold'].includes(sourceStatus);
   };
 
   // Close spec search on outside click

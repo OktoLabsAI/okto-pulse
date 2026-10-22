@@ -228,7 +228,6 @@ const STATUS_COLORS: Record<SpecStatus, string> = {
 
 const CARD_STATUS_COLORS: Record<CardStatus, string> = {
   not_started: 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-400',
-  started: 'bg-blue-100 text-blue-600 dark:bg-blue-900/40 dark:text-blue-300',
   in_progress: 'bg-indigo-100 text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-300',
   validation: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
   rejected: 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300',

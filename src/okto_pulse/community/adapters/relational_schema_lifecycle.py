@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from .current_relational_schema import current_schema_contract, initialize_current_schema
+from .legacy_card_status_normalization import normalize_legacy_card_status
 
 
 class CommunityRelationalSchemaLifecycleOrchestrator:
@@ -26,6 +27,7 @@ class CommunityRelationalSchemaLifecycleOrchestrator:
         runtime = self._runtime_provider()
         async with _serialized_schema_lifecycle(runtime):
             await initialize_current_schema(runtime.engine, current_schema_contract())
+            await normalize_legacy_card_status(runtime.engine)
             await self._seed()
 
 

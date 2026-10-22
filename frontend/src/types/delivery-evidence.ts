@@ -106,7 +106,7 @@ export type CardDeliveryBatchDraft = Omit<CardDeliveryBatchInput, 'idempotency_k
 
 export interface CardDeliveryReportInput {
   contract_version: 'card-delivery-report/v1';
-  expected_card_status: 'started' | 'in_progress';
+  expected_card_status: 'in_progress';
   batch: CardDeliveryBatchInput;
   report: {
     learning_submission?: import('./index').LearningSubmission;

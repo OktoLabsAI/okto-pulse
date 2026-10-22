@@ -25,8 +25,8 @@ from okto_pulse.community.api.auth_deps import (
     require_user,
 )
 from okto_pulse.community.api.boards import router as boards_router
+from okto_pulse.community.api.columns_pagination import KANBAN_STATUSES
 from okto_pulse.community.api.deps import get_unit_of_work
-from okto_pulse.core.domain.enums import CardStatus
 from okto_pulse.core.domain.permissions import PERMISSION_REGISTRY
 from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.ports.authentication import Principal
@@ -38,7 +38,7 @@ from okto_pulse.core.ports.application_persistence import (
 
 
 REALM = RealmScope.local()
-STATUSES = tuple(item.value for item in CardStatus)
+STATUSES = KANBAN_STATUSES
 DONE_INDEX = STATUSES.index("done")
 
 
@@ -223,6 +223,7 @@ def test_default_batch_has_native_pagination_metadata(
     assert response.status_code == 200, response.text
     body = response.json()
     assert set(body) == {"board_id", "columns", "columns_meta"}
+    assert "started" not in body["columns"]
     assert all(len(body["columns"][card_status]) == 4 for card_status in STATUSES)
     assert set(body["columns"]["done"][0]) == {
         "id",

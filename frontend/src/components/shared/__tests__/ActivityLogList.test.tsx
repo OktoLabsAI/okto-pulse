@@ -107,6 +107,37 @@ describe('ActivityLogList', () => {
     expect(labelsAfter).toHaveTextContent('2. urgent');
   });
 
+  it('shows startup normalization as historical status changes', () => {
+    render(<ActivityLogList entries={[
+      {
+        ...baseEntry,
+        id: 'migration-current',
+        action: 'card_status_normalized',
+        actor_name: 'Pulse startup',
+        summary: '',
+        details: { from_status: 'started', to_status: 'in_progress' },
+      },
+      {
+        ...baseEntry,
+        id: 'migration-restore',
+        action: 'card_restore_status_normalized',
+        actor_name: 'Pulse startup',
+        summary: '',
+        details: {
+          pre_archive_status_before: 'started',
+          pre_archive_status_after: 'in_progress',
+        },
+      },
+    ]} />);
+
+    expect(screen.getByRole('button', {
+      name: /Legacy status migrated.*Status: started → in_progress/i,
+    })).toBeInTheDocument();
+    expect(screen.getByRole('button', {
+      name: /Restore status migrated.*Restore status: started → in_progress/i,
+    })).toBeInTheDocument();
+  });
+
   it('does not expose the card-only raw JSON details panel', () => {
     render(<ActivityLogList entries={[baseEntry]} />);
 

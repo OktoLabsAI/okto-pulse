@@ -163,7 +163,7 @@ export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 
       if (!isTest && (compose ? !setsReady : !selected)) throw new Error('Select the accepted execution receipts for each obligation first.');
       if (isTest && (!selected || !testedIds.length)) throw new Error('Select the authenticated run and the implementation records it observed.');
       if (onStage) {
-        if (!recordingMine?.card_version || recordingMine.delivery_revision === undefined || !['started', 'in_progress'].includes(recordingMine.status)) {
+        if (!recordingMine?.card_version || recordingMine.delivery_revision === undefined || recordingMine.status !== 'in_progress') {
           throw new Error('The current execution state and delivery revision are required. Reload before preparing this report.');
         }
         onStage({ contract_version: 'card-delivery-batch/v1', expected_card_version: recordingMine.card_version,
@@ -325,7 +325,7 @@ export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 
               {candidates.length === 0 && <span className="text-xs text-gray-500">{isTest ? 'No authenticated runs available. Planned scenarios do not appear here: a passed or failed result with valid authenticated evidence is required.' : 'No eligible receipts yet. Submit an accepted execution receipt for the committed files in the Implementation Targets tab — it becomes pickable here immediately, before completion.'}</span>}
             </label>}
             {isTest && candidates.length === 0 && <div className="space-y-2 rounded-lg border border-sky-200 bg-sky-50 p-3 text-xs text-sky-800 dark:border-sky-900 dark:bg-sky-950/20 dark:text-sky-300">
-              {mine && !['started', 'in_progress', 'done'].includes(mine.status) && <p>This card is {mine.status.replace(/_/g, ' ')}. Runs become eligible in Started, In Progress or Done.</p>}
+              {mine && !['in_progress', 'done'].includes(mine.status) && <p>This card is {mine.status.replace(/_/g, ' ')}. Runs become eligible in In Progress or Done.</p>}
               <p>Review the linked scenarios in Tests. Execute them and record authenticated evidence, then use Refresh evidence here.</p>
               {onOpenTests && <button type="button" className="btn btn-secondary text-xs" onClick={onOpenTests}>Open Tests</button>}
             </div>}

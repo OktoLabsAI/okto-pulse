@@ -14,7 +14,6 @@ const mocks = vi.hoisted(() => {
   const moveCard = vi.fn();
   const emptyColumns = {
     not_started: [],
-    started: [],
     in_progress: [],
     validation: [],
     rejected: [],

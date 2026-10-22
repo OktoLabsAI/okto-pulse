@@ -17,7 +17,6 @@ import type { DeliveryReadinessState } from '@/components/code-traceability/Deli
 
 const columnColors: Record<CardStatus, string> = {
   not_started: 'border-t-gray-400',
-  started: 'border-t-blue-500',
   in_progress: 'border-t-amber-500',
   validation: 'border-t-violet-500',
   rejected: 'border-t-rose-600',

@@ -647,7 +647,7 @@ export function CardModal({
     if (status === 'done') return true;
     if (status !== 'validation') return false;
     if (card.card_type === 'test') return false;
-    return ['not_started', 'started', 'in_progress', 'on_hold'].includes(card.status);
+    return ['not_started', 'in_progress', 'on_hold'].includes(card.status);
   };
 
   const loseCardAccess = () => {
@@ -1260,11 +1260,11 @@ export function CardModal({
       if (batch) {
         if (!card.spec_id || !deliverySelection || !sameDeliveryBasis(batch, deliverySelection)
           || !batch.entries.length || !conclusion || !metrics
-          || !['started', 'in_progress'].includes(fromStatus ?? '') || !['validation', 'done'].includes(status)) {
+          || fromStatus !== 'in_progress' || !['validation', 'done'].includes(status)) {
           throw new Error('Refresh and review the delivery selection before submitting this draft.');
         }
         const body: CardDeliveryReportInput = {
-          contract_version: 'card-delivery-report/v1', expected_card_status: fromStatus as 'started' | 'in_progress',
+          contract_version: 'card-delivery-report/v1', expected_card_status: 'in_progress',
           batch: { ...batch, idempotency_key: '' },
           report: { status: status as 'validation' | 'done', conclusion, ...metrics,
             ...(learningSubmission ? { learning_submission: learningSubmission } : {}),
@@ -2741,7 +2741,7 @@ export function CardModal({
               onChange={setConclusionImpactDraft}
             />}
             {card?.spec_id && <DeliverySelectionEditor key={card.id} boardId={card.board_id} cardId={card.id} specId={card.spec_id} onChange={setConclusionDeliverySelection} onPending={setConclusionSelectionPending} />}
-            {card?.spec_id && ['started', 'in_progress'].includes(conclusionOrigin.current?.status ?? '') && <div className="mt-3 space-y-2">
+            {card?.spec_id && conclusionOrigin.current?.status === 'in_progress' && <div className="mt-3 space-y-2">
               <label><input type="checkbox" checked={conclusionBatchMode} onChange={event => { setConclusionBatchMode(event.target.checked); if (!event.target.checked) setConclusionBatch(undefined); }} /> Save a last batch together with this report</label>
               {conclusionBatchMode && (!conclusionDeliverySelection
                 ? <p>Enable evidence selection above to prepare the last batch.</p>
