@@ -55,7 +55,7 @@ from okto_pulse.core.domain.effective_delivery_coverage import (
     implementation_scope_current,
 )
 from okto_pulse.core.domain.delivery_progress import DeliveryProgress, progress_blocks_execution, require_delivery_progress_mutable
-from okto_pulse.core.domain.delivery_selection import current_delivery_selection, seal_delivery_selection, current_delivery_report, report_reuses_impact, submitted_report_receipt
+from okto_pulse.core.domain.delivery_selection import current_delivery_selection, superseded_delivery_selection, seal_delivery_selection, current_delivery_report, report_reuses_impact, submitted_report_receipt
 from okto_pulse.core.domain.delivery_impact import DeliveryImpactClaim, compose_delivery_impact, DeliveryImpactObservation, progress_affects_impact_source, require_impact_observation, reusable_impact_block
 from okto_pulse.core.models.delivery_selection import DeliveryImpactBasis, DeliverySelectionManifest, DeliverySelectionInput
 from okto_pulse.core.models.delivery_evidence import (
@@ -732,7 +732,11 @@ class CommunityDeliveryEvidenceStore:
                 record_hashes={record.id: self._selection_record_hash(record) for record in records},
                 prospective_report=prospective_report)
         except ValueError:
-            selected, selection_valid = set(), False
+            # A prior edition's intact frozen selection cannot select any
+            # current records. Its absence of credit is a complete projection,
+            # while a malformed or current-edition report remains incomplete.
+            selected = set()
+            selection_valid = prospective_report is None and superseded_delivery_selection(card, scope)
         implementations, tests, rejected_records = [], [], []
         expected_bindings = {item.binding for item in obligations}
 
