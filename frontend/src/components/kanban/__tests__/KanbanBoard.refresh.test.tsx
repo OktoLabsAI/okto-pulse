@@ -36,7 +36,6 @@ const mocks = vi.hoisted(() => {
   const optimisticMoveCard = vi.fn();
   const emptyColumns = {
     not_started: [],
-    started: [],
     in_progress: [],
     validation: [],
     rejected: [],

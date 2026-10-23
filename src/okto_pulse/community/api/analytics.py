@@ -321,10 +321,10 @@ async def board_blockers(
 
     Categories (non-overlapping; a card can appear in multiple):
 
-    - ``dependency_blocked`` — card is not_started/started while at least one
+    - ``dependency_blocked`` — card is not_started/in_progress while at least one
       of its `depends_on_id` targets has NOT reached the DONE status.
     - ``on_hold`` — card is explicitly paused (status=on_hold).
-    - ``stale`` — card is in_progress/started/validation but
+    - ``stale`` — card is in_progress/validation but
       ``now() - updated_at > stale_hours``.
     - ``rework_required`` — card is Rejected and explicitly awaits the
       rejected -> in_progress rework handoff, independent of its age.

@@ -241,7 +241,6 @@ vi.mock('@/components/traceability', () => ({
 
 const emptyColumns = (): Record<CardStatus, CardSummary[]> => ({
   not_started: [],
-  started: [],
   in_progress: [],
   validation: [],
   rejected: [],
@@ -350,7 +349,6 @@ function allowedTransition(
 
 const STATUS_LABELS_FOR_TEST: Record<CardStatus, string> = {
   not_started: 'Not Started',
-  started: 'Started',
   in_progress: 'In Progress',
   validation: 'Validation',
   rejected: 'Rejected',
@@ -543,14 +541,14 @@ describe('CardModal', () => {
         card_type: 'normal',
       },
     ];
-    storeMock.columns.started = [
+    storeMock.columns.in_progress.push(
       {
         id: 'test-1',
         board_id: 'board-1',
         spec_id: 'spec-1',
         title: 'Regression: story lineage is visible',
         description: null,
-        status: 'started',
+        status: 'in_progress',
         priority: 'medium',
         position: 0,
         assignee_id: null,
@@ -563,12 +561,12 @@ describe('CardModal', () => {
         conclusions: [],
         card_type: 'test',
       },
-    ];
+    );
 
     apiMock.getCard.mockResolvedValue(bugCard);
     apiMock.getAllowedTransitions.mockResolvedValue(
       transitionEnvelope('bug-1', 'not_started', [
-        allowedTransition('started'),
+        allowedTransition('in_progress'),
         allowedTransition('cancelled'),
       ]),
     );
@@ -714,7 +712,7 @@ describe('CardModal', () => {
     apiMock.getCard.mockResolvedValue(selected);
     apiMock.getSpec.mockResolvedValue({ id: 'spec-1', title: 'Delivered', status: 'done', test_scenarios: [] });
     apiMock.getAllowedTransitions.mockResolvedValue(transitionEnvelope(selected.id, 'not_started', [
-      allowedTransition('started', cardType === 'normal' ? {
+      allowedTransition('in_progress', cardType === 'normal' ? {
         blocked_reason: 'normal_card_spec_done: Normal work requires an authorized Spec revision.',
       } : {}),
       allowedTransition('cancelled'),
@@ -794,9 +792,9 @@ describe('CardModal', () => {
     const status = await screen.findByRole('combobox', {
       name: 'Card status',
     });
-    expect(
+    await waitFor(() => expect(
       within(status).getAllByRole('option').map((option) => option.textContent),
-    ).toEqual(['Not Started', 'Started', 'Cancelled']);
+    ).toEqual(['Not Started', 'In Progress', 'Cancelled']));
     expect(apiMock.getAllowedTransitions).toHaveBeenCalledWith('board-1', {
       entity_type: 'card',
       entity_id: 'bug-1',
@@ -987,7 +985,7 @@ describe('CardModal', () => {
     apiMock.getCard.mockResolvedValue(taskCard);
     apiMock.getAllowedTransitions.mockResolvedValue(
       transitionEnvelope(taskCard.id, taskCard.status, [
-        allowedTransition('started'),
+        allowedTransition('in_progress'),
         allowedTransition('rejected'),
       ]),
     );
@@ -1004,7 +1002,7 @@ describe('CardModal', () => {
   it('fails closed and excludes a policy-blocked transition from the lifecycle selector', async () => {
     apiMock.getAllowedTransitions.mockResolvedValue(
       transitionEnvelope('bug-1', 'not_started', [
-        allowedTransition('started', {
+        allowedTransition('in_progress', {
           gate: 'policy_compliance',
           blocked_reason: 'Policy Compliance blocked this transition.',
           reason_codes: ['policy_compliance_blocked'],
@@ -1043,7 +1041,7 @@ describe('CardModal', () => {
   it('keeps lifecycle fail-closed when the canonical transition envelope is malformed', async () => {
     apiMock.getAllowedTransitions.mockResolvedValue({
       ...transitionEnvelope('bug-1', 'not_started', [
-        allowedTransition('started'),
+        allowedTransition('in_progress'),
       ]),
       source: 'legacy_client_map',
     });
@@ -1073,7 +1071,7 @@ describe('CardModal', () => {
 
   it('reports a structured policy 409 and reloads transition authority without a readiness card', async () => {
     apiMock.moveCard.mockRejectedValueOnce(
-      policyRejection('bug-1', 'not_started', 'started'),
+      policyRejection('bug-1', 'not_started', 'in_progress'),
     );
 
     render(<CardModal boardId="board-1" />);
@@ -1082,11 +1080,11 @@ describe('CardModal', () => {
       name: 'Card status',
     });
     await waitFor(() => expect(status).not.toBeDisabled());
-    fireEvent.change(status, { target: { value: 'started' } });
+    fireEvent.change(status, { target: { value: 'in_progress' } });
 
     await waitFor(() => expect(apiMock.moveCard).toHaveBeenCalledWith(
       'bug-1',
-      expect.objectContaining({ status: 'started' }),
+      expect.objectContaining({ status: 'in_progress' }),
     ));
     fireEvent.click(screen.getByRole('tab', { name: /^Validation/ }));
     fireEvent.click(
@@ -1103,7 +1101,7 @@ describe('CardModal', () => {
     apiMock.getCard.mockResolvedValue(testCard);
     apiMock.getAllowedTransitions.mockResolvedValue(
       transitionEnvelope(testCard.id, 'not_started', [
-        allowedTransition('started'),
+        allowedTransition('in_progress'),
       ]),
     );
     permissionsMock.has.mockImplementation((permission: string) =>
@@ -1206,7 +1204,7 @@ describe('CardModal', () => {
           ? delayedFirstTransitions
           : Promise.resolve(
               transitionEnvelope(secondCard.id, 'not_started', [
-                allowedTransition('started'),
+                allowedTransition('in_progress'),
               ]),
             ),
     );
@@ -1221,7 +1219,7 @@ describe('CardModal', () => {
       const status = screen.getByRole('combobox', { name: 'Card status' });
       expect(
         within(status).getAllByRole('option').map((option) => option.textContent),
-      ).toEqual(['Not Started', 'Started']);
+      ).toEqual(['Not Started', 'In Progress']);
     });
 
     resolveFirstTransitions?.(
@@ -1234,7 +1232,7 @@ describe('CardModal', () => {
     const status = screen.getByRole('combobox', { name: 'Card status' });
     expect(
       within(status).getAllByRole('option').map((option) => option.textContent),
-    ).toEqual(['Not Started', 'Started']);
+    ).toEqual(['Not Started', 'In Progress']);
   });
 
   it('keeps read-only collaboration and requirement workspaces non-mutating', async () => {
@@ -2143,10 +2141,9 @@ describe('CardModal', () => {
 
     expect(within(panel).getByText('Origin Task')).toBeInTheDocument();
     expect(within(panel).getByText('Implement story lineage')).toBeInTheDocument();
-    expect(within(panel).getByText('In Progress')).toBeInTheDocument();
+    expect(within(panel).getAllByText('In Progress')).toHaveLength(2);
     expect(within(panel).getByText('Linked Regression Tests')).toBeInTheDocument();
     expect(within(panel).getByText('Regression: story lineage is visible')).toBeInTheDocument();
-    expect(within(panel).getByText('Started')).toBeInTheDocument();
   });
 
   it('toggles the human task requirement link skip from requirement references', async () => {

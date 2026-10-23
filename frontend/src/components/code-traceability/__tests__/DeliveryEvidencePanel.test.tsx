@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { DeliveryEvidencePanel } from '../DeliveryEvidencePanel';
 import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 
@@ -61,7 +61,7 @@ it('shows Decision adherence without implementation credit and links to its sing
   render(<DeliveryEvidencePanel boardId="b" specId="s" onOpenDecisions={onOpenDecisions} />);
   expect(await screen.findByText('Not applicable')).toBeInTheDocument();
   fireEvent.click(screen.getByText('Only the mock'));
-  expect(screen.queryByText('No admitted implementation evidence.')).not.toBeInTheDocument();
+  expect(screen.queryByText('Current implementation proof unavailable.')).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'Review in Decisions' }));
   expect(onOpenDecisions).toHaveBeenCalledOnce();
 });
@@ -103,7 +103,21 @@ it('labels waived checks explicitly instead of presenting them as proof', async 
   expect(await screen.findByText('Waived')).toBeInTheDocument();
   fireEvent.click(screen.getByText('Bindings live on the card ledger'));
   expect(screen.getByText('Implementation waivers (not proof): waiver-1')).toBeVisible();
-  expect(screen.getByText('No admitted implementation evidence.')).toBeVisible();
+  expect(screen.getByText('Current implementation proof unavailable.')).toBeVisible();
+});
+
+it('shows current implementation proof separately from delivery qualification', async () => {
+  const data = projection();
+  data.rows = [{ ...data.rows[0], implementation_ids: [], implementation_satisfied: false }];
+  data.current_proof_rows = [{ obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64),
+    implementation_ids: ['impl'], implementation_satisfied: true }];
+  api.getDeliveryEvidence.mockResolvedValue(data);
+  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  const table = await screen.findByTestId('delivery-coverage-table');
+  expect(within(table).getByText('✓ Current proof')).toBeVisible();
+  expect(within(table).getByText('Delivery pending', { exact: false })).toBeVisible();
+  fireEvent.click(within(table).getByText('Bindings live on the card ledger'));
+  expect(screen.getByText('Record: impl')).toBeVisible();
 });
 
 it('refreshes the rollup when the containing Spec revision changes', async () => {
@@ -166,14 +180,14 @@ it('bounds large gap lists without declaring the omitted work complete', async (
 it('renders per-card grouping with proof counts and DoD statuses', async () => {
   render(<DeliveryEvidencePanel boardId="b" specId="s" />);
   expect(await screen.findByText('TASK-142 — Re-anchor delivery bindings')).toBeTruthy();
-  expect(screen.getByText('1 obligation with accepted proof')).toBeTruthy();
+  expect(screen.getByText('1 obligation with delivery-qualified proof')).toBeTruthy();
   expect(screen.getByText('TASK-143 — Rollup aggregation query')).toBeTruthy();
-  expect(screen.getByText('1/2 obligations with proof · 1 unproven')).toBeTruthy();
+  expect(screen.getByText('1/2 obligations with delivery-qualified proof · 1 pending qualification')).toBeTruthy();
   expect(screen.getByText('TEST-21 — DoD rejection scenario')).toBeTruthy();
   expect(screen.getByText('Test card · records authenticated outcomes; delivery requires current passing evidence for every required criterion')).toBeTruthy();
-  expect(screen.getAllByText('Satisfied').length).toBe(1);
-  expect(screen.getByText('In progress')).toBeTruthy();
-  expect(screen.getByText('Excluded from DoD gate')).toBeTruthy();
+  expect(screen.getAllByText('Implementation proven').length).toBe(1);
+  expect(screen.getByText('Implementation pending')).toBeTruthy();
+  expect(screen.getByText('Verification gate')).toBeTruthy();
 });
 
 it('keeps a mixed report partial when only its functional criterion passes', async () => {

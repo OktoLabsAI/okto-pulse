@@ -111,11 +111,16 @@ async def test_all_production_lifecycle_paths_keep_the_mutex_through_schema_and_
     async def seeds():
         assert probe(db._schema_process_lock_path(runtime)) == "blocked"
         observed.append("seeds")
+    async def normalize(engine):
+        assert engine is runtime.engine
+        assert probe(db._schema_process_lock_path(runtime)) == "blocked"
+        observed.append("normalize")
     monkeypatch.setattr(lifecycle, "initialize_current_schema", schema)
+    monkeypatch.setattr(lifecycle, "normalize_legacy_card_status", normalize)
     monkeypatch.setattr(orchestrator, "_seed", seeds)
     try:
         await {"concrete": orchestrator.initialize_schema, "core": core_runtime.init_db, "community": db.init_db}[path]()
-        assert observed == ["schema", "seeds"]
+        assert observed == ["schema", "normalize", "seeds"]
         assert probe(db._schema_process_lock_path(runtime)) == "entered"
     finally:
         await runtime.engine.dispose()

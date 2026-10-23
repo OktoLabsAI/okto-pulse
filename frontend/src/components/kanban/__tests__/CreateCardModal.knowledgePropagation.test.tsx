@@ -27,7 +27,6 @@ vi.mock('@/store/dashboard', () => ({
   useDashboardStore: () => storeMock,
   useColumns: () => ({
     not_started: [],
-    started: [],
     in_progress: [],
     validation: [],
     rejected: [],
@@ -179,7 +178,7 @@ describe('CreateCardModal selective Knowledge integration', () => {
       ...specWithKnowledge, status: 'draft',
       test_scenarios: [{ id: 'ts-plan', title: 'Planned scenario' }],
     });
-    render(<CreateCardModal boardId="board-1" initialStatus="started" onClose={vi.fn()} />);
+    render(<CreateCardModal boardId="board-1" initialStatus="not_started" onClose={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: type }));
     await screen.findByRole('option', { name: 'Selective propagation spec (draft)' });
     fireEvent.change(specSelect(), { target: { value: 'spec-1' } });
@@ -249,7 +248,7 @@ describe('CreateCardModal selective Knowledge integration', () => {
       expect(statusSelect).toHaveValue('not_started');
       expect(
         within(statusSelect).getAllByRole('option').map((option) => option.textContent),
-      ).toEqual(['Not Started', 'Started']);
+      ).toEqual(['Not Started']);
     },
   );
 
