@@ -76,6 +76,21 @@ it('shows obligation delivery from the same persisted generation without loading
   expect(api.getDeliveryEvidence).not.toHaveBeenCalled();
 });
 
+it('refreshes a current coverage generation after a delivery report event', async () => {
+  const first = persistedProjection();
+  const second = persistedProjection();
+  second.projection.generation_id = 'generation-2';
+  second.summaries[0].verification.percent = 75;
+  api.getPersistedReadinessProjection.mockResolvedValueOnce(first).mockResolvedValue(second);
+  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  await screen.findByText(/Generation generation-1/);
+  fireEvent(window, new Event('pulse:delivery-evidence-changed'));
+  await screen.findByText(/Generation generation-2/);
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');
+  expect(api.getDeliveryEvidence).not.toHaveBeenCalled();
+});
+
 it('refreshes exception detail when navigating in-place and rejects foreign evidence', async () => {
   const data = projection();
   data.records = [{ id: 'waiver', kind: 'waiver', actor_id: 'human', created_at: '2026-10-14T10:00:00Z', revoked: false,

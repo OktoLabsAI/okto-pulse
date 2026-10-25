@@ -108,6 +108,20 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
   const projection = projectionOwner?.api === api && projectionOwner.key === scopeKey ? storedProjection : null;
 
   useEffect(() => {
+    if (legacyMode) return;
+    const refresh = () => setReload(value => value + 1);
+    const visible = () => { if (document.visibilityState === 'visible') refresh(); };
+    window.addEventListener('pulse:delivery-evidence-changed', refresh);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', visible);
+    return () => {
+      window.removeEventListener('pulse:delivery-evidence-changed', refresh);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', visible);
+    };
+  }, [legacyMode]);
+
+  useEffect(() => {
     const controller = new AbortController();
     setProjection(null); setProjectionError('');
     if (legacyMode) return () => controller.abort();
