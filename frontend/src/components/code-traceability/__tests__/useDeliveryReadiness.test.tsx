@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { useBoardDeliveryReadiness } from '../useBoardDeliveryReadiness';
 import { useDeliveryReadiness } from '../useDeliveryReadiness';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { cards, persistedProjection, readiness } from './readinessFixture';
 
 const api = vi.hoisted(() => ({ getPersistedReadinessProjection: vi.fn(), getDeliveryReadiness: vi.fn() }));
@@ -9,7 +10,7 @@ vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 beforeEach(() => { vi.clearAllMocks(); api.getPersistedReadinessProjection.mockResolvedValue(persistedProjection()); });
 afterEach(cleanup);
 
-it('reuses one summary per Spec and clears old percentages while refreshing related cards', async () => {
+it('reuses one summary per Spec and retains the previous generation while refreshing related cards', async () => {
   const view = renderHook(() => useBoardDeliveryReadiness('b', cards, true, '0'));
   await waitFor(() => expect(view.result.current.c.persisted?.summary?.verification.percent).toBe(75));
   expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(1);
@@ -17,7 +18,9 @@ it('reuses one summary per Spec and clears old percentages while refreshing rela
   let resolve!: (value: typeof next) => void;
   api.getPersistedReadinessProjection.mockImplementation(() => new Promise(r => { resolve = r; }));
   act(() => window.dispatchEvent(new Event('pulse:delivery-evidence-changed')));
-  await waitFor(() => expect(view.result.current.c).toEqual({ loading: true }));
+  await waitFor(() => expect(view.result.current.c.persisted?.freshness).toBe('updating'));
+  expect(view.result.current.c.persisted?.summary?.verification.percent).toBe(75);
+  expect(view.result.current.other.persisted?.generationId).toBe('generation-1');
   await act(async () => resolve(next));
   await waitFor(() => expect(view.result.current.other.persisted?.summary?.verification.percent).toBe(50));
   expect(cards[0].status).toBe('in_progress');
@@ -28,10 +31,28 @@ it('does not read without permission; denial removes previous values and disabli
   expect(api.getPersistedReadinessProjection).not.toHaveBeenCalled();
   view.rerender({ enabled: true });
   await waitFor(() => expect(view.result.current.c.persisted).toBeDefined());
-  api.getPersistedReadinessProjection.mockRejectedValue(new Error('Denied'));
+  api.getPersistedReadinessProjection.mockRejectedValue(new AuthenticatedFetchError({ status: 403, message: 'Denied' }));
   act(() => window.dispatchEvent(new Event('focus')));
   await waitFor(() => expect(view.result.current.c).toEqual({ error: 'Denied' }));
   view.rerender({ enabled: false }); expect(view.result.current).toEqual({});
+});
+
+it('keeps the Spec projection during a same-scope refresh, then replaces the whole generation', async () => {
+  const view = renderHook(({ revision }) => useDeliveryReadiness('b', 's', undefined, revision, true, 'projection'),
+    { initialProps: { revision: 0 } });
+  await waitFor(() => expect(view.result.current.persisted?.generationId).toBe('generation-1'));
+  const next = persistedProjection();
+  next.projection.generation_id = 'generation-2';
+  next.summaries.forEach(row => { row.verification.percent = 50; });
+  let resolve!: (value: typeof next) => void;
+  api.getPersistedReadinessProjection.mockImplementation(() => new Promise(r => { resolve = r; }));
+  view.rerender({ revision: 1 });
+  await waitFor(() => expect(view.result.current.persisted?.freshness).toBe('updating'));
+  expect(view.result.current.persisted?.generationId).toBe('generation-1');
+  expect(view.result.current.persisted?.summary?.verification.percent).toBe(75);
+  await act(async () => resolve(next));
+  await waitFor(() => expect(view.result.current.persisted?.generationId).toBe('generation-2'));
+  expect(view.result.current.persisted?.summary?.verification.percent).toBe(50);
 });
 
 it.each(['board', 'card', 'generation', 'duplicate', 'version'])('rejects %s mismatches explicitly', async kind => {
