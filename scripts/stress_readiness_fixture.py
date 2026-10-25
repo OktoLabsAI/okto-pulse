@@ -1,7 +1,9 @@
 """Concurrent isolated readiness load, writes, and publication-lag probe.
 
-This uses the Spec's population fixture. It measures the internal source
-snapshot and indexed projection adapters; it does not claim REST/UI SLOs.
+This uses the Spec's population fixture. The candidate read includes service
+authorization and JSON serialization; the legacy read remains an internal
+source snapshot. Writer latency is split into lock wait and transaction time.
+This isolated harness does not claim REST/UI SLOs.
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
     reader = CommunityDeliveryReadinessReader(engine, clock=CommunityReadinessClock())
     service = DeliveryReadinessService(reader, None)
     read_ms, write_ms, lag_ms, burst_write_ms, burst_lag_ms = [], [], [], [], []
+    lock_wait_ms, transaction_ms, burst_lock_wait_ms, burst_transaction_ms = [], [], [], []
     errors: list[str] = []
     warmup_errors: list[str] = []
     freshness: dict[str, int] = {}
@@ -116,7 +119,9 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 try:
                     async def commit_write():
                         async with engine.connect() as connection:
+                            lock_requested = perf_counter()
                             await connection.exec_driver_sql('BEGIN IMMEDIATE')
+                            lock_acquired = perf_counter()
                             try:
                                 await connection.exec_driver_sql(
                                     'UPDATE specs SET description=? WHERE id=?',
@@ -125,20 +130,27 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                                     'SELECT source_revision FROM readiness_scope WHERE spec_id=?',
                                     (spec_id,))).scalar_one() if args.mode == 'persisted' else None
                                 await connection.commit()
-                                return revision
+                                committed_at = perf_counter()
+                                return (revision,
+                                    (lock_acquired - lock_requested) * 1000,
+                                    (committed_at - lock_acquired) * 1000)
                             except BaseException:
                                 await connection.rollback()
                                 raise
                     if args.serialize_writes:
                         async with writer_guard:
-                            revision = await commit_write()
+                            revision, waited_ms, held_ms = await commit_write()
                     else:
-                        revision = await commit_write()
+                        revision, waited_ms, held_ms = await commit_write()
                     committed = perf_counter()
                     if measured:
                         write_ms.append((committed - began) * 1000)
+                        lock_wait_ms.append(waited_ms)
+                        transaction_ms.append(held_ms)
                     if burst and measured:
                         burst_write_ms.append((committed - began) * 1000)
+                        burst_lock_wait_ms.append(waited_ms)
+                        burst_transaction_ms.append(held_ms)
                     if args.mode == 'legacy' or not measured:
                         return
                     async def observe(target_spec=spec_id, target_revision=revision,
@@ -245,10 +257,15 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             'write_p95_ms': round(percentile(write_ms, .95), 3) if write_ms else None,
             'write_p99_ms': round(percentile(write_ms, .99), 3) if write_ms else None,
             'write_max_ms': round(max(write_ms), 3) if write_ms else None,
+            'lock_wait_p95_ms': round(percentile(lock_wait_ms, .95), 3) if lock_wait_ms else None,
+            'transaction_p95_ms': round(percentile(transaction_ms, .95), 3) if transaction_ms else None,
+            'transaction_max_ms': round(max(transaction_ms), 3) if transaction_ms else None,
             'burst': {'requested': args.burst_size, 'scope': args.burst_scope,
                 'writes': len(burst_write_ms),
                 'elapsed_ms': round(burst_elapsed_ms, 3) if burst_elapsed_ms is not None else None,
                 'write_p95_ms': round(percentile(burst_write_ms, .95), 3) if burst_write_ms else None,
+                'lock_wait_p95_ms': round(percentile(burst_lock_wait_ms, .95), 3) if burst_lock_wait_ms else None,
+                'transaction_p95_ms': round(percentile(burst_transaction_ms, .95), 3) if burst_transaction_ms else None,
                 'publish_p95_ms': round(percentile(burst_lag_ms, .95), 3) if burst_lag_ms else None,
                 'publish_max_ms': round(max(burst_lag_ms), 3) if burst_lag_ms else None},
             'publish_p95_ms': round(percentile(lag_ms, .95), 3) if lag_ms else None,
@@ -265,8 +282,12 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 if path.with_name(path.name + '-wal').exists() else 0,
             'samples_ms': {'read': [round(v, 3) for v in read_ms],
                 'write': [round(v, 3) for v in write_ms],
+                'lock_wait': [round(v, 3) for v in lock_wait_ms],
+                'transaction': [round(v, 3) for v in transaction_ms],
                 'publish': [round(v, 3) for v in lag_ms],
                 'burst_write': [round(v, 3) for v in burst_write_ms],
+                'burst_lock_wait': [round(v, 3) for v in burst_lock_wait_ms],
+                'burst_transaction': [round(v, 3) for v in burst_transaction_ms],
                 'burst_publish': [round(v, 3) for v in burst_lag_ms]},
             'resource_samples': {'rss_bytes': rss_bytes, 'pool_checkouts': pool_checkouts,
                 'blocking_tasks': blocking_tasks, 'wal_bytes': wal_samples},
