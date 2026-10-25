@@ -29,7 +29,8 @@ sys.path[:0] = [str(WORKSPACE / 'okto-pulse' / 'src'),
                 str(WORKSPACE / 'okto-pulse-core' / 'src')]
 
 from okto_pulse.community.adapters.current_relational_schema import (
-    create_current_schema_objects, seed_current_schema_fences,
+    APPLICATION_ID, SCHEMA_VERSION, create_current_schema_objects,
+    seed_current_schema_fences,
 )
 from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
 from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import (
@@ -51,6 +52,8 @@ def seed(path: Path, args: argparse.Namespace) -> None:
         with engine.begin() as connection:
             create_current_schema_objects(connection)
             seed_current_schema_fences(connection)
+            connection.exec_driver_sql(f'PRAGMA main.application_id={APPLICATION_ID}')
+            connection.exec_driver_sql(f'PRAGMA main.user_version={SCHEMA_VERSION}')
             connection.exec_driver_sql("INSERT INTO boards (id,name,owner_id,realm_id) "
                 "VALUES ('benchmark-board','Benchmark','owner','local')")
             connection.exec_driver_sql("INSERT INTO agents "

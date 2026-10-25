@@ -3,7 +3,8 @@
 This uses the Spec's population fixture. The candidate read includes service
 authorization and JSON serialization; the legacy read remains an internal
 source snapshot. Writer latency is split into lock wait and transaction time.
-This isolated harness does not claim REST/UI SLOs.
+Publication targets share one bounded polling query; the engine uses the
+Community SQLite PRAGMAs. This isolated harness does not claim REST/UI SLOs.
 """
 
 from __future__ import annotations
@@ -23,10 +24,12 @@ import sys
 from tempfile import TemporaryDirectory
 from time import monotonic, perf_counter, process_time
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from benchmark_readiness_fixture import seed, percentile, WORKSPACE
 from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
+from okto_pulse.community.adapters.sqlalchemy_database import install_community_sqlite_pragmas
 from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import (
     CommunityDeliveryReadinessReader, CommunityReadinessClock,
 )
@@ -40,6 +43,22 @@ ACTOR = ReadinessActor('benchmark-agent', 'agent', 'local', 'benchmark-board')
 async def run(path: Path, args: argparse.Namespace) -> dict:
     engine = create_async_engine(f'sqlite+aiosqlite:///{path}',
         pool_size=20, max_overflow=0)
+    if args.mode == 'persisted':
+        install_community_sqlite_pragmas(engine)
+    else:
+        # The legacy comparison deliberately removes readiness triggers, so
+        # current-schema admission must refuse it. Match the runtime's SQLite
+        # connection settings without pretending that schema is current.
+        @event.listens_for(engine.sync_engine, 'connect')
+        def _legacy_pragmas(dbapi_connection, _record):
+            cursor = dbapi_connection.cursor()
+            try:
+                cursor.execute('PRAGMA journal_mode=WAL')
+                cursor.execute('PRAGMA busy_timeout=30000')
+                cursor.execute('PRAGMA synchronous=FULL')
+                cursor.execute('PRAGMA foreign_keys=ON')
+            finally:
+                cursor.close()
     worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
     reader = CommunityDeliveryReadinessReader(engine, clock=CommunityReadinessClock())
     service = DeliveryReadinessService(reader, None)
@@ -53,6 +72,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
     stop_load = asyncio.Event()
     stop_worker = asyncio.Event()
     writer_guard = asyncio.Lock()
+    pending_observations: dict[int, tuple[str, int, float, list[float]]] = {}
+    next_observation_id = 0
     worker_publications = 0
     burst_elapsed_ms = None
     rss_bytes, pool_checkouts, blocking_tasks, wal_samples = [], [], [], []
@@ -114,6 +135,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 await asyncio.sleep(max(0, period - (perf_counter() - started)))
 
         async def record_write(index: int, *, burst: bool = False):
+                nonlocal next_observation_id
                 measured = measuring
                 spec_id = f'benchmark-spec-{index % args.specs:03d}'
                 began = perf_counter()
@@ -160,24 +182,33 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                         burst_transaction_ms.append(held_ms)
                     if args.mode == 'legacy' or not measured:
                         return
-                    async def observe(target_spec=spec_id, target_revision=revision,
-                                      committed_at=committed,
-                                      destination=burst_lag_ms if burst else lag_ms):
-                        deadline = monotonic() + 10
-                        while monotonic() < deadline:
-                            async with engine.connect() as connection:
-                                value = (await connection.exec_driver_sql(
-                                    'SELECT g.captured_revision FROM readiness_scope s '
-                                    'LEFT JOIN readiness_generation g ON g.id=s.active_generation_id '
-                                    'WHERE s.spec_id=?', (target_spec,))).scalar_one_or_none()
-                            if value is not None and value >= target_revision:
-                                destination.append((perf_counter() - committed_at) * 1000)
-                                return
-                            await asyncio.sleep(.1)
-                        errors.append('publish_deadline')
-                    observers.append(asyncio.create_task(observe()))
+                    next_observation_id += 1
+                    pending_observations[next_observation_id] = (
+                        spec_id, revision, committed,
+                        burst_lag_ms if burst else lag_ms)
                 except Exception as exc:
                     (errors if measured else warmup_errors).append(f'write:{type(exc).__name__}')
+
+        async def observation_loop():
+            while not stop_load.is_set() or pending_observations:
+                if pending_observations:
+                    async with engine.connect() as connection:
+                        rows = (await connection.exec_driver_sql(
+                            'SELECT s.spec_id,g.captured_revision FROM readiness_scope s '
+                            'LEFT JOIN readiness_generation g ON g.id=s.active_generation_id '
+                            'WHERE s.board_id=?', ('benchmark-board',))).all()
+                    revisions = {spec_id: revision for spec_id, revision in rows}
+                    observed_at = perf_counter()
+                    for observation_id, (spec_id, target, committed_at, destination) in tuple(
+                            pending_observations.items()):
+                        revision = revisions.get(spec_id)
+                        if revision is not None and revision >= target:
+                            destination.append((observed_at - committed_at) * 1000)
+                            pending_observations.pop(observation_id, None)
+                        elif observed_at - committed_at >= 10:
+                            errors.append('publish_deadline')
+                            pending_observations.pop(observation_id, None)
+                await asyncio.sleep(.1)
 
         async def writer_loop(started_at: float):
             index = 0
@@ -212,9 +243,9 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                     wal_samples.append(wal.stat().st_size if wal.exists() else 0)
                 await asyncio.sleep(.5)
 
-        observers: list[asyncio.Task] = []
         started_at = monotonic()
         projection_task = asyncio.create_task(projection_loop()) if args.mode == 'persisted' else None
+        observation_task = asyncio.create_task(observation_loop()) if args.mode == 'persisted' else None
         tasks = [asyncio.create_task(writer_loop(started_at)),
             *(asyncio.create_task(reader_loop(index)) for index in range(args.clients)),
             asyncio.create_task(resource_loop())]
@@ -226,8 +257,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         await asyncio.sleep(args.duration_seconds)
         stop_load.set()
         await asyncio.gather(*tasks)
-        if observers:
-            await asyncio.gather(*observers)
+        if observation_task is not None:
+            await observation_task
         stop_worker.set()
         if projection_task is not None:
             await projection_task
