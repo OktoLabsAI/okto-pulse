@@ -11,8 +11,9 @@ import secrets
 from time import perf_counter
 from uuid import uuid4
 
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from okto_pulse.core.services.persisted_delivery_readiness import ReadinessGeneration, readiness_manifest_digest
 from okto_pulse.core.ports.delivery_readiness import ReadinessReadError
@@ -273,8 +274,10 @@ class CommunityPersistedReadinessStore:
     async def audit_active_generation(self, *, spec_id: str) -> bool:
         """Quarantine a corrupt active generation and durably request repair."""
         async with AsyncSession(self.engine, autoflush=False) as session:
-            scope = (await session.scalars(select(ReadinessScopeRow).where(
+            scope = (await session.scalars(select(ReadinessScopeRow).join(
+                Spec, Spec.id == ReadinessScopeRow.spec_id).where(
                 ReadinessScopeRow.spec_id == spec_id,
+                ReadinessScopeRow.edition == Spec.edition,
                 ReadinessScopeRow.tombstone.is_(False)))).first()
             if scope is None or not scope.active_generation_id:
                 return True
@@ -389,29 +392,26 @@ class CommunityPersistedReadinessStore:
         """Retire one nonactive generation in bounded row batches."""
         now = datetime.now(timezone.utc)
         async with AsyncSession(self.engine) as session, session.begin():
-            rows = (await session.scalars(select(ReadinessGenerationRow).order_by(
-                ReadinessGenerationRow.created_at).limit(200))).all()
-            candidate = None
-            for gen in rows:
-                scope = await session.get(ReadinessScopeRow, gen.scope_id)
-                if scope is None or scope.active_generation_id == gen.id:
-                    continue
-                if gen.state == "expired":
-                    candidate = gen
-                    break
-                if gen.state == "staging":
-                    if gen.created_at < now - timedelta(minutes=5):
-                        candidate = gen
-                        break
-                    continue
-                if gen.state == "complete":
-                    newer = await session.scalar(select(func.count()).select_from(ReadinessGenerationRow).where(
-                        ReadinessGenerationRow.scope_id == gen.scope_id,
-                        ReadinessGenerationRow.state == "complete",
-                        ReadinessGenerationRow.created_at > gen.created_at))
-                    if gen.created_at < now - timedelta(minutes=30) or newer >= 4:
-                        candidate = gen
-                        break
+            newer_generation = aliased(ReadinessGenerationRow)
+            newer_complete_count = (select(func.count()).select_from(newer_generation).where(
+                newer_generation.scope_id == ReadinessGenerationRow.scope_id,
+                newer_generation.state == "complete",
+                newer_generation.created_at > ReadinessGenerationRow.created_at,
+            ).correlate(ReadinessGenerationRow).scalar_subquery())
+            candidate = (await session.scalars(select(ReadinessGenerationRow).join(
+                ReadinessScopeRow, ReadinessScopeRow.id == ReadinessGenerationRow.scope_id,
+            ).where(
+                ReadinessScopeRow.active_generation_id.is_distinct_from(ReadinessGenerationRow.id),
+                or_(
+                    ReadinessGenerationRow.state == "expired",
+                    and_(ReadinessGenerationRow.state == "staging",
+                         ReadinessGenerationRow.created_at < now - timedelta(minutes=5)),
+                    and_(ReadinessGenerationRow.state == "complete", or_(
+                        ReadinessGenerationRow.created_at < now - timedelta(minutes=30),
+                        newer_complete_count >= 4,
+                    )),
+                ),
+            ).order_by(ReadinessGenerationRow.created_at).limit(1))).first()
             if candidate is None:
                 return False
             candidate.state = "expired"
@@ -479,9 +479,16 @@ class CommunityPersistedReadinessStore:
                 if incompatible or stale:
                     job.requested_revision = max(job.requested_revision, scope.source_revision)
                     job.state, job.due_at, job.updated_at = "pending", now, now
-        # Audit one complete manifest per sweep. This stays on the background
-        # path and bounds the hash cost independently of REST/MCP reads.
-        await self.audit_active_generation(spec_id=spec_ids[-1])
+        # Every visited scope must have its active manifest checked. Auditing
+        # only the last Spec in a page leaves earlier corrupt generations
+        # permanently visible as current when the cursor cycles over the same
+        # page. Each audit releases its read snapshot before hashing; one bad
+        # scope must not prevent later scopes from being reconciled.
+        for spec_id in spec_ids:
+            try:
+                await self.audit_active_generation(spec_id=spec_id)
+            except Exception:
+                logger.exception("readiness.reconcile_audit_failed spec=%s", spec_id)
         async with AsyncSession(self.engine) as session, session.begin():
             state = await session.get(AppSetting, "readiness_reconcile_cursor")
             if state is None:

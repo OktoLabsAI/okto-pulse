@@ -203,3 +203,138 @@ async def test_sustained_queue_lag_is_warned_without_exposing_payload(tmp_path, 
         assert 'readiness.queue_lag oldest_s=66.000' in caplog.text
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_audits_each_active_generation_in_a_page(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(
+                "INSERT INTO specs (id,board_id,title,status,version,created_by,"
+                "architecture_adoption,execution_contract) "
+                "VALUES ('z-spec','board','Other','in_progress',1,'owner','{}',?)",
+                (json.dumps({"contract_version": "spec-execution-contract/v1",
+                    "board_id": "board", "spec_id": "z-spec", "adopted_in_edition": 1,
+                    "actor_id": "owner", "origin": "new_spec"}),),
+            )
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        assert await worker.process_once() == 1
+        assert await worker.process_once() == 1
+        first = await worker.store.read(board_id="board", spec_id="spec", edition=1)
+        last = await worker.store.read(board_id="board", spec_id="z-spec", edition=1)
+        assert first is not None and first.freshness == "current"
+        assert last is not None and last.freshness == "current"
+
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(
+                "UPDATE readiness_summary SET payload='{}' WHERE generation_id=?",
+                (first.generation_id,),
+            )
+        # The cursor can be at the end of the page after startup. The next
+        # sweep must eventually inspect both active manifests, not only the
+        # lexicographically last Spec.
+        assert await worker.store.reconcile_once() == 0
+        assert await worker.store.reconcile_once() == 2
+        repaired = await worker.store.read(board_id="board", spec_id="spec", edition=1)
+        assert repaired is not None and repaired.generation_id is None
+        assert repaired.freshness == "pending_initial"
+        async with engine.connect() as connection:
+            job = (await connection.exec_driver_sql(
+                "SELECT state,error_code FROM readiness_job WHERE scope_id='spec:1'"
+            )).one()
+        assert job == ("pending", "readiness_active_manifest_mismatch")
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_unrelated_board_commit_does_not_retry_projection_snapshot(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql("INSERT INTO boards (id,name,owner_id,realm_id) "
+                "VALUES ('other','Other','owner','local')")
+        entered, resume = asyncio.Event(), asyncio.Event()
+
+        class PausedExecution:
+            calls = 0
+
+            async def run(self, operation):
+                self.calls += 1
+                if self.calls == 1:
+                    entered.set()
+                    await resume.wait()
+                return await asyncio.to_thread(operation)
+
+        worker = ReadinessProjectionProcessor(engine, PausedExecution())
+        processing = asyncio.create_task(worker.process_once())
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql("UPDATE boards SET name='Changed' WHERE id='other'")
+        resume.set()
+        assert await asyncio.wait_for(processing, timeout=10) == 1
+        result = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert result is not None and result.freshness == 'current'
+        assert result.captured_revision == result.source_revision == 1
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_many_source_revisions_coalesce_into_one_generation(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        async with engine.begin() as connection:
+            for index in range(20):
+                await connection.exec_driver_sql(
+                    "UPDATE specs SET description=? WHERE id='spec'", (f'revision-{index}',),
+                )
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        assert await worker.process_once() == 1
+        result = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert result is not None and result.freshness == 'current'
+        assert result.captured_revision == result.source_revision == 21
+        async with engine.connect() as connection:
+            generations = (await connection.exec_driver_sql(
+                "SELECT count(*) FROM readiness_generation WHERE scope_id='spec:1'"
+            )).scalar_one()
+        assert generations == 1
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_over_cap_scope_is_unknown_while_healthy_scope_progresses(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(
+                "UPDATE specs SET test_scenarios=? WHERE id='spec'",
+                (json.dumps([f'scenario-{index}' for index in range(5001)]),),
+            )
+            await connection.exec_driver_sql(
+                "INSERT INTO specs (id,board_id,title,status,version,created_by,"
+                "architecture_adoption,execution_contract) "
+                "VALUES ('z-spec','board','Healthy','in_progress',1,'owner','{}',?)",
+                (json.dumps({"contract_version": "spec-execution-contract/v1",
+                    "board_id": "board", "spec_id": "z-spec", "adopted_in_edition": 1,
+                    "actor_id": "owner", "origin": "new_spec"}),),
+            )
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        assert await worker.process_once() == 1
+        assert await worker.process_once() == 1
+        limited = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        healthy = await worker.store.read(board_id='board', spec_id='z-spec', edition=1)
+        assert limited is not None and limited.freshness == 'current'
+        assert limited.summaries[0]['implementation']['status'] == 'unknown'
+        assert limited.summaries[0]['implementation']['percent'] is None
+        assert limited.summaries[0]['verification']['status'] == 'unknown'
+        assert limited.units == ()
+        assert healthy is not None and healthy.freshness == 'current'
+    finally:
+        await engine.dispose()
