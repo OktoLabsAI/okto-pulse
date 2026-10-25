@@ -57,16 +57,30 @@ async def probe(database: Path, board_id: str, read_count: int) -> dict:
                 if row is None:
                     raise ValueError('board_has_no_active_spec')
                 spec_id, edition, realm_id, card_count = row
-                scope_id = f"{spec_id}:{edition}"
                 await connection.exec_driver_sql(
                     "INSERT INTO readiness_scope "
                     "(id,realm_id,board_id,spec_id,edition,source_revision,tombstone,updated_at) "
-                    "VALUES (?,?,?,?,?,1,0,CURRENT_TIMESTAMP)",
-                    (scope_id, realm_id, board_id, spec_id, edition))
+                    "VALUES (?,?,?,?,?,1,0,CURRENT_TIMESTAMP) "
+                    "ON CONFLICT(realm_id,board_id,spec_id,edition) DO NOTHING",
+                    (f"{spec_id}:{edition}", realm_id, board_id, spec_id, edition))
+                scope = (await connection.exec_driver_sql(
+                    "SELECT id,source_revision,tombstone FROM readiness_scope "
+                    "WHERE realm_id=? AND board_id=? AND spec_id=? AND edition=?",
+                    (realm_id, board_id, spec_id, edition))).one()
+                scope_id, source_revision, tombstone = scope
+                if tombstone:
+                    raise RuntimeError('selected_readiness_scope_tombstoned')
+                # The live predecessor may already have a complete generation
+                # and an idle job. Reprojection is forced only on this copy.
                 await connection.exec_driver_sql(
                     "INSERT INTO readiness_job "
                     "(scope_id,requested_revision,state,lease_epoch,attempt,due_at,updated_at) "
-                    "VALUES (?,1,'pending',0,0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)", (scope_id,))
+                    "VALUES (?,?,'pending',0,0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP) "
+                    "ON CONFLICT(scope_id) DO UPDATE SET "
+                    "requested_revision=excluded.requested_revision,state='pending',"
+                    "owner=NULL,lease_until=NULL,attempt=0,error_code=NULL,"
+                    "due_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP",
+                    (scope_id, source_revision))
             worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
             worker._last_reconcile = monotonic()
             worker._last_gc = monotonic()
