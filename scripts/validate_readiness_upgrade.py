@@ -74,6 +74,10 @@ def validate(source: Path) -> dict:
         with closing(sqlite3.connect(copied)) as upgraded, closing(sqlite3.connect(backup)) as preserved:
             if inspect_current_schema(upgraded.cursor(), current_schema_contract()) is not False:
                 raise ValueError('current_schema_incompatible')
+            diagnostic_present = upgraded.execute("SELECT count(*) FROM sqlite_schema "
+                "WHERE type='table' AND name='readiness_diagnostic'").fetchone()[0] == 1
+            if not diagnostic_present:
+                raise ValueError('readiness_diagnostic_missing')
             if upgraded.execute('PRAGMA quick_check(1)').fetchone() != ('ok',):
                 raise ValueError('upgraded_integrity_failed')
             if upgraded.execute('PRAGMA foreign_key_check').fetchone() is not None:
@@ -85,6 +89,8 @@ def validate(source: Path) -> dict:
                 'source_tables_verified': len(before),
                 'source_rows_verified': sum(count for count, _ in before.values()),
                 'upgraded_schema_version': upgraded.execute('PRAGMA user_version').fetchone()[0],
+                'readiness_diagnostic_present': diagnostic_present,
+                'quick_check': 'ok', 'foreign_key_check': 'empty',
                 'source_unchanged': True, 'backup_verified': True}
 
 
