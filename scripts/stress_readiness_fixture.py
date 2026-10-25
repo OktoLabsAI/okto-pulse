@@ -45,6 +45,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
     service = DeliveryReadinessService(reader, None)
     read_ms, write_ms, lag_ms, burst_write_ms, burst_lag_ms = [], [], [], [], []
     lock_wait_ms, transaction_ms, burst_lock_wait_ms, burst_transaction_ms = [], [], [], []
+    source_update_ms, source_commit_ms = [], []
     errors: list[str] = []
     warmup_errors: list[str] = []
     freshness: dict[str, int] = {}
@@ -126,27 +127,33 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                                 await connection.exec_driver_sql(
                                     'UPDATE specs SET description=? WHERE id=?',
                                     (f'{"burst" if burst else "load"}-{index}', spec_id))
+                                update_done = perf_counter()
+                                await connection.commit()
+                                committed_at = perf_counter()
+                                # The real source command commits with its intent trigger.
+                                # Observing the revision belongs outside the writer lock.
                                 revision = (await connection.exec_driver_sql(
                                     'SELECT source_revision FROM readiness_scope WHERE spec_id=?',
                                     (spec_id,))).scalar_one() if args.mode == 'persisted' else None
-                                await connection.commit()
-                                committed_at = perf_counter()
-                                return (revision,
+                                return (revision, committed_at,
                                     (lock_acquired - lock_requested) * 1000,
-                                    (committed_at - lock_acquired) * 1000)
+                                    (committed_at - lock_acquired) * 1000,
+                                    (update_done - lock_acquired) * 1000,
+                                    (committed_at - update_done) * 1000)
                             except BaseException:
                                 await connection.rollback()
                                 raise
                     if args.serialize_writes:
                         async with writer_guard:
-                            revision, waited_ms, held_ms = await commit_write()
+                            revision, committed, waited_ms, held_ms, updated_ms, committed_ms = await commit_write()
                     else:
-                        revision, waited_ms, held_ms = await commit_write()
-                    committed = perf_counter()
+                        revision, committed, waited_ms, held_ms, updated_ms, committed_ms = await commit_write()
                     if measured:
                         write_ms.append((committed - began) * 1000)
                         lock_wait_ms.append(waited_ms)
                         transaction_ms.append(held_ms)
+                        source_update_ms.append(updated_ms)
+                        source_commit_ms.append(committed_ms)
                     if burst and measured:
                         burst_write_ms.append((committed - began) * 1000)
                         burst_lock_wait_ms.append(waited_ms)
@@ -260,6 +267,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             'lock_wait_p95_ms': round(percentile(lock_wait_ms, .95), 3) if lock_wait_ms else None,
             'transaction_p95_ms': round(percentile(transaction_ms, .95), 3) if transaction_ms else None,
             'transaction_max_ms': round(max(transaction_ms), 3) if transaction_ms else None,
+            'source_update_p95_ms': round(percentile(source_update_ms, .95), 3) if source_update_ms else None,
+            'source_commit_p95_ms': round(percentile(source_commit_ms, .95), 3) if source_commit_ms else None,
             'burst': {'requested': args.burst_size, 'scope': args.burst_scope,
                 'writes': len(burst_write_ms),
                 'elapsed_ms': round(burst_elapsed_ms, 3) if burst_elapsed_ms is not None else None,
@@ -284,6 +293,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 'write': [round(v, 3) for v in write_ms],
                 'lock_wait': [round(v, 3) for v in lock_wait_ms],
                 'transaction': [round(v, 3) for v in transaction_ms],
+                'source_update': [round(v, 3) for v in source_update_ms],
+                'source_commit': [round(v, 3) for v in source_commit_ms],
                 'publish': [round(v, 3) for v in lag_ms],
                 'burst_write': [round(v, 3) for v in burst_write_ms],
                 'burst_lock_wait': [round(v, 3) for v in burst_lock_wait_ms],
