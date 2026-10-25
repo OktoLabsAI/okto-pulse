@@ -93,32 +93,31 @@ class CommunityPersistedReadinessStore:
         async with self.engine.connect() as connection:
             await connection.exec_driver_sql("BEGIN")
             try:
-                scope = (await connection.exec_driver_sql(
-                    "SELECT id,source_revision,active_generation_id FROM readiness_scope "
-                    "WHERE board_id=? AND spec_id=? AND edition=? AND tombstone=0 LIMIT 1",
-                    (board_id, spec_id, edition))).mappings().first()
-                if scope is None:
+                header = (await connection.exec_driver_sql(
+                    "SELECT s.id AS scope_id,s.source_revision,"
+                    "j.state AS job_state,j.error_code AS job_error,"
+                    "g.id AS gen_id,g.scope_id AS gen_scope_id,g.state AS gen_state,"
+                    "g.evaluator_version,g.captured_revision,g.evaluated_at "
+                    "FROM readiness_scope s "
+                    "LEFT JOIN readiness_job j ON j.scope_id=s.id "
+                    "LEFT JOIN readiness_generation g ON g.id=coalesce(?,s.active_generation_id) "
+                    "WHERE s.board_id=? AND s.spec_id=? AND s.edition=? AND s.tombstone=0 LIMIT 1",
+                    (generation_id_override, board_id, spec_id, edition))).mappings().first()
+                if header is None:
                     return None
-                job = (await connection.exec_driver_sql(
-                    "SELECT state,error_code FROM readiness_job WHERE scope_id=?",
-                    (scope['id'],))).mappings().first()
-                selected_id = generation_id_override or scope['active_generation_id']
-                gen = (await connection.exec_driver_sql(
-                    "SELECT id,scope_id,state,evaluator_version,captured_revision,evaluated_at "
-                    "FROM readiness_generation WHERE id=?", (selected_id,))).mappings().first(
-                    ) if selected_id else None
-                if gen is not None and (gen['state'] != 'complete' or gen['scope_id'] != scope['id']):
-                    gen = None
-                if generation_id_override is not None and gen is None:
+                valid_generation = (header['gen_id'] is not None
+                    and header['gen_state'] == 'complete'
+                    and header['gen_scope_id'] == header['scope_id'])
+                if generation_id_override is not None and not valid_generation:
                     raise ReadinessReadError('readiness_cursor_stale', native_code='snapshot_conflict')
-                compatible = gen is not None and gen['evaluator_version'] == EVALUATOR_VERSION
-                if job is not None and job['state'] == 'terminal':
+                compatible = valid_generation and header['evaluator_version'] == EVALUATOR_VERSION
+                if header['job_state'] == 'terminal':
                     freshness = 'unavailable'
-                elif gen is None:
+                elif not valid_generation:
                     freshness = 'pending_initial'
                 elif not compatible:
                     freshness = 'unavailable'
-                elif gen['captured_revision'] == scope['source_revision']:
+                elif header['captured_revision'] == header['source_revision']:
                     freshness = 'current'
                 else:
                     freshness = 'updating'
@@ -129,26 +128,26 @@ class CommunityPersistedReadinessStore:
                     if card_id:
                         summary_json = tuple(row[0] for row in (await connection.exec_driver_sql(
                             "SELECT payload FROM readiness_summary WHERE generation_id=? "
-                            "AND card_key=?", (gen['id'], card_id))).all())
+                            "AND card_key=?", (header['gen_id'], card_id))).all())
                     else:
                         summary_json = tuple(row[0] for row in (await connection.exec_driver_sql(
                             "SELECT payload FROM readiness_summary WHERE generation_id=? "
-                            "ORDER BY card_key", (gen['id'],))).all())
+                            "ORDER BY card_key", (header['gen_id'],))).all())
                     if unit_limit:
                         key = card_id or ''
                         unit_total = int((await connection.exec_driver_sql(
                             "SELECT count(*) FROM readiness_unit WHERE generation_id=? AND card_key=?",
-                            (gen['id'], key))).scalar_one())
+                            (header['gen_id'], key))).scalar_one())
                         unit_json = tuple(row[0] for row in (await connection.exec_driver_sql(
                             "SELECT payload FROM readiness_unit WHERE generation_id=? AND card_key=? "
                             "ORDER BY kind,ref,semantic_sha256 LIMIT ? OFFSET ?",
-                            (gen['id'], key, unit_limit, unit_offset))).all())
-                source_revision = int(scope['source_revision'])
-                generation_id = gen['id'] if compatible else None
-                captured_revision = int(gen['captured_revision']) if compatible else None
-                evaluated_at = (datetime.fromisoformat(gen['evaluated_at']).replace(tzinfo=timezone.utc)
-                    if compatible and isinstance(gen['evaluated_at'], str) else None)
-                error_code = job['error_code'] if job else None
+                            (header['gen_id'], key, unit_limit, unit_offset))).all())
+                source_revision = int(header['source_revision'])
+                generation_id = header['gen_id'] if compatible else None
+                captured_revision = int(header['captured_revision']) if compatible else None
+                evaluated_at = (datetime.fromisoformat(header['evaluated_at']).replace(tzinfo=timezone.utc)
+                    if compatible and isinstance(header['evaluated_at'], str) else None)
+                error_code = header['job_error']
             finally:
                 await connection.rollback()
         summaries = tuple(json.loads(value) for value in summary_json)
