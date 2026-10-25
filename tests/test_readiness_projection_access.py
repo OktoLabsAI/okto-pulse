@@ -12,7 +12,9 @@ from okto_pulse.community.adapters.readiness_projection_worker import ReadinessP
 from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import CommunityDeliveryReadinessReader, CommunityReadinessClock
 from okto_pulse.community.adapters.sqlalchemy_models import AgentBoard
 from okto_pulse.community.adapters.worker_runners import TrackedBlockingExecution
-from okto_pulse.core.ports.delivery_readiness import ReadinessActor, ReadinessReadError
+from okto_pulse.core.ports.delivery_readiness import (
+    ReadinessAccessDenied, ReadinessActor, ReadinessReadError,
+)
 
 ledger = delivery.ledger
 pytestmark = [pytest.mark.asyncio, pytest.mark.parametrize('ledger', ['native_schema'], indirect=True)]
@@ -43,8 +45,22 @@ async def test_projection_pages_are_actor_bound_and_reauthorized(ledger, monkeyp
     async with session.bind.begin() as connection:
         await connection.exec_driver_sql("UPDATE readiness_job SET state='terminal',error_code='forced' "
             "WHERE scope_id=?", (f'{delivery.SPEC_ID}:1',))
+    with pytest.raises(ReadinessAccessDenied):
+        await reader.requeue_terminal(board_id=delivery.BOARD_ID,
+            spec_id=delivery.SPEC_ID, actor=ReadinessActor('shared', 'human', 'local'),
+            edition=1,
+            expected_revision=first.source_revision, idempotency_key='unauthorized',
+            reason='Must not requeue')
+    with pytest.raises(ReadinessReadError, match='readiness_requeue_conflict'):
+        await reader.requeue_terminal(board_id=delivery.BOARD_ID,
+            spec_id=delivery.SPEC_ID, actor=ACTOR, edition=2,
+            expected_revision=first.source_revision, idempotency_key='wrong-edition',
+            reason='Must not cross editions')
     assert (await reader.requeue_terminal(board_id=delivery.BOARD_ID,
-        spec_id=delivery.SPEC_ID, actor=ACTOR))['requeued']
+        spec_id=delivery.SPEC_ID, actor=ACTOR,
+        edition=1,
+        expected_revision=first.source_revision, idempotency_key='repair-one',
+        reason='Storage recovered'))['queued']
     async with session.bind.connect() as connection:
         assert (await connection.exec_driver_sql("SELECT previous_error_code FROM readiness_operation_audit "
             "WHERE scope_id=?", (f'{delivery.SPEC_ID}:1',))).scalar_one() == 'forced'

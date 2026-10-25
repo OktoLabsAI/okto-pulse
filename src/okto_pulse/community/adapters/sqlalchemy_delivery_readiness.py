@@ -36,7 +36,8 @@ from okto_pulse.core.domain.enums import CardType
 from okto_pulse.core.domain.execution_contract import execution_contract
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID, RealmScope
 from okto_pulse.core.ports.delivery_readiness import (
-    ReadinessActor, ReadinessCard, ReadinessReadError, ReadinessScenarioProcedure, ReadinessSnapshot,
+    ReadinessAccessDenied, ReadinessActor, ReadinessCard, ReadinessReadError,
+    ReadinessScenarioProcedure, ReadinessSnapshot,
     resolve_readiness_access, resolve_delivery_gate_policy,
 )
 from okto_pulse.core.ports.permission_policy import (
@@ -521,21 +522,36 @@ class CommunityDeliveryReadinessReader:
                     'has_more': has_more, 'next_cursor': next_cursor}
         raise ReadinessReadError('readiness_snapshot_changed')
 
-    async def requeue_terminal(self, *, board_id, spec_id, actor):
+    async def requeue_terminal(self, *, board_id, spec_id, actor,
+                               edition, expected_revision, idempotency_key, reason):
         from .sqlalchemy_persisted_readiness import CommunityPersistedReadinessStore
 
         counts = {'queries': 0, 'facts': 0}
         async with AsyncSession(self.engine, autoflush=False) as session:
             access = await self._access(session, actor, board_id, counts)
-            access.require('board.admin.edit')
+            access.require('readiness.requeue')
+            if actor.actor_kind in {'human', 'user'}:
+                board = await session.get(Board, board_id)
+                if board is None:
+                    raise ReadinessReadError('readiness_scope_mismatch')
+                if board.owner_id != actor.actor_id:
+                    share = (await session.scalars(select(BoardShare.permission).where(
+                        BoardShare.board_id == board_id,
+                        BoardShare.user_id == actor.actor_id,
+                        BoardShare.realm_id == (actor.realm_id or LOCAL_REALM_ID)))).first()
+                    if share != 'admin':
+                        raise ReadinessAccessDenied('readiness.requeue')
             spec = await session.get(Spec, spec_id)
             if spec is None or spec.board_id != board_id or spec.archived:
                 raise ReadinessReadError('readiness_scope_mismatch')
+            if spec.edition != edition:
+                raise ReadinessReadError('readiness_requeue_conflict')
             scope_id = f'{spec_id}:{spec.edition}'
-        changed = await CommunityPersistedReadinessStore(self.engine).requeue_terminal(
+        return await CommunityPersistedReadinessStore(self.engine).requeue_terminal(
             scope_id=scope_id, board_id=board_id,
-            actor_id=actor.actor_id, actor_kind=actor.actor_kind)
-        return {'scope_id': scope_id, 'requeued': changed}
+            actor_id=actor.actor_id, actor_kind=actor.actor_kind,
+            expected_revision=expected_revision, idempotency_key=idempotency_key,
+            reason=reason)
 
     async def _capacity_snapshot(self, session, board_id, spec_id, card_id, counts, error):
         """Keep an authorized scope header, never the prefix of overflowing facts.

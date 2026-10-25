@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import asdict, replace
+from datetime import datetime, timedelta, timezone
 import json
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -74,14 +75,28 @@ async def test_worker_publishes_one_complete_generation_after_source_commit(tmp_
         async with engine.begin() as connection:
             await connection.exec_driver_sql("UPDATE readiness_job SET state='terminal',error_code='test' "
                 "WHERE scope_id='spec:1'")
-        assert await worker.store.requeue_terminal(scope_id="spec:1", board_id="board",
-            actor_id="owner", actor_kind="human")
-        assert not await worker.store.requeue_terminal(scope_id="spec:1", board_id="board",
-            actor_id="owner", actor_kind="human")
+        requeued = await worker.store.requeue_terminal(scope_id="spec:1", board_id="board",
+            actor_id="owner", actor_kind="human", expected_revision=2,
+            idempotency_key="repair-one", reason="Retry after storage repair")
+        assert requeued["scope"] == "spec:1" and requeued["requested_revision"] == 2
+        assert requeued["queued"] and not requeued["replayed"] and requeued["audit_id"]
+        replayed = await worker.store.requeue_terminal(scope_id="spec:1", board_id="board",
+            actor_id="owner", actor_kind="human", expected_revision=2,
+            idempotency_key="repair-one", reason="Retry after storage repair")
+        assert replayed["replayed"] is True
+        assert replayed["audit_id"] == requeued["audit_id"]
+        with pytest.raises(ReadinessReadError, match="readiness_requeue_conflict"):
+            await worker.store.requeue_terminal(scope_id="spec:1", board_id="board",
+                actor_id="owner", actor_kind="human", expected_revision=1,
+                idempotency_key="repair-two", reason="Wrong revision")
+        with pytest.raises(ReadinessReadError, match="readiness_requeue_conflict"):
+            await worker.store.requeue_terminal(scope_id="spec:1", board_id="board",
+                actor_id="owner", actor_kind="human", expected_revision=2,
+                idempotency_key="repair-one", reason="Conflicting replay")
         async with engine.connect() as connection:
-            audit = (await connection.exec_driver_sql("SELECT operation,actor_id,previous_error_code "
+            audit = (await connection.exec_driver_sql("SELECT operation,actor_id,previous_error_code,reason "
                 "FROM readiness_operation_audit WHERE scope_id='spec:1'")).one()
-            assert audit == ("requeue_terminal", "owner", "test")
+            assert audit == ("requeue_terminal", "owner", "test", "Retry after storage repair")
         async with engine.begin() as connection:
             await connection.exec_driver_sql("UPDATE readiness_summary SET payload='{}' "
                 "WHERE generation_id=?", (current.generation_id,))
@@ -303,6 +318,154 @@ async def test_claim_round_robin_survives_restart_and_failing_scope(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_crash_replay_keeps_source_and_hides_unpublished_staging(tmp_path):
+    database = tmp_path / 'pulse.sqlite3'
+    engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
+    try:
+        await _seed_one_spec(engine)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        await asyncio.sleep(.06)
+        abandoned = await worker.store.claim(owner='crashed-worker')
+        assert abandoned is not None
+        snapshot, revision = await worker.reader.load_for_projection(
+            board_id='board', spec_id='spec', blocking_execution=worker.blocking_execution)
+        staged_id = await worker.store.stage(abandoned,
+            build_readiness_generation(snapshot, captured_revision=revision))
+        before = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert before is not None and before.generation_id is None
+        async with engine.connect() as connection:
+            source_before = (await connection.exec_driver_sql(
+                "SELECT version,description FROM specs WHERE id='spec'")).one()
+        await engine.dispose()
+
+        # A dead process cannot renew its lease. Reopening the same durable DB
+        # must steal the claim with a newer epoch and ignore its staged rows.
+        engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(
+                "UPDATE readiness_job SET lease_until='2000-01-01' WHERE scope_id='spec:1'")
+        restarted = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        assert await restarted.process_once() == 1
+        current = await restarted.store.read(board_id='board', spec_id='spec', edition=1)
+        assert current is not None and current.freshness == 'current'
+        assert current.generation_id != staged_id
+        assert not await restarted.store.publish(abandoned, staged_id)
+        async with engine.connect() as connection:
+            source_after = (await connection.exec_driver_sql(
+                "SELECT version,description FROM specs WHERE id='spec'")).one()
+            states = (await connection.exec_driver_sql(
+                "SELECT id,state FROM readiness_generation WHERE scope_id='spec:1'")).all()
+        assert source_after == source_before
+        # The bounded GC may expire the abandoned staging during recovery.
+        assert (staged_id, 'staging') in states or (staged_id, 'expired') in states
+        assert (current.generation_id, 'complete') in states
+
+        # A response lost after publication is an idle job on restart.
+        await engine.dispose()
+        engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
+        again = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        assert await again.process_once() == 0
+        replay = await again.store.read(board_id='board', spec_id='spec', edition=1)
+        assert replay is not None and replay.generation_id == current.generation_id
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_eight_failures_terminal_then_fenced_admin_requeue(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        await asyncio.sleep(.06)
+        for number in range(1, 9):
+            claim = await worker.store.claim(owner=f'failure-{number}')
+            assert claim is not None and claim.requested_revision == 1
+            before_failure = datetime.now(timezone.utc)
+            await worker.store.fail(claim, error_code='storage_unavailable')
+            after_failure = datetime.now(timezone.utc)
+            async with engine.connect() as connection:
+                row = (await connection.exec_driver_sql(
+                    "SELECT state,attempt,requested_revision,error_code,due_at "
+                    "FROM readiness_job WHERE scope_id='spec:1'")).one()
+            assert row.state == ('terminal' if number == 8 else 'pending')
+            assert row.attempt == number and row.requested_revision == 1
+            assert row.error_code == 'storage_unavailable'
+            due = datetime.fromisoformat(row.due_at)
+            if due.tzinfo is None:
+                due = due.replace(tzinfo=timezone.utc)
+            backoff = min(30, 2 ** (number - 1))
+            assert due >= before_failure + timedelta(seconds=backoff)
+            assert due <= after_failure + timedelta(seconds=backoff * 1.2)
+            assert await worker.store.claim(owner='early') is None
+            if number < 8:
+                async with engine.begin() as connection:
+                    await connection.exec_driver_sql(
+                        "UPDATE readiness_job SET due_at='2000-01-01' "
+                        "WHERE scope_id='spec:1'")
+        with pytest.raises(ReadinessReadError, match='readiness_requeue_conflict'):
+            await worker.store.requeue_terminal(scope_id='spec:1', board_id='board',
+                actor_id='owner', actor_kind='human', expected_revision=0,
+                idempotency_key='wrong', reason='Storage restored')
+        outcome = await worker.store.requeue_terminal(scope_id='spec:1', board_id='board',
+            actor_id='owner', actor_kind='human', expected_revision=1,
+            idempotency_key='repair', reason='Storage restored')
+        assert outcome['queued'] and not outcome['replayed'] and outcome['audit_id']
+        replay = await worker.store.requeue_terminal(scope_id='spec:1', board_id='board',
+            actor_id='owner', actor_kind='human', expected_revision=1,
+            idempotency_key='repair', reason='Storage restored')
+        assert replay['replayed'] and replay['audit_id'] == outcome['audit_id']
+        async with engine.connect() as connection:
+            row = (await connection.exec_driver_sql(
+                "SELECT state,attempt,requested_revision,error_code FROM readiness_job "
+                "WHERE scope_id='spec:1'")).one()
+            audit = (await connection.exec_driver_sql(
+                "SELECT count(*),max(previous_error_code) FROM readiness_operation_audit "
+                "WHERE scope_id='spec:1'")).one()
+        assert row == ('pending', 0, 1, None)
+        assert audit == (1, 'storage_unavailable')
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_stage_storage_failure_keeps_previous_generation_until_repair(tmp_path, monkeypatch):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        assert await worker.process_once() == 1
+        previous = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert previous is not None and previous.freshness == 'current'
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql("UPDATE specs SET description='new evidence' WHERE id='spec'")
+        await asyncio.sleep(.06)
+        original = worker.store.stage
+
+        async def disk_full(*_args, **_kwargs):
+            raise OSError('database or disk is full')
+
+        monkeypatch.setattr(worker.store, 'stage', disk_full)
+        assert await worker.process_once() == 0
+        failed = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert failed is not None and failed.generation_id == previous.generation_id
+        assert failed.freshness == 'updating' and failed.error_code == 'OSError'
+        monkeypatch.setattr(worker.store, 'stage', original)
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(
+                "UPDATE readiness_job SET due_at='2000-01-01' WHERE scope_id='spec:1'")
+        assert await worker.process_once() == 1
+        repaired = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert repaired is not None and repaired.freshness == 'current'
+        assert repaired.generation_id != previous.generation_id
+        async with engine.connect() as connection:
+            assert (await connection.exec_driver_sql(
+                "SELECT version,description FROM specs WHERE id='spec'")).one() == (1, 'new evidence')
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_sustained_queue_lag_is_warned_without_exposing_payload(tmp_path, monkeypatch, caplog):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
     try:
@@ -364,6 +527,50 @@ async def test_reconcile_audits_each_active_generation_in_a_page(tmp_path):
                 "SELECT state,error_code FROM readiness_job WHERE scope_id='spec:1'"
             )).one()
         assert job == ("pending", "readiness_active_manifest_mismatch")
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_cursor_resumes_bounded_pages_after_restart(tmp_path):
+    database = tmp_path / 'pulse.sqlite3'
+    engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
+    try:
+        await _seed_one_spec(engine)
+        rows = []
+        for number in range(103):
+            spec_id = f'spec-{number:03d}'
+            rows.append((spec_id, json.dumps({
+                'contract_version': 'spec-execution-contract/v1',
+                'board_id': 'board', 'spec_id': spec_id,
+                'adopted_in_edition': 1, 'actor_id': 'owner', 'origin': 'new_spec',
+            })))
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(
+                "INSERT INTO specs (id,board_id,title,status,version,created_by,"
+                "architecture_adoption,execution_contract) "
+                "VALUES (?,'board','Spec','in_progress',1,'owner','{}',?)", rows)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        assert await worker.store.reconcile_once(limit=100) == 100
+        async with engine.connect() as connection:
+            cursor = (await connection.exec_driver_sql(
+                "SELECT value FROM app_settings WHERE key='readiness_reconcile_cursor'"
+            )).scalar_one()
+        assert cursor == 'spec-098'
+
+        await engine.dispose()
+        engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
+        resumed = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        assert await resumed.store.reconcile_once(limit=100) == 4
+        async with engine.connect() as connection:
+            cursor = (await connection.exec_driver_sql(
+                "SELECT value FROM app_settings WHERE key='readiness_reconcile_cursor'"
+            )).scalar_one()
+            jobs = (await connection.exec_driver_sql(
+                "SELECT count(*) FROM readiness_job")).scalar_one()
+        assert cursor == 'spec-102' and jobs == 104
+        assert await resumed.store.reconcile_once(limit=100) == 0
+        assert await resumed.store.reconcile_once(limit=100) == 100
     finally:
         await engine.dispose()
 

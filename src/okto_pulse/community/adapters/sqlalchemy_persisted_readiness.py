@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from itertools import chain, islice
 import json
 import logging
@@ -18,9 +19,10 @@ from sqlalchemy.orm import aliased
 from okto_pulse.core.services.persisted_delivery_readiness import (
     EVALUATOR_VERSION, ReadinessGeneration, readiness_manifest_digest,
 )
-from okto_pulse.core.ports.delivery_readiness import ReadinessReadError
+from okto_pulse.core.ports.delivery_readiness import ReadinessAccessDenied, ReadinessReadError
 from .sqlalchemy_models import (
-    AppSetting, Board, Spec, ReadinessGenerationRow, ReadinessJobRow, ReadinessScopeRow,
+    Agent, AgentBoard, AppSetting, Board, BoardShare, Spec,
+    ReadinessGenerationRow, ReadinessJobRow, ReadinessScopeRow,
     ReadinessSummaryRow, ReadinessUnitRow, ReadinessOperationAuditRow,
 )
 
@@ -387,24 +389,78 @@ class CommunityPersistedReadinessStore:
             job.updated_at = now
 
     async def requeue_terminal(self, *, scope_id: str, board_id: str,
-                               actor_id: str, actor_kind: str) -> bool:
-        """Operator action for a terminal job; never changes the source ledger."""
+                               actor_id: str, actor_kind: str,
+                               expected_revision: int, idempotency_key: str,
+                               reason: str) -> dict:
+        """Fenced, idempotent operator retry without changing source evidence."""
+        if (expected_revision < 0 or not 1 <= len(idempotency_key) <= 128
+                or not idempotency_key.strip()
+                or not 1 <= len(reason.strip()) <= 500):
+            raise ReadinessReadError("readiness_query_invalid")
+        request_key = sha256(json.dumps([actor_id, idempotency_key],
+            ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
         now = datetime.now(timezone.utc)
-        async with AsyncSession(self.engine) as session, session.begin():
-            job = await session.get(ReadinessJobRow, scope_id)
-            scope = await session.get(ReadinessScopeRow, scope_id)
-            if (job is None or scope is None or scope.board_id != board_id
-                or scope.tombstone or job.state != "terminal"):
-                return False
-            previous_error = job.error_code
-            job.state, job.due_at, job.updated_at = "pending", now, now
-            job.owner, job.lease_until, job.error_code, job.attempt = None, None, None, 0
-            job.requested_revision = max(job.requested_revision, scope.source_revision)
-            session.add(ReadinessOperationAuditRow(id=uuid4().hex, scope_id=scope_id,
-                board_id=board_id, operation="requeue_terminal", actor_id=actor_id,
-                actor_kind=actor_kind, previous_error_code=previous_error,
-                target_revision=job.requested_revision, created_at=now))
-            return True
+        async with self.engine.connect() as connection:
+            await connection.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                async with AsyncSession(bind=connection, expire_on_commit=False) as session:
+                    job = await session.get(ReadinessJobRow, scope_id)
+                    scope = await session.get(ReadinessScopeRow, scope_id)
+                    if scope is None or scope.board_id != board_id or scope.tombstone or job is None:
+                        raise ReadinessReadError("readiness_scope_mismatch")
+                    if actor_kind == "agent":
+                        agent = await session.get(Agent, actor_id)
+                        binding = (await session.scalars(select(AgentBoard.id).where(
+                            AgentBoard.agent_id == actor_id,
+                            AgentBoard.board_id == board_id))).first()
+                        if agent is None or not agent.is_active or binding is None:
+                            raise ReadinessAccessDenied("readiness.requeue")
+                    else:
+                        board = await session.get(Board, board_id)
+                        if board is None:
+                            raise ReadinessReadError("readiness_scope_mismatch")
+                        if board.owner_id != actor_id:
+                            share = (await session.scalars(select(BoardShare.permission).where(
+                                BoardShare.board_id == board_id,
+                                BoardShare.user_id == actor_id,
+                                BoardShare.realm_id == scope.realm_id))).first()
+                            if share != "admin":
+                                raise ReadinessAccessDenied("readiness.requeue")
+                    previous = (await session.scalars(select(ReadinessOperationAuditRow).where(
+                        ReadinessOperationAuditRow.scope_id == scope_id,
+                        ReadinessOperationAuditRow.request_key == request_key))).first()
+                    if previous is not None:
+                        if (previous.actor_id != actor_id or previous.reason != reason.strip()
+                                or previous.target_revision != expected_revision):
+                            raise ReadinessReadError("readiness_requeue_conflict")
+                        audit_id = previous.id
+                        await connection.rollback()
+                        logger.info("readiness.requeued board=%s scope=%s revision=%d audit_id=%s replayed=true",
+                            board_id, scope_id, expected_revision, audit_id)
+                        return {"scope": scope_id, "requested_revision": expected_revision,
+                            "queued": True, "audit_id": audit_id, "replayed": True}
+                    if (scope.source_revision != expected_revision
+                            or job.requested_revision != expected_revision
+                            or job.state != "terminal"):
+                        raise ReadinessReadError("readiness_requeue_conflict")
+                    previous_error = job.error_code
+                    job.state, job.due_at, job.updated_at = "pending", now, now
+                    job.owner, job.lease_until, job.error_code, job.attempt = None, None, None, 0
+                    audit_id = uuid4().hex
+                    session.add(ReadinessOperationAuditRow(id=audit_id, scope_id=scope_id,
+                        board_id=board_id, operation="requeue_terminal", actor_id=actor_id,
+                        actor_kind=actor_kind, previous_error_code=previous_error,
+                        target_revision=expected_revision, request_key=request_key,
+                        reason=reason.strip(), created_at=now))
+                    await session.flush()
+                await connection.commit()
+                logger.info("readiness.requeued board=%s scope=%s revision=%d audit_id=%s replayed=false",
+                    board_id, scope_id, expected_revision, audit_id)
+                return {"scope": scope_id, "requested_revision": expected_revision,
+                    "queued": True, "audit_id": audit_id, "replayed": False}
+            except BaseException:
+                await connection.rollback()
+                raise
 
     async def gc_once(self) -> bool:
         """Retire one nonactive generation in bounded row batches."""

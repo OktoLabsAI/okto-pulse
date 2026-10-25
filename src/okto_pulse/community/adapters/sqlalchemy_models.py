@@ -10584,7 +10584,10 @@ class ReadinessOperationAuditRow(Base):
     """Durable, payload-free operator actions on the derived projection."""
 
     __tablename__ = "readiness_operation_audit"
-    __table_args__ = (Index("ix_readiness_operation_audit_scope", "scope_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_readiness_operation_audit_scope", "scope_id", "created_at"),
+        UniqueConstraint("scope_id", "request_key", name="uq_readiness_requeue_request"),
+    )
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     scope_id: Mapped[str] = mapped_column(String(64), nullable=False)
     board_id: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -10593,6 +10596,8 @@ class ReadinessOperationAuditRow(Base):
     actor_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     previous_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
     target_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    request_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
