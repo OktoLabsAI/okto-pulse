@@ -48,12 +48,12 @@ function CoverageBar({ label, covered, total }: { label: string; covered: number
   </div>;
 }
 
-function Meter({ label, value, description }: { label: string;
-  value: ReturnType<typeof ratio>; description: string }) {
+function Meter({ label, value, description, emptyLabel = 'Unavailable', zeroLabel = 'No items' }: { label: string;
+  value: ReturnType<typeof ratio>; description: string; emptyLabel?: string; zeroLabel?: string }) {
   return <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
     <p className="text-sm font-medium text-gray-600 dark:text-gray-300">{label}</p>
     <p className="mt-2 text-3xl font-semibold tracking-tight text-gray-900 dark:text-white">
-      {!value ? 'Unavailable' : value.percent === null ? 'No items' : `${value.percent}%`}
+      {!value ? emptyLabel : value.percent === null ? zeroLabel : `${value.percent}%`}
     </p>
     {value && value.total > 0 && <>
       <CoverageBar label={label} covered={value.covered} total={value.total} />
@@ -124,6 +124,8 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
   const proofAvailable = data?.delivery.state === 'available' && data.delivery.complete_for_scope;
   const implementationValue = persistedRatio(readiness.persisted?.summary?.implementation);
   const verificationValue = persistedRatio(readiness.persisted?.summary?.verification);
+  const proofEmptyLabel = readiness.loading || readiness.persisted?.freshness === 'pending_initial'
+    ? 'Waiting for calculation' : readiness.persisted?.summary ? 'Unable to evaluate' : 'Unavailable';
   const gaps = planning.filter(row => row.value && row.value.covered < row.value.total);
   return <section className="space-y-5 text-sm text-gray-700 dark:text-gray-300" aria-label="Spec coverage">
     <div className="flex flex-wrap items-start justify-between gap-3">
@@ -148,10 +150,12 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
       <AccessibleTabPanel idBase={tabId} tabId="overview" value={activeView} className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <Meter label="Planning coverage" value={planningValue} description="Applicable link dimensions fully covered. Empty dimensions are excluded." />
-          <Meter label="Implementation proof" value={implementationValue} description="Persisted proof for applicable obligations." />
+          <Meter label="Implementation proof" value={implementationValue} emptyLabel={proofEmptyLabel}
+            zeroLabel="Not applicable" description="Persisted proof for applicable obligations." />
           <Meter label="Decision adherence" value={proofAvailable ? ratio(data.delivery.counts.decisions_verified, data.delivery.counts.decisions) : null}
             description="Current obligation evidence and inspections required by Decisions." />
-          <Meter label="Verification proof" value={verificationValue} description="Persisted proof for applicable obligations." />
+          <Meter label="Verification proof" value={verificationValue} emptyLabel={proofEmptyLabel}
+            zeroLabel="Not applicable" description="Persisted proof for applicable obligations." />
         </div>
         {readiness.persisted && <p role="status" className="text-xs text-gray-500">
           {readiness.persisted.freshness === 'current' ? 'Current' : readiness.persisted.freshness === 'updating'

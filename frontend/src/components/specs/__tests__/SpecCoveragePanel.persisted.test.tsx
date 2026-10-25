@@ -64,3 +64,27 @@ it('does not invoke the structural coverage query on the Implementation tab', ()
   expect(api.getSpecCoverage).not.toHaveBeenCalled();
   expect(api.getPersistedReadinessProjection).not.toHaveBeenCalled();
 });
+
+it('shows waiting without inventing zero before the first generation', async () => {
+  const value = persistedProjection();
+  value.projection.freshness = 'pending_initial';
+  value.projection.generation_id = null;
+  value.summaries = [];
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  render(<SpecCoveragePanel boardId="b" specId="s" revision="1" onOpenSection={() => {}} />);
+  const implementation = await screen.findByText('Implementation proof');
+  await waitFor(() => expect(within(implementation.closest('div')!).getByText('Waiting for calculation')).toBeVisible());
+  const verification = screen.getByText('Verification proof');
+  expect(within(verification.closest('div')!).getByText('Waiting for calculation')).toBeVisible();
+  expect(within(implementation.closest('div')!).queryByText('0%')).not.toBeInTheDocument();
+});
+
+it('labels a nonapplicable persisted phase separately from missing proof', async () => {
+  const value = persistedProjection();
+  value.summaries[0].implementation.status = 'not_applicable';
+  value.summaries[0].implementation.percent = null;
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  render(<SpecCoveragePanel boardId="b" specId="s" revision="1" onOpenSection={() => {}} />);
+  const implementation = await screen.findByText('Implementation proof');
+  await waitFor(() => expect(within(implementation.closest('div')!).getByText('Not applicable')).toBeVisible());
+});
