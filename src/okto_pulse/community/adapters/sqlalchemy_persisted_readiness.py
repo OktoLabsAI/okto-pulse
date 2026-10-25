@@ -58,6 +58,7 @@ class ProjectionRead:
     summaries: tuple[dict, ...]
     units: tuple[dict, ...]
     unit_total: int
+    source_snapshot_id: str | None
 
 
 class ReadinessLeaseLost(RuntimeError):
@@ -97,7 +98,7 @@ class CommunityPersistedReadinessStore:
                     "SELECT s.id AS scope_id,s.source_revision,"
                     "j.state AS job_state,j.error_code AS job_error,"
                     "g.id AS gen_id,g.scope_id AS gen_scope_id,g.state AS gen_state,"
-                    "g.evaluator_version,g.captured_revision,g.evaluated_at "
+                    "g.evaluator_version,g.captured_revision,g.evaluated_at,g.source_snapshot_id "
                     "FROM readiness_scope s "
                     "LEFT JOIN readiness_job j ON j.scope_id=s.id "
                     "LEFT JOIN readiness_generation g ON g.id=coalesce(?,s.active_generation_id) "
@@ -147,6 +148,7 @@ class CommunityPersistedReadinessStore:
                 captured_revision = int(header['captured_revision']) if compatible else None
                 evaluated_at = (datetime.fromisoformat(header['evaluated_at']).replace(tzinfo=timezone.utc)
                     if compatible and isinstance(header['evaluated_at'], str) else None)
+                source_snapshot_id = header['source_snapshot_id'] if compatible else None
                 error_code = header['job_error']
             finally:
                 await connection.rollback()
@@ -154,7 +156,7 @@ class CommunityPersistedReadinessStore:
         units = tuple(json.loads(value) for value in unit_json)
         result = ProjectionRead(board_id, spec_id, edition, source_revision,
             generation_id, captured_revision, evaluated_at, freshness,
-            error_code, summaries, units, unit_total)
+            error_code, summaries, units, unit_total, source_snapshot_id)
         logger.debug("readiness.read board=%s spec=%s freshness=%s summaries=%d units=%d elapsed_ms=%.3f",
             board_id, spec_id, freshness, len(summaries), len(units),
             (perf_counter() - started) * 1000)

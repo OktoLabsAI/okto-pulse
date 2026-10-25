@@ -74,6 +74,7 @@ async def test_persisted_rest_reads_published_generation_with_current_authorizat
     result = response.json()
     assert result['projection']['freshness'] == 'current'
     assert result['projection']['generation_id']
+    assert result['projection']['snapshot_id'] and len(result['projection']['snapshot_id']) == 64
     assert result['scope']['spec_id'] == delivery.SPEC_ID
     assert len(result['summaries']) == 3
     assert result['summaries'][0]['implementation']['percent'] == 100

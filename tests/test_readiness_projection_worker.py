@@ -42,12 +42,14 @@ async def test_worker_publishes_one_complete_generation_after_source_commit(tmp_
         assert await worker.process_once() == 1
         first = await worker.store.read(board_id="board", spec_id="spec", edition=1)
         assert first is not None and first.freshness == "current"
+        assert first.source_snapshot_id and len(first.source_snapshot_id) == 64
         assert first.summaries[0]["implementation"]["percent"] is None
         async with engine.begin() as connection:
             await connection.exec_driver_sql("UPDATE specs SET description='changed' WHERE id='spec'")
         delayed = await worker.store.read(board_id="board", spec_id="spec", edition=1)
         assert delayed is not None and delayed.freshness == "updating"
         assert delayed.generation_id == first.generation_id
+        assert delayed.source_snapshot_id == first.source_snapshot_id
         assert delayed.summaries == first.summaries
         await asyncio.sleep(0.06)  # The bounded debounce keeps burst writes coalesced.
         assert await worker.process_once() == 1
