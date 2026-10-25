@@ -15,7 +15,7 @@ import logging
 from time import perf_counter
 
 from pydantic import BaseModel
-from sqlalchemy import event, or_, select
+from sqlalchemy import and_, event, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from okto_pulse.community.adapters.delivery_verification import native_verification_population
@@ -88,6 +88,24 @@ def _json_value(value):
 def _digest(value):
     return hashlib.sha256(json.dumps(value, default=_json_value, sort_keys=True,
         ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
+
+
+def _resolve_readiness_policy(*, actor, board_id, realm_id, owner_id, share,
+                              agent_flags, preset_id, presets, board_overrides):
+    permissions = resolve_agent_permission_facts(
+        agent_flags=agent_flags, preset_id=preset_id, presets=presets,
+        board_overrides=board_overrides)
+    spec_write_access = board_membership_allows_read(
+        owner_id=owner_id, actor_id=actor.actor_id,
+        share_permission=share,
+        verified_agent_board_access=actor.actor_kind == 'agent',
+        allowed_share_permissions={'editor', 'admin'})
+    access = resolve_readiness_access(actor=actor, board_id=board_id,
+        realm_id=realm_id, permissions=permissions,
+        spec_write_access=spec_write_access)
+    access.require('code_traceability.evidence.read')
+    access.require('spec.entity.read')
+    return access
 
 
 class _BatchFacts(CommunityDeliveryEvidenceStore):
@@ -278,19 +296,78 @@ class CommunityDeliveryReadinessReader:
             raise ReadinessReadError('readiness_scope_mismatch')
         presets = await self._rows(session, select(PermissionPreset).order_by(PermissionPreset.id), 5000, counts
             ) if agent is not None and agent.preset_id else ()
-        permissions = resolve_agent_permission_facts(
+        return _resolve_readiness_policy(actor=actor, board_id=board_id,
+            realm_id=realm_id, owner_id=board.owner_id, share=share,
             agent_flags=agent.permission_flags if agent is not None else None,
             preset_id=agent.preset_id if agent is not None else None,
-            presets=tuple(PermissionPresetLineageNode(p.id, p.flags, p.base_preset_id) for p in presets),
+            presets=tuple(PermissionPresetLineageNode(p.id, p.flags, p.base_preset_id)
+                for p in presets),
             board_overrides=binding.permission_overrides if binding is not None else None)
-        spec_write_access = board_membership_allows_read(owner_id=board.owner_id, actor_id=actor.actor_id,
-            share_permission=share, verified_agent_board_access=actor.actor_kind == 'agent',
-            allowed_share_permissions={'editor', 'admin'})
-        access = resolve_readiness_access(actor=actor, board_id=board_id, realm_id=realm_id,
-            permissions=permissions, spec_write_access=spec_write_access)
-        access.require('code_traceability.evidence.read')
-        access.require('spec.entity.read')
-        return access
+
+    async def _access_persisted(self, session, actor, board_id):
+        """Resolve current authority with only the columns used by the policy.
+
+        The source evaluator keeps its existing batch reader. This path is
+        called before and after an indexed generation read, so loading full
+        Board/Agent ORM rows twice would inflate the hot request.
+        """
+        if (not isinstance(actor, ReadinessActor) or not actor.actor_id
+            or actor.actor_kind not in {'human', 'user', 'agent'}
+            or actor.board_id is not None and actor.board_id != board_id):
+            raise ReadinessReadError('readiness_scope_mismatch')
+        realm_id = actor.realm_id or LOCAL_REALM_ID
+        if actor.actor_kind == 'agent':
+            identity = (await session.execute(select(
+                Board.owner_id, Board.realm_id, Agent.id.label('agent_id'),
+                Agent.permission_flags, Agent.preset_id,
+                AgentBoard.permission_overrides,
+            ).select_from(Board).join(Agent, and_(
+                Agent.id == actor.actor_id, Agent.is_active.is_(True)))
+                .join(AgentBoard, and_(AgentBoard.agent_id == Agent.id,
+                    AgentBoard.board_id == Board.id))
+                .where(Board.id == board_id))).first()
+            share = None
+            member = identity is not None and board_membership_allows_read(
+                owner_id=identity.owner_id, actor_id=actor.actor_id,
+                verified_agent_board_access=True)
+        else:
+            first_agent_id = select(Agent.id).where(
+                Agent.created_by == actor.actor_id).limit(1).scalar_subquery()
+            identity = (await session.execute(select(
+                Board.owner_id, Board.realm_id, BoardShare.permission,
+                Agent.id.label('agent_id'), Agent.permission_flags,
+                Agent.preset_id, AgentBoard.permission_overrides,
+            ).select_from(Board).outerjoin(BoardShare, and_(
+                BoardShare.board_id == Board.id,
+                BoardShare.user_id == actor.actor_id,
+                BoardShare.realm_id == realm_id))
+                .outerjoin(Agent, Agent.id == first_agent_id)
+                .outerjoin(AgentBoard, and_(AgentBoard.agent_id == Agent.id,
+                    AgentBoard.board_id == Board.id))
+                .where(Board.id == board_id))).first()
+            share = identity.permission if identity is not None else None
+            member = identity is not None and board_membership_allows_read(
+                owner_id=identity.owner_id, actor_id=actor.actor_id,
+                share_permission=share)
+        if (identity is None or (identity.realm_id or LOCAL_REALM_ID) != realm_id
+            or not member):
+            raise ReadinessReadError('readiness_scope_mismatch')
+        presets = ()
+        if identity.agent_id is not None and identity.preset_id:
+            presets = tuple((await session.execute(select(
+                PermissionPreset.id, PermissionPreset.flags,
+                PermissionPreset.base_preset_id,
+            ).order_by(PermissionPreset.id).limit(5001))).all())
+            if len(presets) > 5000:
+                raise ReadinessReadError('readiness_limit_exceeded',
+                    native_code='readiness_population_limit')
+        return _resolve_readiness_policy(actor=actor, board_id=board_id,
+            realm_id=realm_id, owner_id=identity.owner_id, share=share,
+            agent_flags=identity.permission_flags if identity.agent_id is not None else None,
+            preset_id=identity.preset_id if identity.agent_id is not None else None,
+            presets=tuple(PermissionPresetLineageNode(p.id, p.flags, p.base_preset_id)
+                for p in presets),
+            board_overrides=identity.permission_overrides if identity.agent_id is not None else None)
 
     async def _load_transaction(self, session, board_id, spec_id, card_id, counts,
                                 *, defer_facts=False):
@@ -463,12 +540,11 @@ class CommunityDeliveryReadinessReader:
         )
 
         async def authorize():
-            counts = {'queries': 0, 'facts': 0}
             async with self.engine.connect() as connection:
                 await connection.exec_driver_sql('BEGIN')
                 try:
                     async with AsyncSession(bind=connection, autoflush=False) as session:
-                        access = await self._access(session, actor, board_id, counts)
+                        access = await self._access_persisted(session, actor, board_id)
                         # The unscoped projection contains Card identities and
                         # metrics as well as the Spec summary. Authorize that
                         # population before reading or returning any row.
