@@ -106,7 +106,8 @@ export function useBoardDeliveryReadiness(boardId: string, cards: CardSummary[],
     void Promise.all(Array.from({ length: Math.min(3, specs.length) }, worker));
     const interval = window.setInterval(() => {
       if (document.visibilityState !== 'visible') return;
-      for (const specId of [...pending].filter(id => !inFlight.has(id) && (retryAt.get(id) ?? 0) <= Date.now()).slice(0, 3)) {
+      for (const specId of [...pending].filter(id => !inFlight.has(id) && (retryAt.get(id) ?? 0) <= Date.now())
+        .slice(0, Math.max(0, 3 - inFlight.size))) {
         void loadSpec(specId);
       }
     }, 500);
