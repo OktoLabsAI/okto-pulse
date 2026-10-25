@@ -66,7 +66,7 @@ def test_ts24_release_harness_freezes_installed_inventory_and_provenance() -> No
         with (repo / "pyproject.toml").open("rb") as stream:
             assert module.EXPECTED_VERSION == tomllib.load(stream)["project"]["version"]
     assert module.EXPECTED_VERSION == "0.4.2"
-    assert module.EXPECTED_GRAFX_VERSION == "0.0.7"
+    assert module.EXPECTED_GRAFX_VERSION == "0.0.8"
     assert module.GRAFX_WHEEL_ENV == "OKTO_E2E_GRAFX_WHEEL"
     assert module.GRAFX_REPO_ENV == "OKTO_E2E_GRAFX_REPO"
     assert module.EXPECTED_MCP_TOOL_COUNT == live_tool_count == 285
@@ -252,11 +252,11 @@ def test_fresh_wheels_install_and_serve_from_isolated_venv(tmp_path: Path) -> No
     assert evidence["installed"]["runtime_version"]["python_major_minor"] == [3, 11]
     assert evidence["installed"]["runtime_version"]["required_major_minor"] == [3, 11]
     assert evidence["installed"]["runtime_version"]["pydantic"]
-    assert evidence["installed"]["runtime_version"]["okto_grafx"] == "0.0.7"
+    assert evidence["installed"]["runtime_version"]["okto_grafx"] == "0.0.8"
     assert evidence["core_artifact_audit"]["forbidden_wheel_paths"] == []
     assert evidence["core_artifact_audit"]["missing_required_resources"] == []
     origin = evidence["installed"]["origin_probe"]
-    assert origin["versions"]["grafx"] == "0.0.7"
+    assert origin["versions"]["grafx"] == "0.0.8"
     assert origin["distribution_file_counts"]["grafx"] > 0
     assert "site-packages" in origin["origins"]["okto_grafx"]
     assert origin["grafx_wheel_sha256"] == evidence["wheels"]["grafx"]["sha256"]

@@ -33,14 +33,14 @@ def test_grafx_accel_pin_resolves_to_published_release_not_local_wheel():
     import tomllib
 
     manifest = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert "okto-grafx[accel]==0.0.7" in manifest["project"]["dependencies"]
+    assert "okto-grafx[accel]==0.0.8" in manifest["project"]["dependencies"]
     lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
     grafx = next(package for package in lock["package"] if package["name"] == "okto-grafx")
-    assert grafx["version"] == "0.0.7"
+    assert grafx["version"] == "0.0.8"
     assert grafx["source"] == {"registry": "https://pypi.org/simple"}
     assert {item["name"] for item in grafx["dependencies"]} == {"google-crc32c", "numpy", "tzdata"}
-    assert grafx["wheels"][0]["hash"] == "sha256:fe623ae15d9e3b4c04ef2777e715f2ca3f68c3d092fdbaa17aa57f826c38cb21"
-    assert grafx["sdist"]["hash"] == "sha256:beffe031bd11e336923928f0781bcf08dfdd92866444cdce28e81aa399cf8f3d"
+    assert grafx["wheels"][0]["hash"] == "sha256:c538949db16faba84067a8b7c00a91efa347d235824c580efe2e5fdcfc283dbd"
+    assert grafx["sdist"]["hash"] == "sha256:93c5a921bc4bc51ac9f188531feba927322100a7f05601df52c6a560ec982d1e"
     assert "path" not in grafx["wheels"][0]
 
 
