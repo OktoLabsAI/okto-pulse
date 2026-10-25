@@ -17,7 +17,7 @@ from okto_pulse.community.api import code_traceability as api
 from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import CommunityReadinessClock
 from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
 from okto_pulse.community.adapters.worker_runners import TrackedBlockingExecution
-from okto_pulse.community.adapters.sqlalchemy_models import AgentBoard
+from okto_pulse.community.adapters.sqlalchemy_models import AgentBoard, ReadinessGenerationRow
 from okto_pulse.core.application.service_catalog import build_application_service_catalog
 from okto_pulse.core.mcp.catalog import CoreMcpCatalog
 from okto_pulse.core.mcp.code_traceability_tools import register_code_traceability_tools
@@ -82,6 +82,29 @@ async def test_persisted_rest_reads_published_generation_with_current_authorizat
     assert result['summaries'][0]['implementation']['percent'] == 100
     assert result['summaries'][0]['verification']['percent'] == 100
     assert result['page']['limit'] == 2
+
+
+async def test_incompatible_persisted_generation_is_unavailable_without_actions(ledger, monkeypatch):
+    session, _, _ = ledger
+    rest, tool, _ = await surfaces(session, monkeypatch, persisted=True)
+    worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
+    assert await worker.process_once() == 1
+    await session.execute(update(ReadinessGenerationRow).values(
+        evaluator_version='delivery-readiness-evaluator/future'))
+    await session.commit()
+
+    path = url().replace('/delivery-evidence', '/delivery-readiness-projection')
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=rest), base_url='http://test') as client:
+        response = await client.get(path)
+    result = await tool.fn(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID)
+    assert response.status_code == 200, response.text
+    assert response.headers['cache-control'] == 'no-store'
+    assert not result.is_error, result
+    assert result.payload == response.json()
+    assert result.payload['projection']['freshness'] == 'unavailable'
+    assert result.payload['projection']['generation_id'] is None
+    assert result.payload['summaries'] == []
+    assert 'allowed_actions' not in result.payload
 
 
 async def test_persisted_rest_and_mcp_never_enter_source_evaluator_or_diagnostics(ledger, monkeypatch):
