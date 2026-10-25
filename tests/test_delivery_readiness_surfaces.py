@@ -105,14 +105,17 @@ async def test_persisted_rest_and_mcp_never_enter_source_evaluator_or_diagnostic
     monkeypatch.setattr(EvaluatedDeliveryReadiness, '__init__', forbidden_evaluation)
 
     path = url().replace('/delivery-evidence', '/delivery-readiness-projection')
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=rest), base_url='http://test') as client:
-        response = await client.get(path, params={'unit_limit': 2})
-    result = await tool.fn(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID, unit_limit=2)
+    with statements(session.bind) as sql:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=rest), base_url='http://test') as client:
+            response = await client.get(path, params={'unit_limit': 2})
+        result = await tool.fn(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID, unit_limit=2)
     assert response.status_code == 200, response.text
     assert response.headers['cache-control'] == 'no-store'
     assert not result.is_error, result
     assert result.payload == response.json()
     assert result.payload['projection']['freshness'] == 'current'
+    assert sql
+    assert all('test_scenarios' not in statement.lower() for statement in sql)
     assert result.payload['mutation_reauthorization_required'] is True
     uow.commit.assert_not_awaited()
 
