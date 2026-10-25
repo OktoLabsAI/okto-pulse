@@ -568,7 +568,9 @@ class CommunityDeliveryReadinessReader:
 
         store = CommunityPersistedReadinessStore(self.engine)
         for _ in range(2):
+            started = perf_counter()
             before = await authorize()
+            authorized_at = perf_counter()
             generation_id = None
             unit_offset = 0
             if cursor is not None:
@@ -583,8 +585,15 @@ class CommunityDeliveryReadinessReader:
             projection = await store.read(board_id=board_id, spec_id=spec_id,
                 edition=before[1], card_id=card_id, unit_limit=unit_limit,
                 unit_offset=unit_offset, generation_id_override=generation_id)
+            projected_at = perf_counter()
             after = await authorize()
+            reauthorized_at = perf_counter()
             if before == after:
+                logger.debug('readiness.persisted_read_phases', extra={
+                    'readiness_auth_before_ms': (authorized_at - started) * 1000,
+                    'readiness_projection_ms': (projected_at - authorized_at) * 1000,
+                    'readiness_auth_after_ms': (reauthorized_at - projected_at) * 1000,
+                })
                 has_more = bool(projection and unit_limit
                     and unit_offset + len(projection.units) < projection.unit_total)
                 next_cursor = None

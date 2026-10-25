@@ -14,6 +14,7 @@ import asyncio
 from contextlib import closing
 from hashlib import sha256
 import json
+import logging
 import os
 from pathlib import Path
 import platform
@@ -69,6 +70,26 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
     warmup_errors: list[str] = []
     freshness: dict[str, int] = {}
     measuring = args.warmup_seconds == 0
+    read_phases_ms: dict[str, list[float]] = {
+        'auth_before': [], 'projection': [], 'auth_after': [],
+    }
+
+    class ReadPhaseHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            if record.msg != 'readiness.persisted_read_phases' or not measuring:
+                return
+            read_phases_ms['auth_before'].append(record.readiness_auth_before_ms)
+            read_phases_ms['projection'].append(record.readiness_projection_ms)
+            read_phases_ms['auth_after'].append(record.readiness_auth_after_ms)
+
+    phase_logger = logging.getLogger(
+        'okto_pulse.community.adapters.sqlalchemy_delivery_readiness')
+    previous_log_level = phase_logger.level
+    previous_propagate = phase_logger.propagate
+    phase_handler = ReadPhaseHandler()
+    phase_logger.addHandler(phase_handler)
+    phase_logger.setLevel(logging.DEBUG)
+    phase_logger.propagate = False
     stop_load = asyncio.Event()
     stop_worker = asyncio.Event()
     writer_guard = asyncio.Lock()
@@ -291,6 +312,9 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             'read_p95_ms': round(percentile(read_ms, .95), 3) if read_ms else None,
             'read_p99_ms': round(percentile(read_ms, .99), 3) if read_ms else None,
             'read_max_ms': round(max(read_ms), 3) if read_ms else None,
+            'read_phases_p95_ms': {
+                name: round(percentile(samples, .95), 3) if samples else None
+                for name, samples in read_phases_ms.items()},
             'write_p50_ms': round(median(write_ms), 3) if write_ms else None,
             'write_p95_ms': round(percentile(write_ms, .95), 3) if write_ms else None,
             'write_p99_ms': round(percentile(write_ms, .99), 3) if write_ms else None,
@@ -321,6 +345,9 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             'wal_bytes': path.with_name(path.name + '-wal').stat().st_size
                 if path.with_name(path.name + '-wal').exists() else 0,
             'samples_ms': {'read': [round(v, 3) for v in read_ms],
+                'read_phases': {
+                    name: [round(v, 3) for v in samples]
+                    for name, samples in read_phases_ms.items()},
                 'write': [round(v, 3) for v in write_ms],
                 'lock_wait': [round(v, 3) for v in lock_wait_ms],
                 'transaction': [round(v, 3) for v in transaction_ms],
@@ -335,6 +362,9 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 'blocking_tasks': blocking_tasks, 'wal_bytes': wal_samples},
         }
     finally:
+        phase_logger.removeHandler(phase_handler)
+        phase_logger.setLevel(previous_log_level)
+        phase_logger.propagate = previous_propagate
         await engine.dispose()
 
 
