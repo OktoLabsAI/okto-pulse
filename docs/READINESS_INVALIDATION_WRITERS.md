@@ -15,7 +15,7 @@ não participam desse commit.
 | `boards` (settings/realm relevantes à política) | configuração do Board | Specs do Board | `test_board_policy_fans_out_and_spec_history_invalidates_only_its_spec` |
 | `cards` (população, status, links de cenário, report) | criação/edição/transição/archive/reparent | Spec do Card; reparent invalida origem e destino | `test_reparenting_invalidates_both_scopes`, `test_intent_write_failure_rolls_back_source_update` |
 | `delivery_evidence_records` e `card_delivery_evidence_records` | waiver, implementação, teste, progress, inspeção, revogação, batch/report | Spec e edição do registro | `test_authenticated_report_and_exact_replay_share_source_transaction`, `test_delivery_batch.py`, `test_delivery_report.py` |
-| `implementation_targets`, `implementation_target_resolutions`, `implementation_target_execution_records` | Target, resolução e resultado de execução | Spec do Card correspondente | `test_target_execution_receipt_and_revocation_invalidate_consumer`; resolução ainda pendente |
+| `implementation_targets`, `implementation_target_resolutions`, `implementation_target_execution_records` | Target, resolução e resultado de execução | Spec do Card correspondente | `test_target_execution_receipt_and_revocation_invalidate_consumer` |
 | `code_investigation_receipts` e `code_investigation_receipt_revocations` | receipt e revogação | Specs com execução ligada ao receipt | `test_target_execution_receipt_and_revocation_invalidate_consumer` cobre revogação; receipt novo só passa a ser consumido ao ligar execução |
 
 Replays exatos de evidência não inserem novo registro e não avançam a revisão.
@@ -36,9 +36,10 @@ imediatamente sem recalcular porcentagens. `WAL`, `synchronous=FULL` e
 
 ## Limites ainda abertos
 
-- A cobertura acima demonstra os caminhos principais e os triggers instalados,
-  mas ainda falta teste isolado de resolução de Target. Não tratar a matriz
-  como verificação concluída.
+- A cobertura acima demonstra os caminhos principais e os triggers instalados.
+  Os testes de Target/execução/receipt exercitam a admissão SQL e o fence de
+  revisão numa fixture; a prova de cada transporte público continua nas suítes
+  de integração dos respectivos comandos.
 - Os registros de evidência, Targets e receipts são imutáveis ou versionados nos
   comandos públicos. Uma atualização SQL direta que troque a relação de um
   desses registros entre Specs não invalida o escopo antigo; isso deve ser

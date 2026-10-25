@@ -262,11 +262,23 @@ async def test_target_execution_receipt_and_revocation_invalidate_consumer(ledge
         "SELECT result_investigation_receipt_id FROM implementation_target_execution_records "
         "WHERE id='execution'"))).scalar_one()
     before = await revision()
+    await session.execute(text("INSERT INTO implementation_target_resolutions "
+        "(id,board_id,target_id,investigation_receipt_id,source_ref,receipt_generation,"
+        "subject_version,target_revision,declared_revision,workspace_state_id,declared_dirty,"
+        "state,selector_fingerprint,candidate_count,declared_tool_id,declared_tool_version,"
+        "submitted_by,agent_observed_at,received_at,payload_sha256,idempotency_key) "
+        "SELECT 'resolution',t.board_id,t.id,r.id,t.source_ref,r.generation,"
+        "r.subject_version,t.revision,r.declared_revision,r.workspace_state_id,r.declared_dirty,"
+        "'resolved',:selector,0,'fixture','1','agent-1',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,"
+        ":digest,'resolution' FROM implementation_targets t "
+        "JOIN code_investigation_receipts r ON r.id=:receipt_id WHERE t.id='target'"),
+        {'receipt_id': receipt_id, 'selector': 'f' * 64, 'digest': 'a' * 64})
+    assert await revision() == before + 1
     await session.execute(text("UPDATE implementation_targets "
         "SET intent='Changed intent',revision=revision+1,"
         "last_change_reason_sha256=:reason,updated_at=CURRENT_TIMESTAMP WHERE id='target'"),
         {'reason': 'd' * 64})
-    assert await revision() == before + 1
+    assert await revision() == before + 2
     await session.execute(text("INSERT INTO implementation_target_execution_records "
         "(id,board_id,card_id,target_id,target_revision,result_investigation_receipt_id,"
         "source_ref,disposition,result_declared_revision,result_workspace_state_id,"
@@ -276,13 +288,13 @@ async def test_target_execution_receipt_and_revocation_invalidate_consumer(ledge
         "actual_relative_path,'Changed result',submitted_by,CURRENT_TIMESTAMP,:digest,'execution-2' "
         "FROM implementation_target_execution_records WHERE id='execution'"),
         {'digest': 'e' * 64})
-    assert await revision() == before + 2
+    assert await revision() == before + 3
     await session.execute(text("INSERT INTO code_investigation_receipt_revocations "
         "(id,receipt_id,board_id,reason_code,justification,revoked_by,revoked_at) "
         "VALUES ('revocation',:receipt_id,:board_id,'invalid','Test','owner',CURRENT_TIMESTAMP)"),
         {'receipt_id': receipt_id, 'board_id': delivery.BOARD_ID})
-    assert await revision() == before + 3
+    assert await revision() == before + 4
     await session.commit()
     assert (await session.execute(text("SELECT requested_revision FROM readiness_job "
         "WHERE scope_id=:scope_id"),
-        {'scope_id': f'{delivery.SPEC_ID}:1'})).scalar_one() == before + 3
+        {'scope_id': f'{delivery.SPEC_ID}:1'})).scalar_one() == before + 4
