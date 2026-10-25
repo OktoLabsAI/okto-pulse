@@ -2,49 +2,49 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { useBoardDeliveryReadiness } from '../useBoardDeliveryReadiness';
 import { useDeliveryReadiness } from '../useDeliveryReadiness';
-import { boardSummary, cards, readiness } from './readinessFixture';
+import { cards, persistedProjection, readiness } from './readinessFixture';
 
-const api = vi.hoisted(() => ({ getDeliveryReadinessSummary: vi.fn(), getDeliveryReadiness: vi.fn() }));
+const api = vi.hoisted(() => ({ getPersistedReadinessProjection: vi.fn(), getDeliveryReadiness: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
-beforeEach(() => { vi.clearAllMocks(); api.getDeliveryReadinessSummary.mockResolvedValue(boardSummary()); });
+beforeEach(() => { vi.clearAllMocks(); api.getPersistedReadinessProjection.mockResolvedValue(persistedProjection()); });
 afterEach(cleanup);
 
 it('reuses one summary per Spec and clears old percentages while refreshing related cards', async () => {
   const view = renderHook(() => useBoardDeliveryReadiness('b', cards, true, '0'));
-  await waitFor(() => expect(view.result.current.c.value?.verification.percent).toBe(75));
-  expect(api.getDeliveryReadinessSummary).toHaveBeenCalledTimes(1);
-  const next = boardSummary(); next.cards.forEach(row => { row.delivery_readiness.verification.percent = 50; });
+  await waitFor(() => expect(view.result.current.c.persisted?.summary?.verification.percent).toBe(75));
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(1);
+  const next = persistedProjection(); next.summaries.forEach(row => { row.verification.percent = 50; });
   let resolve!: (value: typeof next) => void;
-  api.getDeliveryReadinessSummary.mockImplementation(() => new Promise(r => { resolve = r; }));
+  api.getPersistedReadinessProjection.mockImplementation(() => new Promise(r => { resolve = r; }));
   act(() => window.dispatchEvent(new Event('pulse:delivery-evidence-changed')));
   await waitFor(() => expect(view.result.current.c).toEqual({ loading: true }));
   await act(async () => resolve(next));
-  await waitFor(() => expect(view.result.current.other.value?.verification.percent).toBe(50));
+  await waitFor(() => expect(view.result.current.other.persisted?.summary?.verification.percent).toBe(50));
   expect(cards[0].status).toBe('in_progress');
 });
 
 it('does not read without permission; denial removes previous values and disabling clears context', async () => {
   const view = renderHook(({ enabled }) => useBoardDeliveryReadiness('b', cards, enabled, '0'), { initialProps: { enabled: false } });
-  expect(api.getDeliveryReadinessSummary).not.toHaveBeenCalled();
+  expect(api.getPersistedReadinessProjection).not.toHaveBeenCalled();
   view.rerender({ enabled: true });
-  await waitFor(() => expect(view.result.current.c.value).toBeDefined());
-  api.getDeliveryReadinessSummary.mockRejectedValue(new Error('Denied'));
+  await waitFor(() => expect(view.result.current.c.persisted).toBeDefined());
+  api.getPersistedReadinessProjection.mockRejectedValue(new Error('Denied'));
   act(() => window.dispatchEvent(new Event('focus')));
   await waitFor(() => expect(view.result.current.c).toEqual({ error: 'Denied' }));
   view.rerender({ enabled: false }); expect(view.result.current).toEqual({});
 });
 
-it.each(['board', 'card', 'snapshot', 'duplicate', 'version'])('rejects %s mismatches explicitly', async kind => {
-  const data = boardSummary();
-  if (kind === 'board') data.delivery_readiness.scope.board_id = 'foreign';
-  if (kind === 'card') data.cards[0].delivery_readiness.scope.card_id = 'foreign';
-  if (kind === 'snapshot') data.cards[0].delivery_readiness.snapshot_id = 'b'.repeat(64);
-  if (kind === 'duplicate') data.cards.push(data.cards[0]);
-  if (kind === 'version') data.metrics_version = 1;
-  api.getDeliveryReadinessSummary.mockResolvedValue(data);
+it.each(['board', 'card', 'generation', 'duplicate', 'version'])('rejects %s mismatches explicitly', async kind => {
+  const data = persistedProjection();
+  if (kind === 'board') data.scope.board_id = 'foreign';
+  if (kind === 'card') data.summaries[1].card_id = 'foreign';
+  if (kind === 'generation') data.projection.generation_id = null;
+  if (kind === 'duplicate') data.summaries.push(data.summaries[1]);
+  if (kind === 'version') (data.projection as { projection_version: number }).projection_version = 2;
+  api.getPersistedReadinessProjection.mockResolvedValue(data);
   const view = renderHook(() => useBoardDeliveryReadiness('b', cards, true, '0'));
   await waitFor(() => expect(view.result.current.c.error).toBeTruthy());
-  expect(view.result.current.c.value).toBeUndefined();
+  expect(view.result.current.c.persisted).toBeUndefined();
 });
 
 it('U08: a late previous Card response cannot replace the current scope; unmount aborts', async () => {
@@ -63,14 +63,14 @@ it('U08: a late previous Card response cannot replace the current scope; unmount
 });
 
 it('U08: a late board summary cannot overwrite a newly selected Board', async () => {
-  let resolveOld!: (value: ReturnType<typeof boardSummary>) => void;
-  api.getDeliveryReadinessSummary.mockImplementation((board) => board === 'b'
+  let resolveOld!: (value: ReturnType<typeof persistedProjection>) => void;
+  api.getPersistedReadinessProjection.mockImplementation((board) => board === 'b'
     ? new Promise(r => { resolveOld = r; }) : Promise.reject(new Error('New board unavailable')));
   const view = renderHook(({ board }) => useBoardDeliveryReadiness(board, cards, true, '0'), { initialProps: { board: 'b' } });
-  const signal = api.getDeliveryReadinessSummary.mock.calls[0][2];
+  const signal = api.getPersistedReadinessProjection.mock.calls[0][3];
   view.rerender({ board: 'new' });
   await waitFor(() => expect(view.result.current.c.error).toBe('New board unavailable'));
-  await act(async () => resolveOld(boardSummary()));
+  await act(async () => resolveOld(persistedProjection()));
   expect(view.result.current.c.error).toBe('New board unavailable');
   expect(signal.aborted).toBe(true);
 });

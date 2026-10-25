@@ -8,6 +8,7 @@ import { PulseLoader } from '@/components/shared/PulseLoader';
 import { useDashboardApi } from '@/services/api';
 import { ObligationRefText } from './obligationPresentation';
 import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
+import { isPersistedReadinessProjection, type PersistedReadinessProjection, type ReadinessMetric } from '@/types/delivery-readiness';
 import { decisionStatusLabel } from '@/components/specs/DecisionReviewSection';
 
 interface Props {
@@ -19,6 +20,12 @@ interface Props {
   onOpenDecisions?: () => void;
   onOpenReadinessSpec?: (location: ReadinessSpecLocation) => void;
   focusExceptionId?: string | null;
+}
+
+function metricLabel(metric?: ReadinessMetric) {
+  if (!metric || metric.status === 'unknown') return 'Unknown';
+  if (metric.status === 'not_applicable') return 'N/A';
+  return `${metric.percent}%`;
 }
 
 function ObligationEvidenceDetails({ data, row }: {
@@ -77,11 +84,56 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
   const [gateMode, setGateMode] = useState<'advisory' | 'blocking' | null>(null);
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
+  const [projection, setProjection] = useState<PersistedReadinessProjection | null>(null);
+  const [projectionError, setProjectionError] = useState('');
+  const [showDetails, setShowDetails] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setProjection(null); setProjectionError('');
+    let retry = 1000;
+    void (async () => {
+      while (!controller.signal.aborted) {
+        if (document.visibilityState !== 'visible') {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          continue;
+        }
+        try {
+          let page = await api.getPersistedReadinessProjection(boardId, specId, { unitLimit: 250 }, controller.signal);
+          if (!isPersistedReadinessProjection(page) || page.scope.board_id !== boardId || page.scope.spec_id !== specId)
+            throw new Error('Readiness projection scope mismatch.');
+          const rows = [...page.units];
+          const seen = new Set<string>();
+          while (page.page.has_more) {
+            const cursor = page.page.next_cursor;
+            if (!cursor || seen.has(cursor)) throw new Error('Readiness page cursor invalid.');
+            seen.add(cursor);
+            const next = await api.getPersistedReadinessProjection(boardId, specId,
+              { unitLimit: 250, cursor }, controller.signal);
+            if (!isPersistedReadinessProjection(next) || next.projection.generation_id !== page.projection.generation_id
+              || next.scope.spec_edition !== page.scope.spec_edition) throw new Error('Readiness generation changed. Restart this view.');
+            rows.push(...next.units);
+            page = next;
+          }
+          if (!controller.signal.aborted) setProjection({ ...page, units: rows });
+          setProjectionError(''); retry = 1000;
+          if (!['updating', 'pending_initial'].includes(page.projection.freshness)) return;
+          await new Promise(resolve => setTimeout(resolve, 500));
+        } catch (failure) {
+          if (controller.signal.aborted) return;
+          setProjectionError(failure instanceof Error ? failure.message : 'Readiness projection unavailable.');
+          await new Promise(resolve => setTimeout(resolve, retry));
+          retry = Math.min(5000, retry * 2);
+        }
+      }
+    })();
+    return () => controller.abort();
+  }, [api, boardId, specId, revision, reload]);
 
   useEffect(() => {
     const controller = new AbortController();
     setData(null); setGateMode(null); setError('');
-    api.getDeliveryEvidence(boardId, specId, controller.signal).then(value => {
+    if (showDetails || focusExceptionId) api.getDeliveryEvidence(boardId, specId, controller.signal).then(value => {
       if (value.board_id !== boardId || value.spec_id !== specId) throw new Error('Delivery evidence scope changed. Refresh the Spec.');
       if (!controller.signal.aborted) setData(value);
     }).catch(err => { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : 'Delivery proof could not be loaded.'); });
@@ -89,7 +141,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
       if (!controller.signal.aborted) setGateMode(resolveDeliveryGateMode(board.settings?.delivery_evidence_gate));
     }).catch(() => { if (!controller.signal.aborted) setGateMode(null); });
     return () => controller.abort();
-  }, [api, boardId, specId, revision, reload, focusExceptionId]);
+  }, [api, boardId, specId, revision, reload, focusExceptionId, showDetails]);
 
   const missingImplementation = data?.rows.filter(row => !row.implementation_satisfied).length ?? 0;
   const missingTest = data?.rows.filter(row => !row.test_satisfied && !row.decision_verification_status).length ?? 0;
@@ -104,7 +156,10 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
   return <section className="space-y-5" aria-label="Implementation and verification">
     {focusExceptionId && data?.board_id === boardId && data.spec_id === specId
       && <DeliveryExceptionDetails data={data} recordId={focusExceptionId} />}
-    <DeliveryReadinessPanel boardId={boardId} specId={specId} revision={`${revision ?? ''}:${reload}`} onOpenReadinessSpec={onOpenReadinessSpec} />
+    {projection && <DeliveryReadinessPanel boardId={boardId} specId={specId} revision={`${revision ?? ''}:${reload}`}
+      persistedValue={projection} onOpenReadinessSpec={onOpenReadinessSpec} />}
+    {!projection && !projectionError && <PulseLoader label="Loading readiness projection…" size="sm" className="py-4" />}
+    {projectionError && <p role="alert" className="text-xs text-amber-700">{projectionError}</p>}
     <p className="text-sm text-gray-500 dark:text-gray-400">Track implementation and verification for each obligation. Expand an item to inspect its evidence.</p>
     <div className="flex flex-wrap items-center justify-between gap-4">
       <div className="flex min-w-0 items-center gap-2">
@@ -126,7 +181,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
       </div>
     </div>
 
-      {!data && !error && <PulseLoader label="Loading delivery rollup…" size="sm" className="py-6" />}
+      {showDetails && !data && !error && <PulseLoader label="Loading delivery details…" size="sm" className="py-6" />}
       <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50/50 px-3 py-2 dark:border-gray-700 dark:bg-gray-700/20">
         <div className="min-w-0">
           <span className="text-xs font-medium text-gray-700 dark:text-gray-300">Skip delivery evidence requirement</span>
@@ -157,11 +212,36 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
       </p>
     )}
 
-    {data && <>
+    <div>
+      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Coverage by obligation</h3>
+      {projection && <p className="mb-2 text-xs text-gray-500" role="status">
+        {projection.projection.freshness === 'current' ? 'Current' : projection.projection.freshness === 'updating'
+          ? 'Updating · previous coherent generation' : projection.projection.freshness === 'pending_initial'
+            ? 'Waiting for calculation' : 'Calculation unavailable'}
+        {projection.projection.generation_id ? ` · Generation ${projection.projection.generation_id}` : ''}
+        {' · '}Implementation {metricLabel(projection.summaries.find(row => row.card_id === null)?.implementation)}
+        {' · '}Verification {metricLabel(projection.summaries.find(row => row.card_id === null)?.verification)}
+      </p>}
+      {projection?.projection.generation_id && <div className="overflow-x-auto"><table className="w-full text-sm" data-testid="delivery-coverage-table">
+        <thead><tr className="border-b text-left text-xs text-gray-500"><th scope="col">Obligation</th>
+          <th scope="col">Implementation</th><th scope="col">Verification</th></tr></thead>
+        <tbody>{projection.units.filter(unit => unit.card_id === null && unit.kind === 'obligation').map(unit =>
+          <tr key={`${unit.ref}:${unit.semantic_sha256}`} className="border-b border-gray-100 dark:border-gray-800">
+            <td className="py-2 pr-4"><ObligationRefText value={unit.ref} /></td>
+            <td className="py-2" title={unit.implementation_reason_codes.join(', ')}>{unit.implementation_state}</td>
+            <td className="py-2" title={unit.verification_reason_codes.join(', ')}>{unit.verification_state}</td>
+          </tr>)}</tbody>
+      </table></div>}
+    </div>
+    <button type="button" className="btn btn-secondary text-xs" onClick={() => setShowDetails(value => !value)}>
+      {showDetails ? 'Hide detailed evidence' : 'Show detailed evidence'}
+    </button>
+
+    {showDetails && data && <>
       <div>
-        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Coverage by obligation</h3>
+        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Detailed evidence by obligation</h3>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm" data-testid="delivery-coverage-table">
+          <table className="w-full text-sm" data-testid="delivery-detailed-coverage-table">
             <thead>
               <tr className="border-b border-gray-100 text-left text-xs text-gray-400 dark:border-gray-800">
                 <th scope="col" className="py-1 pr-4">Obligation</th>

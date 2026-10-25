@@ -4,14 +4,19 @@ import { DeliveryReadinessView } from '../DeliveryReadinessView';
 import { KanbanCard } from '@/components/kanban/KanbanCard';
 import { CardDeliveryDoDPanel } from '../CardDeliveryDoDPanel';
 import { DeliveryEvidencePanel } from '../DeliveryEvidencePanel';
-import { emptyCounts, metric, readiness, task } from './readinessFixture';
+import { emptyCounts, metric, persistedProjection, readiness, task } from './readinessFixture';
 
-const api = vi.hoisted(() => ({ getDeliveryReadiness: vi.fn(), getDeliveryEvidence: vi.fn(), getBoard: vi.fn() }));
+const api = vi.hoisted(() => ({ getDeliveryReadiness: vi.fn(), getPersistedReadinessProjection: vi.fn(), getDeliveryEvidence: vi.fn(), getBoard: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 vi.mock('@dnd-kit/sortable', () => ({ useSortable: () => ({ setNodeRef: vi.fn(), attributes: {}, listeners: {} }) }));
 beforeEach(() => {
   vi.clearAllMocks();
   api.getDeliveryReadiness.mockImplementation((_board, _spec, cardId) => Promise.resolve(readiness(cardId ?? null)));
+  api.getPersistedReadinessProjection.mockImplementation((_board, _spec, options) => {
+    const value = persistedProjection();
+    value.scope.card_id = options?.cardId ?? null;
+    return Promise.resolve(value);
+  });
   api.getDeliveryEvidence.mockResolvedValue({ board_id: 'b', spec_id: 's', edition: 1, version: 1, complete: true,
     candidates: [], implementations: [], rows: [], tests: [], rejected_record_ids: [], per_card: [] });
   api.getBoard.mockResolvedValue({ settings: {} });
@@ -37,7 +42,8 @@ it.each(['normal', 'bug', 'test'] as const)('U01: %s cover and Delivery share ba
 it('Spec Delivery consumes its own context, without averaging card percentages', async () => {
   render(<DeliveryEvidencePanel boardId="b" specId="s" />);
   expect(await screen.findByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');
-  expect(api.getDeliveryReadiness).toHaveBeenCalledWith('b', 's', undefined, expect.any(AbortSignal));
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledWith('b', 's', { unitLimit: 250 }, expect.any(AbortSignal));
+  expect(api.getDeliveryReadiness).not.toHaveBeenCalled();
 });
 
 it('U02: 100/100 remains closure pending while native lifecycle is open', () => {

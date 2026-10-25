@@ -31,6 +31,40 @@ export interface DeliveryReadinessBoardSummary {
   cards: { card_id: string; delivery_readiness: DeliveryReadiness }[];
 }
 
+export interface PersistedReadinessSummary {
+  card_id: string | null; card_type: 'normal' | 'bug' | 'test' | null; card_version: number | null;
+  implementation: ReadinessMetric; verification: ReadinessMetric;
+  population_known: boolean; evaluation_complete: boolean;
+}
+export interface PersistedReadinessProjection {
+  contract_version: 'delivery-readiness-projection/v1';
+  scope: { board_id: string; spec_id: string; spec_edition: number | null;
+    spec_version: number; card_id: string | null };
+  projection: { projection_version: 1; generation_id: string | null;
+    source_revision: number | null; target_revision: number; evaluated_at: string | null;
+    evaluator_version: string; freshness: 'current' | 'updating' | 'pending_initial' | 'unavailable';
+    error_code: string | null };
+  summaries: PersistedReadinessSummary[];
+  units: Array<{card_id: string | null; kind: 'obligation' | 'scenario'; ref: string;
+    semantic_sha256: string; spec_edition: number; contribution_card_ids: string[];
+    implementation_state: string; verification_state: string;
+    implementation_reason_codes: string[]; verification_reason_codes: string[] }>;
+  page: { offset: number; limit: number; total: number; has_more: boolean; next_cursor: string | null };
+  mutation_reauthorization_required: true;
+}
+
+export function isPersistedReadinessProjection(value: unknown): value is PersistedReadinessProjection {
+  return object(value) && value.contract_version === 'delivery-readiness-projection/v1'
+    && object(value.scope) && typeof value.scope.board_id === 'string' && typeof value.scope.spec_id === 'string'
+    && object(value.projection) && value.projection.projection_version === 1
+    && ['current', 'updating', 'pending_initial', 'unavailable'].includes(String(value.projection.freshness))
+    && (!['current', 'updating'].includes(String(value.projection.freshness))
+      || typeof value.projection.generation_id === 'string' && value.projection.generation_id.length > 0)
+    && Array.isArray(value.summaries) && value.summaries.every(summary => object(summary)
+      && (summary.card_id === null || typeof summary.card_id === 'string')
+      && metric(summary.implementation) && metric(summary.verification));
+}
+
 export interface ReadinessQuery {
   card_id?: string; phase?: 'all' | 'implementation' | 'verification' | 'lifecycle';
   snapshot_id?: string; issue_id?: string; limit?: number; cursor?: string;

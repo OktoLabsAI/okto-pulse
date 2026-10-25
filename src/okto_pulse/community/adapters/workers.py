@@ -28,8 +28,10 @@ from okto_pulse.community.adapters.worker_runners import (
 from okto_pulse.community.adapters.sqlalchemy_domain_event_delivery import (
     CommunitySqlAlchemyDomainEventDeliveryStore,
 )
+from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
 
 COMMUNITY_WORKER_BASELINE_FAMILIES: tuple[str, ...] = (
+    "readiness_projection_worker",
     "event_dispatcher",
     "board_erasure_worker",
     "cleanup_worker",
@@ -76,6 +78,15 @@ def build_community_worker_registry(
     # shared task set could otherwise miss late submissions from either family.
     consolidation_blocking_execution = TrackedBlockingExecution()
     outbox_blocking_execution = TrackedBlockingExecution()
+    readiness_blocking_execution = TrackedBlockingExecution()
+    from okto_pulse.community.adapters.sqlalchemy_database import get_engine
+    readiness_runner = PollingRunner(
+        ReadinessProjectionProcessor(get_engine(), readiness_blocking_execution),
+        name="community.readiness_projection",
+        interval_seconds=0.1,
+        operation_name="process_once",
+        blocking_execution=readiness_blocking_execution,
+    )
     event_processor = DomainEventDeliveryProcessor(
         CommunitySqlAlchemyDomainEventDeliveryStore(
             session_factory,
@@ -139,6 +150,14 @@ def build_community_worker_registry(
         final_iteration_guard=lambda: consolidation_runner.shutdown_drained,
     )
     registry = RuntimeWorkerRegistry()
+    registry.register(
+        RuntimeWorkerSpec(
+            family="readiness_projection_worker",
+            start=lambda: start_runner(readiness_runner),
+            stop=lambda runner: runner.stop(timeout=45.0),
+            stop_priority=225,
+        )
+    )
     registry.register(
         RuntimeWorkerSpec(
             family="event_dispatcher",

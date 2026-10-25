@@ -10,7 +10,7 @@ invoke only those governance operations.
 """
 
 from __future__ import annotations
-from okto_pulse.core.models.delivery_evidence import card_delivery_command, DeliveryBatchEntryError, DeliveryEvidenceInput, DeliveryEvidenceCommand, DeliveryEvidenceReadQuery, DeliveryEvidenceQuery
+from okto_pulse.core.models.delivery_evidence import card_delivery_command, DeliveryBatchEntryError, DeliveryEvidenceInput, DeliveryEvidenceCommand, DeliveryEvidenceReadQuery, DeliveryEvidenceQuery, PersistedReadinessQuery
 from okto_pulse.core.models.delivery_report import CardDeliveryRecordInput, DeliveryReportRejected
 from okto_pulse.core.application.use_cases.delivery_evidence import GetDeliveryEvidenceUseCase, RecordCardDeliveryEvidenceUseCase, RecordDeliveryEvidenceUseCase
 from okto_pulse.core.application.use_cases.decision_review import GetDecisionReviewsUseCase, RecordDecisionReviewsUseCase
@@ -1233,6 +1233,31 @@ async def get_code_traceability_projection(
         principal=principal,
         uow=uow,
     )
+
+
+@router.get("/{board_id}/specs/{spec_id}/delivery-readiness-projection")
+async def get_persisted_delivery_readiness(board_id: str, spec_id: str, response: Response,
+    card_id: str | None = Query(default=None, min_length=1, max_length=512),
+    unit_limit: int = Query(default=0, ge=0, le=250),
+    cursor: str | None = Query(default=None, min_length=1, max_length=8192),
+    principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)):
+    from okto_pulse.core.application.use_cases.delivery_evidence import GetPersistedDeliveryReadinessUseCase
+
+    response.headers['Cache-Control'] = 'no-store'
+    return await _execute(GetPersistedDeliveryReadinessUseCase(),
+        PersistedReadinessQuery(board_id=board_id, spec_id=spec_id,
+            card_id=card_id, unit_limit=unit_limit, cursor=cursor),
+        board_id=board_id, principal=principal, uow=uow)
+
+
+@router.post("/{board_id}/specs/{spec_id}/delivery-readiness-projection/requeue")
+async def requeue_persisted_delivery_readiness(board_id: str, spec_id: str,
+    principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)):
+    from okto_pulse.core.application.use_cases.delivery_evidence import RequeuePersistedReadinessUseCase
+
+    return await _execute(RequeuePersistedReadinessUseCase(),
+        DeliveryEvidenceQuery(board_id=board_id, spec_id=spec_id),
+        board_id=board_id, principal=principal, uow=uow)
 
 
 @router.get("/{board_id}/specs/{spec_id}/delivery-readiness-summary")

@@ -1,7 +1,11 @@
 import { AlertTriangle } from 'lucide-react';
-import { isDeliveryReadiness, type DeliveryReadiness, type DeliveryState, type ReadinessMetric } from '@/types/delivery-readiness';
+import { isDeliveryReadiness, type DeliveryReadiness, type DeliveryState, type PersistedReadinessSummary, type ReadinessMetric } from '@/types/delivery-readiness';
 
-export interface DeliveryReadinessState { loading?: boolean; value?: DeliveryReadiness | null; error?: string }
+export interface DeliveryReadinessState {
+  loading?: boolean; value?: DeliveryReadiness | null; error?: string;
+  persisted?: { summary?: PersistedReadinessSummary; freshness: 'current' | 'updating' | 'pending_initial' | 'unavailable';
+    generationId: string | null; errorCode: string | null };
+}
 const labels: Record<DeliveryState, string> = {
   unknown: 'Unable to evaluate', implementation_pending: 'Implementation pending',
   verification_pending: 'Implementation complete · verification pending', verification_failed: 'Verification needs attention',
@@ -41,11 +45,13 @@ function Metric({ label, value, loading, compact }: { label: string; value?: Rea
   </div>;
 }
 
-export function DeliveryReadinessView({ value, loading, error, compact = false, onInspect, onRefresh }: DeliveryReadinessState & {
+export function DeliveryReadinessView({ value, persisted, loading, error, compact = false, onInspect, onRefresh }: DeliveryReadinessState & {
   compact?: boolean; onInspect?: () => void; onRefresh?: () => void;
 }) {
   const current = !loading && !error && isDeliveryReadiness(value) ? value : undefined;
-  const verificationOnly = current?.scope.card_type === 'test' && current.implementation.status === 'not_applicable';
+  const projected = !loading && !error ? persisted?.summary : undefined;
+  const verificationOnly = (current?.scope.card_type === 'test' && current.implementation.status === 'not_applicable')
+    || (projected?.card_type === 'test' && projected.implementation.status === 'not_applicable');
   const incompatible = !loading && !error && value != null && !current;
   const historical = current?.summary.message_code === 'historical_completion_diverged';
   const title = current ? historical ? 'Historical completion · current qualification pending'
@@ -55,11 +61,14 @@ export function DeliveryReadinessView({ value, loading, error, compact = false, 
   const inspectLabel = current?.delivery_state === 'not_applicable' ? 'View scope'
     : current?.delivery_state === 'delivered' || current?.delivery_state === 'delivered_with_exceptions' ? 'View evidence' : 'What is missing?';
   if (compact) return <section aria-label="Delivery readiness" aria-busy={loading || undefined}
-    className="relative mt-2 min-w-0 rounded-md py-1" title={title || (loading ? 'Loading delivery readiness' : 'Current readiness is unavailable. Open Delivery to retry.')}>
+    className="relative mt-2 min-w-0 rounded-md py-1" title={title || (persisted?.freshness === 'current' ? 'Current persisted readiness' : loading ? 'Loading delivery readiness' : 'Current readiness is unavailable. Open Delivery to retry.')}>
     <div className={`grid ${verificationOnly ? 'grid-cols-1' : 'grid-cols-2'} gap-3`}>
-      {!verificationOnly && <Metric label="Implementation" value={current?.implementation} loading={loading} compact />}
-      <Metric label="Verification" value={current?.verification} loading={loading} compact />
+      {!verificationOnly && <Metric label="Implementation" value={current?.implementation ?? projected?.implementation} loading={loading || persisted?.freshness === 'pending_initial'} compact />}
+      <Metric label="Verification" value={current?.verification ?? projected?.verification} loading={loading || persisted?.freshness === 'pending_initial'} compact />
     </div>
+    {persisted?.freshness === 'updating' && <span role="status" className="text-[10px] text-amber-700 dark:text-amber-300">Updating · previous generation</span>}
+    {persisted?.freshness === 'pending_initial' && <span role="status" className="text-[10px] text-gray-500">Waiting for calculation</span>}
+    {persisted?.freshness === 'unavailable' && <span role="status" className="text-[10px] text-amber-700 dark:text-amber-300">Calculation unavailable{persisted.errorCode ? ` · ${persisted.errorCode}` : ''}</span>}
     {onInspect && <button type="button" aria-label="Open delivery details" title="Open delivery details"
       onClick={event => { event.stopPropagation(); onInspect(); }}
       className="absolute inset-0 rounded-md hover:bg-gray-500/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500" />}
@@ -69,13 +78,16 @@ export function DeliveryReadinessView({ value, loading, error, compact = false, 
     <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold text-gray-800 dark:text-gray-100">Delivery readiness</h3>
       {current && <span className="text-xs text-gray-500 dark:text-gray-400">Status: {current.lifecycle.stored_status.replace(/_/g, ' ')}</span>}</div>
     <div className={`grid ${verificationOnly ? 'grid-cols-1' : 'grid-cols-2'} gap-4 py-2`} title={explanation}>
-      {!verificationOnly && <Metric label="Implementation" value={current?.implementation} loading={loading} compact={false} />}
-      <Metric label="Verification" value={current?.verification} loading={loading} compact={false} />
+      {!verificationOnly && <Metric label="Implementation" value={current?.implementation ?? projected?.implementation} loading={loading || persisted?.freshness === 'pending_initial'} compact={false} />}
+      <Metric label="Verification" value={current?.verification ?? projected?.verification} loading={loading || persisted?.freshness === 'pending_initial'} compact={false} />
     </div>
     <div className="space-y-3">
       {title && <p className="break-words font-medium text-gray-700 dark:text-gray-200">{title}</p>}
       {current && <p className="text-gray-500 dark:text-gray-400">{current.summary.unresolved_units === null ? 'Pending units unknown' : `${current.summary.unresolved_units} pending units`} · {current.summary.root_causes} causes</p>}
-      {!loading && !current && <p role="status" className="text-amber-800 dark:text-amber-300">{incompatible ? 'Readiness contract unavailable or incompatible. Refresh after updating the backend.' : error || 'Current readiness is unavailable. Refresh to retry.'}</p>}
+      {persisted?.freshness === 'updating' && <p role="status" className="text-amber-800 dark:text-amber-300">Updating · showing the previous coherent generation.</p>}
+      {persisted?.freshness === 'pending_initial' && <p role="status">Waiting for the first calculation.</p>}
+      {persisted?.freshness === 'unavailable' && <p role="status" className="text-amber-800 dark:text-amber-300">Calculation unavailable{persisted.errorCode ? ` · ${persisted.errorCode}` : ''}.</p>}
+      {!loading && !current && !persisted && <p role="status" className="text-amber-800 dark:text-amber-300">{incompatible ? 'Readiness contract unavailable or incompatible. Refresh after updating the backend.' : error || 'Current readiness is unavailable. Refresh to retry.'}</p>}
     </div>
     <details className="text-xs text-gray-500 dark:text-gray-400"><summary className="cursor-pointer">How these counts work</summary><p className="mt-2">{explanation}</p></details>
     {(onInspect || onRefresh) && <div className="flex shrink-0 flex-wrap gap-2">

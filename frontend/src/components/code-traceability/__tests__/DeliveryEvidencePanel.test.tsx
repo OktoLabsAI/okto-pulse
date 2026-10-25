@@ -2,9 +2,11 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { DeliveryEvidencePanel } from '../DeliveryEvidencePanel';
 import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
+import { persistedProjection } from './readinessFixture';
 
 const api = vi.hoisted(() => ({
   getDeliveryEvidence: vi.fn(),
+  getPersistedReadinessProjection: vi.fn(),
   recordDeliveryEvidence: vi.fn(),
   recordCardDeliveryEvidence: vi.fn(),
   getBoard: vi.fn(),
@@ -31,9 +33,37 @@ function projection(): DeliveryEvidenceProjection {
 beforeEach(() => {
   vi.clearAllMocks();
   api.getDeliveryEvidence.mockResolvedValue(projection());
+  api.getPersistedReadinessProjection.mockResolvedValue(persistedProjection());
   api.getBoard.mockResolvedValue({ id: 'b', settings: { delivery_evidence_gate: 'blocking' } });
 });
 afterEach(cleanup);
+
+function renderDetailed(view: React.ReactElement) {
+  const result = render(view);
+  fireEvent.click(screen.getByRole('button', { name: 'Show detailed evidence' }));
+  return result;
+}
+
+it('shows obligation delivery from the same persisted generation without loading detailed evidence', async () => {
+  const value = persistedProjection();
+  value.projection.freshness = 'updating';
+  value.summaries[0].verification.percent = 50;
+  value.units = [
+    { card_id: null, kind: 'obligation', ref: 'fr:one', semantic_sha256: 'a'.repeat(64),
+      spec_edition: 1, contribution_card_ids: [], implementation_state: 'satisfied',
+      verification_state: 'missing', implementation_reason_codes: [], verification_reason_codes: ['test_missing'] },
+  ];
+  value.page = { offset: 0, limit: 250, total: 1, has_more: false, next_cursor: null };
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  const table = await screen.findByTestId('delivery-coverage-table');
+  expect(table).toHaveTextContent('FR (one)');
+  expect(table).toHaveTextContent('satisfied');
+  expect(table).toHaveTextContent('missing');
+  expect(screen.getByText(/Updating · previous coherent generation/)).toHaveTextContent('Generation generation-1');
+  expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '50');
+  expect(api.getDeliveryEvidence).not.toHaveBeenCalled();
+});
 
 it('refreshes exception detail when navigating in-place and rejects foreign evidence', async () => {
   const data = projection();
@@ -41,7 +71,7 @@ it('refreshes exception detail when navigating in-place and rejects foreign evid
     payload: { justification: 'Recorded scope exception', phase: 'test' } }];
   api.getDeliveryEvidence.mockResolvedValueOnce(data).mockResolvedValueOnce({ ...data, records: [{ ...data.records[0], revoked: true }] })
     .mockResolvedValueOnce({ ...data, board_id: 'foreign' });
-  const view = render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  const view = renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" />);
   await screen.findByText('Bindings live on the card ledger');
   view.rerender(<DeliveryEvidencePanel boardId="b" specId="s" focusExceptionId="waiver" />);
   expect(await screen.findByText('Delivery exception · Revoked')).toBeInTheDocument();
@@ -58,7 +88,7 @@ it('shows Decision adherence without implementation credit and links to its sing
     decision_verification_status: 'inspection_pending', decision_review_ids: [] }];
   api.getDeliveryEvidence.mockResolvedValue(data);
   const onOpenDecisions = vi.fn();
-  render(<DeliveryEvidencePanel boardId="b" specId="s" onOpenDecisions={onOpenDecisions} />);
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" onOpenDecisions={onOpenDecisions} />);
   expect(await screen.findByText('Not applicable')).toBeInTheDocument();
   fireEvent.click(screen.getByText('Only the mock'));
   expect(screen.queryByText('No admitted implementation evidence.')).not.toBeInTheDocument();
@@ -78,7 +108,7 @@ it('expands only the selected obligation proofs, with implementation and verific
   ];
   data.tests = [{ id: 'test', card_id: 'test-1', actor_id: 'verifier', scenario_id: 'scenario-1', result: 'passed', current_verified_run: true }];
   api.getDeliveryEvidence.mockResolvedValue(data);
-  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" />);
   const title = await screen.findByText('Bindings live on the card ledger');
   expect(title.closest('details')).not.toHaveAttribute('open');
   expect(screen.getByText('Implemented the guarded transaction')).not.toBeVisible();
@@ -99,7 +129,7 @@ it('labels waived checks explicitly instead of presenting them as proof', async 
   const data = projection();
   data.rows = [{ ...data.rows[0], implementation_satisfied: false, implementation_ids: [], implementation_waiver_ids: ['waiver-1'] }];
   api.getDeliveryEvidence.mockResolvedValue(data);
-  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" />);
   expect(await screen.findByText('Waived')).toBeInTheDocument();
   fireEvent.click(screen.getByText('Bindings live on the card ledger'));
   expect(screen.getByText('Implementation waivers (not proof): waiver-1')).toBeVisible();
@@ -107,21 +137,21 @@ it('labels waived checks explicitly instead of presenting them as proof', async 
 });
 
 it('refreshes the rollup when the containing Spec revision changes', async () => {
-  const view = render(<DeliveryEvidencePanel boardId="b" specId="s" revision="1" />);
-  await screen.findByTestId('delivery-coverage-table');
+  const view = renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" revision="1" />);
+  await screen.findByTestId('delivery-detailed-coverage-table');
   view.rerender(<DeliveryEvidencePanel boardId="b" specId="s" revision="2" />);
   await waitFor(() => expect(api.getDeliveryEvidence).toHaveBeenCalledTimes(2));
 });
 
 it('renders the informational rollup: verdict, summary and board gate mode', async () => {
-  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" />);
   expect(await screen.findByText('Blocked')).toBeTruthy();
   expect(screen.getByText(/test coverage missing on 1 obligation/)).toBeTruthy();
   expect(screen.getByTestId('delivery-gate-mode').textContent).toContain('Gate: Blocking (Board)');
 });
 
 it('shows obligations name-first with the stable ref as secondary metadata', async () => {
-  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" />);
   expect(await screen.findByText('Bindings live on the card ledger')).toBeTruthy();
   expect(screen.getByText('(fr_3a9f)')).toBeTruthy();
   expect(screen.getByText('Rollup derives from card ledgers')).toBeTruthy();
@@ -129,8 +159,8 @@ it('shows obligations name-first with the stable ref as secondary metadata', asy
 });
 
 it('marks implementation and test coverage per obligation', async () => {
-  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
-  await screen.findByTestId('delivery-coverage-table');
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  await screen.findByTestId('delivery-detailed-coverage-table');
   const marks = screen.getAllByText('✓');
   const pending = screen.getAllByText('◌');
   expect(marks.length).toBe(3); // impl+test row 1, impl row 2
@@ -143,7 +173,7 @@ it('shows missing Card contributions and exact criterion gaps despite some accep
     required_card_ids: ['ui', 'authorization'], missing_card_ids: ['authorization'],
     missing_criteria: [['impl-ui', 'ac-latency']] };
   api.getDeliveryEvidence.mockResolvedValue(data);
-  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" />);
   expect(await screen.findByText('2 planned implementation Card(s)')).toBeInTheDocument();
   expect(screen.getByText('Pending implementation Cards: authorization')).toBeInTheDocument();
   expect(screen.getByText('Implementation impl-ui: missing verification of ac-latency')).toBeInTheDocument();
@@ -156,7 +186,7 @@ it('bounds large gap lists without declaring the omitted work complete', async (
     missing_card_ids: Array.from({ length: 21 }, (_, i) => `card-${i}`),
     missing_criteria: Array.from({ length: 21 }, (_, i) => ['impl', `criterion-${i}`]) };
   api.getDeliveryEvidence.mockResolvedValue(data);
-  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" />);
   expect(await screen.findByText(/additional Cards omitted/)).toBeInTheDocument();
   expect(screen.getAllByText(/Implementation impl: missing verification/)).toHaveLength(20);
   expect(screen.getByText(/Additional criterion gaps are omitted/)).toBeInTheDocument();
@@ -164,7 +194,7 @@ it('bounds large gap lists without declaring the omitted work complete', async (
 });
 
 it('renders per-card grouping with proof counts and DoD statuses', async () => {
-  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" />);
   expect(await screen.findByText('TASK-142 — Re-anchor delivery bindings')).toBeTruthy();
   expect(screen.getByText('1 obligation with accepted proof')).toBeTruthy();
   expect(screen.getByText('TASK-143 — Rollup aggregation query')).toBeTruthy();
@@ -181,7 +211,7 @@ it('keeps a mixed report partial when only its functional criterion passes', asy
   data.rows[0] = { ...data.rows[0], test_ids: ['shared-report'] };
   data.rows[1] = { ...data.rows[1], test_ids: ['shared-report'], missing_criteria: [['impl', 'ac-timeout']] };
   api.getDeliveryEvidence.mockResolvedValue(data);
-  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" />);
   expect(await screen.findByText('Blocked')).toBeInTheDocument();
   expect(screen.getAllByTitle('Current passing evidence for this obligation')).toHaveLength(1);
   expect(screen.getAllByTitle('Missing / stale')).toHaveLength(1);
@@ -189,8 +219,8 @@ it('keeps a mixed report partial when only its functional criterion passes', asy
 });
 
 it('is strictly informational: no recording controls exist on this surface', async () => {
-  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
-  await screen.findByTestId('delivery-coverage-table');
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  await screen.findByTestId('delivery-detailed-coverage-table');
   expect(screen.queryByRole('checkbox')).toBeNull();
   expect(screen.queryByRole('combobox')).toBeNull();
   expect(screen.queryByRole('textbox')).toBeNull();
@@ -200,8 +230,8 @@ it('is strictly informational: no recording controls exist on this surface', asy
 });
 
 it('has no Move-to-Done control: the tab is informational only', async () => {
-  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
-  await screen.findByTestId('delivery-coverage-table');
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  await screen.findByTestId('delivery-detailed-coverage-table');
   expect(screen.queryByTestId('delivery-done-cue')).toBeNull();
   expect(screen.queryByText('Move to Done')).toBeNull();
   expect(screen.getByText(/Waivers are recorded at rollup level/)).toBeTruthy();
@@ -209,7 +239,7 @@ it('has no Move-to-Done control: the tab is informational only', async () => {
 
 it('renders the skip override toggle following the Tests-tab pattern', async () => {
   const onSkip = vi.fn();
-  render(<DeliveryEvidencePanel boardId="b" specId="s" skipDeliveryEvidence={false} onSkipDeliveryEvidenceChange={onSkip} />);
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" skipDeliveryEvidence={false} onSkipDeliveryEvidenceChange={onSkip} />);
   const toggle = await screen.findByTestId('delivery-skip-toggle');
   expect(toggle.getAttribute('role')).toBe('switch');
   expect(toggle.getAttribute('aria-checked')).toBe('false');
@@ -219,21 +249,21 @@ it('renders the skip override toggle following the Tests-tab pattern', async () 
 });
 
 it('renders the skip toggle at the top of the tab, before the coverage table', async () => {
-  render(<DeliveryEvidencePanel boardId="b" specId="s" onSkipDeliveryEvidenceChange={() => {}} />);
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" onSkipDeliveryEvidenceChange={() => {}} />);
   const toggle = await screen.findByTestId('delivery-skip-toggle');
-  const table = await screen.findByTestId('delivery-coverage-table');
+  const table = await screen.findByTestId('delivery-detailed-coverage-table');
   expect(toggle.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
 it('reflects the active skip state on the toggle', async () => {
-  render(<DeliveryEvidencePanel boardId="b" specId="s" skipDeliveryEvidence onSkipDeliveryEvidenceChange={() => {}} />);
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" skipDeliveryEvidence onSkipDeliveryEvidenceChange={() => {}} />);
   const toggle = await screen.findByTestId('delivery-skip-toggle');
   expect(toggle.getAttribute('aria-checked')).toBe('true');
 });
 
 it('shows a passive badge when no update handler is available', async () => {
-  render(<DeliveryEvidencePanel boardId="b" specId="s" skipDeliveryEvidence />);
-  await screen.findByTestId('delivery-coverage-table');
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" skipDeliveryEvidence />);
+  await screen.findByTestId('delivery-detailed-coverage-table');
   expect(screen.queryByTestId('delivery-skip-toggle')).toBeNull();
   expect(screen.getByText('Skipped')).toBeTruthy();
 });
@@ -243,7 +273,7 @@ it('drops the done cue and shows Complete when every obligation is covered', asy
   p.allowed = true;
   p.rows.forEach(row => { row.test_satisfied = true; });
   api.getDeliveryEvidence.mockResolvedValue(p);
-  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" />);
   expect(await screen.findByText('Complete')).toBeTruthy();
   expect(screen.getByText(/All 2 obligations satisfied/)).toBeTruthy();
   expect(screen.queryByTestId('delivery-done-cue')).toBeNull();
@@ -251,29 +281,29 @@ it('drops the done cue and shows Complete when every obligation is covered', asy
 
 it('reflects the advisory gate mode from board settings', async () => {
   api.getBoard.mockResolvedValue({ id: 'b', settings: { delivery_evidence_gate: 'advisory' } });
-  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" />);
   await screen.findByTestId('delivery-gate-mode');
   expect(screen.getByTestId('delivery-gate-mode').textContent).toContain('Gate: Advisory (Board)');
 });
 
 it('reports an unknown gate when board settings fail to load', async () => {
   api.getBoard.mockRejectedValue(new Error('unavailable'));
-  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" />);
   await screen.findByTestId('delivery-gate-mode');
   expect(screen.getByTestId('delivery-gate-mode').textContent).toContain('Gate: Unknown (Board)');
 });
 
 it('surfaces load errors without faking a verdict', async () => {
   api.getDeliveryEvidence.mockRejectedValue(new Error('Unavailable'));
-  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" />);
   expect(await screen.findByText('Unavailable')).toBeTruthy();
   expect(screen.queryByText('Blocked')).toBeNull();
   expect(screen.queryByText('Complete')).toBeNull();
 });
 
 it('refreshes the rollup on demand without any write call', async () => {
-  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
-  await screen.findByTestId('delivery-coverage-table');
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  await screen.findByTestId('delivery-detailed-coverage-table');
   fireEvent.click(screen.getByRole('button', { name: /Refresh delivery rollup/ }));
   await waitFor(() => expect(api.getDeliveryEvidence).toHaveBeenCalledTimes(2));
   expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
@@ -282,15 +312,15 @@ it('refreshes the rollup on demand without any write call', async () => {
 
 it.each([null, 'off'])('does not invent a gate mode for incompatible policy %j', async (mode) => {
   api.getBoard.mockResolvedValue({ settings: { delivery_evidence_gate: mode } });
-  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" />);
   expect(await screen.findByText(/Unknown/)).toBeInTheDocument();
   await waitFor(() => expect(api.getDeliveryEvidence).toHaveBeenCalled());
   expect(screen.queryByText(/Gate: Blocking/)).not.toBeInTheDocument();
 });
 
 it('clears the previous gate mode when a different Board cannot be read', async () => {
-  api.getBoard.mockResolvedValueOnce({ settings: { delivery_evidence_gate: 'advisory' } });
-  const view = render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  api.getBoard.mockResolvedValue({ settings: { delivery_evidence_gate: 'advisory' } });
+  const view = renderDetailed(<DeliveryEvidencePanel boardId="b" specId="s" />);
   expect(await screen.findByText(/Advisory/)).toBeInTheDocument();
   api.getBoard.mockRejectedValueOnce(new Error('Board unavailable'));
   view.rerender(<DeliveryEvidencePanel boardId="other" specId="s" />);

@@ -1,26 +1,33 @@
 import { useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
-import { isReadinessResponse, type ReadinessResponse } from '@/types/delivery-readiness';
+import { isReadinessResponse, type PersistedReadinessProjection, type ReadinessResponse } from '@/types/delivery-readiness';
 import { DeliveryReadinessView } from './DeliveryReadinessView';
 import { DeliveryReadinessIssues } from './DeliveryReadinessIssues';
 import type { ReadinessCardLocation, ReadinessNavigator, ReadinessSpecLocation } from './readinessNavigation';
 import { useNativeReadinessNavigation } from './useNativeReadinessNavigation';
 import { useDeliveryReadiness } from './useDeliveryReadiness';
 
-export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, active = true, focusDiagnosis = false, onNavigate, onOpenReadinessSpec, onOpenReadinessCard }: {
+export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, active = true, focusDiagnosis = false, persistedValue, onNavigate, onOpenReadinessSpec, onOpenReadinessCard }: {
   boardId: string; specId: string; cardId?: string; revision?: string | number;
   focusDiagnosis?: boolean; onNavigate?: ReadinessNavigator;
   active?: boolean;
+  persistedValue?: PersistedReadinessProjection | null;
   onOpenReadinessSpec?: (location: ReadinessSpecLocation) => void;
   onOpenReadinessCard?: (id: string, target?: ReadinessCardLocation) => void;
 }) {
   const api = useDashboardApi();
   const navigation = useNativeReadinessNavigation(boardId, specId, onOpenReadinessSpec, onOpenReadinessCard);
   const [refresh, setRefresh] = useState(0);
-  const state = useDeliveryReadiness(boardId, specId, cardId, JSON.stringify([revision, refresh]), active);
+  const [expanded, setExpanded] = useState(focusDiagnosis);
+  const persistedSummary = persistedValue?.summaries.find(row => row.card_id === (cardId ?? null));
+  const inheritedProjection = persistedValue ? { summary: persistedSummary,
+    freshness: persistedSummary ? persistedValue.projection.freshness : 'pending_initial' as const,
+    generationId: persistedValue.projection.generation_id,
+    errorCode: persistedValue.projection.error_code } : undefined;
+  const state = useDeliveryReadiness(boardId, specId, cardId, JSON.stringify([revision, refresh]),
+    active && (expanded || !persistedValue), expanded ? 'diagnostic' : 'projection');
   const initial = isReadinessResponse(state.value) ? state.value : undefined;
   const key = JSON.stringify([boardId, specId, cardId, initial?.snapshot_id, revision, refresh, state.loading]);
-  const [expanded, setExpanded] = useState(focusDiagnosis);
   const [extra, setExtra] = useState<{ key: string; value: ReadinessResponse }>();
   const [failure, setFailure] = useState<{ key: string; message: string }>();
   const [busy, setBusy] = useState(false);
@@ -83,7 +90,8 @@ export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, acti
     focusedControl.current = element?.dataset.readinessFocus && snapshot
       ? { scope: scopeKey, snapshot, key: element.dataset.readinessFocus } : undefined;
   }}>
-    <DeliveryReadinessView value={error || unavailable ? undefined : value} loading={state.loading} error={error || unavailable}
+    <DeliveryReadinessView value={error || unavailable ? undefined : value} persisted={state.persisted ?? inheritedProjection}
+      loading={state.loading} error={error || unavailable}
       onInspect={inspect} onRefresh={() => setRefresh(v => v + 1)} />
     {expanded && !state.loading && !error && !unavailable && value && <section aria-label="Delivery diagnosis" className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">

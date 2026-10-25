@@ -1,0 +1,408 @@
+"""Short SQLite transactions for durable readiness jobs and generations."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
+from itertools import chain, islice
+import secrets
+from uuid import uuid4
+
+from sqlalchemy import delete, func, or_, select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from okto_pulse.core.services.persisted_delivery_readiness import ReadinessGeneration, readiness_manifest_digest
+from okto_pulse.core.ports.delivery_readiness import ReadinessReadError
+from .sqlalchemy_models import (
+    AppSetting, Board, Spec, ReadinessGenerationRow, ReadinessJobRow, ReadinessScopeRow,
+    ReadinessSummaryRow, ReadinessUnitRow, ReadinessOperationAuditRow,
+)
+
+LEASE_SECONDS = 30
+MAX_ATTEMPTS = 8
+STAGE_BATCH_SIZE = 250
+
+
+@dataclass(frozen=True, slots=True)
+class ReadinessClaim:
+    scope_id: str
+    board_id: str
+    spec_id: str
+    edition: int
+    requested_revision: int
+    owner: str
+    epoch: int
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectionRead:
+    board_id: str
+    spec_id: str
+    edition: int
+    source_revision: int
+    generation_id: str | None
+    captured_revision: int | None
+    evaluated_at: datetime | None
+    freshness: str
+    error_code: str | None
+    summaries: tuple[dict, ...]
+    units: tuple[dict, ...]
+    unit_total: int
+
+
+class ReadinessLeaseLost(RuntimeError):
+    pass
+
+
+class CommunityPersistedReadinessStore:
+    def __init__(self, engine):
+        self.engine = engine
+
+    async def read(self, *, board_id: str, spec_id: str, edition: int,
+                   card_id: str | None = None, unit_limit: int = 0,
+                   unit_offset: int = 0, generation_id_override: str | None = None) -> ProjectionRead | None:
+        """Read one committed generation with no source evaluation or repair.
+
+        Callers must authorize the current actor and requested Card before
+        using this internal adapter; the persisted payload has no ACL.
+        """
+        if unit_limit < 0 or unit_limit > 250 or unit_offset < 0:
+            raise ValueError("readiness_page_invalid")
+        async with AsyncSession(self.engine, autoflush=False) as session:
+            await session.execute(text("BEGIN"))
+            scope = (await session.scalars(select(ReadinessScopeRow).where(
+                ReadinessScopeRow.board_id == board_id,
+                ReadinessScopeRow.spec_id == spec_id,
+                ReadinessScopeRow.edition == edition,
+                ReadinessScopeRow.tombstone.is_(False)))).first()
+            if scope is None:
+                return None
+            job = await session.get(ReadinessJobRow, scope.id)
+            selected_id = generation_id_override or scope.active_generation_id
+            gen = await session.get(ReadinessGenerationRow, selected_id) if selected_id else None
+            if gen is not None and (gen.state != "complete" or gen.scope_id != scope.id):
+                gen = None
+            if generation_id_override is not None and gen is None:
+                raise ReadinessReadError('readiness_cursor_stale', native_code='snapshot_conflict')
+            compatible = gen is not None and gen.evaluator_version == "delivery-readiness-evaluator/v1"
+            if job is not None and job.state == "terminal":
+                freshness = "unavailable"
+            elif gen is None:
+                freshness = "pending_initial"
+            elif not compatible:
+                freshness = "unavailable"
+            elif gen.captured_revision == scope.source_revision:
+                freshness = "current"
+            else:
+                freshness = "updating"
+            summaries = ()
+            units = ()
+            unit_total = 0
+            if compatible:
+                predicate = (ReadinessSummaryRow.card_key == card_id) if card_id else None
+                query = select(ReadinessSummaryRow).where(ReadinessSummaryRow.generation_id == gen.id)
+                if predicate is not None:
+                    query = query.where(predicate)
+                summaries = tuple(row.payload for row in (await session.scalars(
+                    query.order_by(ReadinessSummaryRow.card_key))).all())
+                if unit_limit:
+                    unit_total = int(await session.scalar(select(func.count()).select_from(ReadinessUnitRow).where(
+                        ReadinessUnitRow.generation_id == gen.id,
+                        ReadinessUnitRow.card_key == (card_id or ""))) or 0)
+                    rows = (await session.scalars(select(ReadinessUnitRow).where(
+                        ReadinessUnitRow.generation_id == gen.id,
+                        ReadinessUnitRow.card_key == (card_id or "")).order_by(
+                        ReadinessUnitRow.kind, ReadinessUnitRow.ref,
+                        ReadinessUnitRow.semantic_sha256).offset(unit_offset).limit(unit_limit))).all()
+                    units = tuple(row.payload for row in rows)
+            return ProjectionRead(board_id, spec_id, edition, scope.source_revision,
+                gen.id if compatible else None, gen.captured_revision if compatible else None,
+                gen.evaluated_at if compatible else None, freshness,
+                job.error_code if job else None, summaries, units, unit_total)
+
+    async def claim(self, *, owner: str) -> ReadinessClaim | None:
+        now = datetime.now(timezone.utc)
+        async with self.engine.connect() as connection:
+            await connection.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                async with AsyncSession(bind=connection, expire_on_commit=False) as session:
+                    row = (await session.scalars(select(ReadinessJobRow).join(ReadinessScopeRow,
+                        ReadinessScopeRow.id == ReadinessJobRow.scope_id).where(
+                        ReadinessScopeRow.tombstone.is_(False),
+                        or_(
+                            (ReadinessJobRow.state == "pending") & (ReadinessJobRow.due_at <= now),
+                            (ReadinessJobRow.state == "running") & (ReadinessJobRow.lease_until < now),
+                        )).order_by(ReadinessJobRow.due_at, ReadinessJobRow.scope_id).limit(1))).first()
+                    if row is None:
+                        await connection.rollback()
+                        return None
+                    scope = await session.get(ReadinessScopeRow, row.scope_id)
+                    row.state, row.owner = "running", owner
+                    row.lease_epoch += 1
+                    row.lease_until = now + timedelta(seconds=LEASE_SECONDS)
+                    row.updated_at = now
+                    await session.flush()
+                    claim = ReadinessClaim(scope.id, scope.board_id, scope.spec_id, scope.edition,
+                        row.requested_revision, owner, row.lease_epoch)
+                await connection.commit()
+                return claim
+            except BaseException:
+                await connection.rollback()
+                raise
+
+    async def heartbeat(self, claim: ReadinessClaim) -> None:
+        now = datetime.now(timezone.utc)
+        async with AsyncSession(self.engine) as session, session.begin():
+            row = await session.get(ReadinessJobRow, claim.scope_id)
+            if row is None or row.owner != claim.owner or row.lease_epoch != claim.epoch or row.state != "running":
+                raise ReadinessLeaseLost("readiness_lease_lost")
+            row.lease_until = now + timedelta(seconds=LEASE_SECONDS)
+            row.updated_at = now
+
+    async def stage(self, claim: ReadinessClaim, generation: ReadinessGeneration) -> str:
+        if (claim.board_id, claim.spec_id, claim.edition) != (
+            generation.board_id, generation.spec_id, generation.spec_edition):
+            raise ValueError("readiness_generation_scope_mismatch")
+        generation_id = uuid4().hex
+        now = datetime.now(timezone.utc)
+        async with AsyncSession(self.engine) as session, session.begin():
+            job = await session.get(ReadinessJobRow, claim.scope_id)
+            if job is None or job.owner != claim.owner or job.lease_epoch != claim.epoch or job.state != "running":
+                raise ReadinessLeaseLost("readiness_lease_lost")
+            old = (await session.scalars(select(ReadinessGenerationRow).where(
+                ReadinessGenerationRow.scope_id == claim.scope_id,
+                ReadinessGenerationRow.captured_revision == generation.captured_revision,
+                ReadinessGenerationRow.evaluator_version == generation.evaluator_version,
+                ReadinessGenerationRow.state == "staging"))).first()
+            if old is not None:
+                await session.execute(delete(ReadinessSummaryRow).where(ReadinessSummaryRow.generation_id == old.id))
+                await session.execute(delete(ReadinessUnitRow).where(ReadinessUnitRow.generation_id == old.id))
+                await session.delete(old)
+                await session.flush()
+            session.add(ReadinessGenerationRow(id=generation_id, scope_id=claim.scope_id,
+                captured_revision=generation.captured_revision, spec_version=generation.spec_version,
+                evaluator_version=generation.evaluator_version,
+                source_snapshot_id=generation.source_snapshot_id, state="staging",
+                summary_count=len(generation.summaries), unit_count=len(generation.units),
+                manifest_sha256=generation.manifest_sha256, created_at=now,
+                evaluated_at=generation.evaluated_at))
+        rows = chain(
+            (ReadinessSummaryRow(generation_id=generation_id, card_key=summary.card_id or "",
+                payload=summary.payload()) for summary in generation.summaries),
+            (ReadinessUnitRow(generation_id=generation_id, card_key=unit.card_id or "",
+                kind=unit.kind, ref=unit.ref, semantic_sha256=unit.semantic_sha256,
+                payload=asdict(unit)) for unit in generation.units),
+        )
+        while batch := list(islice(rows, STAGE_BATCH_SIZE)):
+            await self.heartbeat(claim)
+            async with AsyncSession(self.engine) as session, session.begin():
+                session.add_all(batch)
+        await self.verify_stage(claim, generation_id)
+        return generation_id
+
+    async def verify_stage(self, claim: ReadinessClaim, generation_id: str) -> None:
+        """Verify staged payload outside a writer transaction before CAS publication."""
+        async with AsyncSession(self.engine, autoflush=False) as session:
+            await session.execute(text("BEGIN"))
+            gen = await session.get(ReadinessGenerationRow, generation_id)
+            if gen is None or gen.scope_id != claim.scope_id or gen.state != "staging":
+                raise ReadinessLeaseLost("readiness_stage_missing")
+            summaries = [row.payload for row in (await session.scalars(
+                select(ReadinessSummaryRow).where(ReadinessSummaryRow.generation_id == generation_id)
+                .order_by(ReadinessSummaryRow.card_key))).all()]
+            units = [row.payload for row in (await session.scalars(
+                select(ReadinessUnitRow).where(ReadinessUnitRow.generation_id == generation_id)
+                .order_by(ReadinessUnitRow.card_key, ReadinessUnitRow.kind,
+                    ReadinessUnitRow.ref, ReadinessUnitRow.semantic_sha256))).all()]
+            header = (gen.captured_revision, gen.source_snapshot_id,
+                gen.evaluator_version, gen.summary_count, gen.unit_count, gen.manifest_sha256)
+        revision, snapshot_id, evaluator, summary_count, unit_count, manifest = header
+        if len(summaries) != summary_count or len(units) != unit_count:
+            raise ValueError("readiness_stage_incomplete")
+        digest = readiness_manifest_digest(board_id=claim.board_id, spec_id=claim.spec_id,
+            edition=claim.edition, captured_revision=revision,
+            source_snapshot_id=snapshot_id, evaluator_version=evaluator,
+            summaries=summaries, units=units)
+        if digest != manifest:
+            raise ValueError("readiness_stage_manifest_mismatch")
+
+    async def publish(self, claim: ReadinessClaim, generation_id: str) -> bool:
+        """CAS-activate a complete generation; return False for a lost fence."""
+        now = datetime.now(timezone.utc)
+        async with self.engine.connect() as connection:
+            await connection.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                async with AsyncSession(bind=connection, expire_on_commit=False) as session:
+                    scope = await session.get(ReadinessScopeRow, claim.scope_id)
+                    job = await session.get(ReadinessJobRow, claim.scope_id)
+                    gen = await session.get(ReadinessGenerationRow, generation_id)
+                    if (scope is None or job is None or gen is None or scope.tombstone
+                        or gen.scope_id != claim.scope_id or gen.state != "staging"
+                        or job.owner != claim.owner or job.lease_epoch != claim.epoch
+                        or job.state != "running" or job.lease_until is None or job.lease_until <= now
+                        or scope.edition != claim.edition or gen.captured_revision > scope.source_revision):
+                        await connection.rollback()
+                        return False
+                    summaries = await session.scalar(select(func.count()).select_from(ReadinessSummaryRow).where(
+                        ReadinessSummaryRow.generation_id == generation_id))
+                    units = await session.scalar(select(func.count()).select_from(ReadinessUnitRow).where(
+                        ReadinessUnitRow.generation_id == generation_id))
+                    if summaries != gen.summary_count or units != gen.unit_count:
+                        await connection.rollback()
+                        return False
+                    active = await session.get(ReadinessGenerationRow, scope.active_generation_id) if scope.active_generation_id else None
+                    if active is not None and active.captured_revision > gen.captured_revision:
+                        await connection.rollback()
+                        return False
+                    gen.state = "complete"
+                    scope.active_generation_id = generation_id
+                    scope.updated_at = now
+                    job.requested_revision = max(job.requested_revision, scope.source_revision)
+                    job.state = "idle" if gen.captured_revision == scope.source_revision else "pending"
+                    job.owner, job.lease_until = None, None
+                    job.attempt = 0
+                    job.error_code = None
+                    job.due_at = now
+                    job.updated_at = now
+                    await session.flush()
+                await connection.commit()
+                return True
+            except BaseException:
+                await connection.rollback()
+                raise
+
+    async def fail(self, claim: ReadinessClaim, *, error_code: str) -> None:
+        now = datetime.now(timezone.utc)
+        async with AsyncSession(self.engine) as session, session.begin():
+            job = await session.get(ReadinessJobRow, claim.scope_id)
+            if job is None or job.owner != claim.owner or job.lease_epoch != claim.epoch:
+                return
+            job.attempt += 1
+            job.state = "terminal" if job.attempt >= MAX_ATTEMPTS else "pending"
+            job.owner, job.lease_until = None, None
+            job.error_code = error_code[:128]
+            base = min(30, 2 ** (job.attempt - 1))
+            job.due_at = now + timedelta(seconds=base * (1 + secrets.randbelow(21) / 100))
+            job.updated_at = now
+
+    async def requeue_terminal(self, *, scope_id: str, board_id: str,
+                               actor_id: str, actor_kind: str) -> bool:
+        """Operator action for a terminal job; never changes the source ledger."""
+        now = datetime.now(timezone.utc)
+        async with AsyncSession(self.engine) as session, session.begin():
+            job = await session.get(ReadinessJobRow, scope_id)
+            scope = await session.get(ReadinessScopeRow, scope_id)
+            if (job is None or scope is None or scope.board_id != board_id
+                or scope.tombstone or job.state != "terminal"):
+                return False
+            previous_error = job.error_code
+            job.state, job.due_at, job.updated_at = "pending", now, now
+            job.owner, job.lease_until, job.error_code, job.attempt = None, None, None, 0
+            job.requested_revision = max(job.requested_revision, scope.source_revision)
+            session.add(ReadinessOperationAuditRow(id=uuid4().hex, scope_id=scope_id,
+                board_id=board_id, operation="requeue_terminal", actor_id=actor_id,
+                actor_kind=actor_kind, previous_error_code=previous_error,
+                target_revision=job.requested_revision, created_at=now))
+            return True
+
+    async def gc_once(self) -> bool:
+        """Retire one nonactive generation in bounded row batches."""
+        now = datetime.now(timezone.utc)
+        async with AsyncSession(self.engine) as session, session.begin():
+            rows = (await session.scalars(select(ReadinessGenerationRow).order_by(
+                ReadinessGenerationRow.created_at).limit(200))).all()
+            candidate = None
+            for gen in rows:
+                scope = await session.get(ReadinessScopeRow, gen.scope_id)
+                if scope is None or scope.active_generation_id == gen.id:
+                    continue
+                if gen.state == "expired":
+                    candidate = gen
+                    break
+                if gen.state == "staging":
+                    if gen.created_at < now - timedelta(minutes=5):
+                        candidate = gen
+                        break
+                    continue
+                if gen.state == "complete":
+                    newer = await session.scalar(select(func.count()).select_from(ReadinessGenerationRow).where(
+                        ReadinessGenerationRow.scope_id == gen.scope_id,
+                        ReadinessGenerationRow.state == "complete",
+                        ReadinessGenerationRow.created_at > gen.created_at))
+                    if gen.created_at < now - timedelta(minutes=30) or newer >= 4:
+                        candidate = gen
+                        break
+            if candidate is None:
+                return False
+            candidate.state = "expired"
+            await session.flush()
+            await session.execute(text("DELETE FROM readiness_summary WHERE rowid IN "
+                "(SELECT rowid FROM readiness_summary WHERE generation_id=:id LIMIT 250)"),
+                {"id": candidate.id})
+            await session.execute(text("DELETE FROM readiness_unit WHERE rowid IN "
+                "(SELECT rowid FROM readiness_unit WHERE generation_id=:id LIMIT 250)"),
+                {"id": candidate.id})
+            remaining = await session.scalar(select(func.count()).select_from(ReadinessSummaryRow).where(
+                ReadinessSummaryRow.generation_id == candidate.id))
+            remaining += await session.scalar(select(func.count()).select_from(ReadinessUnitRow).where(
+                ReadinessUnitRow.generation_id == candidate.id))
+            if not remaining:
+                await session.delete(candidate)
+            return True
+
+    async def reconcile_once(self, *, limit: int = 100) -> int:
+        """Bounded restart/backfill repair; GET never calls this writer."""
+        if not 1 <= limit <= 100:
+            raise ValueError("readiness_reconcile_limit_invalid")
+        now = datetime.now(timezone.utc)
+        async with AsyncSession(self.engine, autoflush=False) as session:
+            state = await session.get(AppSetting, "readiness_reconcile_cursor")
+            cursor = state.value if state else ""
+            spec_ids = (await session.scalars(select(Spec.id).where(Spec.id > cursor,
+                Spec.archived.is_(False)).order_by(Spec.id).limit(limit))).all()
+        if not spec_ids:
+            async with AsyncSession(self.engine) as session, session.begin():
+                state = await session.get(AppSetting, "readiness_reconcile_cursor")
+                if state is not None:
+                    state.value = ""
+            return 0
+        for spec_id in spec_ids:
+            async with AsyncSession(self.engine) as session, session.begin():
+                spec = await session.get(Spec, spec_id)
+                if spec is None or spec.archived:
+                    continue
+                identity = f"{spec.id}:{spec.edition}"
+                scope = await session.get(ReadinessScopeRow, identity)
+                if scope is None:
+                    board = await session.get(Board, spec.board_id)
+                    if board is None:
+                        continue
+                    scope = ReadinessScopeRow(id=identity, realm_id=board.realm_id or "local",
+                        board_id=spec.board_id, spec_id=spec.id, edition=spec.edition,
+                        source_revision=0, active_generation_id=None, tombstone=False, updated_at=now)
+                    session.add(scope)
+                    await session.flush()
+                job = await session.get(ReadinessJobRow, identity)
+                if job is None:
+                    session.add(ReadinessJobRow(scope_id=identity,
+                        requested_revision=scope.source_revision, state="pending", owner=None,
+                        lease_epoch=0, lease_until=None, attempt=0, due_at=now,
+                        error_code=None, updated_at=now))
+                    continue
+                if job.state in {"running", "terminal"}:
+                    continue
+                gen = await session.get(ReadinessGenerationRow,
+                    scope.active_generation_id) if scope.active_generation_id else None
+                incompatible = gen is None or gen.state != "complete" or (
+                    gen.evaluator_version != "delivery-readiness-evaluator/v1")
+                stale = gen is not None and gen.captured_revision < scope.source_revision
+                if incompatible or stale:
+                    job.requested_revision = max(job.requested_revision, scope.source_revision)
+                    job.state, job.due_at, job.updated_at = "pending", now, now
+        async with AsyncSession(self.engine) as session, session.begin():
+            state = await session.get(AppSetting, "readiness_reconcile_cursor")
+            if state is None:
+                session.add(AppSetting(key="readiness_reconcile_cursor", value=spec_ids[-1]))
+            else:
+                state.value = spec_ids[-1]
+        return len(spec_ids)

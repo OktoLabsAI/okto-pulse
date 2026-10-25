@@ -77,3 +77,40 @@ class CommunityReadinessCursorCodec:
             binding.snapshot_id, binding.spec_edition, binding.projection_id):
             raise ReadinessReadError('readiness_cursor_stale')
         return payload['offset']
+
+    def encode_projection(self, *, actor_id, board_id, spec_id, edition, card_id,
+                          limit, generation_id, offset):
+        if not isinstance(generation_id, str) or not generation_id or type(offset) is not int or offset < 1:
+            raise ReadinessReadError('readiness_query_invalid')
+        binding = _canonical({'actor_id': actor_id, 'board_id': board_id, 'spec_id': spec_id,
+            'edition': edition, 'card_id': card_id, 'limit': limit})
+        payload = _canonical({'version': 1, 'kind': 'persisted-readiness',
+            'binding': hashlib.sha256(binding).hexdigest(), 'generation_id': generation_id,
+            'offset': offset})
+        return _encode(payload) + '.' + _encode(hmac.new(self._key, payload, hashlib.sha256).digest())
+
+    def decode_projection(self, token, *, actor_id, board_id, spec_id, edition,
+                          card_id, limit):
+        try:
+            if not isinstance(token, str) or not 1 <= len(token) <= 8192 or token.count('.') != 1:
+                raise ValueError('invalid_envelope')
+            encoded, signature = map(_decode, token.split('.'))
+            if not hmac.compare_digest(signature, hmac.new(self._key, encoded, hashlib.sha256).digest()):
+                raise ValueError('invalid_signature')
+            payload = json.loads(encoded)
+            if not isinstance(payload, dict) or not hmac.compare_digest(encoded, _canonical(payload)):
+                raise ValueError('noncanonical_payload')
+            if set(payload) != {'version', 'kind', 'binding', 'generation_id', 'offset'}:
+                raise ValueError('invalid_fields')
+            binding = _canonical({'actor_id': actor_id, 'board_id': board_id, 'spec_id': spec_id,
+                'edition': edition, 'card_id': card_id, 'limit': limit})
+            if (type(payload['version']) is not int or payload['version'] != 1
+                or payload['kind'] != 'persisted-readiness'
+                or not hmac.compare_digest(payload['binding'], hashlib.sha256(binding).hexdigest())
+                or not isinstance(payload['generation_id'], str) or len(payload['generation_id']) != 32
+                or any(ch not in '0123456789abcdef' for ch in payload['generation_id'])
+                or type(payload['offset']) is not int or payload['offset'] < 1):
+                raise ValueError('invalid_binding')
+            return payload['generation_id'], payload['offset']
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError) as exc:
+            raise ReadinessReadError('readiness_query_invalid', native_code='readiness_cursor_invalid') from exc

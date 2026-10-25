@@ -393,6 +393,126 @@ class CommunityDeliveryReadinessReader:
             logger.debug('readiness_batch_read elapsed_ms=%.3f queries=%d facts=%d',
                 (perf_counter() - started) * 1000, counts['queries'], counts['facts'])
 
+    async def load_for_projection(self, *, board_id, spec_id):
+        """Capture one source revision and immutable facts without actor state.
+
+        The worker releases this connection before calling the CPU evaluator.
+        Later writes may advance the source; publication fences that revision
+        instead of retrying an unrelated global ``PRAGMA data_version`` change.
+        """
+        from okto_pulse.community.adapters.sqlalchemy_models import ReadinessScopeRow
+
+        counts = {'queries': 0, 'facts': 0}
+        async with self.engine.connect() as connection:
+            await connection.exec_driver_sql('BEGIN')
+            try:
+                async with AsyncSession(bind=connection, autoflush=False, expire_on_commit=False) as session:
+                    scope = (await session.scalars(select(ReadinessScopeRow).where(
+                        ReadinessScopeRow.board_id == board_id,
+                        ReadinessScopeRow.spec_id == spec_id,
+                        ReadinessScopeRow.tombstone.is_(False)).order_by(
+                        ReadinessScopeRow.edition.desc()).limit(1))).first()
+                    if scope is None:
+                        raise ReadinessReadError('readiness_scope_mismatch')
+                    try:
+                        snapshot = await self._load_transaction(session, board_id, spec_id, None, counts)
+                    except ReadinessReadError as exc:
+                        if exc.code != 'readiness_limit_exceeded':
+                            raise
+                        snapshot = await self._capacity_snapshot(session, board_id, spec_id, None, counts, exc)
+                    if snapshot.facts.scope.edition != scope.edition:
+                        raise ReadinessReadError('readiness_snapshot_changed')
+                    return snapshot, scope.source_revision
+            finally:
+                await connection.rollback()
+
+    async def load_persisted(self, *, board_id, spec_id, actor, card_id=None,
+                             unit_limit=0, cursor=None):
+        """Authorize current actor around a bounded projection read.
+
+        No proof facts, historical versions or diagnostics are loaded. A changed
+        ACL/Spec/Card during the read is retried once, then fails closed.
+        """
+        from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import (
+            CommunityPersistedReadinessStore,
+        )
+
+        async def authorize():
+            counts = {'queries': 0, 'facts': 0}
+            async with self.engine.connect() as connection:
+                await connection.exec_driver_sql('BEGIN')
+                try:
+                    async with AsyncSession(bind=connection, autoflush=False) as session:
+                        access = await self._access(session, actor, board_id, counts)
+                        specs = await self._rows(session, select(Spec).where(Spec.id == spec_id,
+                            Spec.board_id == board_id, Spec.archived.is_(False)), 1, counts)
+                        if not specs:
+                            raise ReadinessReadError('readiness_scope_mismatch')
+                        card = None
+                        if card_id is not None:
+                            access.require('card.entity.read')
+                            cards = await self._rows(session, select(Card).where(Card.id == card_id,
+                                Card.board_id == board_id, Card.spec_id == spec_id,
+                                Card.archived.is_(False)), 1, counts)
+                            if not cards:
+                                raise ReadinessReadError('readiness_scope_mismatch')
+                            card = cards[0]
+                        return access, specs[0].edition, specs[0].version, card.policy_version if card else None
+                finally:
+                    await connection.rollback()
+
+        store = CommunityPersistedReadinessStore(self.engine)
+        for _ in range(2):
+            before = await authorize()
+            generation_id = None
+            unit_offset = 0
+            if cursor is not None:
+                if not unit_limit:
+                    raise ReadinessReadError('readiness_query_invalid')
+                from okto_pulse.core import get_settings
+                from .delivery_readiness_cursor import CommunityReadinessCursorCodec
+                generation_id, unit_offset = CommunityReadinessCursorCodec.from_settings(
+                    get_settings()).decode_projection(cursor, actor_id=actor.actor_id,
+                    board_id=board_id, spec_id=spec_id, edition=before[1],
+                    card_id=card_id, limit=unit_limit)
+            projection = await store.read(board_id=board_id, spec_id=spec_id,
+                edition=before[1], card_id=card_id, unit_limit=unit_limit,
+                unit_offset=unit_offset, generation_id_override=generation_id)
+            after = await authorize()
+            if before == after:
+                has_more = bool(projection and unit_limit
+                    and unit_offset + len(projection.units) < projection.unit_total)
+                next_cursor = None
+                if has_more:
+                    from okto_pulse.core import get_settings
+                    from .delivery_readiness_cursor import CommunityReadinessCursorCodec
+                    next_cursor = CommunityReadinessCursorCodec.from_settings(
+                        get_settings()).encode_projection(actor_id=actor.actor_id,
+                        board_id=board_id, spec_id=spec_id, edition=before[1],
+                        card_id=card_id, limit=unit_limit,
+                        generation_id=projection.generation_id,
+                        offset=unit_offset + len(projection.units))
+                return projection, before[1], before[2], {'offset': unit_offset,
+                    'limit': unit_limit, 'total': projection.unit_total if projection else 0,
+                    'has_more': has_more, 'next_cursor': next_cursor}
+        raise ReadinessReadError('readiness_snapshot_changed')
+
+    async def requeue_terminal(self, *, board_id, spec_id, actor):
+        from .sqlalchemy_persisted_readiness import CommunityPersistedReadinessStore
+
+        counts = {'queries': 0, 'facts': 0}
+        async with AsyncSession(self.engine, autoflush=False) as session:
+            access = await self._access(session, actor, board_id, counts)
+            access.require('board.admin.edit')
+            spec = await session.get(Spec, spec_id)
+            if spec is None or spec.board_id != board_id or spec.archived:
+                raise ReadinessReadError('readiness_scope_mismatch')
+            scope_id = f'{spec_id}:{spec.edition}'
+        changed = await CommunityPersistedReadinessStore(self.engine).requeue_terminal(
+            scope_id=scope_id, board_id=board_id,
+            actor_id=actor.actor_id, actor_kind=actor.actor_kind)
+        return {'scope_id': scope_id, 'requeued': changed}
+
     async def _capacity_snapshot(self, session, board_id, spec_id, card_id, counts, error):
         """Keep an authorized scope header, never the prefix of overflowing facts.
 
