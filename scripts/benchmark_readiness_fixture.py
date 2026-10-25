@@ -36,6 +36,7 @@ from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import (
     CommunityDeliveryReadinessReader, CommunityReadinessClock,
 )
 from okto_pulse.community.adapters.worker_runners import TrackedBlockingExecution
+from okto_pulse.core.ports.permission_policy import registered_permission_flags
 
 
 def percentile(values: list[float], percentile_value: float) -> float:
@@ -52,6 +53,14 @@ def seed(path: Path, args: argparse.Namespace) -> None:
             seed_current_schema_fences(connection)
             connection.exec_driver_sql("INSERT INTO boards (id,name,owner_id,realm_id) "
                 "VALUES ('benchmark-board','Benchmark','owner','local')")
+            connection.exec_driver_sql("INSERT INTO agents "
+                "(id,name,api_key,api_key_hash,is_active,permission_flags,created_by) "
+                "VALUES ('benchmark-agent','Benchmark agent','fixture-key-not-used',"
+                "'fixture-hash-not-used',1,?,'benchmark')",
+                (json.dumps(registered_permission_flags(), sort_keys=True),))
+            connection.exec_driver_sql("INSERT INTO agent_boards "
+                "(id,agent_id,board_id,granted_by) VALUES "
+                "('benchmark-agent-grant','benchmark-agent','benchmark-board','benchmark')")
             for number in range(args.specs):
                 spec_id = f'benchmark-spec-{number:03d}'
                 overloaded = number == 0 and getattr(args, 'overload_first', False)

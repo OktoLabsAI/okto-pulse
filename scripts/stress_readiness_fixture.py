@@ -29,6 +29,10 @@ from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import (
     CommunityDeliveryReadinessReader, CommunityReadinessClock,
 )
 from okto_pulse.community.adapters.worker_runners import TrackedBlockingExecution
+from okto_pulse.core.ports.delivery_readiness import ReadinessActor
+from okto_pulse.core.services.delivery_readiness import DeliveryReadinessService
+
+ACTOR = ReadinessActor('benchmark-agent', 'agent', 'local', 'benchmark-board')
 
 
 async def run(path: Path, args: argparse.Namespace) -> dict:
@@ -36,6 +40,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         pool_size=20, max_overflow=0)
     worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
     reader = CommunityDeliveryReadinessReader(engine, clock=CommunityReadinessClock())
+    service = DeliveryReadinessService(reader, None)
     read_ms, write_ms, lag_ms, burst_write_ms, burst_lag_ms = [], [], [], [], []
     errors: list[str] = []
     warmup_errors: list[str] = []
@@ -83,12 +88,19 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                     if args.mode == 'legacy':
                         await reader.load(board_id='benchmark-board', spec_id=spec_id)
                     else:
-                        result = await worker.store.read(board_id='benchmark-board',
-                            spec_id=spec_id, edition=1)
-                        if result is None:
-                            raise RuntimeError('projection_missing')
+                        if args.read_surface == 'service':
+                            result = await service.read_persisted(board_id='benchmark-board',
+                                spec_id=spec_id, actor=ACTOR)
+                            json.dumps(result, ensure_ascii=False)
+                            observed_freshness = result['projection']['freshness']
+                        else:
+                            result = await worker.store.read(board_id='benchmark-board',
+                                spec_id=spec_id, edition=1)
+                            if result is None:
+                                raise RuntimeError('projection_missing')
+                            observed_freshness = result.freshness
                         if measuring:
-                            freshness[result.freshness] = freshness.get(result.freshness, 0) + 1
+                            freshness[observed_freshness] = freshness.get(observed_freshness, 0) + 1
                     if measuring:
                         read_ms.append((perf_counter() - started) * 1000)
                 except Exception as exc:
@@ -211,6 +223,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 )).all()
         return {
             'mode': args.mode, 'duration_s': args.duration_seconds,
+            'read_surface': args.read_surface,
             'serialize_writes': args.serialize_writes,
             'warmup_s': args.warmup_seconds, 'warmup_errors': warmup_errors[:25],
             'fixture': {'specs': args.specs, 'cards_per_spec': args.cards,
@@ -265,6 +278,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=['legacy', 'persisted'], required=True)
+    parser.add_argument('--read-surface', choices=['internal', 'service'])
     parser.add_argument('--duration-seconds', type=int, default=60)
     parser.add_argument('--warmup-seconds', type=int, default=0)
     parser.add_argument('--reads-per-second', type=int, default=10)
@@ -286,6 +300,10 @@ if __name__ == '__main__':
     parser.add_argument('--burst-at-seconds', type=int, default=5)
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
+    if args.read_surface is None:
+        args.read_surface = 'internal' if args.mode == 'legacy' else 'service'
+    if args.mode == 'legacy' and args.read_surface != 'internal':
+        parser.error('legacy fixture only supports the internal read; it is not a v1 service baseline')
     if args.burst_size and (args.burst_at_seconds < 0 or args.burst_at_seconds >= args.duration_seconds):
         parser.error('burst-at-seconds must fall inside the run')
     with TemporaryDirectory(prefix='readiness-stress-') as folder:
@@ -300,7 +318,8 @@ if __name__ == '__main__':
                     connection.execute(f'DROP TRIGGER "{name}"')
                 connection.commit()
         result = asyncio.run(run(path, args))
-        result['fixture_seed'] = 'readiness-deterministic-v1'
+        result['fixture_seed'] = 'readiness-deterministic-v2'
+        result['seed_sha256'] = sha256(Path(seed.__code__.co_filename).read_bytes()).hexdigest()
         result['harness_sha256'] = sha256(Path(__file__).read_bytes()).hexdigest()
         result['command'] = ['stress_readiness_fixture.py', *sys.argv[1:]]
         result['host'] = {'platform': platform.platform(), 'python': platform.python_version(),
