@@ -2,11 +2,14 @@ import { useEffect, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
 import type { CardSummary } from '@/types';
 import { isPersistedReadinessProjection } from '@/types/delivery-readiness';
+import { isDeliveryReadiness } from '@/types/delivery-readiness';
+import { readinessReadMode } from '@/lib/readinessMode';
 import type { DeliveryReadinessState } from './DeliveryReadinessView';
 
 /** One indexed generation read per visible Spec; delayed projections are polled. */
 export function useBoardDeliveryReadiness(boardId: string, cards: CardSummary[], enabled: boolean, refreshKey: string): Record<string, DeliveryReadinessState> {
   const api = useDashboardApi();
+  const mode = readinessReadMode();
   const [revision, setRevision] = useState(0);
   useEffect(() => {
     const refresh = () => setRevision(value => value + 1);
@@ -16,13 +19,13 @@ export function useBoardDeliveryReadiness(boardId: string, cards: CardSummary[],
     window.addEventListener('pulse:delivery-evidence-changed', refresh);
     return () => { window.removeEventListener('focus', refresh); document.removeEventListener('visibilitychange', visible); window.removeEventListener('pulse:delivery-evidence-changed', refresh); };
   }, []);
-  const [result, setResult] = useState<{ cards: CardSummary[]; boardId: string; refreshKey: string; revision: number; values: Record<string, DeliveryReadinessState> }>();
+  const [result, setResult] = useState<{ api: typeof api; cards: CardSummary[]; boardId: string; refreshKey: string; revision: number; values: Record<string, DeliveryReadinessState> }>();
   useEffect(() => {
     if (!enabled) return;
     const controller = new AbortController();
     const values: Record<string, DeliveryReadinessState> = Object.fromEntries(cards.map(card => [card.id,
       card.spec_id ? { loading: true } : { error: 'No Spec scope is available for this card.' }]));
-    const publish = () => { if (!controller.signal.aborted) setResult({ cards, boardId, refreshKey, revision, values: { ...values } }); };
+    const publish = () => { if (!controller.signal.aborted) setResult({ api, cards, boardId, refreshKey, revision, values: { ...values } }); };
     publish();
     const specs = [...new Set(cards.map(card => card.spec_id).filter((id): id is string => !!id))];
     const pending = new Set<string>();
@@ -34,6 +37,21 @@ export function useBoardDeliveryReadiness(boardId: string, cards: CardSummary[],
       inFlight.add(specId);
       const selected = cards.filter(card => card.spec_id === specId);
       try {
+        if (mode === 'legacy') {
+          const legacy = await api.getDeliveryReadinessSummary(boardId, specId, controller.signal);
+          if (!isDeliveryReadiness(legacy.delivery_readiness)
+            || legacy.delivery_readiness.scope.board_id !== boardId
+            || legacy.delivery_readiness.scope.spec_id !== specId)
+            throw new Error('Legacy readiness unavailable or incompatible.');
+          const byCard = new Map(legacy.cards.map(row => [row.card_id, row.delivery_readiness]));
+          for (const card of selected) {
+            const value = byCard.get(card.id);
+            values[card.id] = value && isDeliveryReadiness(value) ? { value }
+              : { error: 'Readiness card scope is unavailable.' };
+          }
+          pending.delete(specId);
+          return;
+        }
         const data = await api.getPersistedReadinessProjection(boardId, specId, undefined, controller.signal);
         if (!isPersistedReadinessProjection(data) || data.scope.board_id !== boardId || data.scope.spec_id !== specId
           || data.scope.card_id !== null) throw new Error('Readiness projection unavailable or incompatible.');
@@ -76,8 +94,8 @@ export function useBoardDeliveryReadiness(boardId: string, cards: CardSummary[],
       }
     }, 500);
     return () => { controller.abort(); window.clearInterval(interval); };
-  }, [api, boardId, cards, enabled, refreshKey, revision]);
+  }, [api, boardId, cards, enabled, refreshKey, revision, mode]);
   if (!enabled) return {};
-  if (result?.cards === cards && result.boardId === boardId && result.refreshKey === refreshKey && result.revision === revision) return result.values;
+  if (result?.api === api && result.cards === cards && result.boardId === boardId && result.refreshKey === refreshKey && result.revision === revision) return result.values;
   return Object.fromEntries(cards.map(card => [card.id, { loading: true }]));
 }

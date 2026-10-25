@@ -14,6 +14,8 @@ from test_delivery_readiness_batch import statements
 from test_code_traceability_rest import _projection_rest_app
 from okto_pulse.community.api import code_traceability as api
 from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import CommunityReadinessClock
+from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
+from okto_pulse.community.adapters.worker_runners import TrackedBlockingExecution
 from okto_pulse.community.adapters.sqlalchemy_models import AgentBoard
 from okto_pulse.core.application.service_catalog import build_application_service_catalog
 from okto_pulse.core.mcp.catalog import CoreMcpCatalog
@@ -53,6 +55,25 @@ async def surfaces(session, monkeypatch):
 
 def url():
     return f'/boards/{delivery.BOARD_ID}/specs/{delivery.SPEC_ID}/delivery-evidence'
+
+
+async def test_persisted_rest_reads_published_generation_with_current_authorization(ledger, monkeypatch):
+    session, _, _ = ledger
+    rest, _, _ = await surfaces(session, monkeypatch)
+    await session.commit()
+    worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
+    assert await worker.process_once() == 1
+    path = url().replace('/delivery-evidence', '/delivery-readiness-projection')
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=rest), base_url='http://test') as client:
+        response = await client.get(path, params={'unit_limit': 2})
+    assert response.status_code == 200, response.text
+    assert response.headers['cache-control'] == 'no-store'
+    result = response.json()
+    assert result['projection']['freshness'] == 'current'
+    assert result['projection']['generation_id']
+    assert result['scope']['spec_id'] == delivery.SPEC_ID
+    assert len(result['summaries']) == 3
+    assert result['page']['limit'] == 2
 
 
 @pytest.mark.parametrize('card_id', [None, 'task', 'test'])

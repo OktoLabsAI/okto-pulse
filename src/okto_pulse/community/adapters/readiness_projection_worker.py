@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
+from datetime import datetime, timezone
 import logging
 from time import monotonic
 from uuid import uuid4
@@ -22,35 +24,53 @@ class ReadinessProjectionProcessor:
         self.owner = uuid4().hex
         self._last_reconcile = 0.0
         self._last_gc = 0.0
+        self._gc_backlog = False
 
     async def process_once(self) -> int:
         if monotonic() - self._last_reconcile >= 60:
-            await self.store.reconcile_once()
+            scanned = await self.store.reconcile_once()
+            queue = await self.store.queue_status()
+            logger.info("readiness.queue scanned=%d counts=%s oldest_s=%s",
+                scanned, queue["counts"], queue["oldest_s"])
             self._last_reconcile = monotonic()
-        if monotonic() - self._last_gc >= 5:
-            await self.store.gc_once()
+        if self._gc_backlog or monotonic() - self._last_gc >= 5:
+            self._gc_backlog = await self.store.gc_once()
             self._last_gc = monotonic()
         claim = await self.store.claim(owner=self.owner)
         if claim is None:
             return 0
         heartbeat = asyncio.create_task(self._heartbeats(claim), name="readiness.heartbeat")
         try:
-            snapshot, captured_revision = await self.reader.load_for_projection(
+            snapshot_started = monotonic()
+            snapshot, captured_revision, calculate_identity = await self.reader.load_for_projection(
                 board_id=claim.board_id, spec_id=claim.spec_id)
+            snapshot_ms = (monotonic() - snapshot_started) * 1000
             if captured_revision < 0:
                 raise ValueError("readiness_revision_invalid")
             started = monotonic()
             generation = await self.blocking_execution.run(
-                lambda: build_readiness_generation(snapshot, captured_revision=captured_revision))
+                lambda: build_readiness_generation(
+                    replace(snapshot, snapshot_id=calculate_identity()),
+                    captured_revision=captured_revision))
+            compute_ms = (monotonic() - started) * 1000
             if heartbeat.done():
                 heartbeat.result()
             if monotonic() - started > 30:
                 raise TimeoutError("readiness_calculation_budget_exceeded")
+            stage_started = monotonic()
             generation_id = await self.store.stage(claim, generation)
+            stage_ms = (monotonic() - stage_started) * 1000
+            publish_started = monotonic()
             if not await self.store.publish(claim, generation_id):
                 raise ReadinessLeaseLost("readiness_publication_fence_lost")
-            logger.info("readiness.published board=%s spec=%s revision=%d units=%d",
-                claim.board_id, claim.spec_id, captured_revision, len(generation.units))
+            publish_ms = (monotonic() - publish_started) * 1000
+            source_to_publish_ms = max(0.0, (
+                datetime.now(timezone.utc) - claim.source_updated_at).total_seconds() * 1000)
+            logger.info("readiness.published board=%s spec=%s revision=%d units=%d "
+                "snapshot_ms=%.3f compute_ms=%.3f stage_ms=%.3f publish_ms=%.3f "
+                "source_to_publish_ms=%.3f",
+                claim.board_id, claim.spec_id, captured_revision, len(generation.units),
+                snapshot_ms, compute_ms, stage_ms, publish_ms, source_to_publish_ms)
             return 1
         except asyncio.CancelledError:
             raise

@@ -17,11 +17,11 @@ export function useDeliveryReadiness(boardId: string, specId: string, cardId?: s
     };
   }, []);
   const key = JSON.stringify([boardId, specId, cardId, revision, refresh, mode]);
-  const [result, setResult] = useState<{ key: string; state: DeliveryReadinessState }>();
+  const [result, setResult] = useState<{ api: typeof api; key: string; state: DeliveryReadinessState }>();
   useEffect(() => {
     if (!enabled) return;
     const controller = new AbortController();
-    setResult({ key, state: { loading: true } });
+    setResult({ api, key, state: { loading: true } });
     void (async () => {
       let backoff = 1000;
       while (!controller.signal.aborted) {
@@ -38,7 +38,7 @@ export function useDeliveryReadiness(boardId: string, specId: string, cardId?: s
               throw new Error('Readiness projection unavailable or incompatible.');
             const summary = projected.summaries.find(row => row.card_id === (cardId ?? null));
             if (!summary && projected.projection.freshness === 'current') throw new Error('Readiness scope is unavailable.');
-            if (!controller.signal.aborted) setResult({ key, state: { persisted: {
+            if (!controller.signal.aborted) setResult({ api, key, state: { persisted: {
               summary, freshness: summary ? projected.projection.freshness : 'pending_initial',
               generationId: projected.projection.generation_id,
               errorCode: projected.projection.error_code } } });
@@ -49,10 +49,10 @@ export function useDeliveryReadiness(boardId: string, specId: string, cardId?: s
           const value = await api.getDeliveryReadiness(boardId, specId, cardId, controller.signal);
           if (!isDeliveryReadiness(value)) throw new Error('Readiness contract unavailable or incompatible.');
           if (value.scope.board_id !== boardId || value.scope.spec_id !== specId || value.scope.card_id !== (cardId ?? null)) throw new Error('Readiness scope mismatch.');
-          if (!controller.signal.aborted) setResult({ key, state: { value } });
+          if (!controller.signal.aborted) setResult({ api, key, state: { value } });
           return;
         } catch (error) {
-          if (!controller.signal.aborted) setResult({ key, state: { error: error instanceof Error ? error.message : 'Readiness could not be loaded.' } });
+          if (!controller.signal.aborted) setResult({ api, key, state: { error: error instanceof Error ? error.message : 'Readiness could not be loaded.' } });
           if (mode === 'diagnostic') return;
           await new Promise(resolve => setTimeout(resolve, backoff));
           backoff = Math.min(5000, backoff * 2);
@@ -61,5 +61,5 @@ export function useDeliveryReadiness(boardId: string, specId: string, cardId?: s
     })();
     return () => controller.abort();
   }, [api, boardId, specId, cardId, key, enabled, mode]);
-  return !enabled ? {} : result?.key === key ? result.state : { loading: true };
+  return !enabled ? {} : result?.api === api && result.key === key ? result.state : { loading: true };
 }

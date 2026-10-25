@@ -5,10 +5,12 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from itertools import chain, islice
+import logging
 import secrets
+from time import perf_counter
 from uuid import uuid4
 
-from sqlalchemy import delete, func, or_, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from okto_pulse.core.services.persisted_delivery_readiness import ReadinessGeneration, readiness_manifest_digest
@@ -21,6 +23,7 @@ from .sqlalchemy_models import (
 LEASE_SECONDS = 30
 MAX_ATTEMPTS = 8
 STAGE_BATCH_SIZE = 250
+logger = logging.getLogger("okto_pulse.readiness_projection")
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +35,7 @@ class ReadinessClaim:
     requested_revision: int
     owner: str
     epoch: int
+    source_updated_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +62,17 @@ class CommunityPersistedReadinessStore:
     def __init__(self, engine):
         self.engine = engine
 
+    async def queue_status(self) -> dict:
+        async with AsyncSession(self.engine, autoflush=False) as session:
+            grouped = (await session.execute(select(ReadinessJobRow.state, func.count()).group_by(
+                ReadinessJobRow.state))).all()
+            oldest = await session.scalar(select(func.min(ReadinessScopeRow.updated_at)).join(
+                ReadinessJobRow, ReadinessJobRow.scope_id == ReadinessScopeRow.id).where(
+                ReadinessJobRow.state.in_(("pending", "running")),
+                ReadinessScopeRow.tombstone.is_(False)))
+        return {"counts": {state: int(count) for state, count in grouped},
+            "oldest_s": max(0.0, (datetime.now(timezone.utc) - oldest).total_seconds()) if oldest else None}
+
     async def read(self, *, board_id: str, spec_id: str, edition: int,
                    card_id: str | None = None, unit_limit: int = 0,
                    unit_offset: int = 0, generation_id_override: str | None = None) -> ProjectionRead | None:
@@ -66,6 +81,7 @@ class CommunityPersistedReadinessStore:
         Callers must authorize the current actor and requested Card before
         using this internal adapter; the persisted payload has no ACL.
         """
+        started = perf_counter()
         if unit_limit < 0 or unit_limit > 250 or unit_offset < 0:
             raise ValueError("readiness_page_invalid")
         async with AsyncSession(self.engine, autoflush=False) as session:
@@ -115,10 +131,14 @@ class CommunityPersistedReadinessStore:
                         ReadinessUnitRow.kind, ReadinessUnitRow.ref,
                         ReadinessUnitRow.semantic_sha256).offset(unit_offset).limit(unit_limit))).all()
                     units = tuple(row.payload for row in rows)
-            return ProjectionRead(board_id, spec_id, edition, scope.source_revision,
+            result = ProjectionRead(board_id, spec_id, edition, scope.source_revision,
                 gen.id if compatible else None, gen.captured_revision if compatible else None,
                 gen.evaluated_at if compatible else None, freshness,
                 job.error_code if job else None, summaries, units, unit_total)
+            logger.debug("readiness.read board=%s spec=%s freshness=%s summaries=%d units=%d elapsed_ms=%.3f",
+                board_id, spec_id, freshness, len(summaries), len(units),
+                (perf_counter() - started) * 1000)
+            return result
 
     async def claim(self, *, owner: str) -> ReadinessClaim | None:
         now = datetime.now(timezone.utc)
@@ -143,7 +163,7 @@ class CommunityPersistedReadinessStore:
                     row.updated_at = now
                     await session.flush()
                     claim = ReadinessClaim(scope.id, scope.board_id, scope.spec_id, scope.edition,
-                        row.requested_revision, owner, row.lease_epoch)
+                        row.requested_revision, owner, row.lease_epoch, scope.updated_at)
                 await connection.commit()
                 return claim
             except BaseException:
@@ -175,10 +195,7 @@ class CommunityPersistedReadinessStore:
                 ReadinessGenerationRow.evaluator_version == generation.evaluator_version,
                 ReadinessGenerationRow.state == "staging"))).first()
             if old is not None:
-                await session.execute(delete(ReadinessSummaryRow).where(ReadinessSummaryRow.generation_id == old.id))
-                await session.execute(delete(ReadinessUnitRow).where(ReadinessUnitRow.generation_id == old.id))
-                await session.delete(old)
-                await session.flush()
+                old.state = "expired"  # GC removes rows in bounded transactions.
             session.add(ReadinessGenerationRow(id=generation_id, scope_id=claim.scope_id,
                 captured_revision=generation.captured_revision, spec_version=generation.spec_version,
                 evaluator_version=generation.evaluator_version,
@@ -202,11 +219,20 @@ class CommunityPersistedReadinessStore:
 
     async def verify_stage(self, claim: ReadinessClaim, generation_id: str) -> None:
         """Verify staged payload outside a writer transaction before CAS publication."""
+        if not await self._verify_generation(generation_id, scope_id=claim.scope_id,
+                                              expected_state="staging", board_id=claim.board_id,
+                                              spec_id=claim.spec_id, edition=claim.edition):
+            raise ValueError("readiness_stage_manifest_mismatch")
+
+    async def _verify_generation(self, generation_id: str, *, scope_id: str,
+                                 expected_state: str, board_id: str, spec_id: str,
+                                 edition: int) -> bool:
+        """Hash a stable read snapshot without retaining a writer checkout."""
         async with AsyncSession(self.engine, autoflush=False) as session:
             await session.execute(text("BEGIN"))
             gen = await session.get(ReadinessGenerationRow, generation_id)
-            if gen is None or gen.scope_id != claim.scope_id or gen.state != "staging":
-                raise ReadinessLeaseLost("readiness_stage_missing")
+            if gen is None or gen.scope_id != scope_id or gen.state != expected_state:
+                return False
             summaries = [row.payload for row in (await session.scalars(
                 select(ReadinessSummaryRow).where(ReadinessSummaryRow.generation_id == generation_id)
                 .order_by(ReadinessSummaryRow.card_key))).all()]
@@ -218,13 +244,51 @@ class CommunityPersistedReadinessStore:
                 gen.evaluator_version, gen.summary_count, gen.unit_count, gen.manifest_sha256)
         revision, snapshot_id, evaluator, summary_count, unit_count, manifest = header
         if len(summaries) != summary_count or len(units) != unit_count:
-            raise ValueError("readiness_stage_incomplete")
-        digest = readiness_manifest_digest(board_id=claim.board_id, spec_id=claim.spec_id,
-            edition=claim.edition, captured_revision=revision,
-            source_snapshot_id=snapshot_id, evaluator_version=evaluator,
-            summaries=summaries, units=units)
-        if digest != manifest:
-            raise ValueError("readiness_stage_manifest_mismatch")
+            return False
+        try:
+            digest = readiness_manifest_digest(board_id=board_id, spec_id=spec_id,
+                edition=edition, captured_revision=revision,
+                source_snapshot_id=snapshot_id, evaluator_version=evaluator,
+                summaries=summaries, units=units)
+        except (KeyError, TypeError, ValueError):
+            return False
+        return digest == manifest
+
+    async def audit_active_generation(self, *, spec_id: str) -> bool:
+        """Quarantine a corrupt active generation and durably request repair."""
+        async with AsyncSession(self.engine, autoflush=False) as session:
+            scope = (await session.scalars(select(ReadinessScopeRow).where(
+                ReadinessScopeRow.spec_id == spec_id,
+                ReadinessScopeRow.tombstone.is_(False)))).first()
+            if scope is None or not scope.active_generation_id:
+                return True
+            generation_id = scope.active_generation_id
+            identity = (scope.id, scope.board_id, scope.spec_id, scope.edition)
+        if await self._verify_generation(generation_id, scope_id=identity[0],
+                expected_state="complete", board_id=identity[1], spec_id=identity[2],
+                edition=identity[3]):
+            return True
+        now = datetime.now(timezone.utc)
+        async with AsyncSession(self.engine) as session, session.begin():
+            scope = await session.get(ReadinessScopeRow, identity[0])
+            if scope is None or scope.active_generation_id != generation_id:
+                return False  # A concurrent publication already superseded it.
+            job = await session.get(ReadinessJobRow, identity[0])
+            scope.active_generation_id = None
+            scope.updated_at = now
+            if job is not None:
+                job.requested_revision = max(job.requested_revision, scope.source_revision)
+                if job.state != "running":
+                    job.state, job.owner, job.lease_until = "pending", None, None
+                    job.due_at = now
+                job.error_code = "readiness_active_manifest_mismatch"
+                job.updated_at = now
+            gen = await session.get(ReadinessGenerationRow, generation_id)
+            if gen is not None:
+                gen.state = "expired"
+        logger.error("readiness.active_manifest_mismatch board=%s spec=%s generation=%s",
+            identity[1], identity[2], generation_id)
+        return False
 
     async def publish(self, claim: ReadinessClaim, generation_id: str) -> bool:
         """CAS-activate a complete generation; return False for a lost fence."""
@@ -399,6 +463,9 @@ class CommunityPersistedReadinessStore:
                 if incompatible or stale:
                     job.requested_revision = max(job.requested_revision, scope.source_revision)
                     job.state, job.due_at, job.updated_at = "pending", now, now
+        # Audit one complete manifest per sweep. This stays on the background
+        # path and bounds the hash cost independently of REST/MCP reads.
+        await self.audit_active_generation(spec_id=spec_ids[-1])
         async with AsyncSession(self.engine) as session, session.begin():
             state = await session.get(AppSetting, "readiness_reconcile_cursor")
             if state is None:

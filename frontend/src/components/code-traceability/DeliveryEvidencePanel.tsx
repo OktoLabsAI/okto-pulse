@@ -10,6 +10,7 @@ import { ObligationRefText } from './obligationPresentation';
 import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 import { isPersistedReadinessProjection, type PersistedReadinessProjection, type ReadinessMetric } from '@/types/delivery-readiness';
 import { decisionStatusLabel } from '@/components/specs/DecisionReviewSection';
+import { readinessReadMode } from '@/lib/readinessMode';
 
 interface Props {
   boardId: string;
@@ -26,6 +27,16 @@ function metricLabel(metric?: ReadinessMetric) {
   if (!metric || metric.status === 'unknown') return 'Unknown';
   if (metric.status === 'not_applicable') return 'N/A';
   return `${metric.percent}%`;
+}
+
+function unitLabel(state: string, phase: 'implementation' | 'verification') {
+  const labels: Record<string, string> = {
+    satisfied: phase === 'implementation' ? '✓ Current proof' : '✓ Verified',
+    missing: '◌ Pending', partial: '◐ Partial', failed: '✕ Failed',
+    stale: '↻ Stale', conflict: '⚠ Conflict', waived: 'Waived · no proof credit',
+    not_applicable: 'N/A', unknown: 'Unknown',
+  };
+  return labels[state] ?? 'Unknown';
 }
 
 function ObligationEvidenceDetails({ data, row, currentRow }: {
@@ -82,17 +93,24 @@ function ObligationEvidenceDetails({ data, row, currentRow }: {
 // presents the aggregated verdict, never mutates it.
 export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryEvidence = false, onSkipDeliveryEvidenceChange, onOpenDecisions, onOpenReadinessSpec, focusExceptionId }: Props) {
   const api = useDashboardApi();
-  const [data, setData] = useState<DeliveryEvidenceProjection | null>(null);
+  const legacyMode = readinessReadMode() === 'legacy';
+  const [storedData, setData] = useState<DeliveryEvidenceProjection | null>(null);
+  const [dataOwner, setDataOwner] = useState<{ api: typeof api; key: string }>();
   const [gateMode, setGateMode] = useState<'advisory' | 'blocking' | null>(null);
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
-  const [projection, setProjection] = useState<PersistedReadinessProjection | null>(null);
+  const [storedProjection, setProjection] = useState<PersistedReadinessProjection | null>(null);
+  const [projectionOwner, setProjectionOwner] = useState<{ api: typeof api; key: string }>();
   const [projectionError, setProjectionError] = useState('');
-  const [showDetails, setShowDetails] = useState(false);
+  const [showDetails, setShowDetails] = useState(legacyMode);
+  const scopeKey = JSON.stringify([boardId, specId, revision, reload]);
+  const data = dataOwner?.api === api && dataOwner.key === scopeKey ? storedData : null;
+  const projection = projectionOwner?.api === api && projectionOwner.key === scopeKey ? storedProjection : null;
 
   useEffect(() => {
     const controller = new AbortController();
     setProjection(null); setProjectionError('');
+    if (legacyMode) return () => controller.abort();
     let retry = 1000;
     void (async () => {
       while (!controller.signal.aborted) {
@@ -117,7 +135,10 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
             rows.push(...next.units);
             page = next;
           }
-          if (!controller.signal.aborted) setProjection({ ...page, units: rows });
+          if (!controller.signal.aborted) {
+            setProjectionOwner({ api, key: scopeKey });
+            setProjection({ ...page, units: rows });
+          }
           setProjectionError(''); retry = 1000;
           if (!['updating', 'pending_initial'].includes(page.projection.freshness)) return;
           await new Promise(resolve => setTimeout(resolve, 500));
@@ -130,20 +151,23 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
       }
     })();
     return () => controller.abort();
-  }, [api, boardId, specId, revision, reload]);
+  }, [api, boardId, specId, revision, reload, scopeKey, legacyMode]);
 
   useEffect(() => {
     const controller = new AbortController();
     setData(null); setGateMode(null); setError('');
     if (showDetails || focusExceptionId) api.getDeliveryEvidence(boardId, specId, controller.signal).then(value => {
       if (value.board_id !== boardId || value.spec_id !== specId) throw new Error('Delivery evidence scope changed. Refresh the Spec.');
-      if (!controller.signal.aborted) setData(value);
+      if (!controller.signal.aborted) {
+        setDataOwner({ api, key: scopeKey });
+        setData(value);
+      }
     }).catch(err => { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : 'Delivery proof could not be loaded.'); });
     api.getBoard(boardId).then(board => {
       if (!controller.signal.aborted) setGateMode(resolveDeliveryGateMode(board.settings?.delivery_evidence_gate));
     }).catch(() => { if (!controller.signal.aborted) setGateMode(null); });
     return () => controller.abort();
-  }, [api, boardId, specId, revision, reload, focusExceptionId, showDetails]);
+  }, [api, boardId, specId, revision, reload, focusExceptionId, showDetails, scopeKey]);
 
   const missingImplementation = data?.rows.filter(row => !row.implementation_satisfied).length ?? 0;
   const currentProofRows = new Map((data?.current_proof_rows ?? []).map(row =>
@@ -162,7 +186,9 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
       && <DeliveryExceptionDetails data={data} recordId={focusExceptionId} />}
     {projection && <DeliveryReadinessPanel boardId={boardId} specId={specId} revision={`${revision ?? ''}:${reload}`}
       persistedValue={projection} onOpenReadinessSpec={onOpenReadinessSpec} />}
-    {!projection && !projectionError && <PulseLoader label="Loading readiness projection…" size="sm" className="py-4" />}
+    {legacyMode && <DeliveryReadinessPanel boardId={boardId} specId={specId}
+      revision={`${revision ?? ''}:${reload}`} onOpenReadinessSpec={onOpenReadinessSpec} />}
+    {!legacyMode && !projection && !projectionError && <PulseLoader label="Loading readiness projection…" size="sm" className="py-4" />}
     {projectionError && <p role="alert" className="text-xs text-amber-700">{projectionError}</p>}
     <p className="text-sm text-gray-500 dark:text-gray-400">Track implementation and verification for each obligation. Expand an item to inspect its evidence.</p>
     <div className="flex flex-wrap items-center justify-between gap-4">
@@ -216,7 +242,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
       </p>
     )}
 
-    <div>
+    {!legacyMode && <div>
       <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Coverage by obligation</h3>
       {projection && <p className="mb-2 text-xs text-gray-500" role="status">
         {projection.projection.freshness === 'current' ? 'Current' : projection.projection.freshness === 'updating'
@@ -232,11 +258,11 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
         <tbody>{projection.units.filter(unit => unit.card_id === null && unit.kind === 'obligation').map(unit =>
           <tr key={`${unit.ref}:${unit.semantic_sha256}`} className="border-b border-gray-100 dark:border-gray-800">
             <td className="py-2 pr-4"><ObligationRefText value={unit.ref} /></td>
-            <td className="py-2" title={unit.implementation_reason_codes.join(', ')}>{unit.implementation_state}</td>
-            <td className="py-2" title={unit.verification_reason_codes.join(', ')}>{unit.verification_state}</td>
+            <td className="py-2" title={unit.implementation_reason_codes.join(', ')}>{unitLabel(unit.implementation_state, 'implementation')}</td>
+            <td className="py-2" title={unit.verification_reason_codes.join(', ')}>{unitLabel(unit.verification_state, 'verification')}</td>
           </tr>)}</tbody>
       </table></div>}
-    </div>
+    </div>}
     <button type="button" className="btn btn-secondary text-xs" onClick={() => setShowDetails(value => !value)}>
       {showDetails ? 'Hide detailed evidence' : 'Show detailed evidence'}
     </button>

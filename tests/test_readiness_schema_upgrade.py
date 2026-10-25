@@ -67,3 +67,19 @@ def test_unknown_predecessor_is_refused_without_backup_or_mutation(tmp_path):
         assert connection.execute("PRAGMA user_version").fetchone()[0] == PREDECESSOR_VERSION
         assert connection.execute("SELECT name FROM sqlite_schema WHERE name='readiness_scope'").fetchone() is None
     assert not list(tmp_path.glob("*.bak"))
+
+
+def test_ddl_failure_rolls_back_to_the_exact_predecessor(tmp_path, monkeypatch):
+    path = tmp_path / "pulse.sqlite3"
+    _predecessor(path)
+    def fail_after_tables(_connection):
+        raise RuntimeError("injected_trigger_failure")
+    monkeypatch.setattr('okto_pulse.community.adapters.readiness_schema_upgrade.install_readiness_invalidation_triggers',
+        fail_after_tables)
+    with pytest.raises(RuntimeError, match="injected_trigger_failure"):
+        upgrade_readiness_schema(path)
+    with closing(sqlite3.connect(path)) as database:
+        assert database.execute("PRAGMA user_version").fetchone()[0] == PREDECESSOR_VERSION
+        assert _fingerprint(database) == PREDECESSOR_SHA256
+        assert database.execute("SELECT value FROM app_settings WHERE key='readiness_fixture'").fetchone() == ("preserved",)
+    assert len(list(tmp_path.glob("*.bak"))) == 1  # Forensic copy is retained.

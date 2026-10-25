@@ -84,6 +84,7 @@ class CommunitySettings(CoreSettings, BaseSettings):
     host: str = "127.0.0.1"  # Community is local-only — bind to loopback
     port: int = 8100
     database_url: str = ""
+    readiness_read_mode: Literal["projection", "legacy"] = "projection"
     upload_dir: str = ""
     max_upload_size: int = 10 * 1024 * 1024
     data_dir: str = ""  # Default set in validator

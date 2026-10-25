@@ -2,11 +2,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { DeliveryEvidencePanel } from '../DeliveryEvidencePanel';
 import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
-import { persistedProjection } from './readinessFixture';
+import { persistedProjection, readiness } from './readinessFixture';
 
 const api = vi.hoisted(() => ({
   getDeliveryEvidence: vi.fn(),
   getPersistedReadinessProjection: vi.fn(),
+  getDeliveryReadiness: vi.fn(),
   recordDeliveryEvidence: vi.fn(),
   recordCardDeliveryEvidence: vi.fn(),
   getBoard: vi.fn(),
@@ -34,15 +35,25 @@ beforeEach(() => {
   vi.clearAllMocks();
   api.getDeliveryEvidence.mockResolvedValue(projection());
   api.getPersistedReadinessProjection.mockResolvedValue(persistedProjection());
+  api.getDeliveryReadiness.mockResolvedValue(readiness(null));
   api.getBoard.mockResolvedValue({ id: 'b', settings: { delivery_evidence_gate: 'blocking' } });
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 function renderDetailed(view: React.ReactElement) {
   const result = render(view);
   fireEvent.click(screen.getByRole('button', { name: 'Show detailed evidence' }));
   return result;
 }
+
+it('supports the operator legacy read mode in the same binary', async () => {
+  vi.stubGlobal('OKTO_PULSE_CONFIG', { READINESS_READ_MODE: 'legacy' });
+  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  await screen.findByTestId('delivery-detailed-coverage-table');
+  expect(api.getDeliveryEvidence).toHaveBeenCalledOnce();
+  expect(api.getPersistedReadinessProjection).not.toHaveBeenCalled();
+  expect(api.getDeliveryReadiness).toHaveBeenCalled();
+});
 
 it('shows obligation delivery from the same persisted generation without loading detailed evidence', async () => {
   const value = persistedProjection();
@@ -58,8 +69,8 @@ it('shows obligation delivery from the same persisted generation without loading
   render(<DeliveryEvidencePanel boardId="b" specId="s" />);
   const table = await screen.findByTestId('delivery-coverage-table');
   expect(table).toHaveTextContent('FR (one)');
-  expect(table).toHaveTextContent('satisfied');
-  expect(table).toHaveTextContent('missing');
+  expect(table).toHaveTextContent('✓ Current proof');
+  expect(table).toHaveTextContent('◌ Pending');
   expect(screen.getByText(/Updating · previous coherent generation/)).toHaveTextContent('Generation generation-1');
   expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '50');
   expect(api.getDeliveryEvidence).not.toHaveBeenCalled();

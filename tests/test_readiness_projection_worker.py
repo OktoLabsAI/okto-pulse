@@ -9,6 +9,7 @@ from okto_pulse.community.adapters.current_relational_schema import (
     create_current_schema_objects, seed_current_schema_fences,
 )
 from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
+from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import ReadinessLeaseLost
 from okto_pulse.community.adapters.worker_runners import TrackedBlockingExecution
 from okto_pulse.core.ports.delivery_readiness import ReadinessReadError
 
@@ -73,5 +74,39 @@ async def test_worker_publishes_one_complete_generation_after_source_commit(tmp_
             audit = (await connection.exec_driver_sql("SELECT operation,actor_id,previous_error_code "
                 "FROM readiness_operation_audit WHERE scope_id='spec:1'")).one()
             assert audit == ("requeue_terminal", "owner", "test")
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql("UPDATE readiness_summary SET payload='{}' "
+                "WHERE generation_id=?", (current.generation_id,))
+        assert not await worker.store.audit_active_generation(spec_id="spec")
+        quarantined = await worker.store.read(board_id="board", spec_id="spec", edition=1)
+        assert quarantined is not None and quarantined.freshness == "pending_initial"
+        assert quarantined.generation_id is None
+        async with engine.connect() as connection:
+            state = (await connection.exec_driver_sql("SELECT state,error_code FROM readiness_job "
+                "WHERE scope_id='spec:1'")).one()
+            assert state == ("pending", "readiness_active_manifest_mismatch")
+        assert await worker.process_once() == 1
+        repaired = await worker.store.read(board_id="board", spec_id="spec", edition=1)
+        assert repaired is not None and repaired.freshness == "current"
+        assert repaired.generation_id != current.generation_id
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql("UPDATE specs SET description='new proof revision' "
+                "WHERE id='spec'")
+        await asyncio.sleep(0.06)
+        stale = await worker.store.claim(owner="worker-one")
+        assert stale is not None
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql("UPDATE readiness_job SET lease_until='2000-01-01' "
+                "WHERE scope_id='spec:1'")
+        fresh = await worker.store.claim(owner="worker-two")
+        assert fresh is not None and fresh.epoch > stale.epoch
+        with pytest.raises(ReadinessLeaseLost):
+            await worker.store.heartbeat(stale)
+        await worker.store.fail(stale, error_code="old_attempt")
+        async with engine.connect() as connection:
+            owner, state, error = (await connection.exec_driver_sql(
+                "SELECT owner,state,error_code FROM readiness_job WHERE scope_id='spec:1'"
+            )).one()
+        assert (owner, state, error) == ("worker-two", "running", None)
     finally:
         await engine.dispose()

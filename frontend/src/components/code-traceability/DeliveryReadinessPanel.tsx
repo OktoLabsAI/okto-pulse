@@ -6,6 +6,7 @@ import { DeliveryReadinessIssues } from './DeliveryReadinessIssues';
 import type { ReadinessCardLocation, ReadinessNavigator, ReadinessSpecLocation } from './readinessNavigation';
 import { useNativeReadinessNavigation } from './useNativeReadinessNavigation';
 import { useDeliveryReadiness } from './useDeliveryReadiness';
+import { readinessReadMode } from '@/lib/readinessMode';
 
 export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, active = true, focusDiagnosis = false, persistedValue, onNavigate, onOpenReadinessSpec, onOpenReadinessCard }: {
   boardId: string; specId: string; cardId?: string; revision?: string | number;
@@ -25,7 +26,7 @@ export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, acti
     generationId: persistedValue.projection.generation_id,
     errorCode: persistedValue.projection.error_code } : undefined;
   const state = useDeliveryReadiness(boardId, specId, cardId, JSON.stringify([revision, refresh]),
-    active && (expanded || !persistedValue), expanded ? 'diagnostic' : 'projection');
+    active && (expanded || !persistedValue), expanded || readinessReadMode() === 'legacy' ? 'diagnostic' : 'projection');
   const initial = isReadinessResponse(state.value) ? state.value : undefined;
   const key = JSON.stringify([boardId, specId, cardId, initial?.snapshot_id, revision, refresh, state.loading]);
   const [extra, setExtra] = useState<{ key: string; value: ReadinessResponse }>();
