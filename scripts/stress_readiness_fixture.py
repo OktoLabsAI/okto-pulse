@@ -73,14 +73,21 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
     read_phases_ms: dict[str, list[float]] = {
         'auth_before': [], 'projection': [], 'auth_after': [],
     }
+    publish_phases_ms: dict[str, list[float]] = {
+        'snapshot': [], 'compute': [], 'stage': [], 'publish': [],
+    }
 
     class ReadPhaseHandler(logging.Handler):
         def emit(self, record: logging.LogRecord) -> None:
-            if record.msg != 'readiness.persisted_read_phases' or not measuring:
+            if not measuring:
                 return
-            read_phases_ms['auth_before'].append(record.readiness_auth_before_ms)
-            read_phases_ms['projection'].append(record.readiness_projection_ms)
-            read_phases_ms['auth_after'].append(record.readiness_auth_after_ms)
+            if record.msg == 'readiness.persisted_read_phases':
+                read_phases_ms['auth_before'].append(record.readiness_auth_before_ms)
+                read_phases_ms['projection'].append(record.readiness_projection_ms)
+                read_phases_ms['auth_after'].append(record.readiness_auth_after_ms)
+            elif isinstance(record.msg, str) and record.msg.startswith('readiness.published '):
+                for name, value in zip(publish_phases_ms, record.args[4:8]):
+                    publish_phases_ms[name].append(float(value))
 
     phase_logger = logging.getLogger(
         'okto_pulse.community.adapters.sqlalchemy_delivery_readiness')
@@ -90,6 +97,10 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
     phase_logger.addHandler(phase_handler)
     phase_logger.setLevel(logging.DEBUG)
     phase_logger.propagate = False
+    publish_logger = logging.getLogger('okto_pulse.readiness_projection')
+    previous_publish_level = publish_logger.level
+    publish_logger.addHandler(phase_handler)
+    publish_logger.setLevel(logging.INFO)
     stop_load = asyncio.Event()
     stop_worker = asyncio.Event()
     writer_guard = asyncio.Lock()
@@ -315,6 +326,9 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             'read_phases_p95_ms': {
                 name: round(percentile(samples, .95), 3) if samples else None
                 for name, samples in read_phases_ms.items()},
+            'publish_phases_p95_ms': {
+                name: round(percentile(samples, .95), 3) if samples else None
+                for name, samples in publish_phases_ms.items()},
             'write_p50_ms': round(median(write_ms), 3) if write_ms else None,
             'write_p95_ms': round(percentile(write_ms, .95), 3) if write_ms else None,
             'write_p99_ms': round(percentile(write_ms, .99), 3) if write_ms else None,
@@ -348,6 +362,9 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 'read_phases': {
                     name: [round(v, 3) for v in samples]
                     for name, samples in read_phases_ms.items()},
+                'publish_phases': {
+                    name: [round(v, 3) for v in samples]
+                    for name, samples in publish_phases_ms.items()},
                 'write': [round(v, 3) for v in write_ms],
                 'lock_wait': [round(v, 3) for v in lock_wait_ms],
                 'transaction': [round(v, 3) for v in transaction_ms],
@@ -365,6 +382,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         phase_logger.removeHandler(phase_handler)
         phase_logger.setLevel(previous_log_level)
         phase_logger.propagate = previous_propagate
+        publish_logger.removeHandler(phase_handler)
+        publish_logger.setLevel(previous_publish_level)
         await engine.dispose()
 
 
