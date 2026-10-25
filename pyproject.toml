@@ -47,7 +47,7 @@ dependencies = [
     "uvicorn[standard]>=0.27.0,<1.0.0",
     "wsproto>=1.2.0,<2.0.0",
     "apscheduler>=3.10.0,<4.0.0",
-    "okto-grafx[accel]==0.0.7",
+    "okto-grafx[accel]==0.0.8",
     "requests>=2.32.0,<3.0.0",
     "filelock>=3.16.0,<4.0.0",
     "chardet>=3.0.2,<6.0.0",
@@ -81,7 +81,7 @@ okto-pulse-saas-closure = "okto_pulse.community.saas_closure:main"
 [tool.uv.sources]
 # Resolve the sibling source tree during paired local development. Release wheels
 # retain the exact okto-pulse-core==0.4.2 dependency declared above.
-okto-pulse-core = { path = "../okto_labs_pulse_core", editable = true }
+okto-pulse-core = { path = "../okto-pulse-core", editable = true }
 
 [build-system]
 requires = ["hatchling"]

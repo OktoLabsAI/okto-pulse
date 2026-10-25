@@ -1449,16 +1449,16 @@ wheels = [
 
 [[package]]
 name = "okto-grafx"
-version = "0.0.7"
+version = "0.0.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "google-crc32c" },
     { name = "numpy" },
     { name = "tzdata" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/de/55/d133a90665dc3466724a6b0011e14ac48afa0250f72ab595534083512384/okto_grafx-0.0.7.tar.gz", hash = "sha256:beffe031bd11e336923928f0781bcf08dfdd92866444cdce28e81aa399cf8f3d", size = 1661231, upload-time = "2026-09-15T02:02:22.012Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2b/c8/4250986f03c4f354ab8ad29dab202d4c600640c005ad764dfead02d0df40/okto_grafx-0.0.8.tar.gz", hash = "sha256:93c5a921bc4bc51ac9f188531feba927322100a7f05601df52c6a560ec982d1e", size = 1672157, upload-time = "2026-10-25T18:14:30.513Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/56/3a/7a29a7dee9b167f2bf6aa417d9a48c3eaf099e77897cda429df41ade46c9/okto_grafx-0.0.7-py3-none-any.whl", hash = "sha256:fe623ae15d9e3b4c04ef2777e715f2ca3f68c3d092fdbaa17aa57f826c38cb21", size = 1774362, upload-time = "2026-09-15T02:02:20.362Z" },
+    { url = "https://files.pythonhosted.org/packages/8c/43/524cd74adc1f2e5016fbef92977eaa0a46215d7e950c41794d8a5f49e259/okto_grafx-0.0.8-py3-none-any.whl", hash = "sha256:c538949db16faba84067a8b7c00a91efa347d235824c580efe2e5fdcfc283dbd", size = 1784893, upload-time = "2026-10-25T18:14:28.765Z" },
 ]
 
 [[package]]
@@ -1511,8 +1511,8 @@ requires-dist = [
     { name = "filelock", specifier = ">=3.16.0,<4.0.0" },
     { name = "httpx", specifier = ">=0.27.0,<1.0.0" },
     { name = "mcp", specifier = ">=1.20.0,<2.0.0" },
-    { name = "okto-grafx", extras = ["accel"], specifier = "==0.0.7" },
-    { name = "okto-pulse-core", editable = "../okto_labs_pulse_core" },
+    { name = "okto-grafx", extras = ["accel"], specifier = "==0.0.8" },
+    { name = "okto-pulse-core", editable = "../okto-pulse-core" },
     { name = "pydantic", specifier = ">=2.12.0,<2.14" },
     { name = "pydantic-settings", specifier = ">=2.1.0,<3.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0,<10.0.0" },
@@ -1532,7 +1532,7 @@ provides-extras = ["dev"]
 [[package]]
 name = "okto-pulse-core"
 version = "0.4.2"
-source = { editable = "../okto_labs_pulse_core" }
+source = { editable = "../okto-pulse-core" }
 dependencies = [
     { name = "pydantic" },
     { name = "pydantic-core" },
