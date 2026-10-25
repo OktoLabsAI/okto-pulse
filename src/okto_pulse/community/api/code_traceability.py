@@ -463,7 +463,8 @@ def _http_error(exc: Exception) -> HTTPException:
         status_code = {'readiness_query_invalid': 422, 'readiness_scope_mismatch': 404,
             'readiness_permission_denied': 403, 'readiness_cursor_stale': 409,
             'readiness_snapshot_changed': 409, 'readiness_requeue_conflict': 409}.get(code, 503)
-        return HTTPException(status_code=status_code, detail=projected)
+        return HTTPException(status_code=status_code, detail=projected,
+            headers={'Cache-Control': 'no-store'})
     if isinstance(exc, (DeliveryReportRejected, DeliveryGateBlocked)):
         return HTTPException(status_code=409, detail=exc.to_error_dict())
     if isinstance(exc, ValueError) and str(exc).startswith(("decision_review_", "decision_inspection_")):

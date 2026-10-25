@@ -4,17 +4,19 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 
 import test_delivery_evidence_integration as delivery
 from test_delivery_readiness_authorization import ACTOR, setup
 from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
+from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import CommunityPersistedReadinessStore
 from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import CommunityDeliveryReadinessReader, CommunityReadinessClock
 from okto_pulse.community.adapters.sqlalchemy_models import AgentBoard
 from okto_pulse.community.adapters.worker_runners import TrackedBlockingExecution
 from okto_pulse.core.ports.delivery_readiness import (
     ReadinessAccessDenied, ReadinessActor, ReadinessReadError,
 )
+from okto_pulse.core.ports.permission_policy import registered_permission_flags
 
 ledger = delivery.ledger
 pytestmark = [pytest.mark.asyncio, pytest.mark.parametrize('ledger', ['native_schema'], indirect=True)]
@@ -69,6 +71,34 @@ async def test_projection_pages_are_actor_bound_and_reauthorized(ledger, monkeyp
     with pytest.raises(ReadinessReadError, match='readiness_scope_mismatch'):
         await reader.load_persisted(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID,
             actor=ACTOR, unit_limit=1, cursor=page['next_cursor'])
+
+
+async def test_projection_revocation_during_read_fails_closed(ledger, monkeypatch):
+    session, _, _ = ledger
+    await setup(session)
+    worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
+    assert await worker.process_once() == 1
+    reader = CommunityDeliveryReadinessReader(session.bind, clock=CommunityReadinessClock())
+    original_read = CommunityPersistedReadinessStore.read
+    calls = 0
+
+    async def revoke_after_read(store, **kwargs):
+        nonlocal calls
+        result = await original_read(store, **kwargs)
+        calls += 1
+        if calls == 1:
+            flags = registered_permission_flags()
+            flags['code_traceability']['evidence']['read'] = False
+            async with session.bind.begin() as connection:
+                await connection.execute(update(AgentBoard).where(
+                    AgentBoard.agent_id == ACTOR.actor_id).values(permission_overrides=flags))
+        return result
+
+    monkeypatch.setattr(CommunityPersistedReadinessStore, 'read', revoke_after_read)
+    with pytest.raises(ReadinessAccessDenied):
+        await reader.load_persisted(board_id=delivery.BOARD_ID,
+            spec_id=delivery.SPEC_ID, actor=ACTOR, unit_limit=1)
+    assert calls == 1
 
 
 async def test_projection_cursor_keeps_original_generation_until_retention(ledger, monkeypatch):

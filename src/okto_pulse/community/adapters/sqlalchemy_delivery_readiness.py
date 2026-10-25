@@ -469,13 +469,16 @@ class CommunityDeliveryReadinessReader:
                 try:
                     async with AsyncSession(bind=connection, autoflush=False) as session:
                         access = await self._access(session, actor, board_id, counts)
+                        # The unscoped projection contains Card identities and
+                        # metrics as well as the Spec summary. Authorize that
+                        # population before reading or returning any row.
+                        access.require('card.entity.read')
                         specs = await self._rows(session, select(Spec).where(Spec.id == spec_id,
                             Spec.board_id == board_id, Spec.archived.is_(False)), 1, counts)
                         if not specs:
                             raise ReadinessReadError('readiness_scope_mismatch')
                         card = None
                         if card_id is not None:
-                            access.require('card.entity.read')
                             cards = await self._rows(session, select(Card).where(Card.id == card_id,
                                 Card.board_id == board_id, Card.spec_id == spec_id,
                                 Card.archived.is_(False)), 1, counts)

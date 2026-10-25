@@ -27,7 +27,7 @@ ledger = delivery.ledger
 pytestmark = [pytest.mark.asyncio, pytest.mark.parametrize('ledger', ['native_schema'], indirect=True)]
 
 
-async def surfaces(session, monkeypatch):
+async def surfaces(session, monkeypatch, *, persisted=False):
     await setup(session)
     now = datetime.now(timezone.utc)
     monkeypatch.setattr(CommunityReadinessClock, 'now', lambda self: now)
@@ -49,7 +49,8 @@ async def surfaces(session, monkeypatch):
 
     catalog = CoreMcpCatalog(name='readiness', version='1')
     register_code_traceability_tools(catalog, get_board_agent=agent, get_uow=lambda: scope, get_settings=SimpleNamespace)
-    tool = await catalog.get_tool('okto_pulse_get_delivery_evidence')
+    tool = await catalog.get_tool('okto_pulse_get_persisted_delivery_readiness'
+        if persisted else 'okto_pulse_get_delivery_evidence')
     return rest, tool, uow
 
 
@@ -78,6 +79,62 @@ async def test_persisted_rest_reads_published_generation_with_current_authorizat
     assert result['summaries'][0]['implementation']['percent'] == 100
     assert result['summaries'][0]['verification']['percent'] == 100
     assert result['page']['limit'] == 2
+
+
+async def test_persisted_rest_and_mcp_never_enter_source_evaluator_or_diagnostics(ledger, monkeypatch):
+    from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import CommunityDeliveryReadinessReader
+    from okto_pulse.community.adapters.sqlalchemy_delivery_evidence import CommunityDeliveryEvidenceStore
+    from okto_pulse.core.services.delivery_readiness import EvaluatedDeliveryReadiness
+
+    session, store, _ = ledger
+    rest, tool, uow = await surfaces(session, monkeypatch, persisted=True)
+    implementation = await delivery.record(store, delivery.command())
+    await delivery.record(store, delivery.command('test', implementation_ids=[implementation['id']]))
+    await session.commit()
+    worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
+    assert await worker.process_once() == 1
+
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError('hot_read_entered_source_evaluator')
+
+    def forbidden_evaluation(*_args, **_kwargs):
+        raise AssertionError('hot_read_entered_diagnostics')
+
+    monkeypatch.setattr(CommunityDeliveryReadinessReader, '_load_transaction', forbidden)
+    monkeypatch.setattr(CommunityDeliveryEvidenceStore, 'projection', forbidden)
+    monkeypatch.setattr(EvaluatedDeliveryReadiness, '__init__', forbidden_evaluation)
+
+    path = url().replace('/delivery-evidence', '/delivery-readiness-projection')
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=rest), base_url='http://test') as client:
+        response = await client.get(path, params={'unit_limit': 2})
+    result = await tool.fn(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID, unit_limit=2)
+    assert response.status_code == 200, response.text
+    assert response.headers['cache-control'] == 'no-store'
+    assert not result.is_error, result
+    assert result.payload == response.json()
+    assert result.payload['projection']['freshness'] == 'current'
+    assert result.payload['mutation_reauthorization_required'] is True
+    uow.commit.assert_not_awaited()
+
+
+async def test_persisted_spec_projection_requires_current_card_read_permission(ledger, monkeypatch):
+    session, _, _ = ledger
+    rest, tool, uow = await surfaces(session, monkeypatch, persisted=True)
+    flags = registered_permission_flags()
+    flags['card']['entity']['read'] = False
+    await session.execute(update(AgentBoard).where(AgentBoard.agent_id == ACTOR.actor_id).values(
+        permission_overrides=flags))
+    await session.commit()
+
+    path = url().replace('/delivery-evidence', '/delivery-readiness-projection')
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=rest), base_url='http://test') as client:
+        response = await client.get(path)
+    result = await tool.fn(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID)
+    assert response.status_code == 403, response.text
+    assert response.headers['cache-control'] == 'no-store'
+    assert response.json()['detail']['code'] == 'readiness_permission_denied'
+    assert result.is_error and result.code == 'readiness_permission_denied'
+    uow.commit.assert_not_awaited()
 
 
 @pytest.mark.parametrize('card_id', [None, 'task', 'test'])
