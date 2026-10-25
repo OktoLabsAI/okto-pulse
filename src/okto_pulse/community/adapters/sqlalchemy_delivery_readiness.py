@@ -44,13 +44,13 @@ from okto_pulse.core.ports.permission_policy import (
     PermissionPresetLineageNode, board_membership_allows_read, resolve_agent_permission_facts,
 )
 from okto_pulse.core.ports.test_evidence import supported_test_verification_methods
+from okto_pulse.core.services.persisted_delivery_readiness import EVALUATOR_VERSION
 
 logger = logging.getLogger(__name__)
 MAX_CARDS = 5000
 MAX_HISTORY = 10000
 MAX_FACTS = 20000
 FINGERPRINT_VERSION = 'delivery-readiness-snapshot/v1'
-EVALUATOR_VERSION = 'delivery-readiness-evaluator/v1'
 
 
 class CommunityReadinessClock:

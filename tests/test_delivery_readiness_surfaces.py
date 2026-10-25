@@ -27,7 +27,7 @@ ledger = delivery.ledger
 pytestmark = [pytest.mark.asyncio, pytest.mark.parametrize('ledger', ['native_schema'], indirect=True)]
 
 
-async def surfaces(session, monkeypatch, *, persisted=False):
+async def surfaces(session, monkeypatch, *, persisted=False, tool_name=None):
     await setup(session)
     now = datetime.now(timezone.utc)
     monkeypatch.setattr(CommunityReadinessClock, 'now', lambda self: now)
@@ -49,8 +49,9 @@ async def surfaces(session, monkeypatch, *, persisted=False):
 
     catalog = CoreMcpCatalog(name='readiness', version='1')
     register_code_traceability_tools(catalog, get_board_agent=agent, get_uow=lambda: scope, get_settings=SimpleNamespace)
-    tool = await catalog.get_tool('okto_pulse_get_persisted_delivery_readiness'
-        if persisted else 'okto_pulse_get_delivery_evidence')
+    tool = await catalog.get_tool(tool_name or (
+        'okto_pulse_get_persisted_delivery_readiness' if persisted
+        else 'okto_pulse_get_delivery_evidence'))
     return rest, tool, uow
 
 
@@ -247,9 +248,16 @@ async def test_P08_board_summary_matches_authorized_native_details_without_write
     implementation = await delivery.record(store, delivery.command())
     await delivery.record(store, delivery.command('test', implementation_ids=[implementation['id']]))
     await session.commit()
-    with statements(session.bind) as sql:
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=rest), base_url='http://test') as client:
-            response = await client.get(url().replace('/delivery-evidence', '/delivery-readiness-summary'))
+    worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
+    assert await worker.process_once() == 1
+    with monkeypatch.context() as isolated:
+        def forbidden_evaluator(*_args, **_kwargs):
+            raise AssertionError('summary_get_must_not_evaluate_source')
+        isolated.setattr('okto_pulse.core.services.delivery_readiness.EvaluatedDeliveryReadiness',
+            forbidden_evaluator)
+        with statements(session.bind) as sql:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=rest), base_url='http://test') as client:
+                response = await client.get(url().replace('/delivery-evidence', '/delivery-readiness-summary'))
     assert response.status_code == 200, response.text
     assert response.headers['cache-control'] == 'no-store'
     summary = response.json()
@@ -266,9 +274,11 @@ async def test_P08_board_summary_matches_authorized_native_details_without_write
         # A dedicated Card read also assesses that Card's native lifecycle gates.
         # Its snapshot includes that scoped gate assessment; board projections
         # intentionally share the Spec batch and do not run N Card gate queries.
-        if context['scope']['card_id'] is None:
-            assert context['snapshot_id'] == result.payload['snapshot_id']
+        # The published snapshot has an actor-neutral identity. A live detail
+        # read includes the actor's authority in its own snapshot fingerprint.
+        assert len(context['snapshot_id']) == len(result.payload['snapshot_id']) == 64
         assert context['snapshot_id'] == summary['delivery_readiness']['snapshot_id']
+    assert summary['projection']['freshness'] == 'current'
     test_context = next(row['delivery_readiness'] for row in summary['cards'] if row['card_id'] == 'test')
     assert test_context['implementation']['percent'] is None
     assert all(statement.lstrip().upper().startswith(('SELECT', 'PRAGMA DATA_VERSION', 'BEGIN')) for statement in sql)
@@ -276,10 +286,40 @@ async def test_P08_board_summary_matches_authorized_native_details_without_write
     uow.commit.assert_not_awaited()
 
 
+async def test_P08_board_summary_reports_pending_initial_without_false_zero(ledger, monkeypatch):
+    session, _, _ = ledger
+    rest, _, uow = await surfaces(session, monkeypatch)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=rest), base_url='http://test') as client:
+        response = await client.get(url().replace('/delivery-evidence', '/delivery-readiness-summary'))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body['contract_version'] == 'delivery-readiness/v1'
+    assert body['delivery_readiness'] is None and body['cards'] == []
+    assert body['projection']['freshness'] == 'pending_initial'
+    uow.commit.assert_not_awaited()
+
+
+async def test_P08_board_summary_rest_mcp_parity(ledger, monkeypatch):
+    session, _, _ = ledger
+    rest, tool, uow = await surfaces(session, monkeypatch,
+        tool_name='okto_pulse_get_delivery_readiness_summary')
+    worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
+    assert await worker.process_once() == 1
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=rest), base_url='http://test') as client:
+        response = await client.get(url().replace('/delivery-evidence', '/delivery-readiness-summary'))
+    assert response.status_code == 200, response.text
+    result = await tool.fn(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID)
+    assert not result.is_error, result
+    assert result.payload == response.json()
+    uow.commit.assert_not_awaited()
+
+
 @pytest.mark.parametrize('permission', ['evidence', 'card'])
 async def test_P08_summary_reauthorizes_current_access(ledger, monkeypatch, permission):
     session, _, _ = ledger
     rest, _, uow = await surfaces(session, monkeypatch)
+    worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
+    assert await worker.process_once() == 1
     flags = registered_permission_flags()
     if permission == 'evidence':
         flags['code_traceability']['evidence']['read'] = False
