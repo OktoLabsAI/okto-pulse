@@ -11,7 +11,7 @@ from test_delivery_readiness_authorization import ACTOR, setup
 from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
 from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import CommunityPersistedReadinessStore
 from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import CommunityDeliveryReadinessReader, CommunityReadinessClock
-from okto_pulse.community.adapters.sqlalchemy_models import AgentBoard
+from okto_pulse.community.adapters.sqlalchemy_models import AgentBoard, Spec
 from okto_pulse.community.adapters.worker_runners import TrackedBlockingExecution
 from okto_pulse.core.ports.delivery_readiness import (
     ReadinessAccessDenied, ReadinessActor, ReadinessReadError,
@@ -99,6 +99,31 @@ async def test_projection_revocation_during_read_fails_closed(ledger, monkeypatc
         await reader.load_persisted(board_id=delivery.BOARD_ID,
             spec_id=delivery.SPEC_ID, actor=ACTOR, unit_limit=1)
     assert calls == 1
+
+
+async def test_projection_changing_scope_retries_once_then_fails_closed(ledger, monkeypatch):
+    session, _, _ = ledger
+    await setup(session)
+    worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
+    assert await worker.process_once() == 1
+    reader = CommunityDeliveryReadinessReader(session.bind, clock=CommunityReadinessClock())
+    original_read = CommunityPersistedReadinessStore.read
+    calls = 0
+
+    async def change_after_read(store, **kwargs):
+        nonlocal calls
+        result = await original_read(store, **kwargs)
+        calls += 1
+        async with session.bind.begin() as connection:
+            await connection.execute(update(Spec).where(Spec.id == delivery.SPEC_ID).values(
+                version=Spec.version + 1))
+        return result
+
+    monkeypatch.setattr(CommunityPersistedReadinessStore, 'read', change_after_read)
+    with pytest.raises(ReadinessReadError, match='readiness_snapshot_changed'):
+        await reader.load_persisted(board_id=delivery.BOARD_ID,
+            spec_id=delivery.SPEC_ID, actor=ACTOR, unit_limit=1)
+    assert calls == 2
 
 
 async def test_projection_cursor_keeps_original_generation_until_retention(ledger, monkeypatch):
