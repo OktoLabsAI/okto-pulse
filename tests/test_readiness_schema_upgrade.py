@@ -51,7 +51,8 @@ def _v402_objects():
         'readiness_v402_triggers.json').read_text(encoding='utf-8'))
     old = {sql.split()[2]: sql for sql in statements}
     return tuple((kind, name, table, old.get(name, sql))
-        for kind, name, table, sql in current_schema_contract().objects)
+        for kind, name, table, sql in current_schema_contract().objects
+        if name != 'readiness_diagnostic')
 
 
 def test_upgrade_preserves_source_rows_and_leaves_verified_backup(tmp_path):
@@ -65,8 +66,9 @@ def test_upgrade_preserves_source_rows_and_leaves_verified_backup(tmp_path):
         assert old.execute("PRAGMA user_version").fetchone()[0] == PREDECESSOR_VERSION
         assert current.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert inspect_current_schema(current.cursor(), current_schema_contract()) is False
-        assert {"readiness_scope", "readiness_job", "readiness_generation", "readiness_summary", "readiness_unit"} <= {
-            row[0] for row in current.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
+        assert {"readiness_scope", "readiness_job", "readiness_generation", "readiness_summary",
+            "readiness_diagnostic", "readiness_unit"} <= {
+                row[0] for row in current.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
 
 
 def test_unknown_predecessor_is_refused_without_backup_or_mutation(tmp_path):

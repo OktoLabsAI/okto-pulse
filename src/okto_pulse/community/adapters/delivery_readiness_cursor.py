@@ -40,17 +40,23 @@ class CommunityReadinessCursorCodec:
     @staticmethod
     def _binding(binding):
         return hashlib.sha256(_canonical(binding.model_dump(mode='json',
-            exclude={'snapshot_id', 'spec_edition', 'projection_id'}))).hexdigest()
+            exclude={'snapshot_id', 'spec_edition', 'projection_id', 'generation_id'}))).hexdigest()
 
     def encode(self, binding, offset):
         if type(offset) is not int or offset < 1:
             raise ReadinessReadError('readiness_query_invalid', native_code='readiness_cursor_position_invalid')
-        payload = _canonical({'version': 1, 'kind': 'delivery-readiness',
+        persisted = binding.generation_id is not None
+        fields = {'version': 2 if persisted else 1,
+            'kind': 'delivery-readiness-persisted' if persisted else 'delivery-readiness',
             'binding': self._binding(binding), 'snapshot_id': binding.snapshot_id,
-            'spec_edition': binding.spec_edition, 'projection_id': binding.projection_id, 'offset': offset})
+            'spec_edition': binding.spec_edition, 'projection_id': binding.projection_id,
+            'offset': offset}
+        if persisted:
+            fields['generation_id'] = binding.generation_id
+        payload = _canonical(fields)
         return _encode(payload) + '.' + _encode(hmac.new(self._key, payload, hashlib.sha256).digest())
 
-    def decode(self, token, binding):
+    def _signed_payload(self, token):
         try:
             if not isinstance(token, str) or not 1 <= len(token) <= 8192 or token.count('.') != 1:
                 raise ValueError('invalid_envelope')
@@ -60,10 +66,38 @@ class CommunityReadinessCursorCodec:
             payload = json.loads(encoded)
             if not isinstance(payload, dict) or not hmac.compare_digest(encoded, _canonical(payload)):
                 raise ValueError('noncanonical_payload')
-            if set(payload) != {'version', 'kind', 'binding', 'snapshot_id', 'spec_edition', 'projection_id', 'offset'}:
+            return payload
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError) as exc:
+            raise ReadinessReadError('readiness_query_invalid', native_code='readiness_cursor_invalid') from exc
+
+    def peek_detail_generation(self, token):
+        """Verify the signature before selecting a retained generation.
+
+        The full actor/scope/filter binding is checked by decode after the
+        generation is loaded. This value alone never authorizes a read.
+        """
+        payload = self._signed_payload(token)
+        if (set(payload) != {'version', 'kind', 'binding', 'snapshot_id',
+                'spec_edition', 'projection_id', 'generation_id', 'offset'}
+                or payload.get('version') != 2 or payload.get('kind') != 'delivery-readiness-persisted'
+                or not isinstance(payload.get('generation_id'), str)
+                or len(payload['generation_id']) != 32
+                or any(c not in '0123456789abcdef' for c in payload['generation_id'])):
+            raise ReadinessReadError('readiness_query_invalid', native_code='readiness_cursor_invalid')
+        return payload['generation_id']
+
+    def decode(self, token, binding):
+        payload = self._signed_payload(token)
+        persisted = binding.generation_id is not None
+        fields = {'version', 'kind', 'binding', 'snapshot_id', 'spec_edition', 'projection_id', 'offset'}
+        if persisted:
+            fields.add('generation_id')
+        try:
+            if set(payload) != fields:
                 raise ValueError('invalid_fields')
-            if (type(payload['version']) is not int or payload['version'] != 1
-                or payload['kind'] != 'delivery-readiness' or type(payload['offset']) is not int
+            if (type(payload['version']) is not int or payload['version'] != (2 if persisted else 1)
+                or payload['kind'] != ('delivery-readiness-persisted' if persisted else 'delivery-readiness')
+                or type(payload['offset']) is not int
                 or payload['offset'] < 1 or type(payload['spec_edition']) is not int or payload['spec_edition'] < 1
                 or any(not isinstance(payload[key], str) or len(payload[key]) != 64
                     or any(c not in '0123456789abcdef' for c in payload[key])
@@ -71,6 +105,9 @@ class CommunityReadinessCursorCodec:
                 raise ValueError('invalid_shape')
             if not isinstance(payload['binding'], str) or not hmac.compare_digest(payload['binding'], self._binding(binding)):
                 raise ValueError('invalid_binding')
+            if persisted and (not isinstance(payload['generation_id'], str)
+                    or payload['generation_id'] != binding.generation_id):
+                raise ReadinessReadError('readiness_cursor_stale', native_code='snapshot_conflict')
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError) as exc:
             raise ReadinessReadError('readiness_query_invalid', native_code='readiness_cursor_invalid') from exc
         if (payload['snapshot_id'], payload['spec_edition'], payload['projection_id']) != (

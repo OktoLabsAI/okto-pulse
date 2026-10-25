@@ -138,6 +138,38 @@ async def test_worker_publishes_one_complete_generation_after_source_commit(tmp_
 
 
 @pytest.mark.asyncio
+async def test_tampered_diagnostic_quarantines_active_generation(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        assert await worker.process_once() == 1
+        current = await worker.store.read(board_id="board", spec_id="spec", edition=1)
+        assert current is not None and current.freshness == "current"
+        async with engine.begin() as connection:
+            count = (await connection.exec_driver_sql(
+                "SELECT count(*) FROM readiness_diagnostic WHERE generation_id=?",
+                (current.generation_id,),
+            )).scalar_one()
+            assert count == 1
+            await connection.exec_driver_sql(
+                "UPDATE readiness_diagnostic SET payload='{}' WHERE generation_id=?",
+                (current.generation_id,),
+            )
+        assert not await worker.store.audit_active_generation(spec_id="spec")
+        quarantined = await worker.store.read(board_id="board", spec_id="spec", edition=1)
+        assert quarantined is not None and quarantined.freshness == "pending_initial"
+        assert quarantined.generation_id is None
+        async with engine.connect() as connection:
+            state = (await connection.exec_driver_sql(
+                "SELECT state,error_code FROM readiness_job WHERE scope_id='spec:1'",
+            )).one()
+            assert state == ("pending", "readiness_active_manifest_mismatch")
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_projection_cpu_runs_after_snapshot_checkout_is_released(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
     try:
@@ -222,6 +254,7 @@ async def test_incompatible_evaluator_generation_cannot_publish(tmp_path):
             evaluator_version=future_version,
             summaries=[summary.payload() for summary in generation.summaries],
             units=[asdict(unit) for unit in generation.units],
+            diagnostics=[row.row() for row in generation.diagnostics],
         )
         incompatible = replace(generation, evaluator_version=future_version,
             manifest_sha256=future_digest)

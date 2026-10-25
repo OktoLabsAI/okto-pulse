@@ -529,7 +529,7 @@ class CommunityDeliveryReadinessReader:
         return snapshot, captured_revision
 
     async def load_persisted(self, *, board_id, spec_id, actor, card_id=None,
-                             unit_limit=0, cursor=None):
+                             unit_limit=0, cursor=None, include_diagnostics=False):
         """Authorize current actor around a bounded projection read.
 
         No proof facts, historical versions or diagnostics are loaded. A changed
@@ -574,17 +574,21 @@ class CommunityDeliveryReadinessReader:
             generation_id = None
             unit_offset = 0
             if cursor is not None:
-                if not unit_limit:
+                if not unit_limit and not include_diagnostics:
                     raise ReadinessReadError('readiness_query_invalid')
                 from okto_pulse.core import get_settings
                 from .delivery_readiness_cursor import CommunityReadinessCursorCodec
-                generation_id, unit_offset = CommunityReadinessCursorCodec.from_settings(
-                    get_settings()).decode_projection(cursor, actor_id=actor.actor_id,
-                    board_id=board_id, spec_id=spec_id, edition=before[1],
-                    card_id=card_id, limit=unit_limit)
+                codec = CommunityReadinessCursorCodec.from_settings(get_settings())
+                if include_diagnostics:
+                    generation_id = codec.peek_detail_generation(cursor)
+                else:
+                    generation_id, unit_offset = codec.decode_projection(cursor,
+                        actor_id=actor.actor_id, board_id=board_id, spec_id=spec_id,
+                        edition=before[1], card_id=card_id, limit=unit_limit)
             projection = await store.read(board_id=board_id, spec_id=spec_id,
                 edition=before[1], card_id=card_id, unit_limit=unit_limit,
-                unit_offset=unit_offset, generation_id_override=generation_id)
+                unit_offset=unit_offset, generation_id_override=generation_id,
+                include_diagnostics=include_diagnostics)
             projected_at = perf_counter()
             after = await authorize()
             reauthorized_at = perf_counter()
@@ -606,9 +610,10 @@ class CommunityDeliveryReadinessReader:
                         card_id=card_id, limit=unit_limit,
                         generation_id=projection.generation_id,
                         offset=unit_offset + len(projection.units))
-                return projection, before[1], before[2], {'offset': unit_offset,
+                result = (projection, before[1], before[2], {'offset': unit_offset,
                     'limit': unit_limit, 'total': projection.unit_total if projection else 0,
-                    'has_more': has_more, 'next_cursor': next_cursor}
+                    'has_more': has_more, 'next_cursor': next_cursor})
+                return (*result, after[0]) if include_diagnostics else result
         raise ReadinessReadError('readiness_snapshot_changed')
 
     async def requeue_terminal(self, *, board_id, spec_id, actor,

@@ -10569,6 +10569,13 @@ class ReadinessSummaryRow(Base):
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
+class ReadinessDiagnosticRow(Base):
+    __tablename__ = "readiness_diagnostic"
+    generation_id: Mapped[str] = mapped_column(String(64), ForeignKey("readiness_generation.id", ondelete="CASCADE"), primary_key=True)
+    card_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
 class ReadinessUnitRow(Base):
     __tablename__ = "readiness_unit"
     __table_args__ = (Index("ix_readiness_unit_page", "generation_id", "card_key", "kind", "ref"),)

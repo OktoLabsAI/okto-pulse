@@ -23,7 +23,8 @@ from okto_pulse.core.ports.delivery_readiness import ReadinessAccessDenied, Read
 from .sqlalchemy_models import (
     Agent, AgentBoard, AppSetting, Board, BoardShare, Spec,
     ReadinessGenerationRow, ReadinessJobRow, ReadinessScopeRow,
-    ReadinessSummaryRow, ReadinessUnitRow, ReadinessOperationAuditRow,
+    ReadinessSummaryRow, ReadinessDiagnosticRow, ReadinessUnitRow,
+    ReadinessOperationAuditRow,
 )
 
 LEASE_SECONDS = 30
@@ -59,6 +60,7 @@ class ProjectionRead:
     units: tuple[dict, ...]
     unit_total: int
     source_snapshot_id: str | None
+    diagnostics: dict | None = None
 
 
 class ReadinessLeaseLost(RuntimeError):
@@ -82,7 +84,8 @@ class CommunityPersistedReadinessStore:
 
     async def read(self, *, board_id: str, spec_id: str, edition: int,
                    card_id: str | None = None, unit_limit: int = 0,
-                   unit_offset: int = 0, generation_id_override: str | None = None) -> ProjectionRead | None:
+                   unit_offset: int = 0, generation_id_override: str | None = None,
+                   include_diagnostics: bool = False) -> ProjectionRead | None:
         """Read one committed generation with no source evaluation or repair.
 
         Callers must authorize the current actor and requested Card before
@@ -124,12 +127,13 @@ class CommunityPersistedReadinessStore:
                     freshness = 'updating'
                 summary_json: tuple[str, ...] = ()
                 unit_json: tuple[str, ...] = ()
+                diagnostic_json: str | None = None
                 unit_total = 0
                 if compatible:
-                    if card_id:
+                    if card_id or include_diagnostics:
                         summary_json = tuple(row[0] for row in (await connection.exec_driver_sql(
                             "SELECT payload FROM readiness_summary WHERE generation_id=? "
-                            "AND card_key=?", (header['gen_id'], card_id))).all())
+                            "AND card_key=?", (header['gen_id'], card_id or ''))).all())
                     else:
                         summary_json = tuple(row[0] for row in (await connection.exec_driver_sql(
                             "SELECT payload FROM readiness_summary WHERE generation_id=? "
@@ -143,6 +147,10 @@ class CommunityPersistedReadinessStore:
                             "SELECT payload FROM readiness_unit WHERE generation_id=? AND card_key=? "
                             "ORDER BY kind,ref,semantic_sha256 LIMIT ? OFFSET ?",
                             (header['gen_id'], key, unit_limit, unit_offset))).all())
+                    if include_diagnostics:
+                        diagnostic_json = (await connection.exec_driver_sql(
+                            "SELECT payload FROM readiness_diagnostic WHERE generation_id=? AND card_key=?",
+                            (header['gen_id'], card_id or ''))).scalar_one_or_none()
                 source_revision = int(header['source_revision'])
                 generation_id = header['gen_id'] if compatible else None
                 captured_revision = int(header['captured_revision']) if compatible else None
@@ -154,9 +162,11 @@ class CommunityPersistedReadinessStore:
                 await connection.rollback()
         summaries = tuple(json.loads(value) for value in summary_json)
         units = tuple(json.loads(value) for value in unit_json)
+        diagnostics = json.loads(diagnostic_json) if diagnostic_json else None
         result = ProjectionRead(board_id, spec_id, edition, source_revision,
             generation_id, captured_revision, evaluated_at, freshness,
-            error_code, summaries, units, unit_total, source_snapshot_id)
+            error_code, summaries, units, unit_total, source_snapshot_id,
+            diagnostics)
         logger.debug("readiness.read board=%s spec=%s freshness=%s summaries=%d units=%d elapsed_ms=%.3f",
             board_id, spec_id, freshness, len(summaries), len(units),
             (perf_counter() - started) * 1000)
@@ -243,6 +253,9 @@ class CommunityPersistedReadinessStore:
         rows = chain(
             (ReadinessSummaryRow(generation_id=generation_id, card_key=summary.card_id or "",
                 payload=summary.payload()) for summary in generation.summaries),
+            (ReadinessDiagnosticRow(generation_id=generation_id,
+                card_key=diagnostic.card_id or "", payload=diagnostic.payload)
+                for diagnostic in generation.diagnostics),
             (ReadinessUnitRow(generation_id=generation_id, card_key=unit.card_id or "",
                 kind=unit.kind, ref=unit.ref, semantic_sha256=unit.semantic_sha256,
                 payload=asdict(unit)) for unit in generation.units),
@@ -273,6 +286,10 @@ class CommunityPersistedReadinessStore:
             summaries = [row.payload for row in (await session.scalars(
                 select(ReadinessSummaryRow).where(ReadinessSummaryRow.generation_id == generation_id)
                 .order_by(ReadinessSummaryRow.card_key))).all()]
+            diagnostics = [{"card_id": row.card_key or None, "payload": row.payload}
+                for row in (await session.scalars(select(ReadinessDiagnosticRow).where(
+                    ReadinessDiagnosticRow.generation_id == generation_id)
+                    .order_by(ReadinessDiagnosticRow.card_key))).all()]
             units = [row.payload for row in (await session.scalars(
                 select(ReadinessUnitRow).where(ReadinessUnitRow.generation_id == generation_id)
                 .order_by(ReadinessUnitRow.card_key, ReadinessUnitRow.kind,
@@ -280,13 +297,16 @@ class CommunityPersistedReadinessStore:
             header = (gen.captured_revision, gen.source_snapshot_id,
                 gen.evaluator_version, gen.summary_count, gen.unit_count, gen.manifest_sha256)
         revision, snapshot_id, evaluator, summary_count, unit_count, manifest = header
-        if len(summaries) != summary_count or len(units) != unit_count:
+        if (len(summaries) != summary_count or len(units) != unit_count
+                or len(diagnostics) != summary_count
+                or any('card_id' not in row for row in summaries)
+                or {row['card_id'] for row in diagnostics} != {row['card_id'] for row in summaries}):
             return False
         try:
             digest = readiness_manifest_digest(board_id=board_id, spec_id=spec_id,
                 edition=edition, captured_revision=revision,
                 source_snapshot_id=snapshot_id, evaluator_version=evaluator,
-                summaries=summaries, units=units)
+                summaries=summaries, units=units, diagnostics=diagnostics)
         except (KeyError, TypeError, ValueError):
             return False
         return digest == manifest
@@ -494,6 +514,9 @@ class CommunityPersistedReadinessStore:
             await session.execute(text("DELETE FROM readiness_summary WHERE rowid IN "
                 "(SELECT rowid FROM readiness_summary WHERE generation_id=:id LIMIT 250)"),
                 {"id": candidate.id})
+            await session.execute(text("DELETE FROM readiness_diagnostic WHERE rowid IN "
+                "(SELECT rowid FROM readiness_diagnostic WHERE generation_id=:id LIMIT 250)"),
+                {"id": candidate.id})
             await session.execute(text("DELETE FROM readiness_unit WHERE rowid IN "
                 "(SELECT rowid FROM readiness_unit WHERE generation_id=:id LIMIT 250)"),
                 {"id": candidate.id})
@@ -501,6 +524,8 @@ class CommunityPersistedReadinessStore:
                 ReadinessSummaryRow.generation_id == candidate.id))
             remaining += await session.scalar(select(func.count()).select_from(ReadinessUnitRow).where(
                 ReadinessUnitRow.generation_id == candidate.id))
+            remaining += await session.scalar(select(func.count()).select_from(ReadinessDiagnosticRow).where(
+                ReadinessDiagnosticRow.generation_id == candidate.id))
             if not remaining:
                 await session.delete(candidate)
             return True

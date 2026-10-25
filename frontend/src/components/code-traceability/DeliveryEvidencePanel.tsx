@@ -199,7 +199,8 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
     {focusExceptionId && data?.board_id === boardId && data.spec_id === specId
       && <DeliveryExceptionDetails data={data} recordId={focusExceptionId} />}
     {projection && <DeliveryReadinessPanel boardId={boardId} specId={specId} revision={`${revision ?? ''}:${reload}`}
-      persistedValue={projection} onOpenReadinessSpec={onOpenReadinessSpec} />}
+      persistedValue={projection} onGenerationMismatch={() => setReload(value => value + 1)}
+      onOpenReadinessSpec={onOpenReadinessSpec} />}
     {legacyMode && <DeliveryReadinessPanel boardId={boardId} specId={specId}
       revision={`${revision ?? ''}:${reload}`} onOpenReadinessSpec={onOpenReadinessSpec} />}
     {!legacyMode && !projection && !projectionError && <PulseLoader label="Loading readiness projection…" size="sm" className="py-4" />}

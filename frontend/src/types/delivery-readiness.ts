@@ -13,6 +13,7 @@ export type DeliveryState = 'unknown' | 'implementation_pending' | 'verification
   | 'ready' | 'delivered' | 'ready_with_exceptions' | 'delivered_with_exceptions' | 'not_applicable';
 export interface DeliveryReadiness {
   contract_version: 'delivery-readiness/v1'; metrics_version: 2;
+  projection?: { projection_version: 1; generation_id: string; snapshot_id: string };
   scope: { board_id: string; spec_id: string; card_id: string | null; card_type: 'normal' | 'bug' | 'test' | null;
     spec_edition: number; spec_version: number; card_version: number | null };
   snapshot_id: string; evaluated_at: string; scope_complete: boolean; evaluation_complete: boolean;

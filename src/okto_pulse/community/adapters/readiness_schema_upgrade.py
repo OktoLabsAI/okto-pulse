@@ -23,7 +23,8 @@ from .current_relational_schema import (
 )
 from .sqlalchemy_models import (
     ReadinessGenerationRow, ReadinessJobRow, ReadinessScopeRow,
-    ReadinessSummaryRow, ReadinessUnitRow, ReadinessOperationAuditRow,
+    ReadinessSummaryRow, ReadinessDiagnosticRow, ReadinessUnitRow,
+    ReadinessOperationAuditRow,
 )
 from .readiness_invalidation_schema import install_readiness_invalidation_triggers
 
@@ -35,7 +36,7 @@ READINESS_V402_VERSION = 402
 READINESS_V402_SHA256 = "ff2132ff78ded80b46110cb69796d6cc792d635893b4ce7b68ebd43a30d82113"
 _TABLES = (
     ReadinessScopeRow.__table__, ReadinessJobRow.__table__, ReadinessGenerationRow.__table__,
-    ReadinessSummaryRow.__table__, ReadinessUnitRow.__table__,
+    ReadinessSummaryRow.__table__, ReadinessDiagnosticRow.__table__, ReadinessUnitRow.__table__,
     ReadinessOperationAuditRow.__table__,
 )
 
@@ -103,6 +104,11 @@ def upgrade_readiness_schema(database: Path) -> Path:
                     locked.execute(str(CreateTable(table).compile(dialect=dialect())))
                     for index in sorted(table.indexes, key=lambda item: item.name):
                         locked.execute(str(CreateIndex(index).compile(dialect=dialect())))
+            else:
+                # The diagnostic projection is a new derived-only table. Prior
+                # readiness schemas are admitted by exact fingerprint above.
+                table = ReadinessDiagnosticRow.__table__
+                locked.execute(str(CreateTable(table).compile(dialect=dialect())))
             if version == READINESS_V401_VERSION:
                 # SQLite cannot add a UNIQUE table constraint with ALTER TABLE.
                 # This audit table has no foreign-key dependants; replace only

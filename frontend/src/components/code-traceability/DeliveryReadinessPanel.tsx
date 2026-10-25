@@ -8,11 +8,12 @@ import { useNativeReadinessNavigation } from './useNativeReadinessNavigation';
 import { useDeliveryReadiness } from './useDeliveryReadiness';
 import { readinessReadMode } from '@/lib/readinessMode';
 
-export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, active = true, focusDiagnosis = false, persistedValue, onNavigate, onOpenReadinessSpec, onOpenReadinessCard }: {
+export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, active = true, focusDiagnosis = false, persistedValue, onGenerationMismatch, onNavigate, onOpenReadinessSpec, onOpenReadinessCard }: {
   boardId: string; specId: string; cardId?: string; revision?: string | number;
   focusDiagnosis?: boolean; onNavigate?: ReadinessNavigator;
   active?: boolean;
   persistedValue?: PersistedReadinessProjection | null;
+  onGenerationMismatch?: () => void;
   onOpenReadinessSpec?: (location: ReadinessSpecLocation) => void;
   onOpenReadinessCard?: (id: string, target?: ReadinessCardLocation) => void;
 }) {
@@ -28,6 +29,16 @@ export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, acti
   const state = useDeliveryReadiness(boardId, specId, cardId, JSON.stringify([revision, refresh]),
     active && (expanded || !persistedValue), expanded || readinessReadMode() === 'legacy' ? 'diagnostic' : 'projection');
   const initial = isReadinessResponse(state.value) ? state.value : undefined;
+  const generationMismatch = !!(persistedValue?.projection.generation_id && initial?.projection?.generation_id
+    && persistedValue.projection.generation_id !== initial.projection.generation_id);
+  const mismatchNotified = useRef<string | null>(null);
+  useEffect(() => {
+    if (!generationMismatch) return;
+    const pair = `${persistedValue?.projection.generation_id}:${initial?.projection?.generation_id}`;
+    if (mismatchNotified.current === pair) return;
+    mismatchNotified.current = pair;
+    onGenerationMismatch?.();
+  }, [generationMismatch, initial?.projection?.generation_id, persistedValue?.projection.generation_id, onGenerationMismatch]);
   const key = JSON.stringify([boardId, specId, cardId, initial?.snapshot_id, revision, refresh, state.loading]);
   const [extra, setExtra] = useState<{ key: string; value: ReadinessResponse }>();
   const [failure, setFailure] = useState<{ key: string; message: string }>();
@@ -46,9 +57,10 @@ export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, acti
     request.current?.abort(); setBusy(false);
     return () => request.current?.abort();
   }, [key, active]);
-  const value = extra?.key === key ? extra.value : initial;
+  const value = generationMismatch ? undefined : extra?.key === key ? extra.value : initial;
   const error = failure?.key === key ? failure.message : state.error;
-  const unavailable = !state.loading && !state.error && state.value && !initial
+  const unavailable = generationMismatch ? 'Readiness generation changed. Refreshing the assessment.'
+    : !state.loading && !state.error && state.value && !initial
     ? 'Readiness diagnostic contract unavailable or incompatible.' : undefined;
   const snapshot = value?.snapshot_id;
   useEffect(() => {

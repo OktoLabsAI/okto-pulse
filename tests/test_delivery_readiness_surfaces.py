@@ -1,4 +1,5 @@
 """P07 REST/MCP parity through the composed service and native SQL reader."""
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -149,6 +150,7 @@ async def test_S01_S02_S04_S11_composed_surfaces_share_metrics_details_and_signi
     implementation = await delivery.record(store, delivery.command())
     await delivery.record(store, delivery.command('test', implementation_ids=[implementation['id']]))
     await session.commit()
+    assert await ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution()).process_once() == 1
     query = {'view': 'readiness', **({'card_id': card_id} if card_id else {})}
     with statements(session.bind) as sql:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=rest), base_url='http://test') as client:
@@ -169,6 +171,38 @@ async def test_S01_S02_S04_S11_composed_surfaces_share_metrics_details_and_signi
     uow.commit.assert_not_awaited()
 
 
+async def test_persisted_diagnostics_restrict_detail_after_current_permission_change(ledger, monkeypatch):
+    session, store, _ = ledger
+    _, tool, _ = await surfaces(session, monkeypatch)
+    await delivery.record(store, delivery.command())
+    await session.commit()
+    assert await ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution()).process_once() == 1
+    query = dict(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID,
+        view='readiness', card_id='task')
+    unrestricted = await tool.fn(**query)
+    assert not unrestricted.is_error and unrestricted.payload['issues']
+    flags = registered_permission_flags()
+    flags['code_traceability']['target']['read'] = False
+    flags['code_traceability']['investigation']['read'] = False
+    flags['agent']['entity']['read'] = False
+    flags['spec']['tests']['read'] = False
+    await session.execute(update(AgentBoard).where(AgentBoard.agent_id == ACTOR.actor_id)
+        .values(permission_overrides=flags))
+    await session.commit()
+    restricted = await tool.fn(**query)
+    assert not restricted.is_error, restricted
+    assert restricted.payload['implementation'] == unrestricted.payload['implementation']
+    assert restricted.payload['verification'] == unrestricted.payload['verification']
+    assert restricted.payload['projection']['generation_id'] == unrestricted.payload['projection']['generation_id']
+    assert any(issue['detail_state'] == 'restricted' for issue in restricted.payload['issues']), [
+        (issue['code'], issue['detail_state'], issue['owner_state'],
+         issue['evidence_count'], issue['scenario_count']) for issue in restricted.payload['issues']]
+    assert all(issue['owner'] is None for issue in restricted.payload['issues'])
+    assert all(not issue['expected'] and not issue['observed']
+        and not issue['evidence_refs'] and not issue['pinpoints']
+        for issue in restricted.payload['issues'] if issue['detail_state'] == 'restricted')
+
+
 @pytest.mark.parametrize('patch', [{'record_id': 'record'}, {'edition': 1}, {'issue_id': 'issue'},
     {'view': 'ledger', 'phase': 'verification'}])
 async def test_S05_query_errors_are_structured_on_both_surfaces(ledger, monkeypatch, patch):
@@ -185,6 +219,8 @@ async def test_S05_query_errors_are_structured_on_both_surfaces(ledger, monkeypa
 async def test_S06_S07_S09_pages_and_detail_keep_metrics_and_refuse_changed_snapshot(ledger, monkeypatch):
     session, store, _ = ledger
     rest, tool, _ = await surfaces(session, monkeypatch)
+    worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
+    assert await worker.process_once() == 1
     query = dict(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID, view='readiness', limit=1)
     first = await tool.fn(**query)
     assert not first.is_error, first
@@ -203,6 +239,14 @@ async def test_S06_S07_S09_pages_and_detail_keep_metrics_and_refuse_changed_snap
         assert second.payload[field] == page[field]
     await delivery.record(store, delivery.command())
     await session.commit()
+    updating = await tool.fn(**query, cursor=page['page']['next_cursor'])
+    assert not updating.is_error and updating.payload['projection']['freshness'] == 'updating'
+    await asyncio.sleep(0.06)
+    assert await worker.process_once() == 1
+    async with session.bind.begin() as connection:
+        await connection.exec_driver_sql("UPDATE readiness_generation SET created_at='2000-01-01 00:00:00' "
+            "WHERE id=?", (page['projection']['generation_id'],))
+    assert await worker.store.gc_once()
     stale = await tool.fn(**query, cursor=page['page']['next_cursor'])
     assert stale.is_error and stale.code == 'readiness_cursor_stale'
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=rest), base_url='http://test') as client:

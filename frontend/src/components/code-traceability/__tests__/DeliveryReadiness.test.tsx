@@ -46,6 +46,26 @@ it('Spec Delivery consumes its own context, without averaging card percentages',
   expect(api.getDeliveryReadiness).not.toHaveBeenCalled();
 });
 
+it('refreshes the obligation table when diagnosis belongs to a newer generation', async () => {
+  let projectionReads = 0;
+  api.getPersistedReadinessProjection.mockImplementation(() => {
+    const value = persistedProjection();
+    if (++projectionReads > 1) value.projection.generation_id = 'generation-2';
+    return Promise.resolve(value);
+  });
+  api.getDeliveryReadiness.mockImplementation(() => {
+    const value = readiness(null);
+    value.projection = { projection_version: 1, generation_id: 'generation-2', snapshot_id: value.snapshot_id };
+    return Promise.resolve(value);
+  });
+  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  expect(await screen.findByText(/Generation generation-1/)).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'What is missing?' }));
+  await waitFor(() => expect(projectionReads).toBeGreaterThan(1));
+  expect(await screen.findByText(/Generation generation-2/)).toBeVisible();
+  expect(screen.queryByText(/Generation generation-1/)).not.toBeInTheDocument();
+});
+
 it('U02: 100/100 remains closure pending while native lifecycle is open', () => {
   const value = readiness(); value.verification = metric(100, 8); value.delivery_state = 'ready';
   render(<DeliveryReadinessView value={value} />);
