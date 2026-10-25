@@ -15,7 +15,9 @@ from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
-from okto_pulse.core.services.persisted_delivery_readiness import ReadinessGeneration, readiness_manifest_digest
+from okto_pulse.core.services.persisted_delivery_readiness import (
+    EVALUATOR_VERSION, ReadinessGeneration, readiness_manifest_digest,
+)
 from okto_pulse.core.ports.delivery_readiness import ReadinessReadError
 from .sqlalchemy_models import (
     AppSetting, Board, Spec, ReadinessGenerationRow, ReadinessJobRow, ReadinessScopeRow,
@@ -107,7 +109,7 @@ class CommunityPersistedReadinessStore:
                     gen = None
                 if generation_id_override is not None and gen is None:
                     raise ReadinessReadError('readiness_cursor_stale', native_code='snapshot_conflict')
-                compatible = gen is not None and gen['evaluator_version'] == 'delivery-readiness-evaluator/v1'
+                compatible = gen is not None and gen['evaluator_version'] == EVALUATOR_VERSION
                 if job is not None and job['state'] == 'terminal':
                     freshness = 'unavailable'
                 elif gen is None:
@@ -323,7 +325,8 @@ class CommunityPersistedReadinessStore:
                         or gen.scope_id != claim.scope_id or gen.state != "staging"
                         or job.owner != claim.owner or job.lease_epoch != claim.epoch
                         or job.state != "running" or job.lease_until is None or job.lease_until <= now
-                        or scope.edition != claim.edition or gen.captured_revision > scope.source_revision):
+                        or scope.edition != claim.edition or gen.captured_revision > scope.source_revision
+                        or gen.evaluator_version != EVALUATOR_VERSION):
                         await connection.rollback()
                         return False
                     summaries = await session.scalar(select(func.count()).select_from(ReadinessSummaryRow).where(
@@ -474,7 +477,7 @@ class CommunityPersistedReadinessStore:
                 gen = await session.get(ReadinessGenerationRow,
                     scope.active_generation_id) if scope.active_generation_id else None
                 incompatible = gen is None or gen.state != "complete" or (
-                    gen.evaluator_version != "delivery-readiness-evaluator/v1")
+                    gen.evaluator_version != EVALUATOR_VERSION)
                 stale = gen is not None and gen.captured_revision < scope.source_revision
                 if incompatible or stale:
                     job.requested_revision = max(job.requested_revision, scope.source_revision)

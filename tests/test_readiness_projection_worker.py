@@ -1,7 +1,7 @@
 """A committed Spec intent can publish a durable generation without KG."""
 
 import asyncio
-from dataclasses import replace
+from dataclasses import asdict, replace
 import json
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -13,7 +13,9 @@ from okto_pulse.community.adapters.readiness_projection_worker import ReadinessP
 from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import ReadinessLeaseLost
 from okto_pulse.community.adapters.worker_runners import TrackedBlockingExecution
 from okto_pulse.core.ports.delivery_readiness import ReadinessReadError
-from okto_pulse.core.services.persisted_delivery_readiness import build_readiness_generation
+from okto_pulse.core.services.persisted_delivery_readiness import (
+    build_readiness_generation, readiness_manifest_digest,
+)
 
 
 async def _seed_one_spec(engine):
@@ -179,6 +181,80 @@ async def test_invalid_staging_manifest_never_becomes_active(tmp_path):
                 "JOIN readiness_job j ON j.scope_id=s.id WHERE s.spec_id='spec'"
             )).one()
             assert state == ('running', None)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_incompatible_evaluator_generation_cannot_publish(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        await asyncio.sleep(.06)
+        claim = await worker.store.claim(owner='evaluator-test')
+        assert claim is not None
+        snapshot, revision = await worker.reader.load_for_projection(
+            board_id='board', spec_id='spec', blocking_execution=worker.blocking_execution)
+        generation = build_readiness_generation(snapshot, captured_revision=revision)
+        future_version = 'delivery-readiness-evaluator/future'
+        future_digest = readiness_manifest_digest(
+            board_id=generation.board_id, spec_id=generation.spec_id,
+            edition=generation.spec_edition, captured_revision=generation.captured_revision,
+            source_snapshot_id=generation.source_snapshot_id,
+            evaluator_version=future_version,
+            summaries=[summary.payload() for summary in generation.summaries],
+            units=[asdict(unit) for unit in generation.units],
+        )
+        incompatible = replace(generation, evaluator_version=future_version,
+            manifest_sha256=future_digest)
+        staged = await worker.store.stage(claim, incompatible)
+        assert not await worker.store.publish(claim, staged)
+        visible = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert visible is not None and visible.generation_id is None
+        assert visible.freshness == 'pending_initial'
+        good_staged = await worker.store.stage(claim, generation)
+        assert await worker.store.publish(claim, good_staged)
+        current = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert current is not None and current.generation_id == good_staged
+        assert current.freshness == 'current'
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_older_snapshot_publishes_as_updating_without_losing_newer_debt(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        await asyncio.sleep(.06)
+        claim = await worker.store.claim(owner='slow-worker')
+        assert claim is not None
+        snapshot, revision = await worker.reader.load_for_projection(
+            board_id='board', spec_id='spec', blocking_execution=worker.blocking_execution)
+        generation = build_readiness_generation(snapshot, captured_revision=revision)
+        staged = await worker.store.stage(claim, generation)
+        before = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert before is not None and before.generation_id is None
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql("UPDATE specs SET description='newer source' WHERE id='spec'")
+        assert await worker.store.publish(claim, staged)
+        intermediate = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert intermediate is not None and intermediate.generation_id == staged
+        assert intermediate.freshness == 'updating'
+        async with engine.connect() as connection:
+            state = (await connection.exec_driver_sql(
+                "SELECT s.source_revision,j.requested_revision,j.state "
+                "FROM readiness_scope s JOIN readiness_job j ON j.scope_id=s.id "
+                "WHERE s.id='spec:1'" )).one()
+        assert state[0] == state[1] == revision + 1
+        assert state[2] == 'pending'
+        await asyncio.sleep(.06)
+        assert await worker.process_once() == 1
+        current = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert current is not None and current.freshness == 'current'
+        assert current.generation_id != staged
     finally:
         await engine.dispose()
 
