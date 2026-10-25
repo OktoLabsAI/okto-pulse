@@ -27,8 +27,8 @@ background continuation or replay of precomputed results is introduced.
 
 Long runs occupy an execution thread and an MCP request for their duration.
 Client/proxy request limits may be shorter than the authorized runner timeout;
-operators must verify that transport separately. This change does not provide
-an asynchronous job API, guaranteed request delivery, or aggregation of receipts.
+operators must verify that transport separately. This extension does not change
+the existing asynchronous job API or guarantee request delivery or receipt aggregation.
 Increasing the runner limit does not relax a product's performance criteria.
 
 Deployment, service restart and new profile registration are separate operator

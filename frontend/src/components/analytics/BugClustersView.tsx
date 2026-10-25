@@ -92,7 +92,7 @@ export function BugClustersView({ boardId, onBack }: { boardId: string; onBack: 
       <label className="grid gap-1">Status
         <select className={inputClass} value={draft.status ?? ''} onChange={e => setDraft({ ...draft, status: e.target.value })}>
           <option value="">All statuses</option>
-          {['not_started', 'started', 'in_progress', 'validation', 'rejected', 'on_hold', 'done', 'cancelled'].map(value => <option key={value}>{value}</option>)}
+          {['not_started', 'in_progress', 'validation', 'rejected', 'on_hold', 'done', 'cancelled'].map(value => <option key={value}>{value}</option>)}
         </select>
       </label>
       <button className={inputClass} type="submit">Apply filters</button>

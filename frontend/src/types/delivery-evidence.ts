@@ -50,6 +50,8 @@ export interface DeliveryEvidenceProjection {
     missing_card_ids?: string[];
     missing_criteria?: Array<[string, string]>;
   }>;
+  current_proof_rows?: Array<{ obligation_ref: string; semantic_sha256: string;
+    implementation_ids: string[]; implementation_satisfied: boolean }> | null;
   implementations: Array<{ id: string; card_id: string; actor_id?: string; explanation: string; bindings: Array<{ obligation_ref: string; semantic_sha256: string }>; contributions: Array<{ binding: { obligation_ref: string; semantic_sha256: string }; contribution: 'partial' | 'complete'; execution_ids: string[] }>; admitted_obligation_refs: string[]; ready_obligation_refs: string[]; executions: Array<{ execution_id: string; target_id: string; source_ref: string; relative_path: string; result_revision: string; symbol?: string | null; current_accepted_execution: boolean }> }>;
   tests?: Array<{ id: string; card_id: string; actor_id?: string; scenario_id: string; result: string; current_verified_run?: boolean }>;
   candidates: Array<{ kind: 'implementation' | 'test'; id: string; card_id: string; card_version?: number; label: string }>;
@@ -104,7 +106,7 @@ export type CardDeliveryBatchDraft = Omit<CardDeliveryBatchInput, 'idempotency_k
 
 export interface CardDeliveryReportInput {
   contract_version: 'card-delivery-report/v1';
-  expected_card_status: 'started' | 'in_progress';
+  expected_card_status: 'in_progress';
   batch: CardDeliveryBatchInput;
   report: {
     learning_submission?: import('./index').LearningSubmission;

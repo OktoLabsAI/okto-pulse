@@ -27,6 +27,7 @@ from .test_evidence import (
 )
 
 SCHEMA = "okto-pulse-external-unittest/v1"
+PAIRED_PROFILE_SCHEMA = "okto-pulse-external-unittest-profile/v2"
 _LONG_TIMEOUT_AUTHORIZATION = "local-long-running/v1"
 _MAX_LONG_TIMEOUT_SECONDS = 3600
 _NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}")
@@ -53,7 +54,8 @@ def _profile_path(root, name):
 
 
 def register_profile(*, root, name, workspace, source_ref, board_id, spec_id,
-                     scenario_id, test_ids, timeout_seconds=60, allow_long_running=False):
+                     scenario_id, test_ids, timeout_seconds=60,
+                     workspace_role=None, companions=None, allow_long_running=False):
     path = _profile_path(Path(root), name)
     workspace = Path(workspace)
     if not workspace.is_absolute() or not workspace.is_dir():
@@ -62,6 +64,12 @@ def register_profile(*, root, name, workspace, source_ref, board_id, spec_id,
     data = dict(schema_version=SCHEMA, workspace=str(workspace), source_ref=source_ref,
                 board_id=board_id, spec_id=spec_id, scenario_id=scenario_id,
                 test_ids=test_ids, timeout_seconds=timeout_seconds)
+    if companions:
+        data["schema_version"] = PAIRED_PROFILE_SCHEMA
+        data["workspace_role"] = workspace_role
+        data["companions"] = companions
+    elif workspace_role is not None:
+        _fail("companion_required_for_workspace_role")
     if type(allow_long_running) is not bool:
         _fail("timeout_authorization_invalid")
     if allow_long_running:
@@ -77,12 +85,20 @@ def register_profile(*, root, name, workspace, source_ref, board_id, spec_id,
 def _validate_profile(data):
     keys = {"schema_version", "workspace", "source_ref", "board_id", "spec_id",
             "scenario_id", "test_ids", "timeout_seconds"}
-    if (not isinstance(data, dict) or set(data) not in (keys, keys | {"timeout_authorization"})
-            or data["schema_version"] != SCHEMA):
+    if not isinstance(data, dict):
+        _fail("profile_invalid")
+    paired = data.get("schema_version") == PAIRED_PROFILE_SCHEMA
+    if paired:
+        keys |= {"workspace_role", "companions"}
+    if set(data) not in (keys, keys | {"timeout_authorization"}) or data["schema_version"] not in {SCHEMA, PAIRED_PROFILE_SCHEMA}:
         _fail("profile_invalid")
     if any(not isinstance(data[k], str) or not data[k].strip()
            for k in ("workspace", "source_ref", "board_id", "spec_id", "scenario_id")):
         _fail("profile_invalid")
+    workspace = Path(data["workspace"])
+    if not workspace.is_absolute() or not workspace.is_dir():
+        _fail("absolute_workspace_required")
+    _assert_no_reparse_chain(workspace, allow_missing=False)
     authorization = data.get("timeout_authorization")
     if "timeout_authorization" in data and authorization != _LONG_TIMEOUT_AUTHORIZATION:
         _fail("timeout_authorization_invalid")
@@ -100,6 +116,38 @@ def _validate_profile(data):
         path = PurePosixPath(selector.split("::")[0])
         if path.is_absolute() or ".." in path.parts:
             _fail("test_path_invalid")
+    if paired:
+        if data["workspace_role"] not in {"core", "community"}:
+            _fail("workspace_role_invalid")
+        companions = data["companions"]
+        if not isinstance(companions, list) or len(companions) != 1:
+            _fail("companions_invalid")
+        roles = {data["workspace_role"]}
+        sources = {data["source_ref"]}
+        workspaces = {str(Path(data["workspace"]).resolve()).casefold()}
+        for companion in companions:
+            if not isinstance(companion, dict) or set(companion) != {
+                "role", "workspace", "source_ref", "revision",
+            }:
+                _fail("companion_invalid")
+            role = companion["role"]
+            if role not in {"core", "community"} or role in roles:
+                _fail("companion_role_invalid")
+            roles.add(role)
+            for field in ("workspace", "source_ref"):
+                if not isinstance(companion[field], str) or not companion[field].strip():
+                    _fail("companion_invalid")
+            if not isinstance(companion["revision"], str) or not _REVISION.fullmatch(companion["revision"]):
+                _fail("companion_revision_invalid")
+            path = Path(companion["workspace"])
+            if not path.is_absolute() or not path.is_dir():
+                _fail("companion_workspace_invalid")
+            _assert_no_reparse_chain(path, allow_missing=False)
+            normalized_path = str(path.resolve()).casefold()
+            if normalized_path in workspaces or companion["source_ref"] in sources:
+                _fail("companion_duplicate_source")
+            workspaces.add(normalized_path)
+            sources.add(companion["source_ref"])
 
 
 def validate_external_manifest(data, *, board_id, spec_id, scenario_id, scenario_sha256):
@@ -175,6 +223,14 @@ def _observe(profile, revision):
         root = Path(temp) / "project"
         root.mkdir()
         _snapshot(Path(profile["workspace"]), revision, root)
+        paired_roots = {}
+        if profile["schema_version"] == PAIRED_PROFILE_SCHEMA:
+            paired_roots[profile["workspace_role"]] = str(root)
+            for index, companion in enumerate(profile["companions"]):
+                destination = Path(temp) / "companions" / str(index)
+                destination.mkdir(parents=True)
+                _snapshot(Path(companion["workspace"]), companion["revision"], destination)
+                paired_roots[companion["role"]] = str(destination)
         report = Path(temp) / "result.json"
         worker = Path(__file__).with_name("external_unittest_worker.py")
         # Do not forward API tokens, Pulse configuration or PYTHONPATH.
@@ -182,8 +238,12 @@ def _observe(profile, revision):
                if key.upper() in {"SYSTEMROOT", "WINDIR", "PATH", "TEMP", "TMP", "LANG",
                                   "USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOMEDRIVE", "HOMEPATH", "HOME"}}
         with open(os.devnull, "wb") as output:
-            process = subprocess.Popen([sys.executable, "-E", "-P", "-B", str(worker), str(root),
-                                        str(report), *profile["test_ids"]],
+            worker_args = [str(root), str(report)]
+            if paired_roots:
+                worker_args.extend(["--paired-sources", json.dumps(paired_roots)])
+            worker_args.extend(profile["test_ids"])
+            process = subprocess.Popen([sys.executable, "-E", "-P", "-B", str(worker),
+                                        *worker_args],
                                        cwd=root, env=env, stdout=output, stderr=output,
                                        start_new_session=os.name != "nt")
             try:
@@ -237,6 +297,11 @@ async def execute_external_request(request, *, ledger, scope, status, actor_id, 
         _fail("profile_scope_mismatch")
     basis = dict(source_ref=profile["source_ref"], revision=revision,
                  runner_ref=request["runner_ref"], test_ids=profile["test_ids"])
+    if profile["schema_version"] == PAIRED_PROFILE_SCHEMA:
+        basis["companion_sources"] = [
+            {key: companion[key] for key in ("role", "source_ref", "revision")}
+            for companion in profile["companions"]
+        ]
     normalized = dict(schema_version=SCHEMA, purpose="test_scenario_evidence", **scope, execution_basis=basis)
     validate_external_manifest(normalized, **scope)
     manifest, canonical_ref = _persist_inline_manifest(normalized, ledger=ledger)

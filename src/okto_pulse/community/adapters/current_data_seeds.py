@@ -5,12 +5,14 @@ from sqlalchemy import select
 from okto_pulse.core.discovery_intent_catalog import DEFAULT_DISCOVERY_INTENTS
 
 from .permission_preset_reconciliation import reconcile_community_permission_presets
+from .card_status_permission_reconciliation import reconcile_card_status_permission_documents
 from .sqlalchemy_database import get_session_factory
 from .sqlalchemy_models import DiscoveryIntent
 
 
 async def seed_current_catalogs() -> None:
     await reconcile_community_permission_presets()
+    await reconcile_card_status_permission_documents()
     async with get_session_factory()() as session:
         async with session.begin():
             existing = {row.name: row for row in (

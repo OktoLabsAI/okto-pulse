@@ -54,7 +54,10 @@ export function DeliveryReadinessView({ value, persisted, loading, error, compac
     || (projected?.card_type === 'test' && projected.implementation.status === 'not_applicable');
   const incompatible = !loading && !error && value != null && !current;
   const historical = current?.summary.message_code === 'historical_completion_diverged';
-  const title = current ? historical ? 'Historical completion · current qualification pending'
+  const implementationDoneVerificationPending = historical && current?.scope.card_type !== 'test'
+    && current?.delivery_state === 'verification_pending' && current.implementation.unresolved === 0;
+  const title = current ? implementationDoneVerificationPending ? 'Implementation complete · verification pending'
+    : historical ? 'Historical completion · current qualification pending'
     : current.scope.card_type === 'test' && current.lifecycle.stored_status === 'done' && current.delivery_state === 'verification_failed'
       ? 'Execution complete · failures found' : labels[current.delivery_state] : null;
   const explanation = 'Current evidence for the applicable scope; not an agent-declared score. Percentage = satisfied ÷ applicable, rounded down. N/A is excluded; waivers do not add proof credit.';
@@ -62,6 +65,9 @@ export function DeliveryReadinessView({ value, persisted, loading, error, compac
     : current?.delivery_state === 'delivered' || current?.delivery_state === 'delivered_with_exceptions' ? 'View evidence' : 'What is missing?';
   if (compact) return <section aria-label="Delivery readiness" aria-busy={loading || undefined}
     className="relative mt-2 min-w-0 rounded-md py-1" title={title || (persisted?.freshness === 'current' ? 'Current persisted readiness' : loading ? 'Loading delivery readiness' : 'Current readiness is unavailable. Open Delivery to retry.')}>
+    {historical && <p role="status" className="mb-1 text-[10px] font-semibold text-amber-700 dark:text-amber-300">
+      {implementationDoneVerificationPending ? 'Implementation done · Verification pending' : 'Execution done · Delivery pending'}
+    </p>}
     <div className={`grid ${verificationOnly ? 'grid-cols-1' : 'grid-cols-2'} gap-3`}>
       {!verificationOnly && <Metric label="Implementation" value={current?.implementation ?? projected?.implementation} loading={loading || persisted?.freshness === 'pending_initial'} compact />}
       <Metric label="Verification" value={current?.verification ?? projected?.verification} loading={loading || persisted?.freshness === 'pending_initial'} compact />

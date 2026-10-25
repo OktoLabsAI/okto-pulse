@@ -299,7 +299,7 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
     if (targetStatus === 'done') return true;
     if (targetStatus !== 'validation') return false;
     if (card?.card_type === 'test') return false;
-    return sourceStatus !== null && ['not_started', 'started', 'in_progress', 'on_hold'].includes(sourceStatus);
+    return sourceStatus !== null && ['not_started', 'in_progress', 'on_hold'].includes(sourceStatus);
   };
 
   // Close spec search on outside click
@@ -591,6 +591,7 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
     if (!canMoveCard(fromStatus, targetStatus)) return;
 
     const card = Object.values(renderedColumns).flat().find((c) => c.id === cardId);
+    const originalIndex = renderedColumns[fromStatus]?.findIndex((item) => item.id === cardId) ?? -1;
 
     // ITEM 17: cancelling requires a justification — intercept the drop.
     if (targetStatus === 'cancelled' && fromStatus !== 'cancelled') {
@@ -613,6 +614,9 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
     try {
       await apiRef.current.moveCard(cardId, destination.request);
     } catch (err) {
+      // Restore the visible origin immediately. The subsequent server refresh
+      // reconciles concurrent changes and the authoritative column totals.
+      if (originalIndex >= 0) optimisticMoveCard(cardId, fromStatus, originalIndex);
       toast.error(err instanceof Error ? err.message : 'Failed to move card');
     } finally {
       refreshColumns();

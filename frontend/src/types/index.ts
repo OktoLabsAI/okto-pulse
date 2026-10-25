@@ -12,7 +12,6 @@ import type { SpecExecutionContract } from './execution-contract';
 // Card status enum matching backend
 export type CardStatus =
   | 'not_started'
-  | 'started'
   | 'in_progress'
   | 'validation'
   | 'rejected'
@@ -22,7 +21,6 @@ export type CardStatus =
 
 export const CARD_STATUSES: CardStatus[] = [
   'not_started',
-  'started',
   'in_progress',
   'validation',
   'rejected',
@@ -37,12 +35,10 @@ export const CARD_STATUSES: CardStatus[] = [
  */
 export const CREATABLE_CARD_STATUSES: CardStatus[] = [
   'not_started',
-  'started',
 ];
 
 export const STATUS_LABELS: Record<CardStatus, string> = {
   not_started: 'Not Started',
-  started: 'Started',
   in_progress: 'In Progress',
   validation: 'Validation',
   rejected: 'Rejected',

@@ -4,7 +4,7 @@ import json
 from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 import asyncio
 import httpx
 from contextlib import asynccontextmanager
@@ -460,7 +460,7 @@ async def test_gate_accepts_chain_valid_proof_recorded_before_done(ledger):
     register_relational_application_adapter(CommunityRelationalApplicationAdapter())
     session, store, _ = ledger
     await session.execute(
-        update(Card).where(Card.id == "task").values(status="in_progress")
+        update(Card).where(Card.id.in_(["task", "test"])).values(status="in_progress")
     )
     await session.commit()
     card = await session.get(Card, "task")
@@ -471,11 +471,16 @@ async def test_gate_accepts_chain_valid_proof_recorded_before_done(ledger):
 
     result = await record(store, command(idempotency_key="pre-done-impl"))
     assert result["replayed"] is False
+    with pytest.raises(ValueError, match="delivery_evidence_incomplete"):
+        await require_card_delivery(session, card=card, spec=spec, board=None)
     # Passing authenticated test evidence still cannot give final credit to an
     # implementation Card that has not reached Done.
     await record(store, command("test", implementation_ids=[result["id"]]))
     await session.commit()
-    assert not (await store.projection(BOARD_ID, SPEC_ID))["allowed"]
+    before_done = await store.projection(BOARD_ID, SPEC_ID)
+    assert not before_done["allowed"]
+    assert any(result["id"] in row["implementation_ids"] for row in before_done["current_proof_rows"])
+    assert all(result["id"] not in row["implementation_ids"] for row in before_done["rows"])
     await require_card_delivery(session, card=card, spec=spec, board=None)
     await session.execute(update(Card).where(Card.id == "task").values(status="validation"))
     await session.commit()
@@ -487,9 +492,42 @@ async def test_gate_accepts_chain_valid_proof_recorded_before_done(ledger):
     assert not (await store.projection(BOARD_ID, SPEC_ID))["allowed"]
     # Controlled lifecycle stimulus isolates rollup's status predicate; actual
     # governed transitions are exercised by the complete lifecycle suites.
-    await session.execute(update(Card).where(Card.id == "task").values(status="done"))
+    await session.execute(update(Card).where(Card.id.in_(["task", "test"])).values(status="done"))
     await session.commit()
-    assert (await store.projection(BOARD_ID, SPEC_ID))["allowed"]
+    after_done = await store.projection(BOARD_ID, SPEC_ID)
+    assert after_done["allowed"]
+    assert any(result["id"] in row["implementation_ids"] for row in after_done["rows"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ledger", ["native_schema"], indirect=True)
+async def test_test_card_done_requires_current_cross_card_delivery_verification(ledger):
+    from okto_pulse.core.services.delivery_evidence import require_card_delivery
+    from okto_pulse.community.adapters.relational_application import CommunityRelationalApplicationAdapter
+    from okto_pulse.core.ports.relational_application import register_relational_application_adapter
+
+    register_relational_application_adapter(CommunityRelationalApplicationAdapter())
+    session, store, _ = ledger
+    await session.execute(update(Card).where(Card.id.in_(["task", "test"])).values(status="in_progress"))
+    await session.commit()
+    card = await session.get(Card, "test")
+    spec = await session.get(Spec, SPEC_ID)
+
+    with patch.object(CommunityDeliveryEvidenceStore, "_progress_summary",
+                      side_effect=AssertionError("completion gate loaded display summaries")):
+        with pytest.raises(ValueError, match="delivery_evidence_incomplete"):
+            await require_card_delivery(session, card=card, spec=spec)
+
+    implementation = await record(store, command(idempotency_key="test-gate-implementation"))
+    await record(store, command("test", implementation_ids=[implementation["id"]],
+        idempotency_key="test-gate-verification"))
+    await session.commit()
+    # Current proof can authorize the Test Card transition before the sibling
+    # implementation Card closes; Spec delivery still waits for its lifecycle.
+    with patch.object(CommunityDeliveryEvidenceStore, "_progress_summary",
+                      side_effect=AssertionError("completion gate loaded display summaries")):
+        await require_card_delivery(session, card=card, spec=spec)
+    assert not (await store.projection(BOARD_ID, SPEC_ID))["allowed"]
 
 
 @pytest.mark.asyncio
@@ -522,6 +560,7 @@ async def test_waiver_is_human_scoped_phase_specific_revocable_and_preserves_don
     waived = await store.projection(BOARD_ID, SPEC_ID)
     assert waived["allowed"]
     assert all(not row["implementation_ids"] and not row["test_ids"] for row in waived["rows"])
+    assert all(not row["implementation_satisfied"] for row in waived["current_proof_rows"])
     revoke = spec_exception_command("revoke", record_id=first["id"])
     for human, granted, error in [(True, False, "permission"), (False, True, "human_authorization")]:
         with pytest.raises(PermissionDeniedError, match=error):
