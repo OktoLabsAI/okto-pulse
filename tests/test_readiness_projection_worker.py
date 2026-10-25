@@ -260,6 +260,49 @@ async def test_older_snapshot_publishes_as_updating_without_losing_newer_debt(tm
 
 
 @pytest.mark.asyncio
+async def test_claim_round_robin_survives_restart_and_failing_scope(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        async with engine.begin() as connection:
+            for spec_id in ('a-spec', 'z-spec'):
+                await connection.exec_driver_sql(
+                    "INSERT INTO specs (id,board_id,title,status,version,created_by,"
+                    "architecture_adoption,execution_contract) "
+                    "VALUES (?,'board','Spec','in_progress',1,'owner','{}',?)",
+                    (spec_id, json.dumps({"contract_version": "spec-execution-contract/v1",
+                        "board_id": "board", "spec_id": spec_id, "adopted_in_edition": 1,
+                        "actor_id": "owner", "origin": "new_spec"})),
+                )
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        await asyncio.sleep(.06)
+        claimed = []
+        for _ in range(3):
+            claim = await worker.store.claim(owner='round-robin-test')
+            assert claim is not None
+            claimed.append(claim.spec_id)
+            await worker.store.fail(claim, error_code='synthetic_failure')
+            async with engine.begin() as connection:
+                await connection.exec_driver_sql(
+                    "UPDATE readiness_job SET due_at='2000-01-01 00:00:00' WHERE scope_id=?",
+                    (claim.scope_id,),
+                )
+        assert claimed == ['a-spec', 'spec', 'z-spec']
+        async with engine.connect() as connection:
+            cursor = (await connection.exec_driver_sql(
+                "SELECT value FROM app_settings WHERE key='readiness_claim_cursor'"
+            )).scalar_one()
+        assert cursor == 'z-spec:1'
+        await engine.dispose()
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+        restarted = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        next_claim = await restarted.store.claim(owner='after-restart')
+        assert next_claim is not None and next_claim.spec_id == 'a-spec'
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_sustained_queue_lag_is_warned_without_exposing_payload(tmp_path, monkeypatch, caplog):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
     try:

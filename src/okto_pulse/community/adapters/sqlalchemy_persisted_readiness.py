@@ -165,17 +165,32 @@ class CommunityPersistedReadinessStore:
             await connection.exec_driver_sql("BEGIN IMMEDIATE")
             try:
                 async with AsyncSession(bind=connection, expire_on_commit=False) as session:
-                    row = (await session.scalars(select(ReadinessJobRow).join(ReadinessScopeRow,
-                        ReadinessScopeRow.id == ReadinessJobRow.scope_id).where(
+                    cursor_row = await session.get(AppSetting, "readiness_claim_cursor")
+                    cursor = cursor_row.value if cursor_row else ""
+                    eligible = select(ReadinessJobRow).join(ReadinessScopeRow,
+                        ReadinessScopeRow.id == ReadinessJobRow.scope_id).join(
+                        Spec, Spec.id == ReadinessScopeRow.spec_id).where(
                         ReadinessScopeRow.tombstone.is_(False),
+                        ReadinessScopeRow.edition == Spec.edition,
+                        Spec.archived.is_(False),
                         or_(
                             (ReadinessJobRow.state == "pending") & (ReadinessJobRow.due_at <= now),
                             (ReadinessJobRow.state == "running") & (ReadinessJobRow.lease_until < now),
-                        )).order_by(ReadinessJobRow.due_at, ReadinessJobRow.scope_id).limit(1))).first()
+                        ))
+                    row = (await session.scalars(eligible.where(
+                        ReadinessJobRow.scope_id > cursor).order_by(
+                        ReadinessJobRow.scope_id).limit(1))).first()
+                    if row is None and cursor:
+                        row = (await session.scalars(eligible.order_by(
+                            ReadinessJobRow.scope_id).limit(1))).first()
                     if row is None:
                         await connection.rollback()
                         return None
                     scope = await session.get(ReadinessScopeRow, row.scope_id)
+                    if cursor_row is None:
+                        session.add(AppSetting(key="readiness_claim_cursor", value=row.scope_id))
+                    else:
+                        cursor_row.value = row.scope_id
                     row.state, row.owner = "running", owner
                     row.lease_epoch += 1
                     row.lease_until = now + timedelta(seconds=LEASE_SECONDS)
