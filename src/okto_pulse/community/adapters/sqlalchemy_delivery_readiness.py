@@ -292,7 +292,7 @@ class CommunityDeliveryReadinessReader:
         return access
 
     async def _load_transaction(self, session, board_id, spec_id, card_id, counts,
-                                *, defer_identity=False):
+                                *, defer_facts=False):
         rows = {}
         rows[Spec] = await self._rows(session, select(Spec).where(Spec.id == spec_id,
             Spec.board_id == board_id, Spec.archived.is_(False)), 1, counts)
@@ -324,7 +324,14 @@ class CommunityDeliveryReadinessReader:
             Receipt.id.in_(receipts)).order_by(Receipt.id), MAX_FACTS, counts)
         rows[Revocation] = await self._rows(session, select(Revocation).where(Revocation.receipt_id.in_(receipts))
             .order_by(Revocation.id), MAX_FACTS, counts)
-        facts = await _BatchFacts(session, rows, inventory=self.inventory).snapshot()
+        if defer_facts:
+            return rows
+        return await self._snapshot_from_rows(rows)
+
+    async def _snapshot_from_rows(self, rows):
+        """Build facts from an immutable row set; no database call is allowed."""
+        spec = rows[Spec][0]
+        facts = await _BatchFacts(None, rows, inventory=self.inventory).snapshot()
         # Hash actual content as well as identities. No mutable ORM objects,
         # raw ledger payloads, credentials or full Board configuration escape.
         identity_values = {model.__tablename__: tuple((r.id,
@@ -337,7 +344,7 @@ class CommunityDeliveryReadinessReader:
                 'fingerprint_version': FINGERPRINT_VERSION,
                 'evaluator_version': EVALUATOR_VERSION,
                 'inputs': identities, 'effective_facts': facts})
-        identity = '' if defer_identity else calculate_identity()
+        identity = calculate_identity()
         evaluated_at = self.clock.now()
         if evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None:
             raise ReadinessReadError('readiness_assessment_unavailable', native_code='readiness_clock_timezone_required')
@@ -348,13 +355,12 @@ class CommunityDeliveryReadinessReader:
             ('title', 'verification_method', 'given', 'when', 'then', 'notes')),
             tuple(v for v in (s.get('linked_criteria') or ()) if isinstance(v, str)))
             for s in spec.test_scenarios if isinstance(s, dict) and isinstance(s.get('id'), str)) if isinstance(spec.test_scenarios, list) else ()
-        snapshot = ReadinessSnapshot(facts, identity, evaluated_at.astimezone(timezone.utc), int(spec.version), spec.status.value,
+        return ReadinessSnapshot(facts, identity, evaluated_at.astimezone(timezone.utc), int(spec.version), spec.status.value,
             tuple(ReadinessCard(c.id, c.card_type, c.status, c.policy_version,
                 tuple(c.test_scenario_ids) if c.test_scenario_ids is not None else None, c.assignee_id)
                 for c in rows[Card] if not c.archived), scenarios,
             delivery_gate_mode=resolve_delivery_gate_policy(rows[Board][0].settings),
             skip_delivery_evidence=spec.skip_delivery_evidence is True)
-        return (snapshot, calculate_identity) if defer_identity else snapshot
 
     async def load(self, *, board_id, spec_id, card_id=None, actor=None):
         # Actor-less reads are internal fact-loader compatibility only. Public
@@ -401,7 +407,7 @@ class CommunityDeliveryReadinessReader:
             logger.debug('readiness_batch_read elapsed_ms=%.3f queries=%d facts=%d',
                 (perf_counter() - started) * 1000, counts['queries'], counts['facts'])
 
-    async def load_for_projection(self, *, board_id, spec_id):
+    async def load_for_projection(self, *, board_id, spec_id, blocking_execution):
         """Capture one source revision and immutable facts without actor state.
 
         The worker releases this connection before calling the CPU evaluator.
@@ -423,19 +429,26 @@ class CommunityDeliveryReadinessReader:
                     if scope is None:
                         raise ReadinessReadError('readiness_scope_mismatch')
                     try:
-                        snapshot, calculate_identity = await self._load_transaction(
-                            session, board_id, spec_id, None, counts, defer_identity=True)
+                        rows = await self._load_transaction(
+                            session, board_id, spec_id, None, counts, defer_facts=True)
                     except ReadinessReadError as exc:
                         if exc.code != 'readiness_limit_exceeded':
                             raise
-                        snapshot = await self._capacity_snapshot(session, board_id, spec_id, None, counts, exc)
-                        calculate_identity = lambda: snapshot.snapshot_id
-                    if snapshot.facts.scope.edition != scope.edition:
-                        raise ReadinessReadError('readiness_snapshot_changed')
+                        rows = None
+                        overflow = await self._capacity_snapshot(session, board_id, spec_id, None, counts, exc)
                     captured_revision = scope.source_revision
+                    edition = scope.edition
             finally:
                 await connection.rollback()
-        return snapshot, captured_revision, calculate_identity
+        if rows is None:
+            snapshot = overflow
+        else:
+            import asyncio
+            snapshot = await blocking_execution.run(
+                lambda: asyncio.run(self._snapshot_from_rows(rows)))
+        if snapshot.facts.scope.edition != edition:
+            raise ReadinessReadError('readiness_snapshot_changed')
+        return snapshot, captured_revision
 
     async def load_persisted(self, *, board_id, spec_id, actor, card_id=None,
                              unit_limit=0, cursor=None):

@@ -1,5 +1,7 @@
 """Source and projection intent commit or roll back together."""
 
+import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy import create_engine
 
 from okto_pulse.community.adapters.current_relational_schema import (
@@ -79,3 +81,37 @@ def test_new_edition_tombstones_old_generation_scope(tmp_path):
                 "WHERE scope_id='spec-a:2'").scalar_one() == 1
     finally:
         engine.dispose()
+
+
+def test_scope_job_constraints_and_paged_unit_index_survive_reopen(tmp_path):
+    engine = _database(tmp_path)
+    try:
+        with engine.connect() as connection:
+            connection.exec_driver_sql('PRAGMA foreign_keys=ON')
+            scope = connection.exec_driver_sql(
+                "SELECT id,realm_id,board_id,spec_id,edition FROM readiness_scope "
+                "WHERE spec_id='spec-a'").one()
+            with pytest.raises(IntegrityError):
+                connection.exec_driver_sql("INSERT INTO readiness_scope "
+                    "(id,realm_id,board_id,spec_id,edition,source_revision,tombstone,updated_at) "
+                    "VALUES (?,?,?,?,?,0,0,CURRENT_TIMESTAMP)",
+                    ('duplicate-scope', *scope[1:]))
+            connection.rollback()
+            with pytest.raises(IntegrityError):
+                connection.exec_driver_sql("INSERT INTO readiness_job "
+                    "(scope_id,requested_revision,state,lease_epoch,attempt,due_at,updated_at) "
+                    "VALUES (?,1,'pending',0,0,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)", (scope[0],))
+            connection.rollback()
+            plan = connection.exec_driver_sql("EXPLAIN QUERY PLAN SELECT payload "
+                "FROM readiness_unit WHERE generation_id=? AND card_key=? "
+                "ORDER BY kind,ref,semantic_sha256 LIMIT 20", ('g', '')).all()
+            assert any('INDEX' in row[3].upper() for row in plan)
+    finally:
+        engine.dispose()
+    reopened = create_engine(f"sqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        with reopened.connect() as connection:
+            assert connection.exec_driver_sql("SELECT requested_revision FROM readiness_job "
+                "WHERE scope_id='spec-a:1'").scalar_one() == 1
+    finally:
+        reopened.dispose()

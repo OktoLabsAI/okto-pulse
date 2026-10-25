@@ -84,6 +84,7 @@ def build_community_worker_registry(
         ReadinessProjectionProcessor(get_engine(), readiness_blocking_execution),
         name="community.readiness_projection",
         interval_seconds=0.1,
+        active_interval_seconds=0.0,
         operation_name="process_once",
         blocking_execution=readiness_blocking_execution,
     )

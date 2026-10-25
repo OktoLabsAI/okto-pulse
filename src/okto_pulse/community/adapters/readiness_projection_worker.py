@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
 from datetime import datetime, timezone
 import logging
 from time import monotonic
@@ -23,16 +22,34 @@ class ReadinessProjectionProcessor:
         self.blocking_execution = blocking_execution
         self.owner = uuid4().hex
         self._last_reconcile = 0.0
+        self._last_queue_probe = 0.0
+        self._last_queue_log = 0.0
+        self._last_lag_warning = 0.0
         self._last_gc = 0.0
         self._gc_backlog = False
 
     async def process_once(self) -> int:
         if monotonic() - self._last_reconcile >= 60:
             scanned = await self.store.reconcile_once()
-            queue = await self.store.queue_status()
-            logger.info("readiness.queue scanned=%d counts=%s oldest_s=%s",
-                scanned, queue["counts"], queue["oldest_s"])
             self._last_reconcile = monotonic()
+        else:
+            scanned = 0
+        if monotonic() - self._last_queue_probe >= 5:
+            queue = await self.store.queue_status()
+            now = monotonic()
+            self._last_queue_probe = now
+            if now - self._last_queue_log >= 60:
+                logger.info("readiness.queue scanned=%d counts=%s oldest_s=%s pool_checked_out=%d",
+                    scanned, queue["counts"], queue["oldest_s"],
+                    getattr(self.store.engine.sync_engine.pool, 'checkedout', lambda: 0)())
+                self._last_queue_log = now
+            if queue['oldest_s'] is not None and queue['oldest_s'] >= 65:
+                if now - self._last_lag_warning >= 60:
+                    logger.warning("readiness.queue_lag oldest_s=%.3f counts=%s",
+                        queue['oldest_s'], queue['counts'])
+                    self._last_lag_warning = now
+            else:
+                self._last_lag_warning = 0.0
         if self._gc_backlog or monotonic() - self._last_gc >= 5:
             self._gc_backlog = await self.store.gc_once()
             self._last_gc = monotonic()
@@ -42,20 +59,20 @@ class ReadinessProjectionProcessor:
         heartbeat = asyncio.create_task(self._heartbeats(claim), name="readiness.heartbeat")
         try:
             snapshot_started = monotonic()
-            snapshot, captured_revision, calculate_identity = await self.reader.load_for_projection(
-                board_id=claim.board_id, spec_id=claim.spec_id)
+            snapshot, captured_revision = await self.reader.load_for_projection(
+                board_id=claim.board_id, spec_id=claim.spec_id,
+                blocking_execution=self.blocking_execution)
             snapshot_ms = (monotonic() - snapshot_started) * 1000
             if captured_revision < 0:
                 raise ValueError("readiness_revision_invalid")
             started = monotonic()
             generation = await self.blocking_execution.run(
-                lambda: build_readiness_generation(
-                    replace(snapshot, snapshot_id=calculate_identity()),
-                    captured_revision=captured_revision))
+                lambda: build_readiness_generation(snapshot, captured_revision=captured_revision,
+                    deadline=snapshot_started + 30))
             compute_ms = (monotonic() - started) * 1000
             if heartbeat.done():
                 heartbeat.result()
-            if monotonic() - started > 30:
+            if monotonic() - snapshot_started > 30:
                 raise TimeoutError("readiness_calculation_budget_exceeded")
             stage_started = monotonic()
             generation_id = await self.store.stage(claim, generation)

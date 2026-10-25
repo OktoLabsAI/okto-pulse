@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from itertools import chain, islice
+import json
 import logging
 import secrets
 from time import perf_counter
@@ -84,61 +85,76 @@ class CommunityPersistedReadinessStore:
         started = perf_counter()
         if unit_limit < 0 or unit_limit > 250 or unit_offset < 0:
             raise ValueError("readiness_page_invalid")
-        async with AsyncSession(self.engine, autoflush=False) as session:
-            await session.execute(text("BEGIN"))
-            scope = (await session.scalars(select(ReadinessScopeRow).where(
-                ReadinessScopeRow.board_id == board_id,
-                ReadinessScopeRow.spec_id == spec_id,
-                ReadinessScopeRow.edition == edition,
-                ReadinessScopeRow.tombstone.is_(False)))).first()
-            if scope is None:
-                return None
-            job = await session.get(ReadinessJobRow, scope.id)
-            selected_id = generation_id_override or scope.active_generation_id
-            gen = await session.get(ReadinessGenerationRow, selected_id) if selected_id else None
-            if gen is not None and (gen.state != "complete" or gen.scope_id != scope.id):
-                gen = None
-            if generation_id_override is not None and gen is None:
-                raise ReadinessReadError('readiness_cursor_stale', native_code='snapshot_conflict')
-            compatible = gen is not None and gen.evaluator_version == "delivery-readiness-evaluator/v1"
-            if job is not None and job.state == "terminal":
-                freshness = "unavailable"
-            elif gen is None:
-                freshness = "pending_initial"
-            elif not compatible:
-                freshness = "unavailable"
-            elif gen.captured_revision == scope.source_revision:
-                freshness = "current"
-            else:
-                freshness = "updating"
-            summaries = ()
-            units = ()
-            unit_total = 0
-            if compatible:
-                predicate = (ReadinessSummaryRow.card_key == card_id) if card_id else None
-                query = select(ReadinessSummaryRow).where(ReadinessSummaryRow.generation_id == gen.id)
-                if predicate is not None:
-                    query = query.where(predicate)
-                summaries = tuple(row.payload for row in (await session.scalars(
-                    query.order_by(ReadinessSummaryRow.card_key))).all())
-                if unit_limit:
-                    unit_total = int(await session.scalar(select(func.count()).select_from(ReadinessUnitRow).where(
-                        ReadinessUnitRow.generation_id == gen.id,
-                        ReadinessUnitRow.card_key == (card_id or ""))) or 0)
-                    rows = (await session.scalars(select(ReadinessUnitRow).where(
-                        ReadinessUnitRow.generation_id == gen.id,
-                        ReadinessUnitRow.card_key == (card_id or "")).order_by(
-                        ReadinessUnitRow.kind, ReadinessUnitRow.ref,
-                        ReadinessUnitRow.semantic_sha256).offset(unit_offset).limit(unit_limit))).all()
-                    units = tuple(row.payload for row in rows)
-            result = ProjectionRead(board_id, spec_id, edition, scope.source_revision,
-                gen.id if compatible else None, gen.captured_revision if compatible else None,
-                gen.evaluated_at if compatible else None, freshness,
-                job.error_code if job else None, summaries, units, unit_total)
-            logger.debug("readiness.read board=%s spec=%s freshness=%s summaries=%d units=%d elapsed_ms=%.3f",
-                board_id, spec_id, freshness, len(summaries), len(units),
-                (perf_counter() - started) * 1000)
-            return result
+        async with self.engine.connect() as connection:
+            await connection.exec_driver_sql("BEGIN")
+            try:
+                scope = (await connection.exec_driver_sql(
+                    "SELECT id,source_revision,active_generation_id FROM readiness_scope "
+                    "WHERE board_id=? AND spec_id=? AND edition=? AND tombstone=0 LIMIT 1",
+                    (board_id, spec_id, edition))).mappings().first()
+                if scope is None:
+                    return None
+                job = (await connection.exec_driver_sql(
+                    "SELECT state,error_code FROM readiness_job WHERE scope_id=?",
+                    (scope['id'],))).mappings().first()
+                selected_id = generation_id_override or scope['active_generation_id']
+                gen = (await connection.exec_driver_sql(
+                    "SELECT id,scope_id,state,evaluator_version,captured_revision,evaluated_at "
+                    "FROM readiness_generation WHERE id=?", (selected_id,))).mappings().first(
+                    ) if selected_id else None
+                if gen is not None and (gen['state'] != 'complete' or gen['scope_id'] != scope['id']):
+                    gen = None
+                if generation_id_override is not None and gen is None:
+                    raise ReadinessReadError('readiness_cursor_stale', native_code='snapshot_conflict')
+                compatible = gen is not None and gen['evaluator_version'] == 'delivery-readiness-evaluator/v1'
+                if job is not None and job['state'] == 'terminal':
+                    freshness = 'unavailable'
+                elif gen is None:
+                    freshness = 'pending_initial'
+                elif not compatible:
+                    freshness = 'unavailable'
+                elif gen['captured_revision'] == scope['source_revision']:
+                    freshness = 'current'
+                else:
+                    freshness = 'updating'
+                summary_json: tuple[str, ...] = ()
+                unit_json: tuple[str, ...] = ()
+                unit_total = 0
+                if compatible:
+                    if card_id:
+                        summary_json = tuple(row[0] for row in (await connection.exec_driver_sql(
+                            "SELECT payload FROM readiness_summary WHERE generation_id=? "
+                            "AND card_key=?", (gen['id'], card_id))).all())
+                    else:
+                        summary_json = tuple(row[0] for row in (await connection.exec_driver_sql(
+                            "SELECT payload FROM readiness_summary WHERE generation_id=? "
+                            "ORDER BY card_key", (gen['id'],))).all())
+                    if unit_limit:
+                        key = card_id or ''
+                        unit_total = int((await connection.exec_driver_sql(
+                            "SELECT count(*) FROM readiness_unit WHERE generation_id=? AND card_key=?",
+                            (gen['id'], key))).scalar_one())
+                        unit_json = tuple(row[0] for row in (await connection.exec_driver_sql(
+                            "SELECT payload FROM readiness_unit WHERE generation_id=? AND card_key=? "
+                            "ORDER BY kind,ref,semantic_sha256 LIMIT ? OFFSET ?",
+                            (gen['id'], key, unit_limit, unit_offset))).all())
+                source_revision = int(scope['source_revision'])
+                generation_id = gen['id'] if compatible else None
+                captured_revision = int(gen['captured_revision']) if compatible else None
+                evaluated_at = (datetime.fromisoformat(gen['evaluated_at']).replace(tzinfo=timezone.utc)
+                    if compatible and isinstance(gen['evaluated_at'], str) else None)
+                error_code = job['error_code'] if job else None
+            finally:
+                await connection.rollback()
+        summaries = tuple(json.loads(value) for value in summary_json)
+        units = tuple(json.loads(value) for value in unit_json)
+        result = ProjectionRead(board_id, spec_id, edition, source_revision,
+            generation_id, captured_revision, evaluated_at, freshness,
+            error_code, summaries, units, unit_total)
+        logger.debug("readiness.read board=%s spec=%s freshness=%s summaries=%d units=%d elapsed_ms=%.3f",
+            board_id, spec_id, freshness, len(summaries), len(units),
+            (perf_counter() - started) * 1000)
+        return result
 
     async def claim(self, *, owner: str) -> ReadinessClaim | None:
         now = datetime.now(timezone.utc)

@@ -1,6 +1,7 @@
 """A committed Spec intent can publish a durable generation without KG."""
 
 import asyncio
+from dataclasses import replace
 import json
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -12,23 +13,28 @@ from okto_pulse.community.adapters.readiness_projection_worker import ReadinessP
 from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import ReadinessLeaseLost
 from okto_pulse.community.adapters.worker_runners import TrackedBlockingExecution
 from okto_pulse.core.ports.delivery_readiness import ReadinessReadError
+from okto_pulse.core.services.persisted_delivery_readiness import build_readiness_generation
+
+
+async def _seed_one_spec(engine):
+    async with engine.begin() as connection:
+        await connection.run_sync(create_current_schema_objects)
+        await connection.run_sync(seed_current_schema_fences)
+        await connection.exec_driver_sql("INSERT INTO boards (id,name,owner_id,realm_id) "
+            "VALUES ('board','Test','owner','local')")
+        await connection.exec_driver_sql("INSERT INTO specs "
+            "(id,board_id,title,status,version,created_by,architecture_adoption,execution_contract) "
+            "VALUES ('spec','board','Spec','in_progress',1,'owner','{}',?)",
+            (json.dumps({"contract_version": "spec-execution-contract/v1", "board_id": "board",
+                "spec_id": "spec", "adopted_in_edition": 1, "actor_id": "owner",
+                "origin": "new_spec"}),))
 
 
 @pytest.mark.asyncio
 async def test_worker_publishes_one_complete_generation_after_source_commit(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
     try:
-        async with engine.begin() as connection:
-            await connection.run_sync(create_current_schema_objects)
-            await connection.run_sync(seed_current_schema_fences)
-            await connection.exec_driver_sql("INSERT INTO boards (id,name,owner_id,realm_id) "
-                "VALUES ('board','Test','owner','local')")
-            await connection.exec_driver_sql("INSERT INTO specs "
-                "(id,board_id,title,status,version,created_by,architecture_adoption,execution_contract) "
-                "VALUES ('spec','board','Spec','in_progress',1,'owner','{}',?)",
-                (json.dumps({"contract_version": "spec-execution-contract/v1", "board_id": "board",
-                    "spec_id": "spec", "adopted_in_edition": 1, "actor_id": "owner",
-                    "origin": "new_spec"}),))
+        await _seed_one_spec(engine)
         worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
         assert await worker.process_once() == 1
         first = await worker.store.read(board_id="board", spec_id="spec", edition=1)
@@ -108,5 +114,92 @@ async def test_worker_publishes_one_complete_generation_after_source_commit(tmp_
                 "SELECT owner,state,error_code FROM readiness_job WHERE scope_id='spec:1'"
             )).one()
         assert (owner, state, error) == ("worker-two", "running", None)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_projection_cpu_runs_after_snapshot_checkout_is_released(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        entered, resume = asyncio.Event(), asyncio.Event()
+
+        class PausedExecution:
+            calls = 0
+
+            async def run(self, operation):
+                self.calls += 1
+                if self.calls == 1:
+                    assert engine.sync_engine.pool.checkedout() == 0
+                    entered.set()
+                    await resume.wait()
+                return await asyncio.to_thread(operation)
+
+        worker = ReadinessProjectionProcessor(engine, PausedExecution())
+        processing = asyncio.create_task(worker.process_once())
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        assert engine.sync_engine.pool.checkedout() == 0
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql("UPDATE specs SET description='committed during CPU' "
+                "WHERE id='spec'")
+        resume.set()
+        assert await asyncio.wait_for(processing, timeout=10) == 1
+        stale = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert stale is not None and stale.freshness == 'updating'
+        assert stale.captured_revision == 1 and stale.source_revision == 2
+        assert await worker.process_once() == 1
+        current = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert current is not None and current.freshness == 'current'
+        assert current.captured_revision == 2
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_invalid_staging_manifest_never_becomes_active(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        await asyncio.sleep(.06)
+        claim = await worker.store.claim(owner='manifest-test')
+        assert claim is not None
+        snapshot, revision = await worker.reader.load_for_projection(
+            board_id='board', spec_id='spec', blocking_execution=worker.blocking_execution)
+        generation = build_readiness_generation(snapshot, captured_revision=revision)
+        with pytest.raises(ValueError, match='readiness_stage_manifest_mismatch'):
+            await worker.store.stage(claim, replace(generation, manifest_sha256='0' * 64))
+        visible = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert visible is not None and visible.freshness == 'pending_initial'
+        assert visible.generation_id is None
+        async with engine.connect() as connection:
+            state = (await connection.exec_driver_sql(
+                "SELECT state,active_generation_id FROM readiness_scope s "
+                "JOIN readiness_job j ON j.scope_id=s.id WHERE s.spec_id='spec'"
+            )).one()
+            assert state == ('running', None)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_sustained_queue_lag_is_warned_without_exposing_payload(tmp_path, monkeypatch, caplog):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        async def reconciled():
+            return 0
+        async def queue():
+            return {'counts': {'pending': 1}, 'oldest_s': 66.0}
+        async def no_claim(*, owner):
+            return None
+        monkeypatch.setattr(worker.store, 'reconcile_once', reconciled)
+        monkeypatch.setattr(worker.store, 'queue_status', queue)
+        monkeypatch.setattr(worker.store, 'claim', no_claim)
+        monkeypatch.setattr(worker.store, 'gc_once', reconciled)
+        with caplog.at_level('WARNING', logger='okto_pulse.readiness_projection'):
+            assert await worker.process_once() == 0
+        assert 'readiness.queue_lag oldest_s=66.000' in caplog.text
     finally:
         await engine.dispose()

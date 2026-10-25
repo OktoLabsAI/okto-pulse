@@ -140,6 +140,7 @@ class PollingRunner:
         *,
         name: str,
         interval_seconds: float,
+        active_interval_seconds: float | None = None,
         operation_name: str,
         recover: Callable[[], Awaitable[int]] | None = None,
         final_iteration: bool = False,
@@ -149,6 +150,7 @@ class PollingRunner:
         self.processor = processor
         self.name = name
         self.interval_seconds = interval_seconds
+        self.active_interval_seconds = active_interval_seconds
         self.operation_name = operation_name
         self._recover = recover
         self._final_iteration = final_iteration
@@ -196,8 +198,9 @@ class PollingRunner:
     async def run_forever(self) -> None:
         try:
             while self._running:
+                completed = 0
                 try:
-                    await self.process_once()
+                    completed = await self.process_once()
                 except asyncio.CancelledError:
                     raise
                 except Exception:
@@ -205,10 +208,12 @@ class PollingRunner:
                 wake = self._wake_event
                 if wake is None:
                     return
+                delay = (self.active_interval_seconds if completed and
+                    self.active_interval_seconds is not None else self.interval_seconds)
                 try:
                     await asyncio.wait_for(
                         wake.wait(),
-                        timeout=self.interval_seconds,
+                        timeout=delay,
                     )
                 except asyncio.TimeoutError:
                     pass

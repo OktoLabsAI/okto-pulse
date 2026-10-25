@@ -58,8 +58,10 @@ def url():
 
 
 async def test_persisted_rest_reads_published_generation_with_current_authorization(ledger, monkeypatch):
-    session, _, _ = ledger
+    session, store, _ = ledger
     rest, _, _ = await surfaces(session, monkeypatch)
+    implementation = await delivery.record(store, delivery.command())
+    await delivery.record(store, delivery.command('test', implementation_ids=[implementation['id']]))
     await session.commit()
     worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
     assert await worker.process_once() == 1
@@ -73,6 +75,8 @@ async def test_persisted_rest_reads_published_generation_with_current_authorizat
     assert result['projection']['generation_id']
     assert result['scope']['spec_id'] == delivery.SPEC_ID
     assert len(result['summaries']) == 3
+    assert result['summaries'][0]['implementation']['percent'] == 100
+    assert result['summaries'][0]['verification']['percent'] == 100
     assert result['page']['limit'] == 2
 
 
