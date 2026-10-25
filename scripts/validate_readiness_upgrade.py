@@ -14,7 +14,12 @@ import json
 import pickle
 from pathlib import Path
 import sqlite3
+import sys
 from tempfile import TemporaryDirectory
+
+WORKSPACE = Path(__file__).resolve().parents[2]
+sys.path[:0] = [str(WORKSPACE / 'okto-pulse' / 'src'),
+                str(WORKSPACE / 'okto-pulse-core' / 'src')]
 
 from okto_pulse.community.adapters.current_relational_schema import (
     current_schema_contract, inspect_current_schema,

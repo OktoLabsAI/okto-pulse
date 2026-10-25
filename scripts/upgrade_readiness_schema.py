@@ -1,4 +1,4 @@
-"""Apply the fenced v400→v401 SQLite upgrade while Pulse is stopped."""
+"""Apply the fenced v400/v401/v402→v403 SQLite upgrade while Pulse is stopped."""
 
 from __future__ import annotations
 

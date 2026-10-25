@@ -1,4 +1,4 @@
-"""Explicit, one-way upgrade from the exact v400 or v401 SQLite format.
+"""Explicit, one-way upgrade from exact v400, v401 or v402 SQLite formats.
 
 Run only during a service stop. The source is locked, backed up and checked
 before any DDL. Unknown or modified predecessors are refused. A backup is
