@@ -20,7 +20,7 @@ from .sqlalchemy_models import Base
 
 
 APPLICATION_ID = 0x4F50554C  # OPUL
-SCHEMA_VERSION = 402
+SCHEMA_VERSION = 403
 _SCHEMA_QUERY = (
     "SELECT type, name, tbl_name, sql FROM main.sqlite_schema "
     "WHERE name NOT GLOB 'sqlite_*' ORDER BY type, name"

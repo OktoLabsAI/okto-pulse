@@ -69,17 +69,22 @@ def _statements(table: str, row: str) -> str:
       WHERE id IN ({identity});
     INSERT INTO readiness_job
       (scope_id,requested_revision,state,owner,lease_epoch,lease_until,attempt,due_at,error_code,updated_at)
-    SELECT id,source_revision,'pending',NULL,0,NULL,0,{due},NULL,{now}
+    SELECT id,source_revision,CASE WHEN tombstone=1 THEN 'terminal' ELSE 'pending' END,
+      NULL,0,NULL,0,{due},CASE WHEN tombstone=1 THEN 'scope_tombstoned' ELSE NULL END,{now}
       FROM readiness_scope WHERE id IN ({identity})
     ON CONFLICT(scope_id) DO UPDATE SET
       requested_revision=max(readiness_job.requested_revision,excluded.requested_revision),
-      state=CASE WHEN readiness_job.state='running' THEN 'running' ELSE 'pending' END,
-      owner=CASE WHEN readiness_job.state='running' THEN readiness_job.owner ELSE NULL END,
-      lease_until=CASE WHEN readiness_job.state='running' THEN readiness_job.lease_until ELSE NULL END,
-      attempt=CASE WHEN readiness_job.state='running' THEN readiness_job.attempt ELSE 0 END,
+      state=CASE WHEN excluded.state='terminal' THEN 'terminal'
+        WHEN readiness_job.state='running' THEN 'running' ELSE 'pending' END,
+      owner=CASE WHEN excluded.state='terminal' THEN NULL
+        WHEN readiness_job.state='running' THEN readiness_job.owner ELSE NULL END,
+      lease_until=CASE WHEN excluded.state='terminal' THEN NULL
+        WHEN readiness_job.state='running' THEN readiness_job.lease_until ELSE NULL END,
+      attempt=CASE WHEN excluded.state='terminal' THEN 0
+        WHEN readiness_job.state='running' THEN readiness_job.attempt ELSE 0 END,
       due_at=CASE WHEN readiness_job.state='pending' AND readiness_job.error_code IS NULL
         THEN min(readiness_job.due_at,excluded.due_at) ELSE excluded.due_at END,
-      error_code=NULL,updated_at=excluded.updated_at;
+      error_code=excluded.error_code,updated_at=excluded.updated_at;
     """
 
 

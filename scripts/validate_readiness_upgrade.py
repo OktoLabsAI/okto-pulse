@@ -1,4 +1,4 @@
-"""Validate the exact v400→v401 upgrade on a consistent copy of a live database.
+"""Validate an admitted v400/v401/v402→v403 upgrade on a live database copy.
 
 This command never writes to the source path. It emits only counts and hashes,
 not source rows. The scratch copy and retained backup live in a temporary
@@ -20,7 +20,9 @@ from okto_pulse.community.adapters.current_relational_schema import (
     current_schema_contract, inspect_current_schema,
 )
 from okto_pulse.community.adapters.readiness_schema_upgrade import (
-    PREDECESSOR_SHA256, _fingerprint, upgrade_readiness_schema,
+    PREDECESSOR_SHA256, PREDECESSOR_VERSION, READINESS_V401_SHA256,
+    READINESS_V401_VERSION, READINESS_V402_SHA256, READINESS_V402_VERSION,
+    _fingerprint, upgrade_readiness_schema,
 )
 
 
@@ -53,8 +55,14 @@ def validate(source: Path) -> dict:
                 destination.commit()
         with closing(sqlite3.connect(copied)) as predecessor:
             predecessor.execute('PRAGMA journal_mode=WAL')
+            before_version = predecessor.execute('PRAGMA user_version').fetchone()[0]
             before_schema = _fingerprint(predecessor)
-            if before_schema != PREDECESSOR_SHA256:
+            expected = {
+                PREDECESSOR_VERSION: PREDECESSOR_SHA256,
+                READINESS_V401_VERSION: READINESS_V401_SHA256,
+                READINESS_V402_VERSION: READINESS_V402_SHA256,
+            }.get(before_version)
+            if before_schema != expected:
                 raise ValueError('unexpected_predecessor_fingerprint')
             before = source_inventory(predecessor)
         backup = upgrade_readiness_schema(copied)
@@ -67,7 +75,8 @@ def validate(source: Path) -> dict:
                 raise ValueError('upgraded_foreign_key_failed')
             if source_inventory(upgraded) != before or source_inventory(preserved) != before:
                 raise ValueError('source_rows_changed')
-            return {'predecessor_fingerprint': before_schema,
+            return {'predecessor_version': before_version,
+                'predecessor_fingerprint': before_schema,
                 'source_tables_verified': len(before),
                 'source_rows_verified': sum(count for count, _ in before.values()),
                 'upgraded_schema_version': upgraded.execute('PRAGMA user_version').fetchone()[0],

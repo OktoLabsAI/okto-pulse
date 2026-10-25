@@ -31,6 +31,8 @@ PREDECESSOR_VERSION = 400
 PREDECESSOR_SHA256 = "b83a653dfdbe9b1737d62c9f4c8b256eca0c32e076ca37009163625921882e4d"
 READINESS_V401_VERSION = 401
 READINESS_V401_SHA256 = "0361baf59a762393cfb4d21aec5b729e611bcf201697d837303da75a8bdc3edb"
+READINESS_V402_VERSION = 402
+READINESS_V402_SHA256 = "ff2132ff78ded80b46110cb69796d6cc792d635893b4ce7b68ebd43a30d82113"
 _TABLES = (
     ReadinessScopeRow.__table__, ReadinessJobRow.__table__, ReadinessGenerationRow.__table__,
     ReadinessSummaryRow.__table__, ReadinessUnitRow.__table__,
@@ -54,9 +56,13 @@ def _require_predecessor(connection: sqlite3.Connection) -> int:
     if connection.execute("PRAGMA main.application_id").fetchone()[0] != APPLICATION_ID:
         raise StorageFormatError("application_id")
     version = connection.execute("PRAGMA main.user_version").fetchone()[0]
-    if version not in {PREDECESSOR_VERSION, READINESS_V401_VERSION}:
+    if version not in {PREDECESSOR_VERSION, READINESS_V401_VERSION, READINESS_V402_VERSION}:
         raise StorageFormatError("predecessor_version")
-    expected = PREDECESSOR_SHA256 if version == PREDECESSOR_VERSION else READINESS_V401_SHA256
+    expected = {
+        PREDECESSOR_VERSION: PREDECESSOR_SHA256,
+        READINESS_V401_VERSION: READINESS_V401_SHA256,
+        READINESS_V402_VERSION: READINESS_V402_SHA256,
+    }[version]
     if _fingerprint(connection) != expected:
         raise StorageFormatError("predecessor_fingerprint")
     _check_integrity(connection)
@@ -97,11 +103,7 @@ def upgrade_readiness_schema(database: Path) -> Path:
                     locked.execute(str(CreateTable(table).compile(dialect=dialect())))
                     for index in sorted(table.indexes, key=lambda item: item.name):
                         locked.execute(str(CreateIndex(index).compile(dialect=dialect())))
-                class _LockedConnection:
-                    def exec_driver_sql(self, statement):
-                        locked.execute(statement)
-                install_readiness_invalidation_triggers(_LockedConnection())
-            else:
+            if version == READINESS_V401_VERSION:
                 # SQLite cannot add a UNIQUE table constraint with ALTER TABLE.
                 # This audit table has no foreign-key dependants; replace only
                 # it and preserve all existing rows under the service-stop lock.
@@ -116,6 +118,24 @@ def upgrade_readiness_schema(database: Path) -> Path:
                 locked.execute("DROP TABLE readiness_operation_audit_pre402")
                 for index in sorted(table.indexes, key=lambda item: item.name):
                     locked.execute(str(CreateIndex(index).compile(dialect=dialect())))
+            if version != PREDECESSOR_VERSION:
+                # The prior manifest was admitted exactly. Replace only its
+                # readiness hooks; preserve unrelated application triggers.
+                names = [row[0] for row in locked.execute(
+                    "SELECT name FROM sqlite_schema WHERE type='trigger' "
+                    "AND name GLOB 'trg_readiness_*'")]
+                for name in names:
+                    locked.execute(f'DROP TRIGGER "{name}"')
+            class _LockedConnection:
+                def exec_driver_sql(self, statement):
+                    locked.execute(statement)
+            install_readiness_invalidation_triggers(_LockedConnection())
+            # Earlier hooks could leave an archived scope with a pending job
+            # that the worker would never claim. Repair that derived debt in
+            # the same exclusive upgrade transaction.
+            locked.execute("UPDATE readiness_job SET state='terminal',owner=NULL,"
+                "lease_until=NULL,attempt=0,error_code='scope_tombstoned' "
+                "WHERE scope_id IN (SELECT id FROM readiness_scope WHERE tombstone=1)")
             locked.execute(f"PRAGMA main.user_version={SCHEMA_VERSION}")
             _check_integrity(locked)
             inspect_current_schema(locked.cursor(), current_schema_contract())
