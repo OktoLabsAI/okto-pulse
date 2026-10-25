@@ -11,6 +11,9 @@ import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 import { isPersistedReadinessProjection, type PersistedReadinessProjection, type ReadinessMetric } from '@/types/delivery-readiness';
 import { decisionStatusLabel } from '@/components/specs/DecisionReviewSection';
 import { readinessReadMode } from '@/lib/readinessMode';
+import { isRetriableReadinessError, ReadinessContractError } from './readinessTransport';
+
+class ReadinessGenerationChangedError extends Error {}
 
 interface Props {
   boardId: string;
@@ -104,8 +107,9 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
   const [projectionError, setProjectionError] = useState('');
   const [showDetails, setShowDetails] = useState(legacyMode);
   const scopeKey = JSON.stringify([boardId, specId, revision, reload]);
+  const projectionScopeKey = JSON.stringify([boardId, specId, legacyMode]);
   const data = dataOwner?.api === api && dataOwner.key === scopeKey ? storedData : null;
-  const projection = projectionOwner?.api === api && projectionOwner.key === scopeKey ? storedProjection : null;
+  const projection = projectionOwner?.api === api && projectionOwner.key === projectionScopeKey ? storedProjection : null;
 
   useEffect(() => {
     if (legacyMode) return;
@@ -123,7 +127,10 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
 
   useEffect(() => {
     const controller = new AbortController();
-    setProjection(null); setProjectionError('');
+    setProjection(current => projectionOwner?.api === api && projectionOwner.key === projectionScopeKey
+      && current?.projection.generation_id
+      ? { ...current, projection: { ...current.projection, freshness: 'updating' } } : null);
+    setProjectionError('');
     if (legacyMode) return () => controller.abort();
     let retry = 1000;
     void (async () => {
@@ -134,23 +141,28 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
         }
         try {
           let page = await api.getPersistedReadinessProjection(boardId, specId, { unitLimit: 250 }, controller.signal);
-          if (!isPersistedReadinessProjection(page) || page.scope.board_id !== boardId || page.scope.spec_id !== specId)
-            throw new Error('Readiness projection scope mismatch.');
+          if (!isPersistedReadinessProjection(page) || page.scope.board_id !== boardId || page.scope.spec_id !== specId
+            || page.scope.card_id !== null)
+            throw new ReadinessContractError('Readiness projection scope mismatch.');
           const rows = [...page.units];
           const seen = new Set<string>();
           while (page.page.has_more) {
             const cursor = page.page.next_cursor;
-            if (!cursor || seen.has(cursor)) throw new Error('Readiness page cursor invalid.');
+            if (!cursor || seen.has(cursor)) throw new ReadinessContractError('Readiness page cursor invalid.');
             seen.add(cursor);
             const next = await api.getPersistedReadinessProjection(boardId, specId,
               { unitLimit: 250, cursor }, controller.signal);
-            if (!isPersistedReadinessProjection(next) || next.projection.generation_id !== page.projection.generation_id
-              || next.scope.spec_edition !== page.scope.spec_edition) throw new Error('Readiness generation changed. Restart this view.');
+            if (!isPersistedReadinessProjection(next) || next.scope.board_id !== boardId || next.scope.spec_id !== specId
+              || next.scope.card_id !== null) throw new ReadinessContractError('Readiness page scope mismatch.');
+            if (next.projection.generation_id !== page.projection.generation_id
+              || next.scope.spec_edition !== page.scope.spec_edition
+              || next.projection.source_revision !== page.projection.source_revision)
+              throw new ReadinessGenerationChangedError('Readiness generation changed. Restarting this view.');
             rows.push(...next.units);
             page = next;
           }
           if (!controller.signal.aborted) {
-            setProjectionOwner({ api, key: scopeKey });
+            setProjectionOwner({ api, key: projectionScopeKey });
             setProjection({ ...page, units: rows });
           }
           setProjectionError(''); retry = 1000;
@@ -159,13 +171,24 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
         } catch (failure) {
           if (controller.signal.aborted) return;
           setProjectionError(failure instanceof Error ? failure.message : 'Readiness projection unavailable.');
+          if (failure instanceof ReadinessGenerationChangedError) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+            continue;
+          }
+          if (!isRetriableReadinessError(failure)) {
+            setProjection(null);
+            return;
+          }
+          setProjection(current => current?.projection.generation_id
+            ? { ...current, projection: { ...current.projection, freshness: 'unavailable', error_code: 'transport_error' } }
+            : null);
           await new Promise(resolve => setTimeout(resolve, retry));
-          retry = Math.min(5000, retry * 2);
+          retry = retry === 1000 ? 2000 : 5000;
         }
       }
     })();
     return () => controller.abort();
-  }, [api, boardId, specId, revision, reload, scopeKey, legacyMode]);
+  }, [api, boardId, specId, revision, reload, projectionScopeKey, legacyMode]);
 
   useEffect(() => {
     const controller = new AbortController();

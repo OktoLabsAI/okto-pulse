@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { DeliveryEvidencePanel } from '../DeliveryEvidencePanel';
 import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 import { persistedProjection, readiness } from './readinessFixture';
@@ -89,6 +89,47 @@ it('refreshes a current coverage generation after a delivery report event', asyn
   expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(2);
   expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');
   expect(api.getDeliveryEvidence).not.toHaveBeenCalled();
+});
+
+it('keeps the previous obligation table visible until a complete new generation arrives', async () => {
+  const first = persistedProjection();
+  first.units = [{ card_id: null, kind: 'obligation', ref: 'fr:old', semantic_sha256: 'a'.repeat(64),
+    spec_edition: 1, contribution_card_ids: [], implementation_state: 'satisfied',
+    verification_state: 'missing', implementation_reason_codes: [], verification_reason_codes: [] }];
+  const next = persistedProjection();
+  next.projection.generation_id = 'generation-2';
+  next.units = [{ ...first.units[0], ref: 'fr:new' }];
+  let resolve!: (value: typeof next) => void;
+  api.getPersistedReadinessProjection.mockResolvedValueOnce(first)
+    .mockImplementation(() => new Promise(r => { resolve = r; }));
+  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  await waitFor(() => expect(screen.getByTestId('delivery-coverage-table')).toHaveTextContent('FR (old)'));
+  fireEvent(window, new Event('pulse:delivery-evidence-changed'));
+  await waitFor(() => expect(screen.getByText(/Generation generation-1/)).toHaveTextContent('Updating'));
+  expect(screen.getByTestId('delivery-coverage-table')).toHaveTextContent('FR (old)');
+  await act(async () => resolve(next));
+  await waitFor(() => expect(screen.getByTestId('delivery-coverage-table')).toHaveTextContent('FR (new)'));
+  expect(screen.getByTestId('delivery-coverage-table')).not.toHaveTextContent('FR (old)');
+  expect(screen.getByText(/Generation generation-2/)).toHaveTextContent('Current');
+});
+
+it('restarts pagination when a newer generation replaces a page mid-read', async () => {
+  const first = persistedProjection();
+  first.units = [{ card_id: null, kind: 'obligation', ref: 'fr:old', semantic_sha256: 'a'.repeat(64),
+    spec_edition: 1, contribution_card_ids: [], implementation_state: 'satisfied',
+    verification_state: 'missing', implementation_reason_codes: [], verification_reason_codes: [] }];
+  first.page = { offset: 0, limit: 1, total: 2, has_more: true, next_cursor: 'cursor-old' };
+  const changed = persistedProjection();
+  changed.projection.generation_id = 'generation-2';
+  const complete = persistedProjection();
+  complete.projection.generation_id = 'generation-2';
+  complete.units = [{ ...first.units[0], ref: 'fr:new' }];
+  api.getPersistedReadinessProjection.mockResolvedValueOnce(first).mockResolvedValueOnce(changed)
+    .mockResolvedValue(complete);
+  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  await waitFor(() => expect(screen.getByTestId('delivery-coverage-table')).toHaveTextContent('FR (new)'));
+  expect(screen.getByTestId('delivery-coverage-table')).not.toHaveTextContent('FR (old)');
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(3);
 });
 
 it('refreshes exception detail when navigating in-place and rejects foreign evidence', async () => {
