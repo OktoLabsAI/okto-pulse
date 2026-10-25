@@ -473,19 +473,20 @@ class CommunityDeliveryReadinessReader:
                         # metrics as well as the Spec summary. Authorize that
                         # population before reading or returning any row.
                         access.require('card.entity.read')
-                        specs = await self._rows(session, select(Spec).where(Spec.id == spec_id,
-                            Spec.board_id == board_id, Spec.archived.is_(False)), 1, counts)
-                        if not specs:
+                        spec = (await session.execute(select(Spec.edition, Spec.version).where(
+                            Spec.id == spec_id, Spec.board_id == board_id,
+                            Spec.archived.is_(False)))).first()
+                        if spec is None:
                             raise ReadinessReadError('readiness_scope_mismatch')
-                        card = None
+                        card_policy_version = None
                         if card_id is not None:
-                            cards = await self._rows(session, select(Card).where(Card.id == card_id,
+                            card_policy_version = (await session.execute(select(Card.policy_version).where(
+                                Card.id == card_id,
                                 Card.board_id == board_id, Card.spec_id == spec_id,
-                                Card.archived.is_(False)), 1, counts)
-                            if not cards:
+                                Card.archived.is_(False)))).scalar_one_or_none()
+                            if card_policy_version is None:
                                 raise ReadinessReadError('readiness_scope_mismatch')
-                            card = cards[0]
-                        return access, specs[0].edition, specs[0].version, card.policy_version if card else None
+                        return access, spec.edition, spec.version, card_policy_version
                 finally:
                     await connection.rollback()
 
