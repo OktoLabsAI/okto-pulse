@@ -11,6 +11,7 @@ from contextlib import closing
 from hashlib import sha256
 import json
 from pathlib import Path
+import shutil
 import sqlite3
 from uuid import uuid4
 
@@ -70,6 +71,16 @@ def _require_predecessor(connection: sqlite3.Connection) -> int:
     return version
 
 
+def _require_backup_space(path: Path) -> None:
+    """Reserve one database copy, the current WAL and DDL working headroom."""
+    database_bytes = path.stat().st_size
+    wal_path = path.with_name(path.name + "-wal")
+    wal_bytes = wal_path.stat().st_size if wal_path.is_file() else 0
+    required_bytes = database_bytes + wal_bytes + max(16 * 1024 * 1024, database_bytes // 4)
+    if shutil.disk_usage(path.parent).free < required_bytes:
+        raise StorageFormatError("insufficient_backup_space")
+
+
 def upgrade_readiness_schema(database: Path) -> Path:
     """Upgrade one stopped SQLite file and return its retained backup path.
 
@@ -81,6 +92,7 @@ def upgrade_readiness_schema(database: Path) -> Path:
     path = database.resolve(strict=True)
     if not path.is_file() or path.suffix.lower() not in {".db", ".sqlite", ".sqlite3"}:
         raise StorageFormatError("database_path")
+    _require_backup_space(path)
     with closing(sqlite3.connect(path, timeout=0, isolation_level=None)) as locked:
         locked.execute("PRAGMA foreign_keys=ON")
         if locked.execute("PRAGMA journal_mode").fetchone()[0].lower() != "wal":

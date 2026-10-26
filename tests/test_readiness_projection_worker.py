@@ -593,6 +593,20 @@ async def test_reconcile_cursor_resumes_bounded_pages_after_restart(tmp_path):
             )).scalar_one()
         assert cursor == 'spec-098'
 
+        # A new source write to a scope already visited by backfill must keep
+        # its own revision and pending work across the worker restart.
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(
+                "UPDATE specs SET title='Reported during backfill' WHERE id='spec-050'")
+        async with engine.connect() as connection:
+            revision = (await connection.exec_driver_sql(
+                "SELECT source_revision FROM readiness_scope WHERE id='spec-050:1'"
+            )).scalar_one()
+            requested = (await connection.exec_driver_sql(
+                "SELECT requested_revision FROM readiness_job WHERE scope_id='spec-050:1'"
+            )).scalar_one()
+        assert revision >= 1 and requested == revision
+
         await engine.dispose()
         engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
         resumed = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
@@ -606,6 +620,10 @@ async def test_reconcile_cursor_resumes_bounded_pages_after_restart(tmp_path):
         assert cursor == 'spec-102' and jobs == 104
         assert await resumed.store.reconcile_once(limit=100) == 0
         assert await resumed.store.reconcile_once(limit=100) == 100
+        async with engine.connect() as connection:
+            assert (await connection.exec_driver_sql(
+                "SELECT requested_revision FROM readiness_job WHERE scope_id='spec-050:1'"
+            )).scalar_one() == revision
     finally:
         await engine.dispose()
 

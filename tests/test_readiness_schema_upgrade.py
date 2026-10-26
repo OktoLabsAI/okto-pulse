@@ -4,6 +4,7 @@ from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
@@ -83,6 +84,37 @@ def test_unknown_predecessor_is_refused_without_backup_or_mutation(tmp_path):
         assert connection.execute("PRAGMA user_version").fetchone()[0] == PREDECESSOR_VERSION
         assert connection.execute("SELECT name FROM sqlite_schema WHERE name='readiness_scope'").fetchone() is None
     assert not list(tmp_path.glob("*.bak"))
+
+
+def test_insufficient_backup_space_refuses_before_lock_backup_or_ddl(tmp_path, monkeypatch):
+    path = tmp_path / "pulse.sqlite3"
+    _predecessor(path)
+    monkeypatch.setattr(
+        "okto_pulse.community.adapters.readiness_schema_upgrade.shutil.disk_usage",
+        lambda _path: SimpleNamespace(free=0),
+    )
+    with pytest.raises(StorageFormatError, match="insufficient_backup_space"):
+        upgrade_readiness_schema(path)
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == PREDECESSOR_VERSION
+        assert _fingerprint(connection) == PREDECESSOR_SHA256
+    assert not list(tmp_path.glob("*.bak"))
+
+
+def test_active_writer_refuses_upgrade_without_creating_backup(tmp_path):
+    path = tmp_path / "pulse.sqlite3"
+    _predecessor(path)
+    with closing(sqlite3.connect(path, isolation_level=None)) as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                upgrade_readiness_schema(path)
+            with closing(sqlite3.connect(path)) as reader:
+                assert reader.execute("PRAGMA user_version").fetchone()[0] == PREDECESSOR_VERSION
+                assert _fingerprint(reader) == PREDECESSOR_SHA256
+            assert not list(tmp_path.glob("*.bak"))
+        finally:
+            writer.rollback()
 
 
 def test_ddl_failure_rolls_back_to_the_exact_predecessor(tmp_path, monkeypatch):
