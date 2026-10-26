@@ -27,7 +27,7 @@ def test_r08c_community_worker_registry_declares_baseline_families(monkeypatch) 
 
 
 @pytest.mark.asyncio
-async def test_file_backed_readiness_starts_two_workers_and_drains_pool(
+async def test_file_backed_readiness_starts_one_worker_and_drains_pool(
     tmp_path, monkeypatch,
 ) -> None:
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.db'}")
@@ -36,7 +36,7 @@ async def test_file_backed_readiness_starts_two_workers_and_drains_pool(
 
     class FakePool:
         def __init__(self, *, max_workers, mp_context):
-            assert max_workers == 2 and mp_context.get_start_method() == 'spawn'
+            assert max_workers == 1 and mp_context.get_start_method() == 'spawn'
 
         def shutdown(self, *, wait, cancel_futures):
             assert wait and cancel_futures
@@ -61,9 +61,7 @@ async def test_file_backed_readiness_starts_two_workers_and_drains_pool(
     await spec.stop(primary)
     assert events == [
         'start:community.readiness_projection',
-        'start:community.readiness_projection.secondary',
         'stop:community.readiness_projection',
-        'stop:community.readiness_projection.secondary',
         'pool:closed',
     ]
     await engine.dispose()

@@ -88,7 +88,8 @@ def build_community_worker_registry(
     database = readiness_engine.url.database
     file_backed = bool(database and database != ':memory:'
         and readiness_engine.url.query.get('uri') != 'true')
-    readiness_pool = (ProcessPoolExecutor(max_workers=2, mp_context=get_context('spawn'))
+    # TR03/AC12/AC23 require at most one concurrent calculation.
+    readiness_pool = (ProcessPoolExecutor(max_workers=1, mp_context=get_context('spawn'))
         if file_backed else None)
     database_path = str(Path(database).resolve()) if file_backed else None
     readiness_runner = PollingRunner(
@@ -101,18 +102,6 @@ def build_community_worker_registry(
         blocking_execution=readiness_blocking_execution,
     )
     readiness_runners = [readiness_runner]
-    if readiness_pool is not None:
-        secondary_blocking_execution = TrackedBlockingExecution()
-        readiness_runners.append(PollingRunner(
-            ReadinessProjectionProcessor(readiness_engine, secondary_blocking_execution,
-                full_projection_executor=readiness_pool, database_path=database_path,
-                maintenance_enabled=False),
-            name="community.readiness_projection.secondary",
-            interval_seconds=0.1,
-            active_interval_seconds=0.0,
-            operation_name="process_once",
-            blocking_execution=secondary_blocking_execution,
-        ))
 
     async def start_readiness():
         started = []
