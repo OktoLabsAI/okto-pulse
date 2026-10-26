@@ -197,6 +197,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         'snapshot_materialize_facts_cards': [],
         'snapshot_materialize_facts_context': [],
         'snapshot_materialize_facts_decisions': [],
+        'predecessor_read': [], 'predecessor_decode': [],
+        'predecessor_digest': [], 'predecessor_construct': [],
         'stage_metadata': [], 'stage_pack': [], 'stage_heartbeat': [],
         'stage_insert': [], 'stage_verify': [],
         'stage_verify_read': [], 'stage_verify_decode': [],
@@ -238,6 +240,10 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                         publish_phases_ms[f'snapshot_materialize_facts_{name}'].append(value)
                 for table, elapsed in record.readiness_query_ms.items():
                     publish_phases_ms.setdefault(f'snapshot_query_{table}', []).append(elapsed)
+                for name in ('read', 'decode', 'digest', 'construct'):
+                    value = getattr(record, f'readiness_predecessor_{name}_ms', None)
+                    if value is not None:
+                        publish_phases_ms[f'predecessor_{name}'].append(value)
             elif record.msg == 'readiness.stage_phases':
                 for key in ('metadata', 'pack', 'heartbeat', 'insert', 'verify'):
                     publish_phases_ms[f'stage_{key}'].append(
