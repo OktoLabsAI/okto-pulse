@@ -1,11 +1,13 @@
 """Concurrent isolated readiness load, writes, and publication-lag probe.
 
-This uses the Spec's population fixture. The candidate read includes service
-authorization and JSON serialization; the legacy read remains an internal
-source snapshot. Writer latency is split into lock wait and transaction time.
+This uses the Spec's population fixture. The candidate read can exercise the
+real REST route in-process (including authorization and JSON serialization) or
+the lower-level service; the legacy read remains an internal source snapshot.
+Writer latency is split into lock wait and transaction time.
 Publication targets share one bounded polling query; the engine uses the
 Community SQLite PRAGMAs. Delivery evidence writes append directly to SQLite
-without the API command path. This isolated harness does not claim REST/UI SLOs.
+without the API command path. The in-process REST mode excludes network and
+browser costs, so this isolated harness alone cannot prove the UI SLO.
 """
 
 from __future__ import annotations
@@ -16,6 +18,8 @@ from concurrent.futures import ProcessPoolExecutor
 from contextlib import closing
 from datetime import datetime, timezone
 from hashlib import sha256
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 import json
 import logging
 from multiprocessing import get_context
@@ -29,6 +33,8 @@ import sys
 from tempfile import TemporaryDirectory
 from time import monotonic, perf_counter, process_time
 
+from fastapi import FastAPI
+import httpx
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -39,10 +45,32 @@ from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import (
     CommunityDeliveryReadinessReader, CommunityReadinessClock,
 )
 from okto_pulse.community.adapters.worker_runners import TrackedBlockingExecution
+from okto_pulse.community.api import code_traceability as readiness_api
+from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.ports.delivery_readiness import ReadinessActor
+from okto_pulse.core.ports.permission_policy import registered_permission_flags
 from okto_pulse.core.services.delivery_readiness import DeliveryReadinessService
 
 ACTOR = ReadinessActor('benchmark-agent', 'agent', 'local', 'benchmark-board')
+
+
+def rest_client(service: DeliveryReadinessService) -> httpx.AsyncClient:
+    """Use the productive FastAPI route without external network RTT."""
+    app = FastAPI()
+    app.include_router(readiness_api.router)
+
+    async def principal() -> Principal:
+        return Principal(subject=ACTOR.actor_id, realm_id=ACTOR.realm_id,
+            actor_kind='agent', claims={'permissions': registered_permission_flags()})
+
+    async def unit_of_work():
+        yield SimpleNamespace(services=SimpleNamespace(delivery_readiness=service),
+            commit=AsyncMock())
+
+    app.dependency_overrides[readiness_api.require_principal] = principal
+    app.dependency_overrides[readiness_api.get_unit_of_work] = unit_of_work
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+        base_url='http://readiness-benchmark')
 
 
 async def run(path: Path, args: argparse.Namespace) -> dict:
@@ -75,6 +103,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
     worker = workers[0]
     reader = CommunityDeliveryReadinessReader(engine, clock=CommunityReadinessClock())
     service = DeliveryReadinessService(reader, None)
+    client = rest_client(service) if args.read_surface == 'rest' else None
     read_ms, write_ms, lag_ms, burst_write_ms, burst_lag_ms = [], [], [], [], []
     lock_wait_ms, transaction_ms, burst_lock_wait_ms, burst_transaction_ms = [], [], [], []
     source_update_ms, source_commit_ms = [], []
@@ -180,7 +209,13 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                     if args.mode == 'legacy':
                         await reader.load(board_id='benchmark-board', spec_id=spec_id)
                     else:
-                        if args.read_surface == 'service':
+                        if args.read_surface == 'rest':
+                            response = await client.get(
+                                f'/boards/benchmark-board/specs/{spec_id}/delivery-readiness-projection')
+                            response.raise_for_status()
+                            result = response.json()
+                            observed_freshness = result['projection']['freshness']
+                        elif args.read_surface == 'service':
                             result = await service.read_persisted(board_id='benchmark-board',
                                 spec_id=spec_id, actor=ACTOR)
                             json.dumps(result, ensure_ascii=False)
@@ -365,7 +400,9 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                     'obligations': args.overload_obligations,
                     'scenarios': args.overload_scenarios,
                     'facts': args.overload_facts} if args.overload_first else None},
-            'reads': len(read_ms), 'writes': len(write_ms), 'errors': errors[:25],
+            'reads': len(read_ms), 'writes': len(write_ms),
+            'error_count': len(errors), 'errors': errors[:25],
+            'warmup_error_count': len(warmup_errors),
             'worker_publications': worker_publications,
             'worker_concurrency': args.worker_concurrency,
             'full_projection_process': args.full_projection_process,
@@ -438,6 +475,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         phase_logger.propagate = previous_propagate
         publish_logger.removeHandler(phase_handler)
         publish_logger.setLevel(previous_publish_level)
+        if client is not None:
+            await client.aclose()
         await engine.dispose()
         if executor is not None:
             executor.shutdown(wait=True, cancel_futures=True)
@@ -449,7 +488,7 @@ if __name__ == '__main__':
     parser.add_argument('--full-projection-process', action='store_true')
     parser.add_argument('--worker-concurrency', type=int, default=1)
     parser.add_argument('--pipeline-depth', type=int, choices=(1, 2), default=1)
-    parser.add_argument('--read-surface', choices=['internal', 'service'])
+    parser.add_argument('--read-surface', choices=['internal', 'service', 'rest'])
     parser.add_argument('--duration-seconds', type=int, default=60)
     parser.add_argument('--warmup-seconds', type=int, default=0)
     parser.add_argument('--reads-per-second', type=int, default=10)
@@ -510,3 +549,5 @@ if __name__ == '__main__':
             print(json.dumps({k: v for k, v in result.items() if k not in {'samples_ms', 'resource_samples'}}, sort_keys=True), flush=True)
         else:
             print(json.dumps({k: v for k, v in result.items() if k not in {'samples_ms', 'resource_samples'}}, sort_keys=True), flush=True)
+        if result['error_count'] or result['warmup_error_count'] or not result['reads']:
+            raise SystemExit(1)
