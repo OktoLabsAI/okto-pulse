@@ -162,6 +162,10 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             elif isinstance(record.msg, str) and record.msg.startswith('readiness.published '):
                 for name, value in zip(('snapshot', 'compute', 'stage', 'publish'), record.args[4:8]):
                     publish_phases_ms[name].append(float(value))
+            elif isinstance(record.msg, str) and record.msg.startswith('readiness.projection_failed '):
+                detail = str(record.exc_info[1]).splitlines()[0][:160] if record.exc_info else ''
+                (errors if measuring else warmup_errors).append(
+                    f'worker:{record.args[2]}:{detail}')
 
     phase_logger = logging.getLogger(
         'okto_pulse.community.adapters.sqlalchemy_delivery_readiness')
@@ -211,6 +215,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             while published < args.specs:
                 published += sum(await asyncio.gather(
                     *(item.process_once() for item in workers)))
+                if (await worker.store.queue_status())['counts'].get('terminal', 0):
+                    raise RuntimeError(f'readiness_fixture_initial_terminal:{warmup_errors[-3:]}')
                 await asyncio.sleep(.06)
         # Exclude connection/thread cold start from steady-state write latency.
         async with engine.begin() as connection:
