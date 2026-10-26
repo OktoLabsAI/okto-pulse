@@ -15,7 +15,6 @@ import hashlib
 import json
 import logging
 from time import perf_counter, process_time
-from types import SimpleNamespace
 
 from pydantic import BaseModel
 from sqlalchemy import and_, event, or_, select
@@ -53,6 +52,8 @@ logger = logging.getLogger(__name__)
 MAX_CARDS = 5000
 MAX_HISTORY = 10000
 MAX_FACTS = 20000
+MAX_PROJECTION_RECORD_CACHE_ROWS = 25000
+MAX_PROJECTION_RECORD_CACHE_SCOPE_ROWS = 5000
 FINGERPRINT_VERSION = 'delivery-readiness-snapshot/v2'
 
 
@@ -63,6 +64,22 @@ class ReadinessSourceDelta:
     source_revision: int
     kind: str
     card_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ProjectionCardRecord:
+    id: str
+    board_id: str
+    card_id: str
+    spec_id: str
+    spec_edition: int
+    kind: str
+    actor_id: str
+    actor_kind: str
+    idempotency_key: str
+    payload_sha256: str
+    payload: dict
+    created_at: datetime
 
 
 class CommunityReadinessClock:
@@ -316,6 +333,47 @@ class CommunityDeliveryReadinessReader:
             raise ValueError('community_readiness_requires_sqlite')
         self.engine, self.clock, self.inventory = engine, clock, inventory
         self._projection_plan_cache = OrderedDict()
+        self._projection_record_cache = OrderedDict()
+        self._projection_record_cache_rows = 0
+
+    def _remember_projection_records(self, key, revision, records):
+        prior = self._projection_record_cache.pop(key, None)
+        if prior is not None:
+            self._projection_record_cache_rows -= len(prior[1])
+        if len(records) > MAX_PROJECTION_RECORD_CACHE_SCOPE_ROWS:
+            return
+        self._projection_record_cache[key] = (revision, records)
+        self._projection_record_cache_rows += len(records)
+        while self._projection_record_cache_rows > MAX_PROJECTION_RECORD_CACHE_ROWS:
+            _, (_, evicted) = self._projection_record_cache.popitem(last=False)
+            self._projection_record_cache_rows -= len(evicted)
+
+    async def _progress_record_rows(self, session, statement, cached, progress_counts, counts):
+        """Reuse immutable rows only after a complete durable progress chain."""
+        changed = tuple(progress_counts)
+        current = await self._projection_record_rows(session,
+            statement.where(CardRecord.card_id.in_(changed)), MAX_FACTS, counts)
+        old_by_card = defaultdict(set)
+        new_by_card = defaultdict(set)
+        for row in cached:
+            if row.card_id in progress_counts:
+                old_by_card[row.card_id].add(row.id)
+        for row in current:
+            new_by_card[row.card_id].add(row.id)
+        if not all(old_by_card[card_id] <= new_by_card[card_id]
+                and len(new_by_card[card_id]) == len(old_by_card[card_id]) + added
+                for card_id, added in progress_counts.items()):
+            return None
+        combined = tuple(sorted((*(row for row in cached
+            if row.card_id not in progress_counts), *current),
+            key=lambda row: (row.created_at, row.id)))
+        if len(combined) > MAX_FACTS:
+            raise ReadinessReadError('readiness_limit_exceeded',
+                native_code='readiness_population_limit')
+        counts['record_cache_hit'] = 1.0
+        counts['record_cache_reused_rows'] = float(len(combined) - len(current))
+        counts['facts'] += len(combined) - len(current)
+        return combined
 
     async def _rows(self, session, statement, limit, counts):
         started = perf_counter() if 'query_ms' in counts else None
@@ -366,7 +424,7 @@ class CommunityDeliveryReadinessReader:
                 raise ReadinessReadError('readiness_limit_exceeded', native_code='readiness_population_limit')
             counts['facts'] += len(values)
             wrap_started = perf_counter()
-            rows = tuple(SimpleNamespace(**row._mapping) for row in values)
+            rows = tuple(_ProjectionCardRecord(**row._mapping) for row in values)
             wrap_ms = (perf_counter() - wrap_started) * 1000
             cpu_ms = (process_time() - cpu_started) * 1000
         finally:
@@ -512,7 +570,8 @@ class CommunityDeliveryReadinessReader:
         return access
 
     async def _load_transaction(self, session, board_id, spec_id, card_id, counts,
-                                *, defer_facts=False):
+                                *, defer_facts=False, cached_records=None,
+                                progress_counts=None):
         rows = {}
         rows[Spec] = await self._rows(session, select(Spec).where(Spec.id == spec_id,
             Spec.board_id == board_id, Spec.archived.is_(False)), 1, counts)
@@ -531,9 +590,13 @@ class CommunityDeliveryReadinessReader:
             CardRecord.card_id.in_(cards))
         record_order = (CardRecord.created_at, CardRecord.id)
         if defer_facts:
-            rows[CardRecord] = await self._projection_record_rows(session,
-                select(*CardRecord.__table__.columns).where(*record_filter)
-                .order_by(*record_order), MAX_FACTS, counts)
+            statement = (select(*CardRecord.__table__.columns)
+                .where(*record_filter).order_by(*record_order))
+            reused = (await self._progress_record_rows(session, statement,
+                cached_records, progress_counts, counts)
+                if cached_records is not None and progress_counts else None)
+            rows[CardRecord] = (reused if reused is not None else
+                await self._projection_record_rows(session, statement, MAX_FACTS, counts))
         else:
             rows[CardRecord] = await self._rows(session,
                 select(CardRecord).where(*record_filter).order_by(*record_order),
@@ -679,6 +742,8 @@ class CommunityDeliveryReadinessReader:
         cached_plan = None
         plan_chain_ms = 0.0
         plan_chain_length = 0
+        counts['record_cache_hit'] = 0.0
+        counts['record_cache_reused_rows'] = 0.0
         async with self.engine.connect() as connection:
             checkout_ms = (perf_counter() - started) * 1000
             phase_started = perf_counter()
@@ -700,27 +765,22 @@ class CommunityDeliveryReadinessReader:
                         delta_row.kind, delta_row.card_id) if delta_row is not None else None)
                     scope_ms = (perf_counter() - phase_started) * 1000
                     phase_started = perf_counter()
-                    try:
-                        rows = await self._load_transaction(
-                            session, board_id, spec_id, None, counts, defer_facts=True)
-                    except ReadinessReadError as exc:
-                        if exc.code != 'readiness_limit_exceeded':
-                            raise
-                        rows = None
-                        overflow = await self._capacity_snapshot(session, board_id, spec_id, None, counts, exc)
                     captured_revision = scope.source_revision
                     edition = scope.edition
                     cache_key = (board_id, spec_id, edition)
                     previous = self._projection_plan_cache.get(cache_key)
-                    if (rows is not None and previous is not None and delta is not None
+                    record_cache = self._projection_record_cache.get(cache_key)
+                    progress_counts = None
+                    if (previous is not None and delta is not None
                             and delta.source_revision == captured_revision
                             and delta.kind == 'card_progress_insert' and delta.card_id):
                         span = captured_revision - previous[0]
+                        chain = ()
                         if span == 1:
-                            cached_plan = previous[1]
+                            chain = (delta,)
                         elif 1 < span <= MAX_PROGRESS_CHAIN:
                             chain_started = perf_counter()
-                            chain = (await session.execute(select(
+                            events = (await session.execute(select(
                                 ReadinessSourceDeltaEventRow.source_revision,
                                 ReadinessSourceDeltaEventRow.kind,
                                 ReadinessSourceDeltaEventRow.card_id).where(
@@ -730,13 +790,33 @@ class CommunityDeliveryReadinessReader:
                                 .order_by(ReadinessSourceDeltaEventRow.source_revision)
                                 .limit(span + 1))).all()
                             plan_chain_ms = (perf_counter() - chain_started) * 1000
-                            plan_chain_length = len(chain)
-                            if (len(chain) == span and all(
+                            plan_chain_length = len(events)
+                            if (len(events) == span and all(
                                     event.source_revision == previous[0] + index
                                     and event.kind == 'card_progress_insert'
                                     and event.card_id
-                                    for index, event in enumerate(chain, start=1))):
-                                cached_plan = previous[1]
+                                    for index, event in enumerate(events, start=1))):
+                                chain = tuple(ReadinessSourceDelta(
+                                    event.source_revision, event.kind, event.card_id)
+                                    for event in events)
+                        if chain:
+                            cached_plan = previous[1]
+                            progress_counts = defaultdict(int)
+                            for event in chain:
+                                progress_counts[event.card_id] += 1
+                    cached_records = (record_cache[1] if record_cache is not None
+                        and previous is not None and record_cache[0] == previous[0]
+                        and progress_counts else None)
+                    try:
+                        rows = await self._load_transaction(
+                            session, board_id, spec_id, None, counts, defer_facts=True,
+                            cached_records=cached_records,
+                            progress_counts=progress_counts)
+                    except ReadinessReadError as exc:
+                        if exc.code != 'readiness_limit_exceeded':
+                            raise
+                        rows = None
+                        overflow = await self._capacity_snapshot(session, board_id, spec_id, None, counts, exc)
                     source_ms = (perf_counter() - phase_started) * 1000
             finally:
                 phase_started = perf_counter()
@@ -757,6 +837,7 @@ class CommunityDeliveryReadinessReader:
             self._projection_plan_cache.move_to_end(cache_key)
             if len(self._projection_plan_cache) > 16:
                 self._projection_plan_cache.popitem(last=False)
+            self._remember_projection_records(cache_key, captured_revision, rows[CardRecord])
         metrics = {
             'readiness_checkout_ms': checkout_ms,
             'readiness_begin_ms': begin_ms,
@@ -768,6 +849,9 @@ class CommunityDeliveryReadinessReader:
             'readiness_read_rows_ms': read_rows_ms,
             'readiness_plan_cache_chain_ms': plan_chain_ms,
             'readiness_plan_cache_chain_length': float(plan_chain_length),
+            'readiness_record_cache_hit': counts['record_cache_hit'],
+            'readiness_record_cache_reused_rows': counts['record_cache_reused_rows'],
+            'readiness_record_cache_rows': float(self._projection_record_cache_rows),
             'readiness_materialize_ms': (perf_counter() - materialize_started) * 1000,
             **materialize_phases,
         }

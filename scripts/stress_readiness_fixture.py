@@ -316,6 +316,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         'snapshot_record_gc_pause_gen2': [],
         'snapshot_record_gc_count_gen0': [], 'snapshot_record_gc_count_gen1': [],
         'snapshot_record_gc_count_gen2': [],
+        'snapshot_record_cache_reused_rows': [],
+        'snapshot_record_cache_rows': [],
         'snapshot_plan_cache_chain': [], 'snapshot_plan_cache_chain_length': [],
         'predecessor_read': [], 'predecessor_decode': [],
         'predecessor_digest': [], 'predecessor_construct': [],
@@ -329,6 +331,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         'publish_counts': [], 'publish_flush': [], 'publish_commit': [],
     }
     plan_cache_samples: list[float] = []
+    record_cache_samples: list[float] = []
     predecessor_cache_samples: list[float] = []
     projection_modes: dict[str, int] = {'full': 0, 'incremental': 0}
 
@@ -372,6 +375,11 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 cache_hit = getattr(record, 'readiness_materialize_facts_plan_cache_hit', None)
                 if cache_hit is not None:
                     plan_cache_samples.append(cache_hit)
+                record_cache_samples.append(record.readiness_record_cache_hit)
+                publish_phases_ms['snapshot_record_cache_reused_rows'].append(
+                    record.readiness_record_cache_reused_rows)
+                publish_phases_ms['snapshot_record_cache_rows'].append(
+                    record.readiness_record_cache_rows)
                 publish_phases_ms['snapshot_plan_cache_chain'].append(
                     record.readiness_plan_cache_chain_ms)
                 publish_phases_ms['snapshot_plan_cache_chain_length'].append(
@@ -737,6 +745,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             'projection_modes': projection_modes,
             'plan_cache_hits': sum(value == 1.0 for value in plan_cache_samples),
             'plan_cache_samples': len(plan_cache_samples),
+            'record_cache_hits': sum(value == 1.0 for value in record_cache_samples),
+            'record_cache_samples': len(record_cache_samples),
             'predecessor_cache_hits': sum(value == 1.0 for value in predecessor_cache_samples),
             'predecessor_cache_samples': len(predecessor_cache_samples),
             'worker_concurrency': args.worker_concurrency,

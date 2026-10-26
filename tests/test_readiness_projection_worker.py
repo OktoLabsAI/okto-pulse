@@ -64,6 +64,15 @@ async def test_projection_capture_reads_delta_with_source_revision(tmp_path):
             await connection.exec_driver_sql("INSERT INTO cards "
                 "(id,board_id,spec_id,title,status,position,created_by) "
                 "VALUES ('card','board','spec','Card','in_progress',0,'owner')")
+            await connection.exec_driver_sql("INSERT INTO cards "
+                "(id,board_id,spec_id,title,status,position,created_by) "
+                "VALUES ('other-card','board','spec','Other','in_progress',1,'owner')")
+            await connection.exec_driver_sql("INSERT INTO card_delivery_evidence_records "
+                "(id,board_id,card_id,spec_id,spec_edition,kind,actor_id,actor_kind,"
+                "idempotency_key,payload_sha256,payload,created_at) "
+                "VALUES ('other-progress','board','other-card','spec',1,'progress','agent','agent',"
+                "'other-progress',?,?,CURRENT_TIMESTAMP)",
+                (sha256(payload.encode()).hexdigest(), payload))
             await connection.exec_driver_sql("INSERT INTO card_delivery_evidence_records "
                 "(id,board_id,card_id,spec_id,spec_edition,kind,actor_id,actor_kind,"
                 "idempotency_key,payload_sha256,payload,created_at) "
@@ -89,6 +98,8 @@ async def test_projection_capture_reads_delta_with_source_revision(tmp_path):
             include_source_delta=True, phase_metrics=phases)
         assert progress_delta is not None and progress_revision == revision + 1
         assert phases['readiness_materialize_facts_plan_cache_hit'] == 1.0
+        assert phases['readiness_record_cache_hit'] == 1.0
+        assert phases['readiness_record_cache_reused_rows'] >= 1
         cold_reader = type(worker.reader)(engine, clock=worker.reader.clock)
         cold, _, _ = await cold_reader.load_for_projection(
             board_id='board', spec_id='spec', blocking_execution=worker.blocking_execution,
@@ -110,14 +121,19 @@ async def test_projection_capture_reads_delta_with_source_revision(tmp_path):
             include_source_delta=True, phase_metrics=phases)
         assert spanned_revision == progress_revision + 2
         assert phases['readiness_materialize_facts_plan_cache_hit'] == 1.0
+        assert phases['readiness_record_cache_hit'] == 1.0
         assert phases['readiness_plan_cache_chain_length'] == 2.0
         cold_spanned, _, _ = await cold_reader.load_for_projection(
             board_id='board', spec_id='spec', blocking_execution=worker.blocking_execution,
             include_source_delta=True)
         assert spanned.snapshot_id == cold_spanned.snapshot_id
         assert spanned.facts == cold_spanned.facts
+        cache_key = ('board', 'spec', 1)
+        cached_revision, cached_rows = worker.reader._projection_record_cache[cache_key]
+        worker.reader._projection_record_cache[cache_key] = (cached_revision,
+            tuple(replace(row, id='missing-cached-id') if row.id == 'progress-1'
+                else row for row in cached_rows))
         async with engine.begin() as connection:
-            await connection.exec_driver_sql("UPDATE specs SET title='Changed' WHERE id='spec'")
             await connection.exec_driver_sql("INSERT INTO card_delivery_evidence_records "
                 "(id,board_id,card_id,spec_id,spec_edition,kind,actor_id,actor_kind,"
                 "idempotency_key,payload_sha256,payload,created_at) "
@@ -125,12 +141,33 @@ async def test_projection_capture_reads_delta_with_source_revision(tmp_path):
                 "'progress-5',?,?,CURRENT_TIMESTAMP)",
                 (sha256(payload.encode()).hexdigest(), payload))
         phases = {}
+        recovered, recovered_revision, _ = await worker.reader.load_for_projection(
+            board_id='board', spec_id='spec', blocking_execution=worker.blocking_execution,
+            include_source_delta=True, phase_metrics=phases)
+        assert recovered_revision == spanned_revision + 1
+        assert phases['readiness_materialize_facts_plan_cache_hit'] == 1.0
+        assert phases['readiness_record_cache_hit'] == 0.0
+        cold_recovered, _, _ = await cold_reader.load_for_projection(
+            board_id='board', spec_id='spec', blocking_execution=worker.blocking_execution,
+            include_source_delta=True)
+        assert recovered.snapshot_id == cold_recovered.snapshot_id
+        assert recovered.facts == cold_recovered.facts
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql("UPDATE specs SET title='Changed' WHERE id='spec'")
+            await connection.exec_driver_sql("INSERT INTO card_delivery_evidence_records "
+                "(id,board_id,card_id,spec_id,spec_edition,kind,actor_id,actor_kind,"
+                "idempotency_key,payload_sha256,payload,created_at) "
+                "VALUES ('progress-6','board','card','spec',1,'progress','agent','agent',"
+                "'progress-6',?,?,CURRENT_TIMESTAMP)",
+                (sha256(payload.encode()).hexdigest(), payload))
+        phases = {}
         _snapshot, next_revision, next_delta = await worker.reader.load_for_projection(
             board_id='board', spec_id='spec',
             blocking_execution=worker.blocking_execution, include_source_delta=True,
             phase_metrics=phases)
-        assert next_revision == spanned_revision + 2
+        assert next_revision == recovered_revision + 2
         assert phases['readiness_materialize_facts_plan_cache_hit'] == 0.0
+        assert phases['readiness_record_cache_hit'] == 0.0
         assert phases['readiness_plan_cache_chain_length'] == 2.0
         assert next_delta is not None
         assert (next_delta.source_revision, next_delta.kind, next_delta.card_id) == (
