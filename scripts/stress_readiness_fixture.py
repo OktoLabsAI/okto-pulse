@@ -112,10 +112,13 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
     freshness: dict[str, int] = {}
     measuring = args.warmup_seconds == 0
     read_phases_ms: dict[str, list[float]] = {
-        'auth_before': [], 'projection': [], 'auth_after': [],
+        'checkout': [], 'auth_before': [], 'projection': [], 'auth_after': [],
     }
     publish_phases_ms: dict[str, list[float]] = {
         'snapshot': [], 'compute': [], 'stage': [], 'publish': [],
+        'snapshot_checkout': [], 'snapshot_rows': [], 'snapshot_materialize': [],
+        'stage_metadata': [], 'stage_pack': [], 'stage_heartbeat': [],
+        'stage_insert': [], 'stage_verify': [],
     }
 
     class ReadPhaseHandler(logging.Handler):
@@ -123,11 +126,20 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             if not measuring:
                 return
             if record.msg == 'readiness.persisted_read_phases':
+                read_phases_ms['checkout'].append(record.readiness_checkout_ms)
                 read_phases_ms['auth_before'].append(record.readiness_auth_before_ms)
                 read_phases_ms['projection'].append(record.readiness_projection_ms)
                 read_phases_ms['auth_after'].append(record.readiness_auth_after_ms)
+            elif record.msg == 'readiness.projection_snapshot_phases':
+                publish_phases_ms['snapshot_checkout'].append(record.readiness_checkout_ms)
+                publish_phases_ms['snapshot_rows'].append(record.readiness_read_rows_ms)
+                publish_phases_ms['snapshot_materialize'].append(record.readiness_materialize_ms)
+            elif record.msg == 'readiness.stage_phases':
+                for key in ('metadata', 'pack', 'heartbeat', 'insert', 'verify'):
+                    publish_phases_ms[f'stage_{key}'].append(
+                        getattr(record, f'readiness_stage_{key}_ms'))
             elif isinstance(record.msg, str) and record.msg.startswith('readiness.published '):
-                for name, value in zip(publish_phases_ms, record.args[4:8]):
+                for name, value in zip(('snapshot', 'compute', 'stage', 'publish'), record.args[4:8]):
                     publish_phases_ms[name].append(float(value))
 
     phase_logger = logging.getLogger(
@@ -141,7 +153,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
     publish_logger = logging.getLogger('okto_pulse.readiness_projection')
     previous_publish_level = publish_logger.level
     publish_logger.addHandler(phase_handler)
-    publish_logger.setLevel(logging.INFO)
+    publish_logger.setLevel(logging.DEBUG)
     stop_load = asyncio.Event()
     stop_worker = asyncio.Event()
     writer_guard = asyncio.Lock()

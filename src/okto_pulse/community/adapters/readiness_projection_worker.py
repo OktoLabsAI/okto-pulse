@@ -36,11 +36,10 @@ def _close_projection_child() -> None:
 atexit.register(_close_projection_child)
 
 
-def _project_from_database(database_path, board_id, spec_id, deadline):
-    """Project on a persistent child event loop, isolated from API reads."""
+def _projection_child_runtime(database_path):
+    """Reuse one child engine and event loop for capture and stage verification."""
     from sqlalchemy.ext.asyncio import create_async_engine
     from .sqlalchemy_database import install_community_sqlite_pragmas
-    from .worker_runners import TrackedBlockingExecution
 
     global _process_runner, _process_engine, _process_database_path
     if _process_runner is None:
@@ -51,9 +50,17 @@ def _project_from_database(database_path, board_id, spec_id, deadline):
         _process_database_path = database_path
     elif _process_database_path != database_path:
         raise ValueError("readiness_process_database_path_changed")
+    return _process_runner, _process_engine
+
+
+def _project_from_database(database_path, board_id, spec_id, deadline):
+    """Project on a persistent child event loop, isolated from API reads."""
+    from .worker_runners import TrackedBlockingExecution
+
+    runner, engine = _projection_child_runtime(database_path)
 
     async def project():
-        reader = CommunityDeliveryReadinessReader(_process_engine,
+        reader = CommunityDeliveryReadinessReader(engine,
             clock=CommunityReadinessClock())
         started = monotonic()
         snapshot, revision = await reader.load_for_projection(
@@ -66,7 +73,14 @@ def _project_from_database(database_path, board_id, spec_id, deadline):
         compute_ms = (monotonic() - started) * 1000
         return generation, revision, snapshot_ms, compute_ms
 
-    return _process_runner.run(project())
+    return runner.run(project())
+
+
+def _verify_stage_from_database(database_path, claim, generation_id):
+    """Verify committed staged rows off the API event loop before CAS publish."""
+    runner, engine = _projection_child_runtime(database_path)
+    store = CommunityPersistedReadinessStore(engine)
+    return runner.run(store.verify_stage(claim, generation_id))
 
 
 class ReadinessProjectionProcessor:
@@ -225,7 +239,8 @@ class ReadinessProjectionProcessor:
             if monotonic() - snapshot_started > 30:
                 raise TimeoutError("readiness_calculation_budget_exceeded")
             stage_started = monotonic()
-            generation_id = await self.store.stage(claim, generation)
+            generation_id = await self.store.stage(claim, generation,
+                verifier=self._verify_staged)
             stage_ms = (monotonic() - stage_started) * 1000
             publish_started = monotonic()
             if not await self.store.publish(claim, generation_id):
@@ -252,6 +267,32 @@ class ReadinessProjectionProcessor:
                 claim.board_id, claim.spec_id, code)
             await self.store.fail(claim, error_code=code)
             return 0
+
+    async def _verify_staged(self, claim, generation_id):
+        if self.full_projection_executor is None:
+            await self.store.verify_stage(claim, generation_id)
+            return
+        try:
+            future = asyncio.get_running_loop().run_in_executor(
+                self.full_projection_executor, _verify_stage_from_database,
+                str(self.database_path), claim, generation_id)
+            await asyncio.shield(future)
+        except BrokenProcessPool:
+            logger.exception("readiness.process_pool_unavailable board=%s spec=%s",
+                claim.board_id, claim.spec_id)
+            self.full_projection_executor = None
+            await self.store.verify_stage(claim, generation_id)
+        except asyncio.CancelledError:
+            while not future.done():
+                try:
+                    await asyncio.shield(future)
+                except asyncio.CancelledError:
+                    continue
+                except BaseException:
+                    break
+            if future.done() and not future.cancelled():
+                future.exception()
+            raise
 
     async def _heartbeats(self, claim) -> None:
         while True:

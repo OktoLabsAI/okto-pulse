@@ -535,7 +535,9 @@ class CommunityDeliveryReadinessReader:
         from okto_pulse.community.adapters.sqlalchemy_models import ReadinessScopeRow
 
         counts = {'queries': 0, 'facts': 0}
+        started = perf_counter()
         async with self.engine.connect() as connection:
+            checkout_ms = (perf_counter() - started) * 1000
             await connection.exec_driver_sql('BEGIN')
             try:
                 async with AsyncSession(bind=connection, autoflush=False, expire_on_commit=False) as session:
@@ -558,12 +560,19 @@ class CommunityDeliveryReadinessReader:
                     edition = scope.edition
             finally:
                 await connection.rollback()
+        read_rows_ms = (perf_counter() - started) * 1000 - checkout_ms
+        materialize_started = perf_counter()
         if rows is None:
             snapshot = overflow
         else:
             import asyncio
             snapshot = await blocking_execution.run(
                 lambda: asyncio.run(self._snapshot_from_rows(rows)))
+        logger.debug('readiness.projection_snapshot_phases', extra={
+            'readiness_checkout_ms': checkout_ms,
+            'readiness_read_rows_ms': read_rows_ms,
+            'readiness_materialize_ms': (perf_counter() - materialize_started) * 1000,
+        })
         if snapshot.facts.scope.edition != edition:
             raise ReadinessReadError('readiness_snapshot_changed')
         return snapshot, captured_revision
@@ -631,6 +640,7 @@ class CommunityDeliveryReadinessReader:
         for _ in range(2):
             started = perf_counter()
             async with self.engine.connect() as authority_connection:
+                checkout_ms = (perf_counter() - started) * 1000
                 # data_version is comparable only on the same SQLite connection.
                 # Release each read transaction before beginning the next one;
                 # reuse the connection so a concurrent commit remains detectable.
@@ -647,6 +657,7 @@ class CommunityDeliveryReadinessReader:
                 reauthorized_at = perf_counter()
             if before == after:
                 logger.debug('readiness.persisted_read_phases', extra={
+                    'readiness_checkout_ms': checkout_ms,
                     'readiness_auth_before_ms': (authorized_at - started) * 1000,
                     'readiness_projection_ms': (projected_at - authorized_at) * 1000,
                     'readiness_auth_after_ms': (reauthorized_at - projected_at) * 1000,

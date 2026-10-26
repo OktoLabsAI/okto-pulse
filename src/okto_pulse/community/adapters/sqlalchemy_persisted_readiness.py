@@ -250,12 +250,14 @@ class CommunityPersistedReadinessStore:
             row.lease_until = now + timedelta(seconds=LEASE_SECONDS)
             row.updated_at = now
 
-    async def stage(self, claim: ReadinessClaim, generation: ReadinessGeneration) -> str:
+    async def stage(self, claim: ReadinessClaim, generation: ReadinessGeneration,
+                    *, verifier=None) -> str:
         if (claim.board_id, claim.spec_id, claim.edition) != (
             generation.board_id, generation.spec_id, generation.spec_edition):
             raise ValueError("readiness_generation_scope_mismatch")
         generation_id = uuid4().hex
         now = datetime.now(timezone.utc)
+        metadata_started = perf_counter()
         async with AsyncSession(self.engine) as session, session.begin():
             job = await session.get(ReadinessJobRow, claim.scope_id)
             if job is None or job.owner != claim.owner or job.lease_epoch != claim.epoch or job.state != "running":
@@ -274,6 +276,9 @@ class CommunityPersistedReadinessStore:
                 summary_count=len(generation.summaries), unit_count=len(generation.units),
                 manifest_sha256=generation.manifest_sha256, created_at=now,
                 evaluated_at=generation.evaluated_at))
+        metadata_ms = (perf_counter() - metadata_started) * 1000
+        pack_ms = heartbeat_ms = insert_ms = 0.0
+        batch_count = 0
         groups = (
             ("readiness_summary", "card_key,payload",
                 "json_extract(value,'$.card_key'),json_extract(value,'$.payload')",
@@ -292,16 +297,38 @@ class CommunityPersistedReadinessStore:
                     "payload": asdict(unit)} for unit in generation.units)),
         )
         for table, columns, fields, rows in groups:
-            while batch := list(islice(rows, STAGE_BATCH_SIZE)):
+            while True:
+                pack_started = perf_counter()
+                batch = list(islice(rows, STAGE_BATCH_SIZE))
+                if not batch:
+                    break
                 # JSON1 expands one bounded parameter into rows inside SQLite.
                 # The table/column SQL is constant above; payloads are bound.
                 packed = json.dumps(batch, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+                pack_ms += (perf_counter() - pack_started) * 1000
+                heartbeat_started = perf_counter()
                 await self.heartbeat(claim)
+                heartbeat_ms += (perf_counter() - heartbeat_started) * 1000
+                insert_started = perf_counter()
                 async with self.engine.begin() as connection:
                     await connection.exec_driver_sql(
                         f"INSERT INTO {table} (generation_id,{columns}) "
                         f"SELECT ?,{fields} FROM json_each(?)", (generation_id, packed))
-        await self.verify_stage(claim, generation_id)
+                insert_ms += (perf_counter() - insert_started) * 1000
+                batch_count += 1
+        verify_started = perf_counter()
+        if verifier is None:
+            await self.verify_stage(claim, generation_id)
+        else:
+            await verifier(claim, generation_id)
+        logger.debug('readiness.stage_phases', extra={
+            'readiness_stage_metadata_ms': metadata_ms,
+            'readiness_stage_pack_ms': pack_ms,
+            'readiness_stage_heartbeat_ms': heartbeat_ms,
+            'readiness_stage_insert_ms': insert_ms,
+            'readiness_stage_verify_ms': (perf_counter() - verify_started) * 1000,
+            'readiness_stage_batch_count': batch_count,
+        })
         return generation_id
 
     async def verify_stage(self, claim: ReadinessClaim, generation_id: str) -> None:

@@ -1,12 +1,13 @@
 """A committed Spec intent can publish a durable generation without KG."""
 
 import asyncio
-from concurrent.futures import Future
+from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import closing
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 import json
+from multiprocessing import get_context
 import sqlite3
 import threading
 import time
@@ -15,7 +16,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from okto_pulse.community.adapters.current_relational_schema import (
-    create_current_schema_objects, seed_current_schema_fences,
+    APPLICATION_ID, SCHEMA_VERSION, create_current_schema_objects, seed_current_schema_fences,
 )
 from okto_pulse.community.adapters.readiness_schema_upgrade import upgrade_readiness_schema
 from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
@@ -380,6 +381,38 @@ async def test_invalid_staging_manifest_never_becomes_active(tmp_path):
                 "JOIN readiness_job j ON j.scope_id=s.id WHERE s.spec_id='spec'"
             )).one()
             assert state == ('running', None)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_process_verifier_rejects_tampered_stage_before_publication(tmp_path):
+    database = tmp_path / 'pulse.sqlite3'
+    engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
+    try:
+        await _seed_one_spec(engine)
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(f'PRAGMA main.application_id={APPLICATION_ID}')
+            await connection.exec_driver_sql(f'PRAGMA main.user_version={SCHEMA_VERSION}')
+        with ProcessPoolExecutor(max_workers=1, mp_context=get_context('spawn')) as executor:
+            worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution(),
+                full_projection_executor=executor, database_path=database)
+            await asyncio.sleep(.06)
+            claim = await worker.store.claim(owner=worker.owner)
+            assert claim is not None
+            snapshot, revision = await worker.reader.load_for_projection(
+                board_id='board', spec_id='spec', blocking_execution=worker.blocking_execution)
+            generation = build_readiness_generation(snapshot, captured_revision=revision)
+            with pytest.raises(ValueError, match='readiness_stage_manifest_mismatch'):
+                await worker.store.stage(claim, replace(generation,
+                    manifest_sha256='0' * 64), verifier=worker._verify_staged)
+            visible = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+            assert visible is not None and visible.generation_id is None
+            generation_id = await worker.store.stage(claim, generation,
+                verifier=worker._verify_staged)
+            assert await worker.store.publish(claim, generation_id)
+            visible = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+            assert visible is not None and visible.freshness == 'current'
     finally:
         await engine.dispose()
 
