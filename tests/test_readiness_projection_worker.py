@@ -1,15 +1,18 @@
 """A committed Spec intent can publish a durable generation without KG."""
 
 import asyncio
+from contextlib import closing
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 import json
+import sqlite3
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from okto_pulse.community.adapters.current_relational_schema import (
     create_current_schema_objects, seed_current_schema_fences,
 )
+from okto_pulse.community.adapters.readiness_schema_upgrade import upgrade_readiness_schema
 from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
 from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import ReadinessLeaseLost
 from okto_pulse.community.adapters.worker_runners import TrackedBlockingExecution
@@ -17,6 +20,7 @@ from okto_pulse.core.ports.delivery_readiness import ReadinessReadError
 from okto_pulse.core.services.persisted_delivery_readiness import (
     build_readiness_generation, readiness_manifest_digest,
 )
+from test_readiness_schema_upgrade import _v401_predecessor
 
 
 async def _seed_one_spec(engine):
@@ -629,21 +633,27 @@ async def test_reconcile_cursor_resumes_bounded_pages_after_restart(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_backfill_completes_all_scopes_with_reports_and_three_worker_restarts(tmp_path):
+async def test_backfill_after_v401_upgrade_completes_all_scopes_and_three_restarts(tmp_path):
     database = tmp_path / 'pulse.sqlite3'
+    _v401_predecessor(database)
+    spec_ids = ['spec', *[f'spec-{number:03d}' for number in range(100)]]
+    contracts = [(spec_id, json.dumps({
+        'contract_version': 'spec-execution-contract/v1',
+        'board_id': 'board', 'spec_id': spec_id,
+        'adopted_in_edition': 1, 'actor_id': 'owner', 'origin': 'new_spec',
+    })) for spec_id in spec_ids]
+    with closing(sqlite3.connect(database)) as predecessor:
+        predecessor.execute("INSERT INTO boards (id,name,owner_id,realm_id) "
+                            "VALUES ('board','Test','owner','local')")
+        predecessor.executemany(
+            "INSERT INTO specs (id,board_id,title,status,version,created_by,"
+            "architecture_adoption,execution_contract) "
+            "VALUES (?,'board','Spec','in_progress',1,'owner','{}',?)", contracts)
+        predecessor.commit()
+    backup = upgrade_readiness_schema(database)
+    assert backup.is_file()
     engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
     try:
-        await _seed_one_spec(engine)
-        rows = [(f'spec-{number:03d}', json.dumps({
-            'contract_version': 'spec-execution-contract/v1',
-            'board_id': 'board', 'spec_id': f'spec-{number:03d}',
-            'adopted_in_edition': 1, 'actor_id': 'owner', 'origin': 'new_spec',
-        })) for number in range(100)]
-        async with engine.begin() as connection:
-            await connection.exec_driver_sql(
-                "INSERT INTO specs (id,board_id,title,status,version,created_by,"
-                "architecture_adoption,execution_contract) "
-                "VALUES (?,'board','Spec','in_progress',1,'owner','{}',?)", rows)
         worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
         assert await worker.store.reconcile_once(limit=100) == 100
         pending = await worker.store.read(board_id='board', spec_id='spec-050', edition=1)
