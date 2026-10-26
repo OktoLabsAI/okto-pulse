@@ -204,6 +204,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         'stage_verify_read': [], 'stage_verify_decode': [],
         'stage_verify_validate': [], 'stage_verify_digest': [],
     }
+    plan_cache_samples: list[float] = []
     projection_modes: dict[str, int] = {'full': 0, 'incremental': 0}
 
     class ReadPhaseHandler(logging.Handler):
@@ -230,6 +231,9 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 publish_phases_ms['snapshot_rollback'].append(record.readiness_rollback_ms)
                 publish_phases_ms['snapshot_rows'].append(record.readiness_read_rows_ms)
                 publish_phases_ms['snapshot_materialize'].append(record.readiness_materialize_ms)
+                cache_hit = getattr(record, 'readiness_materialize_facts_plan_cache_hit', None)
+                if cache_hit is not None:
+                    plan_cache_samples.append(cache_hit)
                 for name in ('facts', 'identity_rows', 'identity_digest'):
                     value = getattr(record, f'readiness_materialize_{name}_ms', None)
                     if value is not None:
@@ -574,6 +578,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             'warmup_error_count': len(warmup_errors),
             'worker_publications': worker_publications,
             'projection_modes': projection_modes,
+            'plan_cache_hits': sum(value == 1.0 for value in plan_cache_samples),
+            'plan_cache_samples': len(plan_cache_samples),
             'worker_concurrency': args.worker_concurrency,
             'full_projection_process': args.full_projection_process,
             'lagging_scopes': [tuple(row) for row in lagging],

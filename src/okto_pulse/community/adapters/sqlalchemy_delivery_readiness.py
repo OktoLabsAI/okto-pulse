@@ -4,7 +4,7 @@ The dedicated connection never joins the writer's UoW and never commits. An
 explicit deferred transaction is necessary because SQLite's legacy driver mode
 does not start a database snapshot for SELECT merely on Session.begin().
 """
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import datetime, timezone
@@ -158,7 +158,7 @@ def _resolve_persisted_policy(*, actor, board_id, realm_id, owner_id, share,
 
 class _BatchFacts(CommunityDeliveryEvidenceStore):
     """Only storage access is replaced; admission/selection rules are inherited."""
-    def __init__(self, session, rows, *, inventory=None):
+    def __init__(self, session, rows, *, inventory=None, cached_plan=None):
         super().__init__(session, inventory=inventory)
         self.rows = rows
         self.index = {model: {r.id: r for r in values} for model, values in rows.items()}
@@ -178,6 +178,8 @@ class _BatchFacts(CommunityDeliveryEvidenceStore):
         self.obligations = None
         self.by_card = None
         self.names = {}
+        self.plan = None
+        self.cached_plan = cached_plan
 
     async def lock_scope(self, scope):
         raise RuntimeError('readiness_write_forbidden')
@@ -223,11 +225,15 @@ class _BatchFacts(CommunityDeliveryEvidenceStore):
 
     async def _execution_plan(self, spec):
         execution_contract(spec)
+        if self.cached_plan is not None:
+            self.plan, self.names, self.obligations, self.by_card = self.cached_plan
+            return self.plan
         fields = ('id', 'board_id', 'spec_id', 'card_type', 'status', 'archived',
                   'test_scenario_ids', 'title', 'description', 'details')
         plan = self.inventory.execution_plan(spec=spec,
             cards=[{field: getattr(c, field, None) for field in fields} for c in self.rows[Card]],
             admitted_methods=supported_test_verification_methods())
+        self.plan = plan
         if not plan.inventory.population_complete:
             self.obligations, self.by_card = (), {}
             return plan
@@ -308,6 +314,7 @@ class CommunityDeliveryReadinessReader:
         if engine.url.get_backend_name() != 'sqlite':
             raise ValueError('community_readiness_requires_sqlite')
         self.engine, self.clock, self.inventory = engine, clock, inventory
+        self._projection_plan_cache = OrderedDict()
 
     async def _rows(self, session, statement, limit, counts):
         started = perf_counter() if 'query_ms' in counts else None
@@ -503,12 +510,14 @@ class CommunityDeliveryReadinessReader:
             return rows
         return await self._snapshot_from_rows(rows)
 
-    async def _snapshot_from_rows(self, rows, *, phase_metrics=None):
+    async def _snapshot_from_rows(self, rows, *, phase_metrics=None,
+                                  cached_plan=None, return_plan=False):
         """Build facts from an immutable row set; no database call is allowed."""
         spec = rows[Spec][0]
         phase_started = perf_counter()
         facts_phases = {}
-        facts = await _BatchFacts(None, rows, inventory=self.inventory).snapshot(
+        batch = _BatchFacts(None, rows, inventory=self.inventory, cached_plan=cached_plan)
+        facts = await batch.snapshot(
             phase_metrics=facts_phases)
         facts_ms = (perf_counter() - phase_started) * 1000
         phase_started = perf_counter()
@@ -545,14 +554,18 @@ class CommunityDeliveryReadinessReader:
                 'readiness_materialize_facts_ms': facts_ms,
                 'readiness_materialize_identity_rows_ms': identity_rows_ms,
                 'readiness_materialize_identity_digest_ms': identity_digest_ms,
+                'readiness_materialize_facts_plan_cache_hit': float(cached_plan is not None),
                 **facts_phases,
             })
-        return ReadinessSnapshot(facts, identity, evaluated_at.astimezone(timezone.utc), int(spec.version), spec.status.value,
+        result = ReadinessSnapshot(facts, identity, evaluated_at.astimezone(timezone.utc), int(spec.version), spec.status.value,
             tuple(ReadinessCard(c.id, c.card_type, c.status, c.policy_version,
                 tuple(c.test_scenario_ids) if c.test_scenario_ids is not None else None, c.assignee_id)
                 for c in rows[Card] if not c.archived), scenarios,
             delivery_gate_mode=resolve_delivery_gate_policy(rows[Board][0].settings),
             skip_delivery_evidence=spec.skip_delivery_evidence is True)
+        if return_plan:
+            return result, (batch.plan, batch.names, batch.obligations, batch.by_card)
+        return result
 
     async def load(self, *, board_id, spec_id, card_id=None, actor=None):
         # Actor-less reads are internal fact-loader compatibility only. Public
@@ -656,9 +669,20 @@ class CommunityDeliveryReadinessReader:
             snapshot = overflow
         else:
             import asyncio
-            snapshot = await blocking_execution.run(
+            cache_key = (board_id, spec_id, edition)
+            previous = self._projection_plan_cache.get(cache_key)
+            cached_plan = (previous[1] if previous is not None
+                and previous[0] == captured_revision - 1
+                and delta is not None and delta.source_revision == captured_revision
+                and delta.kind == 'card_progress_insert' and delta.card_id else None)
+            snapshot, plan = await blocking_execution.run(
                 lambda: asyncio.run(self._snapshot_from_rows(rows,
-                    phase_metrics=materialize_phases)))
+                    phase_metrics=materialize_phases, cached_plan=cached_plan,
+                    return_plan=True)))
+            self._projection_plan_cache[cache_key] = (captured_revision, plan)
+            self._projection_plan_cache.move_to_end(cache_key)
+            if len(self._projection_plan_cache) > 16:
+                self._projection_plan_cache.popitem(last=False)
         metrics = {
             'readiness_checkout_ms': checkout_ms,
             'readiness_begin_ms': begin_ms,

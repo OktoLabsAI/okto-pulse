@@ -24,6 +24,7 @@ PIPELINE_BATCH_CLAIMS = 16
 _process_runner = None
 _process_engine = None
 _process_database_path = None
+_process_reader = None
 
 
 def _close_projection_child() -> None:
@@ -84,10 +85,13 @@ def _project_and_stage_from_database(database_path, claim, deadline):
     from .worker_runners import TrackedBlockingExecution
 
     runner, engine = _projection_child_runtime(database_path)
+    global _process_reader
+    if _process_reader is None:
+        _process_reader = CommunityDeliveryReadinessReader(engine,
+            clock=CommunityReadinessClock())
 
     async def project_and_stage():
-        reader = CommunityDeliveryReadinessReader(engine,
-            clock=CommunityReadinessClock())
+        reader = _process_reader
         store = CommunityPersistedReadinessStore(engine)
         snapshot_phases = {}
         started = monotonic()

@@ -74,11 +74,33 @@ async def test_projection_capture_reads_delta_with_source_revision(tmp_path):
         assert (delta.source_revision, delta.kind, delta.card_id) == (
             revision, 'card_progress_insert', 'card')
         async with engine.begin() as connection:
+            await connection.exec_driver_sql("INSERT INTO card_delivery_evidence_records "
+                "(id,board_id,card_id,spec_id,spec_edition,kind,actor_id,actor_kind,"
+                "idempotency_key,payload_sha256,payload,created_at) "
+                "VALUES ('progress-2','board','card','spec',1,'progress','agent','agent',"
+                "'progress-2',?,?,CURRENT_TIMESTAMP)",
+                (sha256(payload.encode()).hexdigest(), payload))
+        phases = {}
+        cached, progress_revision, progress_delta = await worker.reader.load_for_projection(
+            board_id='board', spec_id='spec', blocking_execution=worker.blocking_execution,
+            include_source_delta=True, phase_metrics=phases)
+        assert progress_delta is not None and progress_revision == revision + 1
+        assert phases['readiness_materialize_facts_plan_cache_hit'] == 1.0
+        cold_reader = type(worker.reader)(engine, clock=worker.reader.clock)
+        cold, _, _ = await cold_reader.load_for_projection(
+            board_id='board', spec_id='spec', blocking_execution=worker.blocking_execution,
+            include_source_delta=True)
+        assert cached.snapshot_id == cold.snapshot_id
+        assert cached.facts == cold.facts
+        async with engine.begin() as connection:
             await connection.exec_driver_sql("UPDATE specs SET title='Changed' WHERE id='spec'")
+        phases = {}
         _snapshot, next_revision, next_delta = await worker.reader.load_for_projection(
             board_id='board', spec_id='spec',
-            blocking_execution=worker.blocking_execution, include_source_delta=True)
-        assert next_revision == revision + 1
+            blocking_execution=worker.blocking_execution, include_source_delta=True,
+            phase_metrics=phases)
+        assert next_revision == progress_revision + 1
+        assert phases['readiness_materialize_facts_plan_cache_hit'] == 0.0
         assert next_delta is not None
         assert (next_delta.source_revision, next_delta.kind, next_delta.card_id) == (
             next_revision, 'full', None)
