@@ -49,11 +49,19 @@ def test_spec_and_card_mutations_enqueue_in_the_same_transaction(tmp_path):
             assert changed == first + 1
             assert connection.exec_driver_sql("SELECT requested_revision FROM readiness_job "
                 "WHERE scope_id='spec-a:1'").scalar_one() == changed
+            assert connection.exec_driver_sql(
+                "SELECT kind FROM readiness_source_delta_event "
+                "WHERE scope_id='spec-a:1' AND source_revision=?",
+                (changed,)).scalar_one() == 'full'
             connection.rollback()
         with engine.connect() as connection:
             assert connection.exec_driver_sql("SELECT source_revision FROM readiness_scope "
                 "WHERE spec_id='spec-a'").scalar_one() == first
             assert connection.exec_driver_sql("SELECT COUNT(*) FROM cards WHERE id='card'").scalar_one() == 0
+            assert connection.exec_driver_sql(
+                "SELECT COUNT(*) FROM readiness_source_delta_event "
+                "WHERE scope_id='spec-a:1' AND source_revision>?",
+                (first,)).scalar_one() == 0
     finally:
         engine.dispose()
 
@@ -81,6 +89,10 @@ def test_progress_hint_is_atomic_and_other_mutations_clear_it(tmp_path):
             assert (kind, card_id) == ('card_progress_insert', 'card')
             assert revision == connection.exec_driver_sql("SELECT source_revision "
                 "FROM readiness_scope WHERE id='spec-a:1'").scalar_one()
+            assert connection.exec_driver_sql(
+                "SELECT kind,card_id FROM readiness_source_delta_event "
+                "WHERE scope_id='spec-a:1' AND source_revision=?",
+                (revision,)).one() == ('card_progress_insert', 'card')
         with engine.connect() as connection:
             connection.exec_driver_sql("UPDATE specs SET title='Changed' WHERE id='spec-a'")
             assert connection.exec_driver_sql("SELECT kind,card_id FROM readiness_source_delta "
@@ -90,10 +102,17 @@ def test_progress_hint_is_atomic_and_other_mutations_clear_it(tmp_path):
             assert connection.exec_driver_sql("SELECT source_revision,kind,card_id "
                 "FROM readiness_source_delta WHERE scope_id='spec-a:1'").one() == (
                 revision, 'card_progress_insert', 'card')
+            assert connection.exec_driver_sql(
+                "SELECT MAX(source_revision) FROM readiness_source_delta_event "
+                "WHERE scope_id='spec-a:1'").scalar_one() == revision
         with engine.begin() as connection:
             connection.exec_driver_sql("UPDATE specs SET title='Changed' WHERE id='spec-a'")
             assert connection.exec_driver_sql("SELECT kind,card_id FROM readiness_source_delta "
                 "WHERE scope_id='spec-a:1'").one() == ('full', None)
+            assert connection.exec_driver_sql(
+                "SELECT kind,card_id FROM readiness_source_delta_event "
+                "WHERE scope_id='spec-a:1' AND source_revision=?",
+                (revision + 1,)).one() == ('full', None)
     finally:
         engine.dispose()
 

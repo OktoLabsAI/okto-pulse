@@ -14,6 +14,7 @@ import orjson
 import sqlite3
 import threading
 import time
+from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -106,6 +107,95 @@ async def test_projection_capture_reads_delta_with_source_revision(tmp_path):
         assert next_delta is not None
         assert (next_delta.source_revision, next_delta.kind, next_delta.card_id) == (
             next_revision, 'full', None)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_skipped_progress_revisions_use_durable_chain_only_when_complete(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql("INSERT INTO cards "
+                "(id,board_id,spec_id,title,status,position,created_by) "
+                "VALUES ('card','board','spec','Card','in_progress',0,'owner')")
+        await asyncio.sleep(.06)
+        assert await worker.process_once() == 1
+        baseline = await worker.store.active_predecessor_revision(
+            scope_id='spec:1', board_id='board', spec_id='spec', edition=1,
+            before_revision=1_000_000)
+        assert baseline is not None
+        assert await worker.store.gc_once() is True
+        async with engine.connect() as connection:
+            assert (await connection.exec_driver_sql(
+                "SELECT COUNT(*) FROM readiness_source_delta_event "
+                "WHERE scope_id='spec:1'")).scalar_one() == 0
+        payload = json.dumps({"progress": {"contract_version": "delivery-progress/v2",
+            "material_change": "unknown", "source_state": {
+                "workspace_state": "unknown", "recoverability": "unknown"},
+            "target_ids": [], "remaining": "Checkpoint"}, "justification": "Checkpoint"})
+        async with engine.begin() as connection:
+            for index in (1, 2):
+                record_id = f'progress-{index}'
+                await connection.exec_driver_sql("INSERT INTO card_delivery_evidence_records "
+                    "(id,board_id,card_id,spec_id,spec_edition,kind,actor_id,actor_kind,"
+                    "idempotency_key,payload_sha256,payload,created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)",
+                    (record_id, 'board', 'card', 'spec', 1, 'progress', 'agent',
+                     'agent', record_id, sha256(payload.encode()).hexdigest(), payload))
+        snapshot, revision, delta = await worker.reader.load_for_projection(
+            board_id='board', spec_id='spec',
+            blocking_execution=worker.blocking_execution, include_source_delta=True)
+        assert revision == baseline + 2
+        chain = await worker.store.load_progress_delta_chain(
+            scope_id='spec:1', after_revision=baseline, through_revision=revision)
+        assert chain is not None
+        assert await worker.store.gc_once() is False
+        assert tuple((item.revision, item.kind, item.card_id) for item in chain) == (
+            (baseline + 1, 'card_progress_insert', 'card'),
+            (baseline + 2, 'card_progress_insert', 'card'))
+        claim = SimpleNamespace(scope_id='spec:1', board_id='board',
+            spec_id='spec', edition=1)
+        candidate = await worker_module._candidate_predecessor(
+            worker.store, claim, revision, delta)
+        assert candidate is not None
+        assert candidate[0].captured_revision == baseline
+        assert candidate[1] == chain
+        assert snapshot.facts.scope.spec_id == 'spec'
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(
+                "DELETE FROM readiness_source_delta_event "
+                "WHERE scope_id='spec:1' AND source_revision=?",
+                (baseline + 1,))
+        assert await worker.store.load_progress_delta_chain(
+            scope_id='spec:1', after_revision=baseline, through_revision=revision) is None
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(
+                "INSERT INTO readiness_source_delta_event "
+                "(scope_id,source_revision,kind,card_id) "
+                "VALUES ('spec:1',?,'card_progress_insert','card')",
+                (baseline + 1,))
+
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql("UPDATE specs SET title='Changed' WHERE id='spec'")
+            record_id = 'progress-3'
+            await connection.exec_driver_sql("INSERT INTO card_delivery_evidence_records "
+                "(id,board_id,card_id,spec_id,spec_edition,kind,actor_id,actor_kind,"
+                "idempotency_key,payload_sha256,payload,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)",
+                (record_id, 'board', 'card', 'spec', 1, 'progress', 'agent',
+                 'agent', record_id, sha256(payload.encode()).hexdigest(), payload))
+        _, mixed_revision, mixed_delta = await worker.reader.load_for_projection(
+            board_id='board', spec_id='spec',
+            blocking_execution=worker.blocking_execution, include_source_delta=True)
+        assert mixed_delta.kind == 'card_progress_insert'
+        assert await worker.store.load_progress_delta_chain(
+            scope_id='spec:1', after_revision=baseline,
+            through_revision=mixed_revision) is None
+        assert await worker_module._candidate_predecessor(
+            worker.store, claim, mixed_revision, mixed_delta) is None
     finally:
         await engine.dispose()
 

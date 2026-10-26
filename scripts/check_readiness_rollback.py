@@ -1,4 +1,4 @@
-"""Assess a stopped v404 SQLite database against its pre-upgrade backup.
+"""Assess a stopped v405 SQLite database against its pre-upgrade backup.
 
 Exit 2 refuses an unqualified predecessor restore. This command never restores
 or changes either file. A positive result is valid only while writers stay

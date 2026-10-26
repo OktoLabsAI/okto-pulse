@@ -1,4 +1,4 @@
-"""Explicit, one-way upgrade from exact v400 through v403 SQLite formats.
+"""Explicit, one-way upgrade from exact v400 through v404 SQLite formats.
 
 Run only during a service stop. The source is locked, backed up and checked
 before any DDL. Unknown or modified predecessors are refused. A backup is
@@ -24,6 +24,7 @@ from .current_relational_schema import (
 )
 from .sqlalchemy_models import (
     ReadinessGenerationRow, ReadinessJobRow, ReadinessScopeRow, ReadinessSourceDeltaRow,
+    ReadinessSourceDeltaEventRow,
     ReadinessSummaryRow, ReadinessDiagnosticRow, ReadinessUnitRow,
     ReadinessOperationAuditRow,
 )
@@ -37,10 +38,13 @@ READINESS_V402_VERSION = 402
 READINESS_V402_SHA256 = "ff2132ff78ded80b46110cb69796d6cc792d635893b4ce7b68ebd43a30d82113"
 READINESS_V403_VERSION = 403
 READINESS_V403_SHA256 = "7458c16aee6837823a8e88b44fb7dfc5a30fa06aea08bb87de934e75078cf05d"
+READINESS_V404_VERSION = 404
+READINESS_V404_SHA256 = "42207d5a287fe03c55a66ba5fbfcc3bf4eb78286b0e5ca74ae1ba69c0bd835bc"
 _TABLES = (
     ReadinessScopeRow.__table__, ReadinessJobRow.__table__, ReadinessGenerationRow.__table__,
     ReadinessSummaryRow.__table__, ReadinessDiagnosticRow.__table__, ReadinessUnitRow.__table__,
     ReadinessOperationAuditRow.__table__, ReadinessSourceDeltaRow.__table__,
+    ReadinessSourceDeltaEventRow.__table__,
 )
 
 
@@ -61,13 +65,15 @@ def _require_predecessor(connection: sqlite3.Connection) -> int:
         raise StorageFormatError("application_id")
     version = connection.execute("PRAGMA main.user_version").fetchone()[0]
     if version not in {PREDECESSOR_VERSION, READINESS_V401_VERSION,
-                       READINESS_V402_VERSION, READINESS_V403_VERSION}:
+                       READINESS_V402_VERSION, READINESS_V403_VERSION,
+                       READINESS_V404_VERSION}:
         raise StorageFormatError("predecessor_version")
     expected = {
         PREDECESSOR_VERSION: PREDECESSOR_SHA256,
         READINESS_V401_VERSION: READINESS_V401_SHA256,
         READINESS_V402_VERSION: READINESS_V402_SHA256,
         READINESS_V403_VERSION: READINESS_V403_SHA256,
+        READINESS_V404_VERSION: READINESS_V404_SHA256,
     }[version]
     if _fingerprint(connection) != expected:
         raise StorageFormatError("predecessor_fingerprint")
@@ -124,10 +130,17 @@ def upgrade_readiness_schema(database: Path) -> Path:
                 # The diagnostic projection was introduced in v403.
                 table = ReadinessDiagnosticRow.__table__
                 locked.execute(str(CreateTable(table).compile(dialect=dialect())))
-            if version != PREDECESSOR_VERSION:
+            if version in {READINESS_V401_VERSION, READINESS_V402_VERSION,
+                           READINESS_V403_VERSION}:
                 # Delta hints are advisory projection metadata. They begin empty
                 # on upgrade, so the first post-upgrade projection is full.
                 table = ReadinessSourceDeltaRow.__table__
+                locked.execute(str(CreateTable(table).compile(dialect=dialect())))
+            if version != PREDECESSOR_VERSION:
+                # Historical revisions older than the upgrade are unknown.
+                # The worker must perform a full projection until the new
+                # transactionally written chain covers its predecessor.
+                table = ReadinessSourceDeltaEventRow.__table__
                 locked.execute(str(CreateTable(table).compile(dialect=dialect())))
             if version == READINESS_V401_VERSION:
                 # SQLite cannot add a UNIQUE table constraint with ALTER TABLE.

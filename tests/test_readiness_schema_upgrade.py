@@ -18,6 +18,7 @@ from okto_pulse.community.adapters.readiness_schema_upgrade import (
     PREDECESSOR_SHA256, PREDECESSOR_VERSION, READINESS_V401_SHA256,
     READINESS_V401_VERSION, READINESS_V402_SHA256, READINESS_V402_VERSION,
     READINESS_V403_SHA256, READINESS_V403_VERSION,
+    READINESS_V404_SHA256, READINESS_V404_VERSION,
     _fingerprint, upgrade_readiness_schema,
 )
 from okto_pulse.community.adapters.readiness_invalidation_schema import (
@@ -62,7 +63,8 @@ def _v402_objects():
     old = {sql.split()[2]: sql for sql in statements}
     return tuple((kind, name, table, old.get(name, sql))
         for kind, name, table, sql in current_schema_contract().objects
-        if name not in {'readiness_diagnostic', 'readiness_source_delta'})
+        if name not in {'readiness_diagnostic', 'readiness_source_delta',
+                        'readiness_source_delta_event'})
 
 
 def _v403_objects():
@@ -71,7 +73,16 @@ def _v403_objects():
     old = {sql.split()[2]: sql for sql in statements}
     return tuple((kind, name, table, old.get(name, sql))
         for kind, name, table, sql in current_schema_contract().objects
-        if name != 'readiness_source_delta')
+        if name not in {'readiness_source_delta', 'readiness_source_delta_event'})
+
+
+def _v404_objects():
+    statements = json.loads((Path(__file__).parent / 'fixtures' /
+        'readiness_v404_triggers.json').read_text(encoding='utf-8'))
+    old = {sql.split()[2]: sql for sql in statements}
+    return tuple((kind, name, table, old.get(name, sql))
+        for kind, name, table, sql in current_schema_contract().objects
+        if name != 'readiness_source_delta_event')
 
 
 def test_upgrade_preserves_source_rows_and_leaves_verified_backup(tmp_path):
@@ -285,6 +296,38 @@ def test_v403_upgrade_adds_empty_delta_hint_and_preserves_source(tmp_path):
         current.execute("UPDATE specs SET title='Changed' WHERE id='spec'")
         assert current.execute("SELECT kind,card_id FROM readiness_source_delta "
             "WHERE scope_id='spec:1'").fetchone() == ('full', None)
+
+
+def test_v404_upgrade_adds_empty_delta_chain_and_preserves_source(tmp_path):
+    path = tmp_path / 'pulse.sqlite3'
+    with closing(sqlite3.connect(path)) as connection:
+        for kind in ('table', 'index', 'trigger'):
+            for row in _v404_objects():
+                if row[0] == kind:
+                    connection.execute(row[3])
+        connection.execute(f'PRAGMA application_id={APPLICATION_ID}')
+        connection.execute(f'PRAGMA user_version={READINESS_V404_VERSION}')
+        connection.execute("INSERT INTO global_discovery_source_revision "
+            "(scope_id,fence_version,trigger_manifest_version,incarnation_id,revision,mutation_nonce) "
+            "VALUES ('_global',?,?,lower(hex(randomblob(32))),0,lower(hex(randomblob(32))))",
+            (GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION, GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION))
+        connection.execute("INSERT INTO boards (id,name,owner_id,realm_id) "
+            "VALUES ('board','Board','owner','local')")
+        connection.execute("INSERT INTO specs "
+            "(id,board_id,title,status,version,created_by,architecture_adoption) "
+            "VALUES ('spec','board','Source','in_progress',1,'owner','{}')")
+        connection.commit()
+        assert connection.execute('PRAGMA journal_mode=WAL').fetchone() == ('wal',)
+        assert _fingerprint(connection) == READINESS_V404_SHA256
+    backup = upgrade_readiness_schema(path)
+    with closing(sqlite3.connect(path)) as current, closing(sqlite3.connect(backup)) as old:
+        assert _fingerprint(old) == READINESS_V404_SHA256
+        assert current.execute("SELECT title FROM specs WHERE id='spec'").fetchone() == ('Source',)
+        assert current.execute("SELECT COUNT(*) FROM readiness_source_delta_event").fetchone() == (0,)
+        assert inspect_current_schema(current.cursor(), current_schema_contract()) is False
+        current.execute("UPDATE specs SET title='Changed' WHERE id='spec'")
+        assert current.execute("SELECT kind,card_id FROM readiness_source_delta_event "
+            "WHERE scope_id='spec:1' ORDER BY source_revision DESC LIMIT 1").fetchone() == ('full', None)
 
 
 @pytest.mark.parametrize("trigger_index", [0, -1])

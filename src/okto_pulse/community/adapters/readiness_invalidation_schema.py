@@ -77,6 +77,9 @@ def _statements(table: str, row: str, operation: str) -> str:
       FROM readiness_scope WHERE id IN ({identity})
     ON CONFLICT(scope_id) DO UPDATE SET
       source_revision=excluded.source_revision,kind=excluded.kind,card_id=excluded.card_id;
+    INSERT INTO readiness_source_delta_event (scope_id,source_revision,kind,card_id)
+    SELECT id,source_revision,{delta_kind},{delta_card}
+      FROM readiness_scope WHERE id IN ({identity});
     INSERT INTO readiness_job
       (scope_id,requested_revision,state,owner,lease_epoch,lease_until,attempt,due_at,error_code,updated_at)
     SELECT id,source_revision,CASE WHEN tombstone=1 THEN 'terminal' ELSE 'pending' END,

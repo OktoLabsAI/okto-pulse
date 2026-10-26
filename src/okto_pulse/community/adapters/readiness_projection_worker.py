@@ -11,7 +11,8 @@ from time import monotonic, process_time
 from uuid import uuid4
 
 from okto_pulse.core.services.persisted_delivery_readiness import (
-    IncrementalReadinessUnavailable, build_readiness_generation,
+    IncrementalReadinessUnavailable, ReadinessSourceDelta,
+    build_readiness_generation,
 )
 from .sqlalchemy_delivery_readiness import CommunityDeliveryReadinessReader, CommunityReadinessClock
 from .sqlalchemy_persisted_readiness import CommunityPersistedReadinessStore, ReadinessLeaseLost
@@ -62,17 +63,35 @@ async def _candidate_predecessor(store, claim, revision, delta, *, phase_metrics
             or delta.kind != "card_progress_insert" or not delta.card_id
             or revision < 1):
         return None
-    return await store.load_verified_predecessor(scope_id=claim.scope_id,
+    predecessor = await store.load_verified_predecessor(scope_id=claim.scope_id,
         board_id=claim.board_id, spec_id=claim.spec_id, edition=claim.edition,
         expected_revision=revision - 1, phase_metrics=phase_metrics)
-
-
-def _build_with_predecessor(snapshot, revision, deadline, predecessor, delta):
     if predecessor is not None:
+        return predecessor, (ReadinessSourceDelta(
+            revision, delta.kind, delta.card_id),)
+    active_revision = await store.active_predecessor_revision(
+        scope_id=claim.scope_id, board_id=claim.board_id, spec_id=claim.spec_id,
+        edition=claim.edition, before_revision=revision)
+    if active_revision is None:
+        return None
+    chain = await store.load_progress_delta_chain(scope_id=claim.scope_id,
+        after_revision=active_revision, through_revision=revision,
+        phase_metrics=phase_metrics)
+    if chain is None or chain[-1].card_id != delta.card_id:
+        return None
+    predecessor = await store.load_verified_predecessor(scope_id=claim.scope_id,
+        board_id=claim.board_id, spec_id=claim.spec_id, edition=claim.edition,
+        expected_revision=active_revision, phase_metrics=phase_metrics)
+    return (predecessor, chain) if predecessor is not None else None
+
+
+def _build_with_predecessor(snapshot, revision, deadline, candidate):
+    if candidate is not None:
+        predecessor, progress_deltas = candidate
         try:
             generation = build_readiness_generation(snapshot, captured_revision=revision,
                 deadline=deadline, predecessor=predecessor,
-                progress_card_id=delta.card_id)
+                progress_deltas=progress_deltas)
             return generation, "incremental"
         except IncrementalReadinessUnavailable as exc:
             logger.debug("readiness.incremental_fallback reason=%s", exc)
@@ -109,13 +128,13 @@ def _project_and_stage_from_database(database_path, claim, deadline):
         if revision < 0:
             raise ValueError("readiness_revision_invalid")
         started = monotonic()
-        predecessor = await _candidate_predecessor(store, claim, revision, delta,
+        candidate = await _candidate_predecessor(store, claim, revision, delta,
             phase_metrics=snapshot_phases)
         predecessor_ms = (monotonic() - started) * 1000
         started = monotonic()
         cpu_started = process_time()
         generation, projection_mode = _build_with_predecessor(snapshot, revision, deadline,
-            predecessor, delta)
+            candidate)
         compute_ms = (monotonic() - started) * 1000
         snapshot_phases["readiness_compute_cpu_ms"] = (
             process_time() - cpu_started) * 1000
@@ -295,7 +314,7 @@ class ReadinessProjectionProcessor:
                 if captured_revision < 0:
                     raise ValueError("readiness_revision_invalid")
                 predecessor_started = monotonic()
-                predecessor = await _candidate_predecessor(self.store, claim,
+                candidate = await _candidate_predecessor(self.store, claim,
                     captured_revision, delta)
                 predecessor_ms = (monotonic() - predecessor_started) * 1000
                 started = monotonic()
@@ -304,7 +323,7 @@ class ReadinessProjectionProcessor:
                 async with self._fallback_calculation_lock:
                     generation, projection_mode = await self.blocking_execution.run(
                         lambda: _build_with_predecessor(snapshot, captured_revision,
-                            snapshot_started + 30, predecessor, delta))
+                            snapshot_started + 30, candidate))
                 compute_ms = (monotonic() - started) * 1000
                 if monotonic() - snapshot_started > 30:
                     raise TimeoutError("readiness_calculation_budget_exceeded")

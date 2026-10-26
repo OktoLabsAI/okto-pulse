@@ -207,6 +207,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         'snapshot_record_gc_count_gen2': [],
         'predecessor_read': [], 'predecessor_decode': [],
         'predecessor_digest': [], 'predecessor_construct': [],
+        'predecessor_chain': [], 'predecessor_chain_length': [],
         'stage_metadata': [], 'stage_pack': [], 'stage_heartbeat': [],
         'stage_insert': [], 'stage_verify': [],
         'stage_verify_read': [], 'stage_verify_decode': [],
@@ -261,10 +262,13 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                     publish_phases_ms.setdefault(f'snapshot_query_{table}', []).append(elapsed)
                 for name, elapsed in record.readiness_record_query_detail_ms.items():
                     publish_phases_ms[f'snapshot_record_{name}'].append(elapsed)
-                for name in ('read', 'decode', 'digest', 'construct'):
+                for name in ('read', 'decode', 'digest', 'construct', 'chain'):
                     value = getattr(record, f'readiness_predecessor_{name}_ms', None)
                     if value is not None:
                         publish_phases_ms[f'predecessor_{name}'].append(value)
+                chain_length = getattr(record, 'readiness_predecessor_chain_length', None)
+                if chain_length is not None:
+                    publish_phases_ms['predecessor_chain_length'].append(chain_length)
                 cache_hit = getattr(record, 'readiness_predecessor_cache_hit', None)
                 if cache_hit is not None:
                     predecessor_cache_samples.append(cache_hit)

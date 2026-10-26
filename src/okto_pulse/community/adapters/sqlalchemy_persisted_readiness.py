@@ -21,7 +21,7 @@ from sqlalchemy.orm import aliased
 
 from okto_pulse.core.services.persisted_delivery_readiness import (
     EVALUATOR_VERSION, ProjectedDiagnostic, ProjectedSummary, ProjectedUnit,
-    ReadinessGeneration, readiness_manifest_digest,
+    ReadinessGeneration, ReadinessSourceDelta, readiness_manifest_digest,
     readiness_manifest_digest_stored,
 )
 from okto_pulse.core.models.delivery_readiness import DeliveryMetric
@@ -36,6 +36,7 @@ from .sqlalchemy_models import (
 LEASE_SECONDS = 30
 MAX_ATTEMPTS = 8
 STAGE_BATCH_SIZE = 250
+MAX_PROGRESS_CHAIN = 10000
 logger = logging.getLogger("okto_pulse.readiness_projection")
 
 
@@ -77,6 +78,50 @@ class CommunityPersistedReadinessStore:
     def __init__(self, engine):
         self.engine = engine
         self._verified_generation_cache = OrderedDict()
+
+    async def active_predecessor_revision(self, *, scope_id: str, board_id: str,
+                                          spec_id: str, edition: int,
+                                          before_revision: int) -> int | None:
+        """Read the currently published generation; manifest verification follows."""
+        async with self.engine.connect() as connection:
+            return (await connection.exec_driver_sql(
+                "SELECT g.captured_revision FROM readiness_scope s "
+                "JOIN readiness_generation g ON g.id=s.active_generation_id "
+                "WHERE s.id=? AND s.board_id=? AND s.spec_id=? AND s.edition=? "
+                "AND s.tombstone=0 AND g.scope_id=s.id AND g.state='complete' "
+                "AND g.captured_revision<?",
+                (scope_id, board_id, spec_id, edition, before_revision))).scalar_one_or_none()
+
+    async def load_progress_delta_chain(self, *, scope_id: str, after_revision: int,
+                                        through_revision: int,
+                                        phase_metrics: dict[str, float] | None = None,
+                                        ) -> tuple[ReadinessSourceDelta, ...] | None:
+        """Require every source revision to be a committed progress insert."""
+        count = through_revision - after_revision
+        if count <= 0 or count > MAX_PROGRESS_CHAIN:
+            return None
+        started = perf_counter()
+        async with self.engine.connect() as connection:
+            rows = (await connection.exec_driver_sql(
+                "SELECT source_revision,kind,card_id FROM readiness_source_delta_event "
+                "WHERE scope_id=? AND source_revision>? AND source_revision<=? "
+                "ORDER BY source_revision LIMIT ?",
+                (scope_id, after_revision, through_revision, count + 1))).all()
+        if phase_metrics is not None:
+            phase_metrics['readiness_predecessor_chain_ms'] = (
+                perf_counter() - started) * 1000
+            phase_metrics['readiness_predecessor_chain_length'] = float(len(rows))
+        if len(rows) != count:
+            return None
+        expected = after_revision + 1
+        deltas = []
+        for revision, kind, card_id in rows:
+            if (revision != expected or kind != 'card_progress_insert'
+                    or not card_id):
+                return None
+            deltas.append(ReadinessSourceDelta(revision, kind, card_id))
+            expected += 1
+        return tuple(deltas)
 
     async def eligible_pending_count(self, *, max_count: int = 2) -> int:
         """Bounded read-only backlog probe while a projection is in flight."""
@@ -782,7 +827,7 @@ class CommunityPersistedReadinessStore:
                 raise
 
     async def gc_once(self) -> bool:
-        """Retire one nonactive generation in bounded row batches."""
+        """Retire one nonactive generation or covered deltas in bounded batches."""
         now = datetime.now(timezone.utc)
         async with AsyncSession(self.engine) as session, session.begin():
             newer_generation = aliased(ReadinessGenerationRow)
@@ -806,7 +851,13 @@ class CommunityPersistedReadinessStore:
                 ),
             ).order_by(ReadinessGenerationRow.created_at).limit(1))).first()
             if candidate is None:
-                return False
+                deleted = await session.execute(text(
+                    "DELETE FROM readiness_source_delta_event WHERE rowid IN ("
+                    "SELECT d.rowid FROM readiness_source_delta_event d "
+                    "JOIN readiness_scope s ON s.id=d.scope_id "
+                    "JOIN readiness_generation g ON g.id=s.active_generation_id "
+                    "WHERE d.source_revision<=g.captured_revision LIMIT 250)"))
+                return deleted.rowcount > 0
             candidate.state = "expired"
             await session.flush()
             await session.execute(text("DELETE FROM readiness_summary WHERE rowid IN "
