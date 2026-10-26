@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
+from functools import lru_cache
 import hashlib
 import json
 import logging
@@ -106,6 +107,36 @@ def _resolve_readiness_policy(*, actor, board_id, realm_id, owner_id, share,
     access.require('code_traceability.evidence.read')
     access.require('spec.entity.read')
     return access
+
+
+def _policy_fact_key(value):
+    """Canonicalize freshly queried policy facts, never an actor's claims."""
+    return json.dumps(value, default=_json_value, sort_keys=True,
+        ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+
+
+@lru_cache(maxsize=256)
+def _resolve_persisted_policy_facts(actor, board_id, realm_id, owner_id, share,
+                                    preset_id, agent_flags_key, presets_key,
+                                    board_overrides_key):
+    # Only the pure policy resolution is reused. Every read still queries Board,
+    # membership, Spec/Card and current policy facts before and after projection.
+    preset_rows = json.loads(presets_key)
+    return _resolve_readiness_policy(actor=actor, board_id=board_id,
+        realm_id=realm_id, owner_id=owner_id, share=share,
+        agent_flags=json.loads(agent_flags_key), preset_id=preset_id,
+        presets=tuple(PermissionPresetLineageNode(row['id'], row['flags'],
+            row['base_preset_id']) for row in preset_rows),
+        board_overrides=json.loads(board_overrides_key))
+
+
+def _resolve_persisted_policy(*, actor, board_id, realm_id, owner_id, share,
+                              agent_flags, preset_id, presets, board_overrides):
+    return _resolve_persisted_policy_facts(actor, board_id, realm_id, owner_id,
+        share, preset_id, _policy_fact_key(agent_flags),
+        _policy_fact_key(tuple({'id': p.id, 'flags': p.flags,
+            'base_preset_id': p.base_preset_id} for p in presets)),
+        _policy_fact_key(board_overrides))
 
 
 class _BatchFacts(CommunityDeliveryEvidenceStore):
@@ -361,7 +392,7 @@ class CommunityDeliveryReadinessReader:
             if len(presets) > 5000:
                 raise ReadinessReadError('readiness_limit_exceeded',
                     native_code='readiness_population_limit')
-        return _resolve_readiness_policy(actor=actor, board_id=board_id,
+        return _resolve_persisted_policy(actor=actor, board_id=board_id,
             realm_id=realm_id, owner_id=identity.owner_id, share=share,
             agent_flags=identity.permission_flags if identity.agent_id is not None else None,
             preset_id=identity.preset_id if identity.agent_id is not None else None,

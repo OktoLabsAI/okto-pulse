@@ -28,7 +28,7 @@ from time import monotonic, perf_counter, process_time
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from benchmark_readiness_fixture import seed, percentile, WORKSPACE
+from benchmark_readiness_fixture import seed, percentile
 from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
 from okto_pulse.community.adapters.sqlalchemy_database import install_community_sqlite_pragmas
 from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import (
@@ -109,6 +109,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
     worker_publications = 0
     burst_elapsed_ms = None
     rss_bytes, pool_checkouts, blocking_tasks, wal_samples = [], [], [], []
+    event_loop_lag_ms: list[float] = []
     cpu_start = process_time()
     try:
         if args.mode == 'persisted':
@@ -243,11 +244,14 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 await asyncio.sleep(.1)
 
         async def writer_loop(started_at: float):
+            if args.writes_per_second == 0:
+                await stop_load.wait()
+                return
             index = 0
             while not stop_load.is_set():
                 await record_write(index)
                 index += 1
-                await asyncio.sleep(max(0, started_at + index - monotonic()))
+                await asyncio.sleep(max(0, started_at + index / args.writes_per_second - monotonic()))
 
         async def burst_loop(started_at: float):
             nonlocal burst_elapsed_ms
@@ -268,12 +272,14 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             process = psutil.Process()
             wal = path.with_name(path.name + '-wal')
             while not stop_load.is_set():
+                deadline = monotonic() + .5
+                await asyncio.sleep(max(0, deadline - monotonic()))
                 if measuring:
+                    event_loop_lag_ms.append(max(0, (monotonic() - deadline) * 1000))
                     rss_bytes.append(process.memory_info().rss)
                     pool_checkouts.append(engine.sync_engine.pool.checkedout())
                     blocking_tasks.append(worker.blocking_execution.pending_count)
                     wal_samples.append(wal.stat().st_size if wal.exists() else 0)
-                await asyncio.sleep(.5)
 
         started_at = monotonic()
         projection_task = asyncio.create_task(projection_loop()) if args.mode == 'persisted' else None
@@ -306,6 +312,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         return {
             'mode': args.mode, 'duration_s': args.duration_seconds,
             'read_surface': args.read_surface,
+            'writes_per_second': args.writes_per_second,
             'serialize_writes': args.serialize_writes,
             'warmup_s': args.warmup_seconds, 'warmup_errors': warmup_errors[:25],
             'fixture': {'specs': args.specs, 'cards_per_spec': args.cards,
@@ -354,7 +361,9 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             'resources': {'rss_max_bytes': max(rss_bytes, default=0),
                 'pool_checked_out_max': max(pool_checkouts, default=0),
                 'blocking_tasks_max': max(blocking_tasks, default=0),
-                'wal_max_bytes': max(wal_samples, default=0)},
+                'wal_max_bytes': max(wal_samples, default=0),
+                'event_loop_lag_p95_ms': round(percentile(event_loop_lag_ms, .95), 3)
+                    if event_loop_lag_ms else None},
             'pool': engine.sync_engine.pool.status(),
             'wal_bytes': path.with_name(path.name + '-wal').stat().st_size
                 if path.with_name(path.name + '-wal').exists() else 0,
@@ -376,7 +385,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 'burst_transaction': [round(v, 3) for v in burst_transaction_ms],
                 'burst_publish': [round(v, 3) for v in burst_lag_ms]},
             'resource_samples': {'rss_bytes': rss_bytes, 'pool_checkouts': pool_checkouts,
-                'blocking_tasks': blocking_tasks, 'wal_bytes': wal_samples},
+                'blocking_tasks': blocking_tasks, 'wal_bytes': wal_samples,
+                'event_loop_lag_ms': [round(v, 3) for v in event_loop_lag_ms]},
         }
     finally:
         phase_logger.removeHandler(phase_handler)
@@ -394,6 +404,7 @@ if __name__ == '__main__':
     parser.add_argument('--duration-seconds', type=int, default=60)
     parser.add_argument('--warmup-seconds', type=int, default=0)
     parser.add_argument('--reads-per-second', type=int, default=10)
+    parser.add_argument('--writes-per-second', type=float, default=1)
     parser.add_argument('--clients', type=int, default=5)
     parser.add_argument('--specs', type=int, default=10)
     parser.add_argument('--cards', type=int, default=100)
@@ -418,6 +429,8 @@ if __name__ == '__main__':
         parser.error('legacy fixture only supports the internal read; it is not a v1 service baseline')
     if args.burst_size and (args.burst_at_seconds < 0 or args.burst_at_seconds >= args.duration_seconds):
         parser.error('burst-at-seconds must fall inside the run')
+    if args.writes_per_second < 0:
+        parser.error('writes-per-second must be nonnegative')
     with TemporaryDirectory(prefix='readiness-stress-') as folder:
         path = Path(folder) / 'pulse.db'
         seed(path, args)
