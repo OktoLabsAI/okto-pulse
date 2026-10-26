@@ -6,7 +6,10 @@ from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
+import threading
+import time
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from okto_pulse.community.adapters.current_relational_schema import (
@@ -35,6 +38,27 @@ async def _seed_one_spec(engine):
             (json.dumps({"contract_version": "spec-execution-contract/v1", "board_id": "board",
                 "spec_id": "spec", "adopted_in_edition": 1, "actor_id": "owner",
                 "origin": "new_spec"}),))
+
+
+def _seed_migrated_v401_many_specs(database):
+    _v401_predecessor(database)
+    spec_ids = ['spec', *[f'spec-{number:03d}' for number in range(100)]]
+    contracts = [(spec_id, json.dumps({
+        'contract_version': 'spec-execution-contract/v1',
+        'board_id': 'board', 'spec_id': spec_id,
+        'adopted_in_edition': 1, 'actor_id': 'owner', 'origin': 'new_spec',
+    })) for spec_id in spec_ids]
+    with closing(sqlite3.connect(database)) as predecessor:
+        predecessor.execute("INSERT INTO boards (id,name,owner_id,realm_id) "
+                            "VALUES ('board','Test','owner','local')")
+        predecessor.executemany(
+            "INSERT INTO specs (id,board_id,title,status,version,created_by,"
+            "architecture_adoption,execution_contract) "
+            "VALUES (?,'board','Spec','in_progress',1,'owner','{}',?)", contracts)
+        predecessor.commit()
+    backup = upgrade_readiness_schema(database)
+    assert backup.is_file()
+    return backup
 
 
 @pytest.mark.asyncio
@@ -635,23 +659,7 @@ async def test_reconcile_cursor_resumes_bounded_pages_after_restart(tmp_path):
 @pytest.mark.asyncio
 async def test_backfill_after_v401_upgrade_completes_all_scopes_and_three_restarts(tmp_path):
     database = tmp_path / 'pulse.sqlite3'
-    _v401_predecessor(database)
-    spec_ids = ['spec', *[f'spec-{number:03d}' for number in range(100)]]
-    contracts = [(spec_id, json.dumps({
-        'contract_version': 'spec-execution-contract/v1',
-        'board_id': 'board', 'spec_id': spec_id,
-        'adopted_in_edition': 1, 'actor_id': 'owner', 'origin': 'new_spec',
-    })) for spec_id in spec_ids]
-    with closing(sqlite3.connect(database)) as predecessor:
-        predecessor.execute("INSERT INTO boards (id,name,owner_id,realm_id) "
-                            "VALUES ('board','Test','owner','local')")
-        predecessor.executemany(
-            "INSERT INTO specs (id,board_id,title,status,version,created_by,"
-            "architecture_adoption,execution_contract) "
-            "VALUES (?,'board','Spec','in_progress',1,'owner','{}',?)", contracts)
-        predecessor.commit()
-    backup = upgrade_readiness_schema(database)
-    assert backup.is_file()
+    _seed_migrated_v401_many_specs(database)
     engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
     try:
         worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
@@ -723,6 +731,57 @@ async def test_backfill_after_v401_upgrade_completes_all_scopes_and_three_restar
             assert visible.summaries[0]['verification']['percent'] is None
     finally:
         await engine.dispose()
+
+
+def test_real_community_lifespan_serves_pending_then_current_on_upgraded_copy(
+    tmp_path, monkeypatch,
+):
+    data_home = tmp_path / 'pulse-home'
+    database = data_home / 'data' / 'pulse.db'
+    database.parent.mkdir(parents=True)
+    _seed_migrated_v401_many_specs(database)
+    monkeypatch.setenv('DATA_DIR', str(data_home))
+    monkeypatch.setenv('KG_EMBEDDING_MODE', 'stub')
+    monkeypatch.setenv('KG_DAILY_TICK_DISABLED', '1')
+
+    from okto_pulse.community.main import create_community_app
+    from okto_pulse.community.api.auth_deps import require_principal
+    from okto_pulse.core.ports.authentication import Principal
+    from okto_pulse.core.ports.permission_policy import registered_permission_flags
+
+    start_worker = threading.Event()
+    real_process_once = ReadinessProjectionProcessor.process_once
+
+    async def held_process_once(self):
+        await asyncio.to_thread(start_worker.wait)
+        return await real_process_once(self)
+
+    monkeypatch.setattr(ReadinessProjectionProcessor, 'process_once', held_process_once)
+    app = create_community_app()
+    app.dependency_overrides[require_principal] = lambda: Principal(
+        subject='owner', realm_id='local', actor_kind='human',
+        claims={'permissions': registered_permission_flags()},
+    )
+    endpoint = '/api/v1/boards/board/specs/spec-000/delivery-readiness-summary'
+    with TestClient(app) as client:
+        try:
+            assert client.get('/').status_code == 200
+            pending = client.get(endpoint)
+            assert pending.status_code == 200, pending.text
+            assert pending.json()['projection']['freshness'] == 'pending_initial'
+            start_worker.set()
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                current = client.get(endpoint)
+                assert current.status_code == 200, current.text
+                if current.json()['projection']['freshness'] == 'current':
+                    assert current.json()['delivery_readiness']['implementation']['percent'] is None
+                    break
+                time.sleep(0.1)
+            else:
+                raise AssertionError('migrated server did not publish a current generation')
+        finally:
+            start_worker.set()
 
 
 @pytest.mark.asyncio
