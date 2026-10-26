@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -75,6 +76,7 @@ class ReadinessLeaseLost(RuntimeError):
 class CommunityPersistedReadinessStore:
     def __init__(self, engine):
         self.engine = engine
+        self._verified_generation_cache = OrderedDict()
 
     async def eligible_pending_count(self, *, max_count: int = 2) -> int:
         """Bounded read-only backlog probe while a projection is in flight."""
@@ -346,6 +348,12 @@ class CommunityPersistedReadinessStore:
         logger.debug('readiness.stage_phases', extra=metrics)
         if phase_metrics is not None:
             phase_metrics.update(metrics)
+        # This object has just passed verification against durable stored rows.
+        # Reuse remains conditional on rechecking the active rows at load time.
+        self._verified_generation_cache[generation_id] = generation
+        self._verified_generation_cache.move_to_end(generation_id)
+        if len(self._verified_generation_cache) > 16:
+            self._verified_generation_cache.popitem(last=False)
         return generation_id
 
     async def verify_stage(self, claim: ReadinessClaim, generation_id: str, *,
@@ -452,10 +460,17 @@ class CommunityPersistedReadinessStore:
                 generation_id = header[0]
                 rows = (await connection.exec_driver_sql(
                     "SELECT 0 AS category,card_key,'' AS kind,'' AS ref,"
-                    "'' AS semantic_sha256,payload FROM readiness_summary WHERE generation_id=? "
-                    "UNION ALL SELECT 1,card_key,'','','',payload FROM readiness_diagnostic "
-                    "WHERE generation_id=? "
-                    "UNION ALL SELECT 2,card_key,kind,ref,semantic_sha256,payload "
+                    "'' AS semantic_sha256,payload,json_valid(payload),"
+                    "CASE WHEN json_valid(payload) THEN json_extract(payload,'$.card_id') END,"
+                    "NULL,NULL,NULL FROM readiness_summary WHERE generation_id=? "
+                    "UNION ALL SELECT 1,card_key,'','','',payload,json_valid(payload),"
+                    "NULL,NULL,NULL,NULL FROM readiness_diagnostic WHERE generation_id=? "
+                    "UNION ALL SELECT 2,card_key,kind,ref,semantic_sha256,payload,"
+                    "json_valid(payload),"
+                    "CASE WHEN json_valid(payload) THEN json_extract(payload,'$.card_id') END,"
+                    "CASE WHEN json_valid(payload) THEN json_extract(payload,'$.kind') END,"
+                    "CASE WHEN json_valid(payload) THEN json_extract(payload,'$.ref') END,"
+                    "CASE WHEN json_valid(payload) THEN json_extract(payload,'$.semantic_sha256') END "
                     "FROM readiness_unit WHERE generation_id=? "
                     "ORDER BY category,card_key,kind,ref,semantic_sha256",
                     (generation_id, generation_id, generation_id))).all()
@@ -467,9 +482,55 @@ class CommunityPersistedReadinessStore:
                 summary_count, unit_count, manifest) = header
             if evaluator != EVALUATOR_VERSION:
                 return None
+            cached = self._verified_generation_cache.get(generation_id)
+            if cached is not None:
+                stored_time = datetime.fromisoformat(evaluated_at)
+                if stored_time.tzinfo is None:
+                    stored_time = stored_time.replace(tzinfo=timezone.utc)
+                if (cached.board_id != board_id or cached.spec_id != spec_id
+                        or cached.spec_edition != edition or cached.spec_version != spec_version
+                        or cached.captured_revision != revision
+                        or cached.source_snapshot_id != snapshot_id
+                        or cached.evaluator_version != evaluator
+                        or cached.evaluated_at != stored_time
+                        or cached.manifest_sha256 != manifest
+                        or len(cached.summaries) != summary_count
+                        or len(cached.diagnostics) != summary_count
+                        or len(cached.units) != unit_count):
+                    return None
+                summary_keys = {row[1] for row in rows if row[0] == 0}
+                diagnostic_keys = {row[1] for row in rows if row[0] == 1}
+                if (len(summary_keys) != summary_count
+                        or sum(row[0] == 0 for row in rows) != summary_count
+                        or sum(row[0] == 1 for row in rows) != summary_count
+                        or sum(row[0] == 2 for row in rows) != unit_count
+                        or summary_keys != diagnostic_keys
+                        or any(not row[6] or row[0] in (0, 2) and (
+                            row[1] != (row[7] or '')
+                            or row[0] == 2 and (row[2], row[3], row[4]) != row[8:11])
+                            for row in rows)):
+                    return None
+                digest_started = perf_counter()
+                digest = readiness_manifest_digest_stored(board_id=board_id,
+                    spec_id=spec_id, edition=edition, captured_revision=revision,
+                    source_snapshot_id=snapshot_id, evaluator_version=evaluator,
+                    rows=[row[:6] for row in rows])
+                if digest != manifest:
+                    return None
+                self._verified_generation_cache.move_to_end(generation_id)
+                if phase_metrics is not None:
+                    phase_metrics.update({
+                        'readiness_predecessor_read_ms': read_ms,
+                        'readiness_predecessor_decode_ms': 0.0,
+                        'readiness_predecessor_digest_ms':
+                            (perf_counter() - digest_started) * 1000,
+                        'readiness_predecessor_construct_ms': 0.0,
+                        'readiness_predecessor_cache_hit': 1.0,
+                    })
+                return cached
             decode_started = perf_counter()
             summaries, diagnostics, units = [], [], []
-            for category, card_key, kind, ref, semantic_sha256, payload in rows:
+            for category, card_key, kind, ref, semantic_sha256, payload, *_ in rows:
                 value = orjson.loads(payload)
                 if category == 0:
                     if value['card_id'] != (card_key or None):
@@ -520,6 +581,7 @@ class CommunityPersistedReadinessStore:
                     'readiness_predecessor_digest_ms': digest_ms,
                     'readiness_predecessor_construct_ms':
                         (perf_counter() - construct_started) * 1000,
+                    'readiness_predecessor_cache_hit': 0.0,
                 })
             return generation
         except (KeyError, TypeError, ValueError):

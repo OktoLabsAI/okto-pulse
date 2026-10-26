@@ -25,6 +25,7 @@ _process_runner = None
 _process_engine = None
 _process_database_path = None
 _process_reader = None
+_process_store = None
 
 
 def _close_projection_child() -> None:
@@ -85,14 +86,16 @@ def _project_and_stage_from_database(database_path, claim, deadline):
     from .worker_runners import TrackedBlockingExecution
 
     runner, engine = _projection_child_runtime(database_path)
-    global _process_reader
+    global _process_reader, _process_store
     if _process_reader is None:
         _process_reader = CommunityDeliveryReadinessReader(engine,
             clock=CommunityReadinessClock())
+    if _process_store is None:
+        _process_store = CommunityPersistedReadinessStore(engine)
 
     async def project_and_stage():
         reader = _process_reader
-        store = CommunityPersistedReadinessStore(engine)
+        store = _process_store
         snapshot_phases = {}
         started = monotonic()
         snapshot, revision, delta = await reader.load_for_projection(

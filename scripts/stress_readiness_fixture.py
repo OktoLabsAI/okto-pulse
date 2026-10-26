@@ -205,6 +205,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         'stage_verify_validate': [], 'stage_verify_digest': [],
     }
     plan_cache_samples: list[float] = []
+    predecessor_cache_samples: list[float] = []
     projection_modes: dict[str, int] = {'full': 0, 'incremental': 0}
 
     class ReadPhaseHandler(logging.Handler):
@@ -248,6 +249,9 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                     value = getattr(record, f'readiness_predecessor_{name}_ms', None)
                     if value is not None:
                         publish_phases_ms[f'predecessor_{name}'].append(value)
+                cache_hit = getattr(record, 'readiness_predecessor_cache_hit', None)
+                if cache_hit is not None:
+                    predecessor_cache_samples.append(cache_hit)
             elif record.msg == 'readiness.stage_phases':
                 for key in ('metadata', 'pack', 'heartbeat', 'insert', 'verify'):
                     publish_phases_ms[f'stage_{key}'].append(
@@ -580,6 +584,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             'projection_modes': projection_modes,
             'plan_cache_hits': sum(value == 1.0 for value in plan_cache_samples),
             'plan_cache_samples': len(plan_cache_samples),
+            'predecessor_cache_hits': sum(value == 1.0 for value in predecessor_cache_samples),
+            'predecessor_cache_samples': len(predecessor_cache_samples),
             'worker_concurrency': args.worker_concurrency,
             'full_projection_process': args.full_projection_process,
             'lagging_scopes': [tuple(row) for row in lagging],

@@ -24,7 +24,9 @@ from okto_pulse.community.adapters.current_relational_schema import (
 from okto_pulse.community.adapters.readiness_schema_upgrade import upgrade_readiness_schema
 from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
 from okto_pulse.community.adapters import readiness_projection_worker as worker_module
-from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import ReadinessLeaseLost
+from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import (
+    CommunityPersistedReadinessStore, ReadinessLeaseLost,
+)
 from okto_pulse.community.adapters.worker_runners import TrackedBlockingExecution
 from okto_pulse.core.ports.delivery_readiness import ReadinessReadError
 from okto_pulse.core.services.persisted_delivery_readiness import (
@@ -118,12 +120,20 @@ async def test_predecessor_loader_verifies_active_manifest_and_row_keys(tmp_path
         assert await worker.process_once() == 1
         visible = await worker.store.read(board_id='board', spec_id='spec', edition=1)
         assert visible is not None and visible.captured_revision is not None
+        phases = {}
         previous = await worker.store.load_verified_predecessor(
             scope_id='spec:1', board_id='board', spec_id='spec', edition=1,
-            expected_revision=visible.captured_revision)
+            expected_revision=visible.captured_revision, phase_metrics=phases)
         assert previous is not None
+        assert phases['readiness_predecessor_cache_hit'] == 1.0
         assert previous.manifest_sha256
         assert len(previous.summaries) == len(previous.diagnostics) == 1
+        cold_phases = {}
+        cold = await CommunityPersistedReadinessStore(engine).load_verified_predecessor(
+            scope_id='spec:1', board_id='board', spec_id='spec', edition=1,
+            expected_revision=visible.captured_revision, phase_metrics=cold_phases)
+        assert cold is not None and cold.manifest_sha256 == previous.manifest_sha256
+        assert cold_phases['readiness_predecessor_cache_hit'] == 0.0
         assert await worker.store.load_verified_predecessor(
             scope_id='spec:1', board_id='board', spec_id='spec', edition=1,
             expected_revision=visible.captured_revision + 1) is None
