@@ -50,11 +50,16 @@ def _selection(table: str, row: str) -> str:
     return f"FROM specs s JOIN boards b ON b.id = s.board_id{joins} WHERE {predicate}"
 
 
-def _statements(table: str, row: str) -> str:
+def _statements(table: str, row: str, operation: str) -> str:
     selection = _selection(table, row)
     identity = f"SELECT s.id || ':' || s.edition {selection}"
     now = "strftime('%Y-%m-%d %H:%M:%f','now')"
     due = "strftime('%Y-%m-%d %H:%M:%f','now','+0.05 seconds')"
+    if table == "card_delivery_evidence_records" and operation == "INSERT":
+        delta_kind = "CASE WHEN NEW.kind='progress' THEN 'card_progress_insert' ELSE 'full' END"
+        delta_card = "CASE WHEN NEW.kind='progress' THEN NEW.card_id ELSE NULL END"
+    else:
+        delta_kind, delta_card = "'full'", "NULL"
     return f"""
     INSERT OR IGNORE INTO readiness_scope
       (id,realm_id,board_id,spec_id,edition,source_revision,active_generation_id,tombstone,updated_at)
@@ -67,6 +72,11 @@ def _statements(table: str, row: str) -> str:
           AND active_spec.edition=readiness_scope.edition
           AND active_spec.archived=0) THEN 0 ELSE 1 END
       WHERE id IN ({identity});
+    INSERT INTO readiness_source_delta (scope_id,source_revision,kind,card_id)
+    SELECT id,source_revision,{delta_kind},{delta_card}
+      FROM readiness_scope WHERE id IN ({identity})
+    ON CONFLICT(scope_id) DO UPDATE SET
+      source_revision=excluded.source_revision,kind=excluded.kind,card_id=excluded.card_id;
     INSERT INTO readiness_job
       (scope_id,requested_revision,state,owner,lease_epoch,lease_until,attempt,due_at,error_code,updated_at)
     SELECT id,source_revision,CASE WHEN tombstone=1 THEN 'terminal' ELSE 'pending' END,
@@ -97,15 +107,15 @@ def readiness_trigger_statements() -> tuple[str, ...]:
             # must not be reintroduced with a dangling FK.
             if table == "specs" and operation == "DELETE":
                 continue
-            body = _statements(table, row)
+            body = _statements(table, row, operation)
             if operation == "UPDATE" and table == "cards":
                 # Reparenting invalidates both consumers, without double
                 # counting ordinary field updates of the same Card.
                 statements.append(f"""CREATE TRIGGER trg_readiness_cards_update_old AFTER UPDATE ON cards
                 WHEN OLD.spec_id IS NOT NEW.spec_id OR OLD.board_id IS NOT NEW.board_id
-                BEGIN {_statements(table, 'OLD')} END""")
+                BEGIN {_statements(table, 'OLD', operation)} END""")
             if operation == "UPDATE" and table == "specs":
-                statements.append(f"""CREATE TRIGGER trg_readiness_specs_update_old_edition AFTER UPDATE ON specs
+                statements.append("""CREATE TRIGGER trg_readiness_specs_update_old_edition AFTER UPDATE ON specs
                 WHEN OLD.edition IS NOT NEW.edition
                 BEGIN
                   UPDATE readiness_scope SET tombstone=1,updated_at=strftime('%Y-%m-%d %H:%M:%f','now')

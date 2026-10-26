@@ -1,4 +1,4 @@
-"""Validate an admitted v400/v401/v402→v403 upgrade on a live database copy.
+"""Validate an admitted v400–v403 to v404 upgrade on a live database copy.
 
 This command never writes to the source path. It emits only counts and hashes,
 not source rows. The scratch copy and retained backup live in a temporary
@@ -25,6 +25,7 @@ from okto_pulse.community.adapters.current_relational_schema import (  # noqa: E
 from okto_pulse.community.adapters.readiness_schema_upgrade import (  # noqa: E402
     PREDECESSOR_SHA256, PREDECESSOR_VERSION, READINESS_V401_SHA256,
     READINESS_V401_VERSION, READINESS_V402_SHA256, READINESS_V402_VERSION,
+    READINESS_V403_SHA256, READINESS_V403_VERSION,
     _fingerprint, upgrade_readiness_schema,
 )
 from okto_pulse.community.adapters.readiness_rollback_assessment import (  # noqa: E402
@@ -50,6 +51,7 @@ def validate(source: Path) -> dict:
                 PREDECESSOR_VERSION: PREDECESSOR_SHA256,
                 READINESS_V401_VERSION: READINESS_V401_SHA256,
                 READINESS_V402_VERSION: READINESS_V402_SHA256,
+                READINESS_V403_VERSION: READINESS_V403_SHA256,
             }.get(before_version)
             if before_schema != expected:
                 raise ValueError('unexpected_predecessor_fingerprint')
@@ -62,6 +64,10 @@ def validate(source: Path) -> dict:
                 "WHERE type='table' AND name='readiness_diagnostic'").fetchone()[0] == 1
             if not diagnostic_present:
                 raise ValueError('readiness_diagnostic_missing')
+            delta_present = upgraded.execute("SELECT count(*) FROM sqlite_schema "
+                "WHERE type='table' AND name='readiness_source_delta'").fetchone()[0] == 1
+            if not delta_present:
+                raise ValueError('readiness_source_delta_missing')
             if upgraded.execute('PRAGMA quick_check(1)').fetchone() != ('ok',):
                 raise ValueError('upgraded_integrity_failed')
             if upgraded.execute('PRAGMA foreign_key_check').fetchone() is not None:
@@ -74,6 +80,7 @@ def validate(source: Path) -> dict:
                 'source_rows_verified': sum(count for count, _ in before.values()),
                 'upgraded_schema_version': upgraded.execute('PRAGMA user_version').fetchone()[0],
                 'readiness_diagnostic_present': diagnostic_present,
+                'readiness_source_delta_present': delta_present,
                 'quick_check': 'ok', 'foreign_key_check': 'empty',
                 'source_unchanged': True, 'backup_verified': True}
 

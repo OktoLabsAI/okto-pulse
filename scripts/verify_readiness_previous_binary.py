@@ -2,7 +2,7 @@
 
 The predecessor source is opened read-only. A temporary SQLite backup is
 upgraded with the current branch; the supplied older wheel runs in a separate
-interpreter and must reject v403 before any database mutation.
+interpreter and must reject v404 before any database mutation.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from okto_pulse.community.adapters.current_relational_schema import (
     SCHEMA_VERSION, StorageFormatError, current_schema_contract,
     require_current_database_file,
 )
-if not str(old_community.__file__).startswith(wheel_root) or SCHEMA_VERSION >= 403:
+if not str(old_community.__file__).startswith(wheel_root) or SCHEMA_VERSION >= 404:
     raise AssertionError('previous_wheel_not_loaded')
 try:
     require_current_database_file(
@@ -47,7 +47,7 @@ except StorageFormatError as error:
     if error.reason != 'version':
         raise AssertionError('unexpected_previous_binary_refusal:' + str(error)) from error
 else:
-    raise AssertionError('previous_binary_admitted_v403')
+    raise AssertionError('previous_binary_admitted_v404')
 print(json.dumps({'old_refused': True, 'old_schema_version': SCHEMA_VERSION,
                   'old_origin': str(old_community.__file__)}))
 """

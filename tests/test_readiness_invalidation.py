@@ -1,5 +1,8 @@
 """Source and projection intent commit or roll back together."""
 
+from hashlib import sha256
+import json
+
 import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import create_engine
@@ -7,11 +10,11 @@ from sqlalchemy import text
 
 import test_delivery_evidence_integration as delivery
 
-ledger = delivery.ledger
-
 from okto_pulse.community.adapters.current_relational_schema import (
     create_current_schema_objects, seed_current_schema_fences,
 )
+
+ledger = delivery.ledger
 
 
 def _database(tmp_path):
@@ -51,6 +54,46 @@ def test_spec_and_card_mutations_enqueue_in_the_same_transaction(tmp_path):
             assert connection.exec_driver_sql("SELECT source_revision FROM readiness_scope "
                 "WHERE spec_id='spec-a'").scalar_one() == first
             assert connection.exec_driver_sql("SELECT COUNT(*) FROM cards WHERE id='card'").scalar_one() == 0
+    finally:
+        engine.dispose()
+
+
+def test_progress_hint_is_atomic_and_other_mutations_clear_it(tmp_path):
+    engine = _database(tmp_path)
+    try:
+        payload = json.dumps({"progress": {"contract_version": "delivery-progress/v2",
+            "material_change": "unknown", "source_state": {
+                "workspace_state": "unknown", "recoverability": "unknown"},
+            "target_ids": [], "remaining": "Checkpoint"}, "justification": "Checkpoint"})
+        with engine.begin() as connection:
+            connection.exec_driver_sql("INSERT INTO cards "
+                "(id,board_id,spec_id,title,status,position,created_by) "
+                "VALUES ('card','board','spec-a','Card','in_progress',0,'owner')")
+            connection.exec_driver_sql("INSERT INTO card_delivery_evidence_records "
+                "(id,board_id,card_id,spec_id,spec_edition,kind,actor_id,actor_kind,"
+                "idempotency_key,payload_sha256,payload,created_at) "
+                "VALUES ('progress-1','board','card','spec-a',1,'progress','agent','agent',"
+                "'progress-1',?,?,CURRENT_TIMESTAMP)",
+                (sha256(payload.encode()).hexdigest(), payload))
+            revision, kind, card_id = connection.exec_driver_sql(
+                "SELECT source_revision,kind,card_id FROM readiness_source_delta "
+                "WHERE scope_id='spec-a:1'").one()
+            assert (kind, card_id) == ('card_progress_insert', 'card')
+            assert revision == connection.exec_driver_sql("SELECT source_revision "
+                "FROM readiness_scope WHERE id='spec-a:1'").scalar_one()
+        with engine.connect() as connection:
+            connection.exec_driver_sql("UPDATE specs SET title='Changed' WHERE id='spec-a'")
+            assert connection.exec_driver_sql("SELECT kind,card_id FROM readiness_source_delta "
+                "WHERE scope_id='spec-a:1'").one() == ('full', None)
+            connection.rollback()
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql("SELECT source_revision,kind,card_id "
+                "FROM readiness_source_delta WHERE scope_id='spec-a:1'").one() == (
+                revision, 'card_progress_insert', 'card')
+        with engine.begin() as connection:
+            connection.exec_driver_sql("UPDATE specs SET title='Changed' WHERE id='spec-a'")
+            assert connection.exec_driver_sql("SELECT kind,card_id FROM readiness_source_delta "
+                "WHERE scope_id='spec-a:1'").one() == ('full', None)
     finally:
         engine.dispose()
 

@@ -49,7 +49,7 @@ def _source_revisions(database: sqlite3.Connection) -> dict[str, int]:
 
 
 def _operation_audit(database: sqlite3.Connection) -> dict[str, tuple]:
-    """Compare the shared, authoritative audit fields across v401/v403 DDL."""
+    """Compare the shared, authoritative audit fields across v401/v404 DDL."""
     if database.execute(
         "SELECT 1 FROM sqlite_schema WHERE type='table' "
         "AND name='readiness_operation_audit'"

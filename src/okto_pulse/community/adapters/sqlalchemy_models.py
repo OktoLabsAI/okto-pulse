@@ -10516,6 +10516,25 @@ class ReadinessScopeRow(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
 
 
+class ReadinessSourceDeltaRow(Base):
+    """Last source mutation in a scope, committed with its revision fence."""
+
+    __tablename__ = "readiness_source_delta"
+    __table_args__ = (
+        CheckConstraint("source_revision >= 0", name="ck_readiness_delta_revision"),
+        CheckConstraint(
+            "(kind = 'full' AND card_id IS NULL) OR "
+            "(kind = 'card_progress_insert' AND card_id IS NOT NULL)",
+            name="ck_readiness_delta_kind_card",
+        ),
+    )
+    scope_id: Mapped[str] = mapped_column(String(64), ForeignKey("readiness_scope.id", ondelete="CASCADE"),
+        primary_key=True)
+    source_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    card_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+
 class ReadinessJobRow(Base):
     """One coalesced readiness request per scope, committed with its source."""
 
