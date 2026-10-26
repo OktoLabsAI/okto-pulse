@@ -19,6 +19,7 @@ from okto_pulse.community.adapters.current_relational_schema import (
 )
 from okto_pulse.community.adapters.readiness_schema_upgrade import upgrade_readiness_schema
 from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
+from okto_pulse.community.adapters import readiness_projection_worker as worker_module
 from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import ReadinessLeaseLost
 from okto_pulse.community.adapters.worker_runners import TrackedBlockingExecution
 from okto_pulse.core.ports.delivery_readiness import ReadinessReadError
@@ -64,6 +65,54 @@ async def test_broken_projection_process_falls_back_and_publishes(tmp_path, subm
         assert worker.full_projection_executor is None
         visible = await worker.store.read(board_id='board', spec_id='spec', edition=1)
         assert visible is not None and visible.freshness == 'current'
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_keeps_one_calculation_after_process_pool_breaks(tmp_path, monkeypatch):
+    database = tmp_path / 'pulse.sqlite3'
+    engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
+
+    class BrokenExecutor:
+        def submit(self, *_args, **_kwargs):
+            raise BrokenProcessPool('pool unavailable')
+
+    active = peak = 0
+    guard = threading.Lock()
+    original = worker_module.build_readiness_generation
+
+    def observed_build(*args, **kwargs):
+        nonlocal active, peak
+        with guard:
+            active += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(.05)
+            return original(*args, **kwargs)
+        finally:
+            with guard:
+                active -= 1
+
+    try:
+        await _seed_one_spec(engine)
+        async with engine.begin() as connection:
+            for spec_id in ('y-spec', 'z-spec'):
+                await connection.exec_driver_sql(
+                    "INSERT INTO specs (id,board_id,title,status,version,created_by,"
+                    "architecture_adoption,execution_contract) "
+                    "VALUES (?,'board','Additional','in_progress',1,'owner','{}',?)",
+                    (spec_id, json.dumps({"contract_version": "spec-execution-contract/v1",
+                        "board_id": "board", "spec_id": spec_id, "adopted_in_edition": 1,
+                        "actor_id": "owner", "origin": "new_spec"})),
+                )
+        await asyncio.sleep(.15)
+        monkeypatch.setattr(worker_module, 'build_readiness_generation', observed_build)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution(),
+            full_projection_executor=BrokenExecutor(), database_path=database,
+            max_inflight=2)
+        assert await worker.process_once() == 2
+        assert peak == 1
     finally:
         await engine.dispose()
 
@@ -866,6 +915,66 @@ async def test_many_source_revisions_coalesce_into_one_generation(tmp_path):
                 "SELECT count(*) FROM readiness_generation WHERE scope_id='spec:1'"
             )).scalar_one()
         assert generations == 1
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_one_calculation_worker_pipelines_only_when_multiple_scopes_are_pending(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        for spec_id in ('y-spec', 'z-spec'):
+            async with engine.begin() as connection:
+                await connection.exec_driver_sql(
+                    "INSERT INTO specs (id,board_id,title,status,version,created_by,"
+                    "architecture_adoption,execution_contract) "
+                    "VALUES (?,'board','Additional','in_progress',1,'owner','{}',?)",
+                    (spec_id, json.dumps({"contract_version": "spec-execution-contract/v1",
+                        "board_id": "board", "spec_id": spec_id, "adopted_in_edition": 1,
+                        "actor_id": "owner", "origin": "new_spec"})),
+                )
+        await asyncio.sleep(.15)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution(), max_inflight=2)
+        assert await worker.process_once() == 2
+        assert await worker.process_once() == 1
+        for spec_id in ('spec', 'y-spec', 'z-spec'):
+            result = await worker.store.read(board_id='board', spec_id=spec_id, edition=1)
+            assert result is not None and result.freshness == 'current'
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_returns_to_maintenance_under_continuous_backlog():
+    engine = create_async_engine('sqlite+aiosqlite:///:memory:')
+    try:
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution(),
+            max_inflight=2)
+
+        class ContinuousBacklog:
+            claims = 0
+
+            async def claim(self, *, owner):
+                self.claims += 1
+                return self.claims
+
+            async def eligible_pending_count(self):
+                return 2
+
+        async def complete(claim):
+            if claim == 1:
+                await asyncio.sleep(.2)
+            return 1
+
+        async def no_maintenance():
+            return None
+
+        worker.store = ContinuousBacklog()
+        worker._run_claim = complete
+        worker._maintenance_once = no_maintenance
+        assert await worker.process_once() == worker_module.PIPELINE_BATCH_CLAIMS
+        assert worker.store.claims == worker_module.PIPELINE_BATCH_CLAIMS
     finally:
         await engine.dispose()
 

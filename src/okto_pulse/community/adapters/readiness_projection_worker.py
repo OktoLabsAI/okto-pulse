@@ -15,6 +15,8 @@ from .sqlalchemy_delivery_readiness import CommunityDeliveryReadinessReader, Com
 from .sqlalchemy_persisted_readiness import CommunityPersistedReadinessStore, ReadinessLeaseLost
 
 logger = logging.getLogger("okto_pulse.readiness_projection")
+PIPELINE_BATCH_SECONDS = 5.0
+PIPELINE_BATCH_CLAIMS = 16
 
 
 _process_runner = None
@@ -69,13 +71,17 @@ def _project_from_database(database_path, board_id, spec_id, deadline):
 
 class ReadinessProjectionProcessor:
     def __init__(self, engine, blocking_execution, *, full_projection_executor=None,
-                 database_path=None, maintenance_enabled=True):
+                 database_path=None, maintenance_enabled=True, max_inflight=1):
         self.store = CommunityPersistedReadinessStore(engine)
         self.reader = CommunityDeliveryReadinessReader(engine, clock=CommunityReadinessClock())
         self.blocking_execution = blocking_execution
         self.full_projection_executor = full_projection_executor
         self.database_path = database_path
         self.maintenance_enabled = maintenance_enabled
+        if max_inflight not in (1, 2):
+            raise ValueError("readiness_max_inflight_invalid")
+        self.max_inflight = max_inflight
+        self._fallback_calculation_lock = asyncio.Lock()
         self.owner = uuid4().hex
         self._last_reconcile = 0.0
         self._last_queue_probe = 0.0
@@ -90,6 +96,42 @@ class ReadinessProjectionProcessor:
         claim = await self.store.claim(owner=self.owner)
         if claim is None:
             return 0
+        if self.max_inflight > 1:
+            return await self._process_pipeline(claim)
+        return await self._run_claim(claim)
+
+    async def _process_pipeline(self, first_claim) -> int:
+        """Overlap one pending snapshot with staging, never a second CPU slot."""
+        running = {asyncio.create_task(self._run_claim(first_claim),
+            name="readiness.pipeline.claim")}
+        processed = 0
+        started = monotonic()
+        claims = 1
+        try:
+            while running:
+                # Return to the PollingRunner for reconciliation, GC and queue
+                # health even when writers keep the debt continuously nonempty.
+                if (len(running) < self.max_inflight
+                        and claims < PIPELINE_BATCH_CLAIMS
+                        and monotonic() - started < PIPELINE_BATCH_SECONDS
+                        and await self.store.eligible_pending_count() >= 2):
+                    claim = await self.store.claim(owner=self.owner)
+                    if claim is not None:
+                        claims += 1
+                        running.add(asyncio.create_task(self._run_claim(claim),
+                            name="readiness.pipeline.claim"))
+                done, running = await asyncio.wait(running, timeout=0.1,
+                    return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    processed += task.result()
+            return processed
+        finally:
+            for task in running:
+                task.cancel()
+            if running:
+                await asyncio.gather(*running, return_exceptions=True)
+
+    async def _run_claim(self, claim) -> int:
         heartbeat = asyncio.create_task(self._heartbeats(claim), name="readiness.heartbeat")
         try:
             return await self._process_claim(claim, heartbeat)
@@ -171,9 +213,12 @@ class ReadinessProjectionProcessor:
                 raise ValueError("readiness_revision_invalid")
             if self.full_projection_executor is None:
                 started = monotonic()
-                generation = await self.blocking_execution.run(
-                    lambda: build_readiness_generation(snapshot, captured_revision=captured_revision,
-                        deadline=snapshot_started + 30))
+                # A broken child pool may fail several queued claims at once.
+                # Keep the thread fallback at the same single calculation slot.
+                async with self._fallback_calculation_lock:
+                    generation = await self.blocking_execution.run(
+                        lambda: build_readiness_generation(snapshot, captured_revision=captured_revision,
+                            deadline=snapshot_started + 30))
                 compute_ms = (monotonic() - started) * 1000
             if heartbeat.done():
                 heartbeat.result()

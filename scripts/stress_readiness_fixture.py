@@ -67,7 +67,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         if args.full_projection_process else None)
     workers = [ReadinessProjectionProcessor(engine, TrackedBlockingExecution(),
         full_projection_executor=executor, database_path=path,
-        maintenance_enabled=index == 0)
+        maintenance_enabled=index == 0,
+        max_inflight=args.pipeline_depth if index == 0 else 1)
         for index in range(args.worker_concurrency)]
     worker = workers[0]
     reader = CommunityDeliveryReadinessReader(engine, clock=CommunityReadinessClock())
@@ -426,6 +427,7 @@ if __name__ == '__main__':
     parser.add_argument('--mode', choices=['legacy', 'persisted'], required=True)
     parser.add_argument('--full-projection-process', action='store_true')
     parser.add_argument('--worker-concurrency', type=int, default=1)
+    parser.add_argument('--pipeline-depth', type=int, choices=(1, 2), default=1)
     parser.add_argument('--read-surface', choices=['internal', 'service'])
     parser.add_argument('--duration-seconds', type=int, default=60)
     parser.add_argument('--warmup-seconds', type=int, default=0)
@@ -459,6 +461,8 @@ if __name__ == '__main__':
         parser.error('writes-per-second must be nonnegative')
     if args.worker_concurrency < 1 or args.worker_concurrency > 4:
         parser.error('worker-concurrency must be between 1 and 4')
+    if args.pipeline_depth > 1 and args.worker_concurrency != 1:
+        parser.error('pipeline-depth=2 requires one claim worker')
     with TemporaryDirectory(prefix='readiness-stress-') as folder:
         path = Path(folder) / 'pulse.db'
         seed(path, args)

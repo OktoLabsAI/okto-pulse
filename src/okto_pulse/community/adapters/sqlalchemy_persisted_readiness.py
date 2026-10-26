@@ -72,6 +72,20 @@ class CommunityPersistedReadinessStore:
     def __init__(self, engine):
         self.engine = engine
 
+    async def eligible_pending_count(self, *, max_count: int = 2) -> int:
+        """Bounded read-only backlog probe while a projection is in flight."""
+        now = datetime.now(timezone.utc)
+        eligible = (select(ReadinessJobRow.scope_id)
+            .join(ReadinessScopeRow, ReadinessScopeRow.id == ReadinessJobRow.scope_id)
+            .join(Spec, Spec.id == ReadinessScopeRow.spec_id)
+            .where(ReadinessJobRow.state == "pending", ReadinessJobRow.due_at <= now,
+                ReadinessScopeRow.tombstone.is_(False),
+                ReadinessScopeRow.edition == Spec.edition,
+                Spec.archived.is_(False))
+            .limit(max_count).subquery())
+        async with AsyncSession(self.engine, autoflush=False) as session:
+            return int(await session.scalar(select(func.count()).select_from(eligible)) or 0)
+
     async def queue_status(self) -> dict:
         async with AsyncSession(self.engine, autoflush=False) as session:
             grouped = (await session.execute(select(ReadinessJobRow.state, func.count()).group_by(

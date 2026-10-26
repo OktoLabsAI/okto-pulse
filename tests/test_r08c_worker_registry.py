@@ -58,6 +58,7 @@ async def test_file_backed_readiness_starts_one_worker_and_drains_pool(
     primary = await spec.start()
     assert primary.processor.maintenance_enabled is True
     assert primary.processor.full_projection_executor is not None
+    assert primary.processor.max_inflight == 2
     await spec.stop(primary)
     assert events == [
         'start:community.readiness_projection',

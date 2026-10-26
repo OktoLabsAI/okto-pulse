@@ -94,7 +94,8 @@ def build_community_worker_registry(
     database_path = str(Path(database).resolve()) if file_backed else None
     readiness_runner = PollingRunner(
         ReadinessProjectionProcessor(readiness_engine, readiness_blocking_execution,
-            full_projection_executor=readiness_pool, database_path=database_path),
+            full_projection_executor=readiness_pool, database_path=database_path,
+            max_inflight=2 if file_backed else 1),
         name="community.readiness_projection",
         interval_seconds=0.1,
         active_interval_seconds=0.0,
