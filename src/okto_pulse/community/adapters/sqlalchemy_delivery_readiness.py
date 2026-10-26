@@ -13,7 +13,7 @@ from functools import lru_cache
 import hashlib
 import json
 import logging
-from time import perf_counter
+from time import perf_counter, process_time
 from types import SimpleNamespace
 
 from pydantic import BaseModel
@@ -331,13 +331,27 @@ class CommunityDeliveryReadinessReader:
     async def _projection_record_rows(self, session, statement, limit, counts):
         """Keep the projection's large ledger batch out of the ORM identity map."""
         started = perf_counter()
-        values = (await session.execute(statement.limit(limit + 1))).all()
+        cpu_started = process_time()
+        result = await session.execute(statement.limit(limit + 1))
+        execute_ms = (perf_counter() - started) * 1000
+        fetch_started = perf_counter()
+        values = result.all()
+        fetch_ms = (perf_counter() - fetch_started) * 1000
         if 'query_ms' in counts:
             counts['query_ms'][CardRecord.__tablename__] = (perf_counter() - started) * 1000
         if len(values) > limit:
             raise ReadinessReadError('readiness_limit_exceeded', native_code='readiness_population_limit')
         counts['facts'] += len(values)
-        return tuple(SimpleNamespace(**row._mapping) for row in values)
+        wrap_started = perf_counter()
+        rows = tuple(SimpleNamespace(**row._mapping) for row in values)
+        if 'query_ms' in counts:
+            counts['record_query_detail_ms'] = {
+                'execute': execute_ms,
+                'fetch': fetch_ms,
+                'wrap': (perf_counter() - wrap_started) * 1000,
+                'cpu': (process_time() - cpu_started) * 1000,
+            }
+        return rows
 
     async def _access(self, session, actor, board_id, counts):
         """Load native identity/ACL/preset facts before reading delivery content."""
@@ -690,6 +704,7 @@ class CommunityDeliveryReadinessReader:
             'readiness_source_ms': source_ms,
             'readiness_rollback_ms': rollback_ms,
             'readiness_query_ms': counts['query_ms'],
+            'readiness_record_query_detail_ms': counts.get('record_query_detail_ms', {}),
             'readiness_read_rows_ms': read_rows_ms,
             'readiness_materialize_ms': (perf_counter() - materialize_started) * 1000,
             **materialize_phases,

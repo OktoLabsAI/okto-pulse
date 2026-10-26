@@ -197,6 +197,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         'snapshot_materialize_facts_cards': [],
         'snapshot_materialize_facts_context': [],
         'snapshot_materialize_facts_decisions': [],
+        'snapshot_record_execute': [], 'snapshot_record_fetch': [],
+        'snapshot_record_wrap': [], 'snapshot_record_cpu': [],
         'predecessor_read': [], 'predecessor_decode': [],
         'predecessor_digest': [], 'predecessor_construct': [],
         'stage_metadata': [], 'stage_pack': [], 'stage_heartbeat': [],
@@ -247,6 +249,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                         publish_phases_ms[f'snapshot_materialize_facts_{name}'].append(value)
                 for table, elapsed in record.readiness_query_ms.items():
                     publish_phases_ms.setdefault(f'snapshot_query_{table}', []).append(elapsed)
+                for name, elapsed in record.readiness_record_query_detail_ms.items():
+                    publish_phases_ms[f'snapshot_record_{name}'].append(elapsed)
                 for name in ('read', 'decode', 'digest', 'construct'):
                     value = getattr(record, f'readiness_predecessor_{name}_ms', None)
                     if value is not None:
