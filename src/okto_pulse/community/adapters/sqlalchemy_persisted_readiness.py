@@ -427,12 +427,14 @@ class CommunityPersistedReadinessStore:
 
     async def load_verified_predecessor(self, *, scope_id: str, board_id: str,
                                         spec_id: str, edition: int,
-                                        expected_revision: int) -> ReadinessGeneration | None:
+                                        expected_revision: int,
+                                        phase_metrics: dict[str, float] | None = None) -> ReadinessGeneration | None:
         """Read one active, adjacent generation under a stable SQLite snapshot.
 
         A missing, stale, malformed or tampered predecessor is ineligible for
         incremental work. The worker then recalculates from the source ledger.
         """
+        started = perf_counter()
         async with self.engine.connect() as connection:
             await connection.exec_driver_sql("BEGIN")
             try:
@@ -459,11 +461,13 @@ class CommunityPersistedReadinessStore:
                     (generation_id, generation_id, generation_id))).all()
             finally:
                 await connection.rollback()
+        read_ms = (perf_counter() - started) * 1000
         try:
             (_, revision, spec_version, snapshot_id, evaluator, evaluated_at,
                 summary_count, unit_count, manifest) = header
             if evaluator != EVALUATOR_VERSION:
                 return None
+            decode_started = perf_counter()
             summaries, diagnostics, units = [], [], []
             for category, card_key, kind, ref, semantic_sha256, payload in rows:
                 value = orjson.loads(payload)
@@ -480,18 +484,22 @@ class CommunityPersistedReadinessStore:
                     units.append(value)
                 else:
                     return None
+            decode_ms = (perf_counter() - decode_started) * 1000
             if (len(summaries) != summary_count or len(diagnostics) != summary_count
                     or len(units) != unit_count
                     or {row['card_id'] for row in summaries} !=
                         {row['card_id'] for row in diagnostics}):
                 return None
+            digest_started = perf_counter()
             digest = readiness_manifest_digest(board_id=board_id, spec_id=spec_id,
                 edition=edition, captured_revision=revision,
                 source_snapshot_id=snapshot_id, evaluator_version=evaluator,
                 summaries=summaries, units=units, diagnostics=diagnostics)
             if digest != manifest:
                 return None
-            return ReadinessGeneration(board_id, spec_id, edition, spec_version,
+            digest_ms = (perf_counter() - digest_started) * 1000
+            construct_started = perf_counter()
+            generation = ReadinessGeneration(board_id, spec_id, edition, spec_version,
                 revision, snapshot_id, datetime.fromisoformat(evaluated_at), evaluator,
                 tuple(ProjectedSummary(row['card_id'], row['card_type'], row['card_version'],
                     DeliveryMetric.model_validate(row['implementation']),
@@ -505,6 +513,15 @@ class CommunityPersistedReadinessStore:
                     tuple(row['verification_reason_codes'])) for row in units),
                 tuple(ProjectedDiagnostic(row['card_id'], row['payload']) for row in diagnostics),
                 manifest)
+            if phase_metrics is not None:
+                phase_metrics.update({
+                    'readiness_predecessor_read_ms': read_ms,
+                    'readiness_predecessor_decode_ms': decode_ms,
+                    'readiness_predecessor_digest_ms': digest_ms,
+                    'readiness_predecessor_construct_ms':
+                        (perf_counter() - construct_started) * 1000,
+                })
+            return generation
         except (KeyError, TypeError, ValueError):
             return None
 

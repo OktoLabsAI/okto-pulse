@@ -55,14 +55,14 @@ def _projection_child_runtime(database_path):
     return _process_runner, _process_engine
 
 
-async def _candidate_predecessor(store, claim, revision, delta):
+async def _candidate_predecessor(store, claim, revision, delta, *, phase_metrics=None):
     if (delta is None or delta.source_revision != revision
             or delta.kind != "card_progress_insert" or not delta.card_id
             or revision < 1):
         return None
     return await store.load_verified_predecessor(scope_id=claim.scope_id,
         board_id=claim.board_id, spec_id=claim.spec_id, edition=claim.edition,
-        expected_revision=revision - 1)
+        expected_revision=revision - 1, phase_metrics=phase_metrics)
 
 
 def _build_with_predecessor(snapshot, revision, deadline, predecessor, delta):
@@ -99,7 +99,8 @@ def _project_and_stage_from_database(database_path, claim, deadline):
         if revision < 0:
             raise ValueError("readiness_revision_invalid")
         started = monotonic()
-        predecessor = await _candidate_predecessor(store, claim, revision, delta)
+        predecessor = await _candidate_predecessor(store, claim, revision, delta,
+            phase_metrics=snapshot_phases)
         predecessor_ms = (monotonic() - started) * 1000
         started = monotonic()
         generation, projection_mode = _build_with_predecessor(snapshot, revision, deadline,
