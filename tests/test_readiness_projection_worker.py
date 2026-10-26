@@ -7,6 +7,7 @@ from contextlib import closing
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 import json
+import logging
 from multiprocessing import get_context
 import sqlite3
 import threading
@@ -386,7 +387,7 @@ async def test_invalid_staging_manifest_never_becomes_active(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_process_verifier_rejects_tampered_stage_before_publication(tmp_path):
+async def test_process_verifier_rejects_tampered_stage_before_publication(tmp_path, caplog):
     database = tmp_path / 'pulse.sqlite3'
     engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
     try:
@@ -408,10 +409,36 @@ async def test_process_verifier_rejects_tampered_stage_before_publication(tmp_pa
                     manifest_sha256='0' * 64))
             visible = await worker.store.read(board_id='board', spec_id='spec', edition=1)
             assert visible is not None and visible.generation_id is None
-            generation_id = await worker._stage_generation(claim, generation)
+            with caplog.at_level(logging.DEBUG, logger='okto_pulse.readiness_projection'):
+                generation_id = await worker._stage_generation(claim, generation)
+            phases = [record for record in caplog.records
+                if record.msg == 'readiness.stage_phases']
+            assert phases and phases[-1].readiness_stage_batch_count > 0
+            assert phases[-1].readiness_stage_verify_ms >= 0
             assert await worker.store.publish(claim, generation_id)
             visible = await worker.store.read(board_id='board', spec_id='spec', edition=1)
             assert visible is not None and visible.freshness == 'current'
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_process_projects_and_stages_before_parent_publish(tmp_path, caplog):
+    database = tmp_path / 'pulse.sqlite3'
+    engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
+    try:
+        await _seed_one_spec(engine)
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(f'PRAGMA main.application_id={APPLICATION_ID}')
+            await connection.exec_driver_sql(f'PRAGMA main.user_version={SCHEMA_VERSION}')
+        with ProcessPoolExecutor(max_workers=1, mp_context=get_context('spawn')) as executor:
+            worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution(),
+                full_projection_executor=executor, database_path=database)
+            with caplog.at_level(logging.DEBUG, logger='okto_pulse.readiness_projection'):
+                assert await worker.process_once() == 1
+            visible = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+            assert visible is not None and visible.freshness == 'current'
+            assert any(record.msg == 'readiness.stage_phases' for record in caplog.records)
     finally:
         await engine.dispose()
 

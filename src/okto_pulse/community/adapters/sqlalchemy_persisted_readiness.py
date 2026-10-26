@@ -257,7 +257,8 @@ class CommunityPersistedReadinessStore:
             row.lease_until = now + timedelta(seconds=LEASE_SECONDS)
             row.updated_at = now
 
-    async def stage(self, claim: ReadinessClaim, generation: ReadinessGeneration) -> str:
+    async def stage(self, claim: ReadinessClaim, generation: ReadinessGeneration,
+                    *, phase_metrics: dict[str, float | int] | None = None) -> str:
         if (claim.board_id, claim.spec_id, claim.edition) != (
             generation.board_id, generation.spec_id, generation.spec_edition):
             raise ValueError("readiness_generation_scope_mismatch")
@@ -324,14 +325,17 @@ class CommunityPersistedReadinessStore:
                 batch_count += 1
         verify_started = perf_counter()
         await self.verify_stage(claim, generation_id)
-        logger.debug('readiness.stage_phases', extra={
+        metrics = {
             'readiness_stage_metadata_ms': metadata_ms,
             'readiness_stage_pack_ms': pack_ms,
             'readiness_stage_heartbeat_ms': heartbeat_ms,
             'readiness_stage_insert_ms': insert_ms,
             'readiness_stage_verify_ms': (perf_counter() - verify_started) * 1000,
             'readiness_stage_batch_count': batch_count,
-        })
+        }
+        logger.debug('readiness.stage_phases', extra=metrics)
+        if phase_metrics is not None:
+            phase_metrics.update(metrics)
         return generation_id
 
     async def verify_stage(self, claim: ReadinessClaim, generation_id: str) -> None:
@@ -345,24 +349,41 @@ class CommunityPersistedReadinessStore:
                                  expected_state: str, board_id: str, spec_id: str,
                                  edition: int) -> bool:
         """Hash a stable read snapshot without retaining a writer checkout."""
-        async with AsyncSession(self.engine, autoflush=False) as session:
-            await session.execute(text("BEGIN"))
-            gen = await session.get(ReadinessGenerationRow, generation_id)
-            if gen is None or gen.scope_id != scope_id or gen.state != expected_state:
-                return False
-            summaries = [row.payload for row in (await session.scalars(
-                select(ReadinessSummaryRow).where(ReadinessSummaryRow.generation_id == generation_id)
-                .order_by(ReadinessSummaryRow.card_key))).all()]
-            diagnostics = [{"card_id": row.card_key or None, "payload": row.payload}
-                for row in (await session.scalars(select(ReadinessDiagnosticRow).where(
-                    ReadinessDiagnosticRow.generation_id == generation_id)
-                    .order_by(ReadinessDiagnosticRow.card_key))).all()]
-            units = [row.payload for row in (await session.scalars(
-                select(ReadinessUnitRow).where(ReadinessUnitRow.generation_id == generation_id)
-                .order_by(ReadinessUnitRow.card_key, ReadinessUnitRow.kind,
-                    ReadinessUnitRow.ref, ReadinessUnitRow.semantic_sha256))).all()]
-            header = (gen.captured_revision, gen.source_snapshot_id,
-                gen.evaluator_version, gen.summary_count, gen.unit_count, gen.manifest_sha256)
+        async with self.engine.connect() as connection:
+            await connection.exec_driver_sql("BEGIN")
+            try:
+                header = (await connection.exec_driver_sql(
+                    "SELECT captured_revision,source_snapshot_id,evaluator_version,"
+                    "summary_count,unit_count,manifest_sha256 FROM readiness_generation "
+                    "WHERE id=? AND scope_id=? AND state=?",
+                    (generation_id, scope_id, expected_state))).one_or_none()
+                if header is None:
+                    return False
+                rows = (await connection.exec_driver_sql(
+                    "SELECT 0 AS category,card_key,'' AS kind,'' AS ref,"
+                    "'' AS semantic_sha256,payload FROM readiness_summary WHERE generation_id=? "
+                    "UNION ALL SELECT 1,card_key,'','','',payload FROM readiness_diagnostic "
+                    "WHERE generation_id=? "
+                    "UNION ALL SELECT 2,card_key,kind,ref,semantic_sha256,payload "
+                    "FROM readiness_unit WHERE generation_id=? "
+                    "ORDER BY category,card_key,kind,ref,semantic_sha256",
+                    (generation_id, generation_id, generation_id))).all()
+            finally:
+                await connection.rollback()
+        summaries = []
+        diagnostics = []
+        units = []
+        try:
+            for category, card_key, _kind, _ref, _semantic_sha256, payload in rows:
+                value = json.loads(payload)
+                if category == 0:
+                    summaries.append(value)
+                elif category == 1:
+                    diagnostics.append({"card_id": card_key or None, "payload": value})
+                else:
+                    units.append(value)
+        except (TypeError, ValueError):
+            return False
         revision, snapshot_id, evaluator, summary_count, unit_count, manifest = header
         if (len(summaries) != summary_count or len(units) != unit_count
                 or len(diagnostics) != summary_count

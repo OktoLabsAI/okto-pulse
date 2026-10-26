@@ -53,34 +53,45 @@ def _projection_child_runtime(database_path):
     return _process_runner, _process_engine
 
 
-def _project_from_database(database_path, board_id, spec_id, deadline):
-    """Project on a persistent child event loop, isolated from API reads."""
+def _project_and_stage_from_database(database_path, claim, deadline):
+    """Keep the large generation in one child until its rows are durable."""
     from .worker_runners import TrackedBlockingExecution
 
     runner, engine = _projection_child_runtime(database_path)
 
-    async def project():
+    async def project_and_stage():
         reader = CommunityDeliveryReadinessReader(engine,
             clock=CommunityReadinessClock())
+        store = CommunityPersistedReadinessStore(engine)
         started = monotonic()
         snapshot, revision = await reader.load_for_projection(
-            board_id=board_id, spec_id=spec_id,
+            board_id=claim.board_id, spec_id=claim.spec_id,
             blocking_execution=TrackedBlockingExecution())
         snapshot_ms = (monotonic() - started) * 1000
+        if revision < 0:
+            raise ValueError("readiness_revision_invalid")
         started = monotonic()
         generation = build_readiness_generation(snapshot,
             captured_revision=revision, deadline=deadline)
         compute_ms = (monotonic() - started) * 1000
-        return generation, revision, snapshot_ms, compute_ms
+        if monotonic() > deadline:
+            raise TimeoutError("readiness_calculation_budget_exceeded")
+        phases = {}
+        started = monotonic()
+        generation_id = await store.stage(claim, generation, phase_metrics=phases)
+        stage_ms = (monotonic() - started) * 1000
+        return generation_id, revision, len(generation.units), snapshot_ms, compute_ms, stage_ms, phases
 
-    return runner.run(project())
+    return runner.run(project_and_stage())
 
 
 def _stage_from_database(database_path, claim, generation):
     """Stage and verify committed rows off the API event loop."""
     runner, engine = _projection_child_runtime(database_path)
     store = CommunityPersistedReadinessStore(engine)
-    return runner.run(store.stage(claim, generation))
+    phases = {}
+    generation_id = runner.run(store.stage(claim, generation, phase_metrics=phases))
+    return generation_id, phases
 
 
 class ReadinessProjectionProcessor:
@@ -188,30 +199,27 @@ class ReadinessProjectionProcessor:
     async def _process_claim(self, claim, heartbeat) -> int:
         try:
             snapshot_started = monotonic()
-            if self.full_projection_executor is None:
-                snapshot, captured_revision = await self.reader.load_for_projection(
-                    board_id=claim.board_id, spec_id=claim.spec_id,
-                    blocking_execution=self.blocking_execution)
-                snapshot_ms = (monotonic() - snapshot_started) * 1000
-            else:
+            process_completed = False
+            if self.full_projection_executor is not None:
                 if self.database_path is None:
                     raise ValueError("readiness_process_database_path_required")
                 try:
                     future = asyncio.get_running_loop().run_in_executor(
-                        self.full_projection_executor, _project_from_database,
-                        str(self.database_path), claim.board_id, claim.spec_id,
+                        self.full_projection_executor, _project_and_stage_from_database,
+                        str(self.database_path), claim,
                         snapshot_started + 30)
-                    generation, captured_revision, snapshot_ms, compute_ms = await asyncio.shield(future)
+                    (generation_id, captured_revision, unit_count, snapshot_ms,
+                        compute_ms, child_stage_ms, phases) = await asyncio.shield(future)
+                    process_completed = True
+                    stage_ms = max(child_stage_ms,
+                        (monotonic() - snapshot_started) * 1000 - snapshot_ms - compute_ms)
+                    logger.debug('readiness.stage_phases', extra=phases)
                 except BrokenProcessPool:
                     # The durable claim survives child failure. Continue in the
                     # existing thread lane until a runtime restart repairs the pool.
                     logger.exception("readiness.process_pool_unavailable board=%s spec=%s",
                         claim.board_id, claim.spec_id)
                     self.full_projection_executor = None
-                    snapshot, captured_revision = await self.reader.load_for_projection(
-                        board_id=claim.board_id, spec_id=claim.spec_id,
-                        blocking_execution=self.blocking_execution)
-                    snapshot_ms = (monotonic() - snapshot_started) * 1000
                 except asyncio.CancelledError:
                     while not future.done():
                         try:
@@ -223,9 +231,13 @@ class ReadinessProjectionProcessor:
                     if future.done() and not future.cancelled():
                         future.exception()
                     raise
-            if captured_revision < 0:
-                raise ValueError("readiness_revision_invalid")
-            if self.full_projection_executor is None:
+            if not process_completed:
+                snapshot, captured_revision = await self.reader.load_for_projection(
+                    board_id=claim.board_id, spec_id=claim.spec_id,
+                    blocking_execution=self.blocking_execution)
+                snapshot_ms = (monotonic() - snapshot_started) * 1000
+                if captured_revision < 0:
+                    raise ValueError("readiness_revision_invalid")
                 started = monotonic()
                 # A broken child pool may fail several queued claims at once.
                 # Keep the thread fallback at the same single calculation slot.
@@ -234,13 +246,14 @@ class ReadinessProjectionProcessor:
                         lambda: build_readiness_generation(snapshot, captured_revision=captured_revision,
                             deadline=snapshot_started + 30))
                 compute_ms = (monotonic() - started) * 1000
+                if monotonic() - snapshot_started > 30:
+                    raise TimeoutError("readiness_calculation_budget_exceeded")
+                stage_started = monotonic()
+                generation_id = await self._stage_locally(claim, generation)
+                stage_ms = (monotonic() - stage_started) * 1000
+                unit_count = len(generation.units)
             if heartbeat.done():
                 heartbeat.result()
-            if monotonic() - snapshot_started > 30:
-                raise TimeoutError("readiness_calculation_budget_exceeded")
-            stage_started = monotonic()
-            generation_id = await self._stage_generation(claim, generation)
-            stage_ms = (monotonic() - stage_started) * 1000
             publish_started = monotonic()
             if not await self.store.publish(claim, generation_id):
                 raise ReadinessLeaseLost("readiness_publication_fence_lost")
@@ -250,7 +263,7 @@ class ReadinessProjectionProcessor:
             logger.info("readiness.published board=%s spec=%s revision=%d units=%d "
                 "snapshot_ms=%.3f compute_ms=%.3f stage_ms=%.3f publish_ms=%.3f "
                 "source_to_publish_ms=%.3f",
-                claim.board_id, claim.spec_id, captured_revision, len(generation.units),
+                claim.board_id, claim.spec_id, captured_revision, unit_count,
                 snapshot_ms, compute_ms, stage_ms, publish_ms, source_to_publish_ms)
             return 1
         except asyncio.CancelledError:
@@ -269,17 +282,19 @@ class ReadinessProjectionProcessor:
 
     async def _stage_generation(self, claim, generation):
         if self.full_projection_executor is None:
-            return await self.store.stage(claim, generation)
+            return await self._stage_locally(claim, generation)
         try:
             future = asyncio.get_running_loop().run_in_executor(
                 self.full_projection_executor, _stage_from_database,
                 str(self.database_path), claim, generation)
-            return await asyncio.shield(future)
+            generation_id, phases = await asyncio.shield(future)
+            logger.debug('readiness.stage_phases', extra=phases)
+            return generation_id
         except BrokenProcessPool:
             logger.exception("readiness.process_pool_unavailable board=%s spec=%s",
                 claim.board_id, claim.spec_id)
             self.full_projection_executor = None
-            return await self.store.stage(claim, generation)
+            return await self._stage_locally(claim, generation)
         except asyncio.CancelledError:
             while not future.done():
                 try:
@@ -291,6 +306,12 @@ class ReadinessProjectionProcessor:
             if future.done() and not future.cancelled():
                 future.exception()
             raise
+
+    async def _stage_locally(self, claim, generation):
+        phases = {}
+        generation_id = await self.store.stage(claim, generation, phase_metrics=phases)
+        logger.debug('readiness.stage_phases', extra=phases)
+        return generation_id
 
     async def _heartbeats(self, claim) -> None:
         while True:
