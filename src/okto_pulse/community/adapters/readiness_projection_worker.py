@@ -10,7 +10,9 @@ import logging
 from time import monotonic
 from uuid import uuid4
 
-from okto_pulse.core.services.persisted_delivery_readiness import build_readiness_generation
+from okto_pulse.core.services.persisted_delivery_readiness import (
+    IncrementalReadinessUnavailable, build_readiness_generation,
+)
 from .sqlalchemy_delivery_readiness import CommunityDeliveryReadinessReader, CommunityReadinessClock
 from .sqlalchemy_persisted_readiness import CommunityPersistedReadinessStore, ReadinessLeaseLost
 
@@ -53,6 +55,30 @@ def _projection_child_runtime(database_path):
     return _process_runner, _process_engine
 
 
+async def _candidate_predecessor(store, claim, revision, delta):
+    if (delta is None or delta.source_revision != revision
+            or delta.kind != "card_progress_insert" or not delta.card_id
+            or revision < 1):
+        return None
+    return await store.load_verified_predecessor(scope_id=claim.scope_id,
+        board_id=claim.board_id, spec_id=claim.spec_id, edition=claim.edition,
+        expected_revision=revision - 1)
+
+
+def _build_with_predecessor(snapshot, revision, deadline, predecessor, delta):
+    if predecessor is not None:
+        try:
+            generation = build_readiness_generation(snapshot, captured_revision=revision,
+                deadline=deadline, predecessor=predecessor,
+                progress_card_id=delta.card_id)
+            return generation, "incremental"
+        except IncrementalReadinessUnavailable as exc:
+            logger.debug("readiness.incremental_fallback reason=%s", exc)
+    generation = build_readiness_generation(snapshot, captured_revision=revision,
+        deadline=deadline)
+    return generation, "full"
+
+
 def _project_and_stage_from_database(database_path, claim, deadline):
     """Keep the large generation in one child until its rows are durable."""
     from .worker_runners import TrackedBlockingExecution
@@ -65,15 +91,19 @@ def _project_and_stage_from_database(database_path, claim, deadline):
         store = CommunityPersistedReadinessStore(engine)
         snapshot_phases = {}
         started = monotonic()
-        snapshot, revision = await reader.load_for_projection(
+        snapshot, revision, delta = await reader.load_for_projection(
             board_id=claim.board_id, spec_id=claim.spec_id,
-            blocking_execution=TrackedBlockingExecution(), phase_metrics=snapshot_phases)
+            blocking_execution=TrackedBlockingExecution(), phase_metrics=snapshot_phases,
+            include_source_delta=True)
         snapshot_ms = (monotonic() - started) * 1000
         if revision < 0:
             raise ValueError("readiness_revision_invalid")
         started = monotonic()
-        generation = build_readiness_generation(snapshot,
-            captured_revision=revision, deadline=deadline)
+        predecessor = await _candidate_predecessor(store, claim, revision, delta)
+        predecessor_ms = (monotonic() - started) * 1000
+        started = monotonic()
+        generation, projection_mode = _build_with_predecessor(snapshot, revision, deadline,
+            predecessor, delta)
         compute_ms = (monotonic() - started) * 1000
         if monotonic() > deadline:
             raise TimeoutError("readiness_calculation_budget_exceeded")
@@ -82,7 +112,8 @@ def _project_and_stage_from_database(database_path, claim, deadline):
         generation_id = await store.stage(claim, generation, phase_metrics=phases)
         stage_ms = (monotonic() - started) * 1000
         return (generation_id, revision, len(generation.units), snapshot_ms,
-            compute_ms, stage_ms, snapshot_phases, phases)
+            predecessor_ms, compute_ms, stage_ms, projection_mode,
+            snapshot_phases, phases)
 
     return runner.run(project_and_stage())
 
@@ -211,10 +242,12 @@ class ReadinessProjectionProcessor:
                         str(self.database_path), claim,
                         snapshot_started + 30)
                     (generation_id, captured_revision, unit_count, snapshot_ms,
-                        compute_ms, child_stage_ms, snapshot_phases, phases) = await asyncio.shield(future)
+                        predecessor_ms, compute_ms, child_stage_ms, projection_mode,
+                        snapshot_phases, phases) = await asyncio.shield(future)
                     process_completed = True
                     stage_ms = max(child_stage_ms,
-                        (monotonic() - snapshot_started) * 1000 - snapshot_ms - compute_ms)
+                        (monotonic() - snapshot_started) * 1000 - snapshot_ms
+                        - predecessor_ms - compute_ms)
                     logger.debug('readiness.projection_snapshot_phases', extra=snapshot_phases)
                     logger.debug('readiness.stage_phases', extra=phases)
                 except BrokenProcessPool:
@@ -235,19 +268,24 @@ class ReadinessProjectionProcessor:
                         future.exception()
                     raise
             if not process_completed:
-                snapshot, captured_revision = await self.reader.load_for_projection(
+                snapshot, captured_revision, delta = await self.reader.load_for_projection(
                     board_id=claim.board_id, spec_id=claim.spec_id,
-                    blocking_execution=self.blocking_execution)
+                    blocking_execution=self.blocking_execution,
+                    include_source_delta=True)
                 snapshot_ms = (monotonic() - snapshot_started) * 1000
                 if captured_revision < 0:
                     raise ValueError("readiness_revision_invalid")
+                predecessor_started = monotonic()
+                predecessor = await _candidate_predecessor(self.store, claim,
+                    captured_revision, delta)
+                predecessor_ms = (monotonic() - predecessor_started) * 1000
                 started = monotonic()
                 # A broken child pool may fail several queued claims at once.
                 # Keep the thread fallback at the same single calculation slot.
                 async with self._fallback_calculation_lock:
-                    generation = await self.blocking_execution.run(
-                        lambda: build_readiness_generation(snapshot, captured_revision=captured_revision,
-                            deadline=snapshot_started + 30))
+                    generation, projection_mode = await self.blocking_execution.run(
+                        lambda: _build_with_predecessor(snapshot, captured_revision,
+                            snapshot_started + 30, predecessor, delta))
                 compute_ms = (monotonic() - started) * 1000
                 if monotonic() - snapshot_started > 30:
                     raise TimeoutError("readiness_calculation_budget_exceeded")
@@ -263,11 +301,14 @@ class ReadinessProjectionProcessor:
             publish_ms = (monotonic() - publish_started) * 1000
             source_to_publish_ms = max(0.0, (
                 datetime.now(timezone.utc) - claim.source_updated_at).total_seconds() * 1000)
-            logger.info("readiness.published board=%s spec=%s revision=%d units=%d "
-                "snapshot_ms=%.3f compute_ms=%.3f stage_ms=%.3f publish_ms=%.3f "
+            logger.info("readiness.published board=%s spec=%s revision=%d units=%d mode=%s "
+                "snapshot_ms=%.3f predecessor_ms=%.3f compute_ms=%.3f "
+                "stage_ms=%.3f publish_ms=%.3f "
                 "source_to_publish_ms=%.3f",
                 claim.board_id, claim.spec_id, captured_revision, unit_count,
-                snapshot_ms, compute_ms, stage_ms, publish_ms, source_to_publish_ms)
+                projection_mode,
+                snapshot_ms, predecessor_ms, compute_ms, stage_ms,
+                publish_ms, source_to_publish_ms)
             return 1
         except asyncio.CancelledError:
             raise

@@ -186,7 +186,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         'identity': [], 'presets': [], 'policy': [],
     }
     publish_phases_ms: dict[str, list[float]] = {
-        'snapshot': [], 'compute': [], 'stage': [], 'publish': [],
+        'snapshot': [], 'predecessor': [], 'compute': [], 'stage': [], 'publish': [],
         'snapshot_checkout': [], 'snapshot_begin': [], 'snapshot_scope': [],
         'snapshot_source': [], 'snapshot_rollback': [],
         'snapshot_rows': [], 'snapshot_materialize': [],
@@ -195,6 +195,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         'stage_verify_read': [], 'stage_verify_decode': [],
         'stage_verify_validate': [], 'stage_verify_digest': [],
     }
+    projection_modes: dict[str, int] = {'full': 0, 'incremental': 0}
 
     class ReadPhaseHandler(logging.Handler):
         def emit(self, record: logging.LogRecord) -> None:
@@ -231,7 +232,10 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                     if value is not None:
                         publish_phases_ms[f'stage_verify_{key}'].append(value)
             elif isinstance(record.msg, str) and record.msg.startswith('readiness.published '):
-                for name, value in zip(('snapshot', 'compute', 'stage', 'publish'), record.args[4:8]):
+                projection_modes[record.args[4]] = projection_modes.get(record.args[4], 0) + 1
+                for name, value in zip(
+                    ('snapshot', 'predecessor', 'compute', 'stage', 'publish'),
+                    record.args[5:10], strict=True):
                     publish_phases_ms[name].append(float(value))
             elif isinstance(record.msg, str) and record.msg.startswith('readiness.projection_failed '):
                 detail = str(record.exc_info[1]).splitlines()[0][:160] if record.exc_info else ''
@@ -548,6 +552,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             'error_count': len(errors), 'errors': errors[:25],
             'warmup_error_count': len(warmup_errors),
             'worker_publications': worker_publications,
+            'projection_modes': projection_modes,
             'worker_concurrency': args.worker_concurrency,
             'full_projection_process': args.full_projection_process,
             'lagging_scopes': [tuple(row) for row in lagging],
