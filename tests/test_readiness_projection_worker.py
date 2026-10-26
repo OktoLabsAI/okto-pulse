@@ -304,6 +304,32 @@ async def test_predecessor_loader_verifies_active_manifest_and_row_keys(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_verified_predecessor_cache_retains_only_current_scope_generation(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        await asyncio.sleep(.06)
+        assert await worker.process_once() == 1
+        original = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql("UPDATE specs SET title='Changed' WHERE id='spec'")
+        await asyncio.sleep(.06)
+        assert await worker.process_once() == 1
+        current = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert current.generation_id != original.generation_id
+        assert tuple(worker.store._verified_generation_cache) == (current.generation_id,)
+        phases = {}
+        predecessor = await worker.store.load_verified_predecessor(
+            scope_id='spec:1', board_id='board', spec_id='spec', edition=1,
+            expected_revision=current.captured_revision, phase_metrics=phases)
+        assert predecessor is not None
+        assert phases['readiness_predecessor_cache_hit'] == 1.0
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('submit_raises', [False, True])
 async def test_broken_projection_process_falls_back_and_publishes(tmp_path, submit_raises):
     database = tmp_path / 'pulse.sqlite3'

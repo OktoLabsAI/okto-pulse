@@ -446,6 +446,12 @@ class CommunityPersistedReadinessStore:
             phase_metrics.update(metrics)
         # This object has just passed verification against durable stored rows.
         # Reuse remains conditional on rechecking the active rows at load time.
+        # Keep one candidate per scope, so retired generations cannot evict the
+        # active predecessors of other scopes under round-robin writes.
+        for prior_id, prior in tuple(self._verified_generation_cache.items()):
+            if (prior.board_id, prior.spec_id, prior.spec_edition) == (
+                    generation.board_id, generation.spec_id, generation.spec_edition):
+                del self._verified_generation_cache[prior_id]
         self._verified_generation_cache[generation_id] = generation
         self._verified_generation_cache.move_to_end(generation_id)
         if len(self._verified_generation_cache) > 16:

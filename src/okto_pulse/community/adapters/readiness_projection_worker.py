@@ -87,18 +87,24 @@ async def _candidate_predecessor(store, claim, revision, delta, *, phase_metrics
     return (predecessor, chain) if predecessor is not None else None
 
 
-def _build_with_predecessor(snapshot, revision, deadline, candidate):
+def _build_with_predecessor(snapshot, revision, deadline, candidate, *, phase_metrics=None):
     if candidate is not None:
         predecessor, progress_deltas = candidate
         try:
+            phases = {}
             generation = build_readiness_generation(snapshot, captured_revision=revision,
                 deadline=deadline, predecessor=predecessor,
-                progress_deltas=progress_deltas)
+                progress_deltas=progress_deltas, phase_metrics=phases)
+            if phase_metrics is not None:
+                phase_metrics.update(phases)
             return generation, "incremental"
         except IncrementalReadinessUnavailable as exc:
             logger.debug("readiness.incremental_fallback reason=%s", exc)
+    phases = {}
     generation = build_readiness_generation(snapshot, captured_revision=revision,
-        deadline=deadline)
+        deadline=deadline, phase_metrics=phases)
+    if phase_metrics is not None:
+        phase_metrics.update(phases)
     return generation, "full"
 
 
@@ -159,7 +165,7 @@ def _project_and_stage_from_database(database_path, claim, deadline):
         started = monotonic()
         cpu_started = process_time()
         generation, projection_mode = _build_with_predecessor(snapshot, revision, deadline,
-            candidate)
+            candidate, phase_metrics=snapshot_phases)
         compute_ms = (monotonic() - started) * 1000
         snapshot_phases["readiness_compute_cpu_ms"] = (
             process_time() - cpu_started) * 1000

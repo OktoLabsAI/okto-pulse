@@ -298,6 +298,10 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
     }
     publish_phases_ms: dict[str, list[float]] = {
         'snapshot': [], 'predecessor': [], 'compute': [], 'stage': [],
+        'compute_predecessor': [], 'compute_evaluation': [],
+        'compute_impact': [], 'compute_assessments': [],
+        'compute_context': [], 'compute_rows': [],
+        'compute_units': [], 'compute_digest': [],
         'snapshot_cpu': [], 'compute_cpu': [], 'stage_cpu': [],
         'process_dispatch': [], 'publish': [],
         'snapshot_checkout': [], 'snapshot_begin': [], 'snapshot_scope': [],
@@ -356,6 +360,11 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                     value = getattr(record, f'readiness_{name}_cpu_ms', None)
                     if value is not None:
                         publish_phases_ms[f'{name}_cpu'].append(value)
+                for name in ('predecessor', 'evaluation', 'impact', 'assessments',
+                             'context', 'rows', 'units', 'digest'):
+                    value = getattr(record, f'readiness_compute_{name}_ms', None)
+                    if value is not None:
+                        publish_phases_ms[f'compute_{name}'].append(value)
                 for name in ('snapshot', 'predecessor', 'compute', 'stage'):
                     for generation in range(3):
                         for metric in ('pause', 'count'):
