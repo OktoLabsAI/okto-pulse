@@ -4,7 +4,8 @@ This uses the Spec's population fixture. The candidate read includes service
 authorization and JSON serialization; the legacy read remains an internal
 source snapshot. Writer latency is split into lock wait and transaction time.
 Publication targets share one bounded polling query; the engine uses the
-Community SQLite PRAGMAs. This isolated harness does not claim REST/UI SLOs.
+Community SQLite PRAGMAs. Delivery evidence writes append directly to SQLite
+without the API command path. This isolated harness does not claim REST/UI SLOs.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import argparse
 import asyncio
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import closing
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import logging
@@ -121,6 +123,25 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
     rss_bytes, pool_checkouts, blocking_tasks, wal_samples = [], [], [], []
     event_loop_lag_ms: list[float] = []
     cpu_start = process_time()
+
+    async def write_source(connection, *, index: int, spec_id: str, phase: str) -> None:
+        if args.write_kind == 'spec_description':
+            await connection.exec_driver_sql(
+                'UPDATE specs SET description=? WHERE id=?',
+                (f'{phase}-{index}', spec_id))
+            return
+        record_id = f'{spec_id}-write-{phase}-{index}'
+        payload = json.dumps({'note': f'Benchmark {phase} report {index}'})
+        await connection.exec_driver_sql(
+            'INSERT INTO card_delivery_evidence_records '
+            '(id,board_id,card_id,spec_id,spec_edition,kind,actor_id,actor_kind,'
+            'idempotency_key,payload_sha256,payload,created_at) '
+            'VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+            (record_id, 'benchmark-board', f'{spec_id}-task-000', spec_id, 1,
+                'progress', 'benchmark-agent', 'agent', record_id,
+                sha256(payload.encode()).hexdigest(), payload,
+                datetime.now(timezone.utc).isoformat()))
+
     try:
         if args.mode == 'persisted':
             published = 0
@@ -130,8 +151,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 await asyncio.sleep(.06)
         # Exclude connection/thread cold start from steady-state write latency.
         async with engine.begin() as connection:
-            await connection.exec_driver_sql(
-                "UPDATE specs SET description='warmup' WHERE id='benchmark-spec-000'")
+            await write_source(connection, index=-1,
+                spec_id='benchmark-spec-000', phase='warmup')
         if args.mode == 'persisted':
             await asyncio.sleep(.06)
             await worker.process_once()
@@ -192,9 +213,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                             await connection.exec_driver_sql('BEGIN IMMEDIATE')
                             lock_acquired = perf_counter()
                             try:
-                                await connection.exec_driver_sql(
-                                    'UPDATE specs SET description=? WHERE id=?',
-                                    (f'{"burst" if burst else "load"}-{index}', spec_id))
+                                await write_source(connection, index=index, spec_id=spec_id,
+                                    phase='burst' if burst else 'load')
                                 update_done = perf_counter()
                                 await connection.commit()
                                 committed_at = perf_counter()
@@ -334,6 +354,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             'mode': args.mode, 'duration_s': args.duration_seconds,
             'read_surface': args.read_surface,
             'writes_per_second': args.writes_per_second,
+            'write_kind': args.write_kind,
             'serialize_writes': args.serialize_writes,
             'warmup_s': args.warmup_seconds, 'warmup_errors': warmup_errors[:25],
             'fixture': {'specs': args.specs, 'cards_per_spec': args.cards,
@@ -433,6 +454,8 @@ if __name__ == '__main__':
     parser.add_argument('--warmup-seconds', type=int, default=0)
     parser.add_argument('--reads-per-second', type=int, default=10)
     parser.add_argument('--writes-per-second', type=float, default=1)
+    parser.add_argument('--write-kind', choices=('spec_description', 'delivery_evidence_append'),
+        default='spec_description')
     parser.add_argument('--clients', type=int, default=5)
     parser.add_argument('--specs', type=int, default=10)
     parser.add_argument('--cards', type=int, default=100)

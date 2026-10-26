@@ -117,6 +117,51 @@ async def test_pipeline_keeps_one_calculation_after_process_pool_breaks(tmp_path
         await engine.dispose()
 
 
+@pytest.mark.asyncio
+async def test_pipeline_cancellation_waits_for_both_inflight_calculations(tmp_path):
+    database = tmp_path / 'pulse.sqlite3'
+    engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
+
+    class PausedExecutor:
+        def __init__(self):
+            self.futures = []
+
+        def submit(self, *_args, **_kwargs):
+            future = Future()
+            self.futures.append(future)
+            return future
+
+    try:
+        await _seed_one_spec(engine)
+        async with engine.begin() as connection:
+            for spec_id in ('y-spec', 'z-spec'):
+                await connection.exec_driver_sql(
+                    "INSERT INTO specs (id,board_id,title,status,version,created_by,"
+                    "architecture_adoption,execution_contract) "
+                    "VALUES (?,'board','Additional','in_progress',1,'owner','{}',?)",
+                    (spec_id, json.dumps({"contract_version": "spec-execution-contract/v1",
+                        "board_id": "board", "spec_id": spec_id, "adopted_in_edition": 1,
+                        "actor_id": "owner", "origin": "new_spec"})),
+                )
+        await asyncio.sleep(.15)
+        executor = PausedExecutor()
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution(),
+            full_projection_executor=executor, database_path=database, max_inflight=2)
+        processing = asyncio.create_task(worker.process_once())
+        async with asyncio.timeout(5):
+            while len(executor.futures) < 2:
+                await asyncio.sleep(.01)
+        processing.cancel()
+        await asyncio.sleep(.05)
+        assert not processing.done()
+        for future in executor.futures:
+            future.set_exception(RuntimeError('calculation stopped'))
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(processing, timeout=5)
+    finally:
+        await engine.dispose()
+
+
 def _seed_migrated_v401_many_specs(database):
     _v401_predecessor(database)
     spec_ids = ['spec', *[f'spec-{number:03d}' for number in range(100)]]
