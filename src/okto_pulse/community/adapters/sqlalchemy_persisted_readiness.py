@@ -250,8 +250,7 @@ class CommunityPersistedReadinessStore:
             row.lease_until = now + timedelta(seconds=LEASE_SECONDS)
             row.updated_at = now
 
-    async def stage(self, claim: ReadinessClaim, generation: ReadinessGeneration,
-                    *, verifier=None) -> str:
+    async def stage(self, claim: ReadinessClaim, generation: ReadinessGeneration) -> str:
         if (claim.board_id, claim.spec_id, claim.edition) != (
             generation.board_id, generation.spec_id, generation.spec_edition):
             raise ValueError("readiness_generation_scope_mismatch")
@@ -317,10 +316,7 @@ class CommunityPersistedReadinessStore:
                 insert_ms += (perf_counter() - insert_started) * 1000
                 batch_count += 1
         verify_started = perf_counter()
-        if verifier is None:
-            await self.verify_stage(claim, generation_id)
-        else:
-            await verifier(claim, generation_id)
+        await self.verify_stage(claim, generation_id)
         logger.debug('readiness.stage_phases', extra={
             'readiness_stage_metadata_ms': metadata_ms,
             'readiness_stage_pack_ms': pack_ms,

@@ -76,11 +76,11 @@ def _project_from_database(database_path, board_id, spec_id, deadline):
     return runner.run(project())
 
 
-def _verify_stage_from_database(database_path, claim, generation_id):
-    """Verify committed staged rows off the API event loop before CAS publish."""
+def _stage_from_database(database_path, claim, generation):
+    """Stage and verify committed rows off the API event loop."""
     runner, engine = _projection_child_runtime(database_path)
     store = CommunityPersistedReadinessStore(engine)
-    return runner.run(store.verify_stage(claim, generation_id))
+    return runner.run(store.stage(claim, generation))
 
 
 class ReadinessProjectionProcessor:
@@ -239,8 +239,7 @@ class ReadinessProjectionProcessor:
             if monotonic() - snapshot_started > 30:
                 raise TimeoutError("readiness_calculation_budget_exceeded")
             stage_started = monotonic()
-            generation_id = await self.store.stage(claim, generation,
-                verifier=self._verify_staged)
+            generation_id = await self._stage_generation(claim, generation)
             stage_ms = (monotonic() - stage_started) * 1000
             publish_started = monotonic()
             if not await self.store.publish(claim, generation_id):
@@ -268,20 +267,19 @@ class ReadinessProjectionProcessor:
             await self.store.fail(claim, error_code=code)
             return 0
 
-    async def _verify_staged(self, claim, generation_id):
+    async def _stage_generation(self, claim, generation):
         if self.full_projection_executor is None:
-            await self.store.verify_stage(claim, generation_id)
-            return
+            return await self.store.stage(claim, generation)
         try:
             future = asyncio.get_running_loop().run_in_executor(
-                self.full_projection_executor, _verify_stage_from_database,
-                str(self.database_path), claim, generation_id)
-            await asyncio.shield(future)
+                self.full_projection_executor, _stage_from_database,
+                str(self.database_path), claim, generation)
+            return await asyncio.shield(future)
         except BrokenProcessPool:
             logger.exception("readiness.process_pool_unavailable board=%s spec=%s",
                 claim.board_id, claim.spec_id)
             self.full_projection_executor = None
-            await self.store.verify_stage(claim, generation_id)
+            return await self.store.stage(claim, generation)
         except asyncio.CancelledError:
             while not future.done():
                 try:

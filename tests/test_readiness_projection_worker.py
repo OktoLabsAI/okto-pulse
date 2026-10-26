@@ -404,15 +404,49 @@ async def test_process_verifier_rejects_tampered_stage_before_publication(tmp_pa
                 board_id='board', spec_id='spec', blocking_execution=worker.blocking_execution)
             generation = build_readiness_generation(snapshot, captured_revision=revision)
             with pytest.raises(ValueError, match='readiness_stage_manifest_mismatch'):
-                await worker.store.stage(claim, replace(generation,
-                    manifest_sha256='0' * 64), verifier=worker._verify_staged)
+                await worker._stage_generation(claim, replace(generation,
+                    manifest_sha256='0' * 64))
             visible = await worker.store.read(board_id='board', spec_id='spec', edition=1)
             assert visible is not None and visible.generation_id is None
-            generation_id = await worker.store.stage(claim, generation,
-                verifier=worker._verify_staged)
+            generation_id = await worker._stage_generation(claim, generation)
             assert await worker.store.publish(claim, generation_id)
             visible = await worker.store.read(board_id='board', spec_id='spec', edition=1)
             assert visible is not None and visible.freshness == 'current'
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_process_stage_cancellation_waits_for_child_result(tmp_path):
+    database = tmp_path / 'pulse.sqlite3'
+    engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
+
+    class PausedExecutor:
+        def __init__(self):
+            self.future = None
+
+        def submit(self, *_args, **_kwargs):
+            self.future = Future()
+            return self.future
+
+    try:
+        await _seed_one_spec(engine)
+        executor = PausedExecutor()
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution(),
+            full_projection_executor=executor, database_path=database)
+        await asyncio.sleep(.06)
+        claim = await worker.store.claim(owner=worker.owner)
+        assert claim is not None
+        staging = asyncio.create_task(worker._stage_generation(claim, object()))
+        async with asyncio.timeout(5):
+            while executor.future is None:
+                await asyncio.sleep(.01)
+        staging.cancel()
+        await asyncio.sleep(.05)
+        assert not staging.done()
+        executor.future.set_result('stage-completed')
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(staging, timeout=5)
     finally:
         await engine.dispose()
 
