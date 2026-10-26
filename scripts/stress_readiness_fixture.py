@@ -203,6 +203,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         'stage_insert': [], 'stage_verify': [],
         'stage_verify_read': [], 'stage_verify_decode': [],
         'stage_verify_validate': [], 'stage_verify_digest': [],
+        'publish_checkout': [], 'publish_begin': [], 'publish_fetch': [],
+        'publish_counts': [], 'publish_flush': [], 'publish_commit': [],
     }
     plan_cache_samples: list[float] = []
     predecessor_cache_samples: list[float] = []
@@ -260,6 +262,10 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                     value = getattr(record, f'readiness_stage_verify_{key}_ms', None)
                     if value is not None:
                         publish_phases_ms[f'stage_verify_{key}'].append(value)
+            elif record.msg == 'readiness.publish_phases':
+                for name in ('checkout', 'begin', 'fetch', 'counts', 'flush', 'commit'):
+                    publish_phases_ms[f'publish_{name}'].append(
+                        getattr(record, f'readiness_publish_{name}_ms'))
             elif isinstance(record.msg, str) and record.msg.startswith('readiness.published '):
                 projection_modes[record.args[4]] = projection_modes.get(record.args[4], 0) + 1
                 for name, value in zip(

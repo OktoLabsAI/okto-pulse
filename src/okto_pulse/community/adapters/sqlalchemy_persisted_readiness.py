@@ -625,16 +625,23 @@ class CommunityPersistedReadinessStore:
             identity[1], identity[2], generation_id)
         return False
 
-    async def publish(self, claim: ReadinessClaim, generation_id: str) -> bool:
+    async def publish(self, claim: ReadinessClaim, generation_id: str,
+                      *, phase_metrics: dict[str, float] | None = None) -> bool:
         """CAS-activate a complete generation; return False for a lost fence."""
         now = datetime.now(timezone.utc)
+        phase_started = perf_counter()
         async with self.engine.connect() as connection:
+            checkout_ms = (perf_counter() - phase_started) * 1000
+            phase_started = perf_counter()
             await connection.exec_driver_sql("BEGIN IMMEDIATE")
+            begin_ms = (perf_counter() - phase_started) * 1000
             try:
+                phase_started = perf_counter()
                 async with AsyncSession(bind=connection, expire_on_commit=False) as session:
                     scope = await session.get(ReadinessScopeRow, claim.scope_id)
                     job = await session.get(ReadinessJobRow, claim.scope_id)
                     gen = await session.get(ReadinessGenerationRow, generation_id)
+                    fetch_ms = (perf_counter() - phase_started) * 1000
                     if (scope is None or job is None or gen is None or scope.tombstone
                         or gen.scope_id != claim.scope_id or gen.state != "staging"
                         or job.owner != claim.owner or job.lease_epoch != claim.epoch
@@ -643,6 +650,7 @@ class CommunityPersistedReadinessStore:
                         or gen.evaluator_version != EVALUATOR_VERSION):
                         await connection.rollback()
                         return False
+                    phase_started = perf_counter()
                     summaries = await session.scalar(select(func.count()).select_from(ReadinessSummaryRow).where(
                         ReadinessSummaryRow.generation_id == generation_id))
                     units = await session.scalar(select(func.count()).select_from(ReadinessUnitRow).where(
@@ -650,6 +658,8 @@ class CommunityPersistedReadinessStore:
                     if summaries != gen.summary_count or units != gen.unit_count:
                         await connection.rollback()
                         return False
+                    counts_ms = (perf_counter() - phase_started) * 1000
+                    phase_started = perf_counter()
                     active = await session.get(ReadinessGenerationRow, scope.active_generation_id) if scope.active_generation_id else None
                     if active is not None and active.captured_revision > gen.captured_revision:
                         await connection.rollback()
@@ -665,7 +675,19 @@ class CommunityPersistedReadinessStore:
                     job.due_at = now
                     job.updated_at = now
                     await session.flush()
+                    flush_ms = (perf_counter() - phase_started) * 1000
+                phase_started = perf_counter()
                 await connection.commit()
+                if phase_metrics is not None:
+                    phase_metrics.update({
+                        'readiness_publish_checkout_ms': checkout_ms,
+                        'readiness_publish_begin_ms': begin_ms,
+                        'readiness_publish_fetch_ms': fetch_ms,
+                        'readiness_publish_counts_ms': counts_ms,
+                        'readiness_publish_flush_ms': flush_ms,
+                        'readiness_publish_commit_ms':
+                            (perf_counter() - phase_started) * 1000,
+                    })
                 return True
             except BaseException:
                 await connection.rollback()

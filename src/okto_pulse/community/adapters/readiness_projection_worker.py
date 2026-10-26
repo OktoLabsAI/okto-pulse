@@ -306,9 +306,12 @@ class ReadinessProjectionProcessor:
             if heartbeat.done():
                 heartbeat.result()
             publish_started = monotonic()
-            if not await self.store.publish(claim, generation_id):
+            publish_phases = {}
+            if not await self.store.publish(claim, generation_id,
+                    phase_metrics=publish_phases):
                 raise ReadinessLeaseLost("readiness_publication_fence_lost")
             publish_ms = (monotonic() - publish_started) * 1000
+            logger.debug('readiness.publish_phases', extra=publish_phases)
             source_to_publish_ms = max(0.0, (
                 datetime.now(timezone.utc) - claim.source_updated_at).total_seconds() * 1000)
             logger.info("readiness.published board=%s spec=%s revision=%d units=%d mode=%s "
