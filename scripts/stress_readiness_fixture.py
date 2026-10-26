@@ -497,7 +497,11 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 published += sum(await asyncio.gather(
                     *(item.process_once() for item in workers)))
                 if (await worker.store.queue_status())['counts'].get('terminal', 0):
-                    raise RuntimeError(f'readiness_fixture_initial_terminal:{warmup_errors[-3:]}')
+                    async with engine.connect() as connection:
+                        terminal = (await connection.exec_driver_sql(
+                            "SELECT scope_id,error_code,attempt FROM readiness_job "
+                            "WHERE state='terminal' ORDER BY scope_id LIMIT 5")).all()
+                    raise RuntimeError(f'readiness_fixture_initial_terminal:{terminal!r}')
                 await asyncio.sleep(.06)
             initial_fixture_audit = audit_fixture(path, args)
         # Exclude connection/thread cold start from steady-state write latency.
