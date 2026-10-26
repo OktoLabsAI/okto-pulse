@@ -6,7 +6,9 @@ import asyncio
 import atexit
 from concurrent.futures.process import BrokenProcessPool
 from datetime import datetime, timezone
+import gc
 import logging
+from threading import get_ident
 from time import monotonic, process_time
 from uuid import uuid4
 
@@ -112,6 +114,27 @@ def _project_and_stage_from_database(database_path, claim, deadline):
     if _process_store is None:
         _process_store = CommunityPersistedReadinessStore(engine)
 
+    gc_phase = {'name': 'snapshot'}
+    gc_started = {}
+    gc_pause_ms = {}
+    gc_counts = {}
+
+    def observe_gc(event, info):
+        thread_id = get_ident()
+        if event == 'start':
+            gc_started[thread_id] = (monotonic(), gc_phase['name'])
+        elif event == 'stop':
+            started = gc_started.pop(thread_id, None)
+            if started is None:
+                return
+            began_at, name = started
+            generation = info.get('generation')
+            if not isinstance(generation, int) or generation not in (0, 1, 2):
+                return
+            key = (name, generation)
+            gc_pause_ms[key] = gc_pause_ms.get(key, 0.0) + (monotonic() - began_at) * 1000
+            gc_counts[key] = gc_counts.get(key, 0) + 1
+
     async def project_and_stage():
         reader = _process_reader
         store = _process_store
@@ -127,10 +150,12 @@ def _project_and_stage_from_database(database_path, claim, deadline):
             process_time() - cpu_started) * 1000
         if revision < 0:
             raise ValueError("readiness_revision_invalid")
+        gc_phase['name'] = 'predecessor'
         started = monotonic()
         candidate = await _candidate_predecessor(store, claim, revision, delta,
             phase_metrics=snapshot_phases)
         predecessor_ms = (monotonic() - started) * 1000
+        gc_phase['name'] = 'compute'
         started = monotonic()
         cpu_started = process_time()
         generation, projection_mode = _build_with_predecessor(snapshot, revision, deadline,
@@ -140,6 +165,7 @@ def _project_and_stage_from_database(database_path, claim, deadline):
             process_time() - cpu_started) * 1000
         if monotonic() > deadline:
             raise TimeoutError("readiness_calculation_budget_exceeded")
+        gc_phase['name'] = 'stage'
         phases = {}
         started = monotonic()
         cpu_started = process_time()
@@ -151,7 +177,20 @@ def _project_and_stage_from_database(database_path, claim, deadline):
             predecessor_ms, compute_ms, stage_ms, projection_mode,
             snapshot_phases, phases)
 
-    return runner.run(project_and_stage())
+    gc.callbacks.append(observe_gc)
+    try:
+        result = runner.run(project_and_stage())
+    finally:
+        gc.callbacks.remove(observe_gc)
+    snapshot_phases = result[8]
+    for name in ('snapshot', 'predecessor', 'compute', 'stage'):
+        for generation in range(3):
+            key = (name, generation)
+            snapshot_phases[f'readiness_gc_{name}_pause_gen{generation}_ms'] = (
+                gc_pause_ms.get(key, 0.0))
+            snapshot_phases[f'readiness_gc_{name}_count_gen{generation}'] = (
+                float(gc_counts.get(key, 0)))
+    return result
 
 
 def _stage_from_database(database_path, claim, generation):

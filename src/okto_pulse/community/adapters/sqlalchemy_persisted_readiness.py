@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from itertools import islice
@@ -356,7 +356,7 @@ class CommunityPersistedReadinessStore:
                 "json_extract(value,'$.payload')",
                 ({"card_key": unit.card_id or "", "kind": unit.kind,
                     "ref": unit.ref, "semantic_sha256": unit.semantic_sha256,
-                    "payload": asdict(unit)} for unit in generation.units)),
+                    "payload": unit.row()} for unit in generation.units)),
         )
         for table, columns, fields, rows in groups:
             while True:

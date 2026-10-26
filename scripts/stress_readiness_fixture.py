@@ -351,6 +351,15 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                     value = getattr(record, f'readiness_{name}_cpu_ms', None)
                     if value is not None:
                         publish_phases_ms[f'{name}_cpu'].append(value)
+                for name in ('snapshot', 'predecessor', 'compute', 'stage'):
+                    for generation in range(3):
+                        for metric in ('pause', 'count'):
+                            value = getattr(record,
+                                f'readiness_gc_{name}_{metric}_gen{generation}'
+                                + ('_ms' if metric == 'pause' else ''), None)
+                            if value is not None:
+                                publish_phases_ms.setdefault(
+                                    f'gc_{name}_{metric}_gen{generation}', []).append(value)
                 publish_phases_ms['snapshot_checkout'].append(record.readiness_checkout_ms)
                 publish_phases_ms['snapshot_begin'].append(record.readiness_begin_ms)
                 publish_phases_ms['snapshot_scope'].append(record.readiness_scope_ms)
