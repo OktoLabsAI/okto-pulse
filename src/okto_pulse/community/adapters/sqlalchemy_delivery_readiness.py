@@ -10,6 +10,7 @@ from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 from functools import lru_cache
+import gc
 import hashlib
 import json
 import logging
@@ -330,26 +331,58 @@ class CommunityDeliveryReadinessReader:
 
     async def _projection_record_rows(self, session, statement, limit, counts):
         """Keep the projection's large ledger batch out of the ORM identity map."""
+        gc_started = None
+        gc_pause_ms = 0.0
+        gc_collections = 0
+        gc_pause_by_generation = [0.0, 0.0, 0.0]
+        gc_count_by_generation = [0, 0, 0]
+
+        def observe_gc(phase, info):
+            nonlocal gc_started, gc_pause_ms, gc_collections
+            if phase == 'start':
+                gc_started = perf_counter()
+            elif phase == 'stop' and gc_started is not None:
+                pause_ms = (perf_counter() - gc_started) * 1000
+                gc_pause_ms += pause_ms
+                gc_collections += 1
+                generation = info.get('generation')
+                if isinstance(generation, int) and 0 <= generation < 3:
+                    gc_pause_by_generation[generation] += pause_ms
+                    gc_count_by_generation[generation] += 1
+                gc_started = None
+
+        gc.callbacks.append(observe_gc)
         started = perf_counter()
         cpu_started = process_time()
-        result = await session.execute(statement.limit(limit + 1))
-        execute_ms = (perf_counter() - started) * 1000
-        fetch_started = perf_counter()
-        values = result.all()
-        fetch_ms = (perf_counter() - fetch_started) * 1000
-        if 'query_ms' in counts:
-            counts['query_ms'][CardRecord.__tablename__] = (perf_counter() - started) * 1000
-        if len(values) > limit:
-            raise ReadinessReadError('readiness_limit_exceeded', native_code='readiness_population_limit')
-        counts['facts'] += len(values)
-        wrap_started = perf_counter()
-        rows = tuple(SimpleNamespace(**row._mapping) for row in values)
+        try:
+            result = await session.execute(statement.limit(limit + 1))
+            execute_ms = (perf_counter() - started) * 1000
+            fetch_started = perf_counter()
+            values = result.all()
+            fetch_ms = (perf_counter() - fetch_started) * 1000
+            if 'query_ms' in counts:
+                counts['query_ms'][CardRecord.__tablename__] = (perf_counter() - started) * 1000
+            if len(values) > limit:
+                raise ReadinessReadError('readiness_limit_exceeded', native_code='readiness_population_limit')
+            counts['facts'] += len(values)
+            wrap_started = perf_counter()
+            rows = tuple(SimpleNamespace(**row._mapping) for row in values)
+            wrap_ms = (perf_counter() - wrap_started) * 1000
+            cpu_ms = (process_time() - cpu_started) * 1000
+        finally:
+            gc.callbacks.remove(observe_gc)
         if 'query_ms' in counts:
             counts['record_query_detail_ms'] = {
                 'execute': execute_ms,
                 'fetch': fetch_ms,
-                'wrap': (perf_counter() - wrap_started) * 1000,
-                'cpu': (process_time() - cpu_started) * 1000,
+                'wrap': wrap_ms,
+                'cpu': cpu_ms,
+                'gc_pause': gc_pause_ms,
+                'gc_collections': float(gc_collections),
+                **{f'gc_pause_gen{generation}': gc_pause_by_generation[generation]
+                   for generation in range(3)},
+                **{f'gc_count_gen{generation}': float(gc_count_by_generation[generation])
+                   for generation in range(3)},
             }
         return rows
 

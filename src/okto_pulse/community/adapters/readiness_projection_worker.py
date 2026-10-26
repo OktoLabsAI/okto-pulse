@@ -7,7 +7,7 @@ import atexit
 from concurrent.futures.process import BrokenProcessPool
 from datetime import datetime, timezone
 import logging
-from time import monotonic
+from time import monotonic, process_time
 from uuid import uuid4
 
 from okto_pulse.core.services.persisted_delivery_readiness import (
@@ -98,11 +98,14 @@ def _project_and_stage_from_database(database_path, claim, deadline):
         store = _process_store
         snapshot_phases = {}
         started = monotonic()
+        cpu_started = process_time()
         snapshot, revision, delta = await reader.load_for_projection(
             board_id=claim.board_id, spec_id=claim.spec_id,
             blocking_execution=TrackedBlockingExecution(), phase_metrics=snapshot_phases,
             include_source_delta=True)
         snapshot_ms = (monotonic() - started) * 1000
+        snapshot_phases["readiness_snapshot_cpu_ms"] = (
+            process_time() - cpu_started) * 1000
         if revision < 0:
             raise ValueError("readiness_revision_invalid")
         started = monotonic()
@@ -110,15 +113,21 @@ def _project_and_stage_from_database(database_path, claim, deadline):
             phase_metrics=snapshot_phases)
         predecessor_ms = (monotonic() - started) * 1000
         started = monotonic()
+        cpu_started = process_time()
         generation, projection_mode = _build_with_predecessor(snapshot, revision, deadline,
             predecessor, delta)
         compute_ms = (monotonic() - started) * 1000
+        snapshot_phases["readiness_compute_cpu_ms"] = (
+            process_time() - cpu_started) * 1000
         if monotonic() > deadline:
             raise TimeoutError("readiness_calculation_budget_exceeded")
         phases = {}
         started = monotonic()
+        cpu_started = process_time()
         generation_id = await store.stage(claim, generation, phase_metrics=phases)
         stage_ms = (monotonic() - started) * 1000
+        snapshot_phases["readiness_stage_cpu_ms"] = (
+            process_time() - cpu_started) * 1000
         return (generation_id, revision, len(generation.units), snapshot_ms,
             predecessor_ms, compute_ms, stage_ms, projection_mode,
             snapshot_phases, phases)

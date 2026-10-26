@@ -187,6 +187,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
     }
     publish_phases_ms: dict[str, list[float]] = {
         'snapshot': [], 'predecessor': [], 'compute': [], 'stage': [],
+        'snapshot_cpu': [], 'compute_cpu': [], 'stage_cpu': [],
         'process_dispatch': [], 'publish': [],
         'snapshot_checkout': [], 'snapshot_begin': [], 'snapshot_scope': [],
         'snapshot_source': [], 'snapshot_rollback': [],
@@ -199,6 +200,11 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         'snapshot_materialize_facts_decisions': [],
         'snapshot_record_execute': [], 'snapshot_record_fetch': [],
         'snapshot_record_wrap': [], 'snapshot_record_cpu': [],
+        'snapshot_record_gc_pause': [], 'snapshot_record_gc_collections': [],
+        'snapshot_record_gc_pause_gen0': [], 'snapshot_record_gc_pause_gen1': [],
+        'snapshot_record_gc_pause_gen2': [],
+        'snapshot_record_gc_count_gen0': [], 'snapshot_record_gc_count_gen1': [],
+        'snapshot_record_gc_count_gen2': [],
         'predecessor_read': [], 'predecessor_decode': [],
         'predecessor_digest': [], 'predecessor_construct': [],
         'stage_metadata': [], 'stage_pack': [], 'stage_heartbeat': [],
@@ -229,6 +235,10 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 read_phases_ms['presets'].append(record.readiness_presets_ms)
                 read_phases_ms['policy'].append(record.readiness_policy_ms)
             elif record.msg == 'readiness.projection_snapshot_phases':
+                for name in ('snapshot', 'compute', 'stage'):
+                    value = getattr(record, f'readiness_{name}_cpu_ms', None)
+                    if value is not None:
+                        publish_phases_ms[f'{name}_cpu'].append(value)
                 publish_phases_ms['snapshot_checkout'].append(record.readiness_checkout_ms)
                 publish_phases_ms['snapshot_begin'].append(record.readiness_begin_ms)
                 publish_phases_ms['snapshot_scope'].append(record.readiness_scope_ms)
