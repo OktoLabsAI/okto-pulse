@@ -279,7 +279,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
       <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50/50 px-3 py-2 dark:border-gray-700 dark:bg-gray-700/20">
         <div className="min-w-0">
           <span className="text-xs font-medium text-gray-700 dark:text-gray-300">Skip delivery evidence requirement</span>
-          <p className="text-[10px] text-gray-400">Allow moving spec to Done without complete delivery proof — the coverage verdict stays visible. Waivers (per obligation) remain human-only.</p>
+          <p className="text-[10px] text-gray-700 dark:text-gray-300">Allow moving spec to Done without complete delivery proof — the coverage verdict stays visible. Waivers (per obligation) remain human-only.</p>
         </div>
         {onSkipDeliveryEvidenceChange ? (
           <button
@@ -294,7 +294,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
             <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${skipDeliveryEvidence ? 'translate-x-5' : ''}`} />
           </button>
         ) : (
-          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide ${skipDeliveryEvidence ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'}`}>
+          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide ${skipDeliveryEvidence ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300'}`}>
             {skipDeliveryEvidence ? 'Skipped' : 'Active'}
           </span>
         )}
@@ -307,7 +307,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
     )}
 
     {!legacyMode && <div>
-      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Coverage by obligation</h3>
+      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-700 dark:text-gray-300">Coverage by obligation</h3>
       {projection && <p className="mb-2 text-xs text-gray-500" role="status">
         {projection.projection.freshness === 'current' ? 'Current' : projection.projection.freshness === 'updating'
           ? 'Updating · previous coherent generation' : projection.projection.freshness === 'pending_initial'
@@ -333,7 +333,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
 
     {showDetails && data && <>
       <div>
-        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Detailed evidence by obligation</h3>
+        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-700 dark:text-gray-300">Detailed evidence by obligation</h3>
         <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">Implementation marks use the same current proof assessment as the percentage above. Delivery qualification also requires its contributing Cards to reach Done.</p>
         <div className="overflow-x-auto">
           <table className="w-full text-sm" data-testid="delivery-detailed-coverage-table">
@@ -391,7 +391,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
 
       {data.per_card && data.per_card.length > 0 && (
         <div>
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Per card</h3>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-700 dark:text-gray-300">Per card</h3>
           <div className="space-y-2">
             {data.per_card.map(card => {
               const proven = card.obligations.filter(o => o.implementation_satisfied).length;
