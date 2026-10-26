@@ -192,6 +192,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         'snapshot_rows': [], 'snapshot_materialize': [],
         'stage_metadata': [], 'stage_pack': [], 'stage_heartbeat': [],
         'stage_insert': [], 'stage_verify': [],
+        'stage_verify_read': [], 'stage_verify_decode': [],
+        'stage_verify_validate': [], 'stage_verify_digest': [],
     }
 
     class ReadPhaseHandler(logging.Handler):
@@ -224,6 +226,10 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 for key in ('metadata', 'pack', 'heartbeat', 'insert', 'verify'):
                     publish_phases_ms[f'stage_{key}'].append(
                         getattr(record, f'readiness_stage_{key}_ms'))
+                for key in ('read', 'decode', 'validate', 'digest'):
+                    value = getattr(record, f'readiness_stage_verify_{key}_ms', None)
+                    if value is not None:
+                        publish_phases_ms[f'stage_verify_{key}'].append(value)
             elif isinstance(record.msg, str) and record.msg.startswith('readiness.published '):
                 for name, value in zip(('snapshot', 'compute', 'stage', 'publish'), record.args[4:8]):
                     publish_phases_ms[name].append(float(value))

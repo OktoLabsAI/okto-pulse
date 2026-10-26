@@ -13,6 +13,7 @@ import secrets
 from time import perf_counter
 from uuid import uuid4
 
+import orjson
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -328,7 +329,8 @@ class CommunityPersistedReadinessStore:
                 insert_ms += (perf_counter() - insert_started) * 1000
                 batch_count += 1
         verify_started = perf_counter()
-        await self.verify_stage(claim, generation_id)
+        verify_metrics: dict[str, float] = {}
+        await self.verify_stage(claim, generation_id, phase_metrics=verify_metrics)
         metrics = {
             'readiness_stage_metadata_ms': metadata_ms,
             'readiness_stage_pack_ms': pack_ms,
@@ -336,23 +338,28 @@ class CommunityPersistedReadinessStore:
             'readiness_stage_insert_ms': insert_ms,
             'readiness_stage_verify_ms': (perf_counter() - verify_started) * 1000,
             'readiness_stage_batch_count': batch_count,
+            **verify_metrics,
         }
         logger.debug('readiness.stage_phases', extra=metrics)
         if phase_metrics is not None:
             phase_metrics.update(metrics)
         return generation_id
 
-    async def verify_stage(self, claim: ReadinessClaim, generation_id: str) -> None:
+    async def verify_stage(self, claim: ReadinessClaim, generation_id: str, *,
+                           phase_metrics: dict[str, float] | None = None) -> None:
         """Verify staged payload outside a writer transaction before CAS publication."""
         if not await self._verify_generation(generation_id, scope_id=claim.scope_id,
                                               expected_state="staging", board_id=claim.board_id,
-                                              spec_id=claim.spec_id, edition=claim.edition):
+                                              spec_id=claim.spec_id, edition=claim.edition,
+                                              phase_metrics=phase_metrics):
             raise ValueError("readiness_stage_manifest_mismatch")
 
     async def _verify_generation(self, generation_id: str, *, scope_id: str,
                                  expected_state: str, board_id: str, spec_id: str,
-                                 edition: int) -> bool:
+                                 edition: int,
+                                 phase_metrics: dict[str, float] | None = None) -> bool:
         """Hash a stable read snapshot without retaining a writer checkout."""
+        read_started = perf_counter()
         async with self.engine.connect() as connection:
             await connection.exec_driver_sql("BEGIN")
             try:
@@ -374,12 +381,14 @@ class CommunityPersistedReadinessStore:
                     (generation_id, generation_id, generation_id))).all()
             finally:
                 await connection.rollback()
+        read_ms = (perf_counter() - read_started) * 1000
+        decode_started = perf_counter()
         summaries = []
         diagnostics = []
         units = []
         try:
             for category, card_key, _kind, _ref, _semantic_sha256, payload in rows:
-                value = json.loads(payload)
+                value = orjson.loads(payload)
                 if category == 0:
                     summaries.append(value)
                 elif category == 1:
@@ -388,12 +397,16 @@ class CommunityPersistedReadinessStore:
                     units.append(value)
         except (TypeError, ValueError):
             return False
+        decode_ms = (perf_counter() - decode_started) * 1000
+        validate_started = perf_counter()
         revision, snapshot_id, evaluator, summary_count, unit_count, manifest = header
         if (len(summaries) != summary_count or len(units) != unit_count
                 or len(diagnostics) != summary_count
                 or any('card_id' not in row for row in summaries)
                 or {row['card_id'] for row in diagnostics} != {row['card_id'] for row in summaries}):
             return False
+        validate_ms = (perf_counter() - validate_started) * 1000
+        digest_started = perf_counter()
         try:
             digest = readiness_manifest_digest(board_id=board_id, spec_id=spec_id,
                 edition=edition, captured_revision=revision,
@@ -401,6 +414,14 @@ class CommunityPersistedReadinessStore:
                 summaries=summaries, units=units, diagnostics=diagnostics)
         except (KeyError, TypeError, ValueError):
             return False
+        if phase_metrics is not None:
+            phase_metrics.update({
+                'readiness_stage_verify_read_ms': read_ms,
+                'readiness_stage_verify_decode_ms': decode_ms,
+                'readiness_stage_verify_validate_ms': validate_ms,
+                'readiness_stage_verify_digest_ms': (perf_counter() - digest_started) * 1000,
+                'readiness_stage_verify_row_count': float(len(rows)),
+            })
         return digest == manifest
 
     async def audit_active_generation(self, *, spec_id: str) -> bool:
