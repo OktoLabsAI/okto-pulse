@@ -22,6 +22,27 @@ ledger = delivery.ledger
 pytestmark = [pytest.mark.asyncio, pytest.mark.parametrize('ledger', ['native_schema'], indirect=True)]
 
 
+async def test_projection_skips_second_policy_query_without_concurrent_commit(ledger, monkeypatch):
+    session, _, _ = ledger
+    await setup(session)
+    worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
+    assert await worker.process_once() == 1
+    reader = CommunityDeliveryReadinessReader(session.bind, clock=CommunityReadinessClock())
+    original_access = reader._access_persisted
+    calls = 0
+
+    async def count_access(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return await original_access(*args, **kwargs)
+
+    monkeypatch.setattr(reader, '_access_persisted', count_access)
+    result, _, _, _ = await reader.load_persisted(board_id=delivery.BOARD_ID,
+        spec_id=delivery.SPEC_ID, actor=ACTOR)
+    assert result.freshness == 'current'
+    assert calls == 1
+
+
 async def test_projection_pages_are_actor_bound_and_reauthorized(ledger, monkeypatch):
     session, _, _ = ledger
     await setup(session)

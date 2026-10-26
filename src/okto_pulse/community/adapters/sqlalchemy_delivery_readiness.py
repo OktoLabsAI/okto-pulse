@@ -563,45 +563,42 @@ class CommunityDeliveryReadinessReader:
                              unit_limit=0, cursor=None, include_diagnostics=False):
         """Authorize current actor around a bounded projection read.
 
-        No proof facts, historical versions or diagnostics are loaded. A changed
-        ACL/Spec/Card during the read is retried once, then fails closed.
+        No proof facts, historical versions or diagnostics are loaded. A commit
+        during the read triggers fresh authorization; changed ACL/Spec/Card
+        facts are retried once, then fail closed.
         """
         from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import (
             CommunityPersistedReadinessStore,
         )
 
-        async def authorize():
-            async with self.engine.connect() as connection:
-                await connection.exec_driver_sql('BEGIN')
-                try:
-                    async with AsyncSession(bind=connection, autoflush=False) as session:
-                        access = await self._access_persisted(session, actor, board_id)
-                        # The unscoped projection contains Card identities and
-                        # metrics as well as the Spec summary. Authorize that
-                        # population before reading or returning any row.
-                        access.require('card.entity.read')
-                        spec = (await session.execute(select(Spec.edition, Spec.version).where(
-                            Spec.id == spec_id, Spec.board_id == board_id,
-                            Spec.archived.is_(False)))).first()
-                        if spec is None:
+        async def authorize(connection):
+            await connection.exec_driver_sql('BEGIN')
+            try:
+                async with AsyncSession(bind=connection, autoflush=False) as session:
+                    access = await self._access_persisted(session, actor, board_id)
+                    # The unscoped projection contains Card identities and
+                    # metrics as well as the Spec summary. Authorize that
+                    # population before reading or returning any row.
+                    access.require('card.entity.read')
+                    spec = (await session.execute(select(Spec.edition, Spec.version).where(
+                        Spec.id == spec_id, Spec.board_id == board_id,
+                        Spec.archived.is_(False)))).first()
+                    if spec is None:
+                        raise ReadinessReadError('readiness_scope_mismatch')
+                    card_policy_version = None
+                    if card_id is not None:
+                        card_policy_version = (await session.execute(select(Card.policy_version).where(
+                            Card.id == card_id,
+                            Card.board_id == board_id, Card.spec_id == spec_id,
+                            Card.archived.is_(False)))).scalar_one_or_none()
+                        if card_policy_version is None:
                             raise ReadinessReadError('readiness_scope_mismatch')
-                        card_policy_version = None
-                        if card_id is not None:
-                            card_policy_version = (await session.execute(select(Card.policy_version).where(
-                                Card.id == card_id,
-                                Card.board_id == board_id, Card.spec_id == spec_id,
-                                Card.archived.is_(False)))).scalar_one_or_none()
-                            if card_policy_version is None:
-                                raise ReadinessReadError('readiness_scope_mismatch')
-                        return access, spec.edition, spec.version, card_policy_version
-                finally:
-                    await connection.rollback()
+                    return access, spec.edition, spec.version, card_policy_version
+            finally:
+                await connection.rollback()
 
         store = CommunityPersistedReadinessStore(self.engine)
-        for _ in range(2):
-            started = perf_counter()
-            before = await authorize()
-            authorized_at = perf_counter()
+        async def read_projected(before, authority_connection):
             generation_id = None
             unit_offset = 0
             if cursor is not None:
@@ -619,10 +616,26 @@ class CommunityDeliveryReadinessReader:
             projection = await store.read(board_id=board_id, spec_id=spec_id,
                 edition=before[1], card_id=card_id, unit_limit=unit_limit,
                 unit_offset=unit_offset, generation_id_override=generation_id,
-                include_diagnostics=include_diagnostics)
-            projected_at = perf_counter()
-            after = await authorize()
-            reauthorized_at = perf_counter()
+                include_diagnostics=include_diagnostics, connection=authority_connection)
+            return projection, unit_offset
+
+        for _ in range(2):
+            started = perf_counter()
+            async with self.engine.connect() as authority_connection:
+                # data_version is comparable only on the same SQLite connection.
+                # Release each read transaction before beginning the next one;
+                # reuse the connection so a concurrent commit remains detectable.
+                observed_version = (await authority_connection.exec_driver_sql(
+                    'PRAGMA data_version')).scalar_one()
+                before = await authorize(authority_connection)
+                authorized_at = perf_counter()
+                projection, unit_offset = await read_projected(before, authority_connection)
+                projected_at = perf_counter()
+                current_version = (await authority_connection.exec_driver_sql(
+                    'PRAGMA data_version')).scalar_one()
+                after = (before if current_version == observed_version
+                    else await authorize(authority_connection))
+                reauthorized_at = perf_counter()
             if before == after:
                 logger.debug('readiness.persisted_read_phases', extra={
                     'readiness_auth_before_ms': (authorized_at - started) * 1000,

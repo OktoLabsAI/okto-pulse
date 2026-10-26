@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -85,7 +86,8 @@ class CommunityPersistedReadinessStore:
     async def read(self, *, board_id: str, spec_id: str, edition: int,
                    card_id: str | None = None, unit_limit: int = 0,
                    unit_offset: int = 0, generation_id_override: str | None = None,
-                   include_diagnostics: bool = False) -> ProjectionRead | None:
+                   include_diagnostics: bool = False,
+                   connection=None) -> ProjectionRead | None:
         """Read one committed generation with no source evaluation or repair.
 
         Callers must authorize the current actor and requested Card before
@@ -94,7 +96,15 @@ class CommunityPersistedReadinessStore:
         started = perf_counter()
         if unit_limit < 0 or unit_limit > 250 or unit_offset < 0:
             raise ValueError("readiness_page_invalid")
-        async with self.engine.connect() as connection:
+        @asynccontextmanager
+        async def read_connection():
+            if connection is None:
+                async with self.engine.connect() as opened:
+                    yield opened
+            else:
+                yield connection
+
+        async with read_connection() as connection:
             await connection.exec_driver_sql("BEGIN")
             try:
                 header = (await connection.exec_driver_sql(
