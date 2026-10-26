@@ -19,8 +19,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from okto_pulse.core.services.persisted_delivery_readiness import (
-    EVALUATOR_VERSION, ReadinessGeneration, readiness_manifest_digest,
+    EVALUATOR_VERSION, ProjectedDiagnostic, ProjectedSummary, ProjectedUnit,
+    ReadinessGeneration, readiness_manifest_digest,
 )
+from okto_pulse.core.models.delivery_readiness import DeliveryMetric
 from okto_pulse.core.ports.delivery_readiness import ReadinessAccessDenied, ReadinessReadError
 from .sqlalchemy_models import (
     Agent, AgentBoard, AppSetting, Board, BoardShare, Spec,
@@ -423,6 +425,89 @@ class CommunityPersistedReadinessStore:
                 'readiness_stage_verify_row_count': float(len(rows)),
             })
         return digest == manifest
+
+    async def load_verified_predecessor(self, *, scope_id: str, board_id: str,
+                                        spec_id: str, edition: int,
+                                        expected_revision: int) -> ReadinessGeneration | None:
+        """Read one active, adjacent generation under a stable SQLite snapshot.
+
+        A missing, stale, malformed or tampered predecessor is ineligible for
+        incremental work. The worker then recalculates from the source ledger.
+        """
+        async with self.engine.connect() as connection:
+            await connection.exec_driver_sql("BEGIN")
+            try:
+                header = (await connection.exec_driver_sql(
+                    "SELECT g.id,g.captured_revision,g.spec_version,g.source_snapshot_id,"
+                    "g.evaluator_version,g.evaluated_at,g.summary_count,g.unit_count,"
+                    "g.manifest_sha256 FROM readiness_scope s "
+                    "JOIN readiness_generation g ON g.id=s.active_generation_id "
+                    "WHERE s.id=? AND s.board_id=? AND s.spec_id=? AND s.edition=? "
+                    "AND s.tombstone=0 AND g.scope_id=s.id AND g.state='complete' "
+                    "AND g.captured_revision=?",
+                    (scope_id, board_id, spec_id, edition, expected_revision))).one_or_none()
+                if header is None:
+                    return None
+                generation_id = header[0]
+                rows = (await connection.exec_driver_sql(
+                    "SELECT 0 AS category,card_key,'' AS kind,'' AS ref,"
+                    "'' AS semantic_sha256,payload FROM readiness_summary WHERE generation_id=? "
+                    "UNION ALL SELECT 1,card_key,'','','',payload FROM readiness_diagnostic "
+                    "WHERE generation_id=? "
+                    "UNION ALL SELECT 2,card_key,kind,ref,semantic_sha256,payload "
+                    "FROM readiness_unit WHERE generation_id=? "
+                    "ORDER BY category,card_key,kind,ref,semantic_sha256",
+                    (generation_id, generation_id, generation_id))).all()
+            finally:
+                await connection.rollback()
+        try:
+            (_, revision, spec_version, snapshot_id, evaluator, evaluated_at,
+                summary_count, unit_count, manifest) = header
+            if evaluator != EVALUATOR_VERSION:
+                return None
+            summaries, diagnostics, units = [], [], []
+            for category, card_key, kind, ref, semantic_sha256, payload in rows:
+                value = orjson.loads(payload)
+                if category == 0:
+                    if value['card_id'] != (card_key or None):
+                        return None
+                    summaries.append(value)
+                elif category == 1:
+                    diagnostics.append({'card_id': card_key or None, 'payload': value})
+                elif category == 2:
+                    if ((value['card_id'] or '') != card_key or value['kind'] != kind
+                            or value['ref'] != ref or value['semantic_sha256'] != semantic_sha256):
+                        return None
+                    units.append(value)
+                else:
+                    return None
+            if (len(summaries) != summary_count or len(diagnostics) != summary_count
+                    or len(units) != unit_count
+                    or {row['card_id'] for row in summaries} !=
+                        {row['card_id'] for row in diagnostics}):
+                return None
+            digest = readiness_manifest_digest(board_id=board_id, spec_id=spec_id,
+                edition=edition, captured_revision=revision,
+                source_snapshot_id=snapshot_id, evaluator_version=evaluator,
+                summaries=summaries, units=units, diagnostics=diagnostics)
+            if digest != manifest:
+                return None
+            return ReadinessGeneration(board_id, spec_id, edition, spec_version,
+                revision, snapshot_id, datetime.fromisoformat(evaluated_at), evaluator,
+                tuple(ProjectedSummary(row['card_id'], row['card_type'], row['card_version'],
+                    DeliveryMetric.model_validate(row['implementation']),
+                    DeliveryMetric.model_validate(row['verification']),
+                    row['population_known'], row['evaluation_complete'], row['context'])
+                    for row in summaries),
+                tuple(ProjectedUnit(row['card_id'], row['kind'], row['ref'], row['semantic_sha256'],
+                    row['spec_edition'], tuple(row['contribution_card_ids']),
+                    row['implementation_state'], row['verification_state'],
+                    tuple(row['implementation_reason_codes']),
+                    tuple(row['verification_reason_codes'])) for row in units),
+                tuple(ProjectedDiagnostic(row['card_id'], row['payload']) for row in diagnostics),
+                manifest)
+        except (KeyError, TypeError, ValueError):
+            return None
 
     async def audit_active_generation(self, *, spec_id: str) -> bool:
         """Quarantine a corrupt active generation and durably request repair."""

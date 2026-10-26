@@ -86,6 +86,36 @@ async def test_projection_capture_reads_delta_with_source_revision(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_predecessor_loader_verifies_active_manifest_and_row_keys(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        await asyncio.sleep(.06)
+        assert await worker.process_once() == 1
+        visible = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert visible is not None and visible.captured_revision is not None
+        previous = await worker.store.load_verified_predecessor(
+            scope_id='spec:1', board_id='board', spec_id='spec', edition=1,
+            expected_revision=visible.captured_revision)
+        assert previous is not None
+        assert previous.manifest_sha256
+        assert len(previous.summaries) == len(previous.diagnostics) == 1
+        assert await worker.store.load_verified_predecessor(
+            scope_id='spec:1', board_id='board', spec_id='spec', edition=1,
+            expected_revision=visible.captured_revision + 1) is None
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql("UPDATE readiness_summary SET "
+                "payload=json_set(payload,'$.card_id','wrong') "
+                "WHERE generation_id=? AND card_key=''", (visible.generation_id,))
+        assert await worker.store.load_verified_predecessor(
+            scope_id='spec:1', board_id='board', spec_id='spec', edition=1,
+            expected_revision=visible.captured_revision) is None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('submit_raises', [False, True])
 async def test_broken_projection_process_falls_back_and_publishes(tmp_path, submit_raises):
     database = tmp_path / 'pulse.sqlite3'
