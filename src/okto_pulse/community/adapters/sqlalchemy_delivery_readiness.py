@@ -6,7 +6,7 @@ does not start a database snapshot for SELECT merely on Session.begin().
 """
 from collections import defaultdict
 from contextlib import contextmanager
-from dataclasses import fields, is_dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 from functools import lru_cache
@@ -53,6 +53,15 @@ MAX_CARDS = 5000
 MAX_HISTORY = 10000
 MAX_FACTS = 20000
 FINGERPRINT_VERSION = 'delivery-readiness-snapshot/v2'
+
+
+@dataclass(frozen=True, slots=True)
+class ReadinessSourceDelta:
+    """Last invalidation observed in the same SQLite snapshot as its revision."""
+
+    source_revision: int
+    kind: str
+    card_id: str | None
 
 
 class CommunityReadinessClock:
@@ -561,14 +570,16 @@ class CommunityDeliveryReadinessReader:
                 (perf_counter() - started) * 1000, counts['queries'], counts['facts'])
 
     async def load_for_projection(self, *, board_id, spec_id, blocking_execution,
-                                  phase_metrics=None):
+                                  phase_metrics=None, include_source_delta=False):
         """Capture one source revision and immutable facts without actor state.
 
         The worker releases this connection before calling the CPU evaluator.
         Later writes may advance the source; publication fences that revision
         instead of retrying an unrelated global ``PRAGMA data_version`` change.
         """
-        from okto_pulse.community.adapters.sqlalchemy_models import ReadinessScopeRow
+        from okto_pulse.community.adapters.sqlalchemy_models import (
+            ReadinessScopeRow, ReadinessSourceDeltaRow,
+        )
 
         counts = {'queries': 0, 'facts': 0, 'query_ms': {}}
         started = perf_counter()
@@ -587,6 +598,10 @@ class CommunityDeliveryReadinessReader:
                         ReadinessScopeRow.edition.desc()).limit(1))).first()
                     if scope is None:
                         raise ReadinessReadError('readiness_scope_mismatch')
+                    delta_row = (await session.get(ReadinessSourceDeltaRow, scope.id)
+                        if include_source_delta else None)
+                    delta = (ReadinessSourceDelta(delta_row.source_revision,
+                        delta_row.kind, delta_row.card_id) if delta_row is not None else None)
                     scope_ms = (perf_counter() - phase_started) * 1000
                     phase_started = perf_counter()
                     try:
@@ -627,6 +642,8 @@ class CommunityDeliveryReadinessReader:
             phase_metrics.update(metrics)
         if snapshot.facts.scope.edition != edition:
             raise ReadinessReadError('readiness_snapshot_changed')
+        if include_source_delta:
+            return snapshot, captured_revision, delta
         return snapshot, captured_revision
 
     async def load_persisted(self, *, board_id, spec_id, actor, card_id=None,

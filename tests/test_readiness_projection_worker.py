@@ -6,6 +6,7 @@ from concurrent.futures.process import BrokenProcessPool
 from contextlib import closing
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 import json
 import logging
 from multiprocessing import get_context
@@ -43,6 +44,45 @@ async def _seed_one_spec(engine):
             (json.dumps({"contract_version": "spec-execution-contract/v1", "board_id": "board",
                 "spec_id": "spec", "adopted_in_edition": 1, "actor_id": "owner",
                 "origin": "new_spec"}),))
+
+
+@pytest.mark.asyncio
+async def test_projection_capture_reads_delta_with_source_revision(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        payload = json.dumps({"progress": {"contract_version": "delivery-progress/v2",
+            "material_change": "unknown", "source_state": {
+                "workspace_state": "unknown", "recoverability": "unknown"},
+            "target_ids": [], "remaining": "Checkpoint"}, "justification": "Checkpoint"})
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql("INSERT INTO cards "
+                "(id,board_id,spec_id,title,status,position,created_by) "
+                "VALUES ('card','board','spec','Card','in_progress',0,'owner')")
+            await connection.exec_driver_sql("INSERT INTO card_delivery_evidence_records "
+                "(id,board_id,card_id,spec_id,spec_edition,kind,actor_id,actor_kind,"
+                "idempotency_key,payload_sha256,payload,created_at) "
+                "VALUES ('progress-1','board','card','spec',1,'progress','agent','agent',"
+                "'progress-1',?,?,CURRENT_TIMESTAMP)",
+                (sha256(payload.encode()).hexdigest(), payload))
+        _snapshot, revision, delta = await worker.reader.load_for_projection(
+            board_id='board', spec_id='spec',
+            blocking_execution=worker.blocking_execution, include_source_delta=True)
+        assert delta is not None
+        assert (delta.source_revision, delta.kind, delta.card_id) == (
+            revision, 'card_progress_insert', 'card')
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql("UPDATE specs SET title='Changed' WHERE id='spec'")
+        _snapshot, next_revision, next_delta = await worker.reader.load_for_projection(
+            board_id='board', spec_id='spec',
+            blocking_execution=worker.blocking_execution, include_source_delta=True)
+        assert next_revision == revision + 1
+        assert next_delta is not None
+        assert (next_delta.source_revision, next_delta.kind, next_delta.card_id) == (
+            next_revision, 'full', None)
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
