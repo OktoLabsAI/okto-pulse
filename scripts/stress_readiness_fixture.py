@@ -27,6 +27,7 @@ import os
 from pathlib import Path
 import platform
 import psutil
+import shutil
 import sqlite3
 from statistics import median
 import sys
@@ -41,6 +42,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from benchmark_readiness_fixture import (
     seed, percentile, register_fixture_verifier, enrich_mixed_fixture, audit_fixture,
 )
+from okto_pulse.community.adapters.current_relational_schema import SCHEMA_VERSION
 from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
 from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import CommunityPersistedReadinessStore
 from okto_pulse.community.adapters.sqlalchemy_database import install_community_sqlite_pragmas
@@ -57,6 +59,115 @@ from okto_pulse.core.services.delivery_readiness import DeliveryReadinessService
 from okto_pulse.core.services.persisted_delivery_readiness import build_readiness_generation
 
 ACTOR = ReadinessActor('benchmark-agent', 'agent', 'local', 'benchmark-board')
+
+
+def _fixture_cache_identity(args: argparse.Namespace) -> dict:
+    shape = ('specs', 'cards', 'obligations', 'scenarios', 'facts', 'history',
+        'fixture_profile', 'overload_first', 'overload_cards',
+        'overload_obligations', 'overload_scenarios', 'overload_facts')
+    return {'contract': 'readiness-stress-fixture-cache/v1',
+        'schema_version': SCHEMA_VERSION,
+        'seed_sha256': sha256(Path(seed.__code__.co_filename).read_bytes()).hexdigest(),
+        'shape': {name: getattr(args, name) for name in shape}}
+
+
+def _sha256_file(path: Path) -> str:
+    digest = sha256()
+    with path.open('rb') as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _evidence_inventory(root: Path) -> dict[str, str]:
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError('fixture_cache_evidence_missing')
+    inventory = {}
+    for item in sorted(root.rglob('*')):
+        if item.is_symlink():
+            raise ValueError('fixture_cache_evidence_symlink')
+        if item.is_file():
+            inventory[item.relative_to(root).as_posix()] = _sha256_file(item)
+    return inventory
+
+
+def _backup_fixture(source: Path, destination: Path) -> None:
+    with closing(sqlite3.connect('file:' + source.resolve().as_posix()
+                                 + '?mode=ro', uri=True)) as reader:
+        with closing(sqlite3.connect(destination)) as writer:
+            reader.backup(writer)
+            writer.commit()
+            if writer.execute('PRAGMA quick_check').fetchone() != ('ok',):
+                raise ValueError('fixture_cache_integrity_failed')
+            if writer.execute('PRAGMA foreign_key_check').fetchone() is not None:
+                raise ValueError('fixture_cache_foreign_key_failed')
+            if writer.execute('PRAGMA user_version').fetchone()[0] != SCHEMA_VERSION:
+                raise ValueError('fixture_cache_schema_mismatch')
+
+
+def _restore_fixture_cache(cache: Path, destination: Path,
+                           identity: dict) -> str | None:
+    metadata_path = cache.with_name(cache.name + '.meta.json')
+    evidence_path = cache.with_name(cache.name + '.evidence')
+    if not any(path.exists() for path in (cache, metadata_path, evidence_path)):
+        return None
+    if not cache.is_file() or not metadata_path.is_file() or not evidence_path.is_dir():
+        raise ValueError('fixture_cache_incomplete')
+    metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
+    if metadata.get('identity') != identity:
+        raise ValueError('fixture_cache_identity_mismatch')
+    created_at = datetime.fromisoformat(metadata['created_at_utc'])
+    if (created_at.tzinfo is None or
+            (datetime.now(timezone.utc) - created_at).total_seconds() > 4 * 3600):
+        raise ValueError('fixture_cache_expired')
+    digest = _sha256_file(cache)
+    if digest != metadata.get('database_sha256'):
+        raise ValueError('fixture_cache_digest_mismatch')
+    if _evidence_inventory(evidence_path) != metadata.get('evidence_files'):
+        raise ValueError('fixture_cache_evidence_digest_mismatch')
+    _backup_fixture(cache, destination)
+    shutil.copytree(evidence_path, destination.parent / 'evidence')
+    if _evidence_inventory(destination.parent / 'evidence') != metadata['evidence_files']:
+        raise ValueError('fixture_cache_evidence_copy_mismatch')
+    return digest
+
+
+def _save_fixture_cache(source: Path, cache: Path, identity: dict) -> str:
+    metadata_path = cache.with_name(cache.name + '.meta.json')
+    evidence_path = cache.with_name(cache.name + '.evidence')
+    if any(path.exists() for path in (cache, metadata_path, evidence_path)):
+        raise ValueError('fixture_cache_already_exists')
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix='readiness-fixture-cache-', dir=cache.parent) as folder:
+        if not Path(folder).resolve().is_relative_to(cache.parent.resolve()):
+            raise ValueError('fixture_cache_scratch_scope_invalid')
+        staged = Path(folder) / 'fixture.db'
+        _backup_fixture(source, staged)
+        digest = _sha256_file(staged)
+        staged_evidence = Path(folder) / 'evidence'
+        source_evidence = source.parent / 'evidence'
+        source_files = (_evidence_inventory(source_evidence)
+            if source_evidence.is_dir() else {})
+        if source_evidence.is_dir():
+            shutil.copytree(source_evidence, staged_evidence)
+        else:
+            staged_evidence.mkdir()
+        evidence_files = _evidence_inventory(staged_evidence)
+        if evidence_files != source_files:
+            raise ValueError('fixture_cache_evidence_copy_mismatch')
+        staged_metadata = Path(folder) / 'fixture.meta.json'
+        staged_metadata.write_text(json.dumps({'identity': identity,
+            'database_sha256': digest, 'evidence_files': evidence_files,
+            'created_at_utc': datetime.now(timezone.utc).isoformat()},
+            sort_keys=True), encoding='utf-8')
+        if any(path.exists() for path in (cache, metadata_path, evidence_path)):
+            raise ValueError('fixture_cache_already_exists')
+        if not evidence_path.resolve().is_relative_to(cache.parent.resolve()):
+            raise ValueError('fixture_cache_scope_invalid')
+        staged_evidence.replace(evidence_path)
+        staged.replace(cache)
+        staged_metadata.replace(metadata_path)
+        return digest
 
 
 async def audit_source_projection_parity(path: Path, args: argparse.Namespace) -> dict:
@@ -723,12 +834,16 @@ if __name__ == '__main__':
     parser.add_argument('--burst-scope', choices=('single', 'round_robin'), default='single')
     parser.add_argument('--serialize-writes', action='store_true')
     parser.add_argument('--burst-at-seconds', type=int, default=5)
+    parser.add_argument('--fixture-cache', type=Path,
+        help='Reuse an integrity-checked enriched SQLite fixture for paired runs (persisted mode).')
     parser.add_argument('--output', type=Path)
     args = parser.parse_args()
     if args.read_surface is None:
         args.read_surface = 'internal' if args.mode == 'legacy' else 'service'
     if args.mode == 'legacy' and args.read_surface != 'internal':
         parser.error('legacy fixture only supports the internal read; it is not a v1 service baseline')
+    if args.fixture_cache and args.mode != 'persisted':
+        parser.error('fixture-cache currently supports persisted mode only')
     if args.burst_size and (args.burst_at_seconds < 0 or args.burst_at_seconds >= args.duration_seconds):
         parser.error('burst-at-seconds must fall inside the run')
     if args.writes_per_second < 0:
@@ -741,7 +856,12 @@ if __name__ == '__main__':
         parser.error('pipeline-depth=2 requires one claim worker')
     with TemporaryDirectory(prefix='readiness-stress-') as folder:
         path = Path(folder) / 'pulse.db'
-        seed(path, args)
+        cache_identity = _fixture_cache_identity(args) if args.fixture_cache else None
+        cache_digest = (_restore_fixture_cache(args.fixture_cache, path, cache_identity)
+            if args.fixture_cache else None)
+        cache_hit = cache_digest is not None
+        if not cache_hit:
+            seed(path, args)
         if args.mode == 'legacy':
             with closing(sqlite3.connect(path)) as connection:
                 names = [name for (name,) in connection.execute(
@@ -752,7 +872,11 @@ if __name__ == '__main__':
                 connection.commit()
         register_fixture_verifier(path)
         try:
-            asyncio.run(enrich_mixed_fixture(path, args))
+            if not cache_hit:
+                asyncio.run(enrich_mixed_fixture(path, args))
+                if args.fixture_cache:
+                    cache_digest = _save_fixture_cache(path, args.fixture_cache,
+                        cache_identity)
             result = asyncio.run(run(path, args))
             if args.mode == 'persisted':
                 try:
@@ -763,6 +887,8 @@ if __name__ == '__main__':
         finally:
             reset_test_evidence_write_verifier_for_tests()
         result['fixture_seed'] = f'readiness-deterministic-v3-{args.fixture_profile}'
+        result['fixture_cache_hit'] = cache_hit
+        result['fixture_cache_sha256'] = cache_digest
         if result['fixture_audit'] is None:
             result['fixture_audit'] = audit_fixture(path, args)
         result['seed_sha256'] = sha256(Path(seed.__code__.co_filename).read_bytes()).hexdigest()
