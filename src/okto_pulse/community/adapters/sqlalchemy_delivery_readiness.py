@@ -253,11 +253,13 @@ class _BatchFacts(CommunityDeliveryEvidenceStore):
         return super()._with_effective_context(snapshot, plan, records, spec,
             native_verification=native_verification)
 
-    async def snapshot(self):
+    async def snapshot(self, *, phase_metrics=None):
         spec = self.spec
         scope = DeliveryScope(spec.board_id, spec.id, int(spec.edition))
+        phase_started = perf_counter()
         plan = await self._execution_plan(spec)
         native = native_verification_population(spec)
+        plan_ms = (perf_counter() - phase_started) * 1000
         if not plan.inventory.population_complete:
             return self._with_effective_context(DeliveryEvidenceSnapshot(scope, (), complete=False,
                 facts_complete=False), plan, (), spec, native_verification=native)
@@ -267,6 +269,7 @@ class _BatchFacts(CommunityDeliveryEvidenceStore):
         implementations, tests, rejections = [], [], []
         complete = facts_complete = True
         active_cards = [c for c in self.rows[Card] if not c.archived]
+        phase_started = perf_counter()
         for card in active_cards:
             part = await self.load_card_snapshot(CardDeliveryScope(scope.board_id, card.id,
                 scope.spec_id, scope.edition), plan=plan, records=self.card_records[card.id],
@@ -276,15 +279,27 @@ class _BatchFacts(CommunityDeliveryEvidenceStore):
             rejections.extend(part.rejected_records)
             complete = complete and part.complete is True
             facts_complete = facts_complete and part.facts_complete is True
+        cards_ms = (perf_counter() - phase_started) * 1000
+        phase_started = perf_counter()
         result = DeliveryEvidenceSnapshot(scope, self.obligations, tuple(implementations), tuple(tests),
             tuple(await self._rollup_waivers(scope)), complete=complete,
             rejected_records=tuple(rejections), facts_complete=facts_complete)
         result = self._with_effective_context(result, plan, self.rows[CardRecord], spec, native_verification=native)
+        context_ms = (perf_counter() - phase_started) * 1000
+        phase_started = perf_counter()
         if result.effective_context and any(r.decision_plan and r.decision_plan.complete
                 and r.decision_plan.verification.inspection for r in result.effective_context.inventory.rows):
             _, states, _, _, _ = await CommunityDecisionReviews(self).material(spec, result,
                 sources=(self.rows[Board][0], self.rows[Record], self.rows[SpecHistory], active_cards))
             result = replace(result, effective_context=replace(result.effective_context, decision_inspections=states))
+        if phase_metrics is not None:
+            phase_metrics.update({
+                'readiness_materialize_facts_plan_ms': plan_ms,
+                'readiness_materialize_facts_cards_ms': cards_ms,
+                'readiness_materialize_facts_context_ms': context_ms,
+                'readiness_materialize_facts_decisions_ms':
+                    (perf_counter() - phase_started) * 1000,
+            })
         return result
 
 
@@ -488,15 +503,21 @@ class CommunityDeliveryReadinessReader:
             return rows
         return await self._snapshot_from_rows(rows)
 
-    async def _snapshot_from_rows(self, rows):
+    async def _snapshot_from_rows(self, rows, *, phase_metrics=None):
         """Build facts from an immutable row set; no database call is allowed."""
         spec = rows[Spec][0]
-        facts = await _BatchFacts(None, rows, inventory=self.inventory).snapshot()
+        phase_started = perf_counter()
+        facts_phases = {}
+        facts = await _BatchFacts(None, rows, inventory=self.inventory).snapshot(
+            phase_metrics=facts_phases)
+        facts_ms = (perf_counter() - phase_started) * 1000
+        phase_started = perf_counter()
         # Hash actual content as well as identities. No mutable ORM objects,
         # raw ledger payloads, credentials or full Board configuration escape.
         identity_values = {model.__tablename__: tuple((r.id,
             {c.key: getattr(r, c.key) for c in model.__table__.columns}) for r in values)
             for model, values in rows.items()}
+        identity_rows_ms = (perf_counter() - phase_started) * 1000
         def calculate_identity():
             # One canonical serialization retains every column while avoiding
             # thousands of separate JSON encodes and intermediate row hashes.
@@ -506,7 +527,9 @@ class CommunityDeliveryReadinessReader:
                 'fingerprint_version': FINGERPRINT_VERSION,
                 'evaluator_version': EVALUATOR_VERSION,
                 'inputs': identities, 'effective_facts': facts})
+        phase_started = perf_counter()
         identity = calculate_identity()
+        identity_digest_ms = (perf_counter() - phase_started) * 1000
         evaluated_at = self.clock.now()
         if evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None:
             raise ReadinessReadError('readiness_assessment_unavailable', native_code='readiness_clock_timezone_required')
@@ -517,6 +540,13 @@ class CommunityDeliveryReadinessReader:
             ('title', 'verification_method', 'given', 'when', 'then', 'notes')),
             tuple(v for v in (s.get('linked_criteria') or ()) if isinstance(v, str)))
             for s in spec.test_scenarios if isinstance(s, dict) and isinstance(s.get('id'), str)) if isinstance(spec.test_scenarios, list) else ()
+        if phase_metrics is not None:
+            phase_metrics.update({
+                'readiness_materialize_facts_ms': facts_ms,
+                'readiness_materialize_identity_rows_ms': identity_rows_ms,
+                'readiness_materialize_identity_digest_ms': identity_digest_ms,
+                **facts_phases,
+            })
         return ReadinessSnapshot(facts, identity, evaluated_at.astimezone(timezone.utc), int(spec.version), spec.status.value,
             tuple(ReadinessCard(c.id, c.card_type, c.status, c.policy_version,
                 tuple(c.test_scenario_ids) if c.test_scenario_ids is not None else None, c.assignee_id)
@@ -621,12 +651,14 @@ class CommunityDeliveryReadinessReader:
                 rollback_ms = (perf_counter() - phase_started) * 1000
         read_rows_ms = (perf_counter() - started) * 1000 - checkout_ms
         materialize_started = perf_counter()
+        materialize_phases = {}
         if rows is None:
             snapshot = overflow
         else:
             import asyncio
             snapshot = await blocking_execution.run(
-                lambda: asyncio.run(self._snapshot_from_rows(rows)))
+                lambda: asyncio.run(self._snapshot_from_rows(rows,
+                    phase_metrics=materialize_phases)))
         metrics = {
             'readiness_checkout_ms': checkout_ms,
             'readiness_begin_ms': begin_ms,
@@ -636,6 +668,7 @@ class CommunityDeliveryReadinessReader:
             'readiness_query_ms': counts['query_ms'],
             'readiness_read_rows_ms': read_rows_ms,
             'readiness_materialize_ms': (perf_counter() - materialize_started) * 1000,
+            **materialize_phases,
         }
         logger.debug('readiness.projection_snapshot_phases', extra=metrics)
         if phase_metrics is not None:

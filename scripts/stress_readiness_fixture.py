@@ -191,6 +191,12 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         'snapshot_checkout': [], 'snapshot_begin': [], 'snapshot_scope': [],
         'snapshot_source': [], 'snapshot_rollback': [],
         'snapshot_rows': [], 'snapshot_materialize': [],
+        'snapshot_materialize_facts': [], 'snapshot_materialize_identity_rows': [],
+        'snapshot_materialize_identity_digest': [],
+        'snapshot_materialize_facts_plan': [],
+        'snapshot_materialize_facts_cards': [],
+        'snapshot_materialize_facts_context': [],
+        'snapshot_materialize_facts_decisions': [],
         'stage_metadata': [], 'stage_pack': [], 'stage_heartbeat': [],
         'stage_insert': [], 'stage_verify': [],
         'stage_verify_read': [], 'stage_verify_decode': [],
@@ -222,6 +228,14 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 publish_phases_ms['snapshot_rollback'].append(record.readiness_rollback_ms)
                 publish_phases_ms['snapshot_rows'].append(record.readiness_read_rows_ms)
                 publish_phases_ms['snapshot_materialize'].append(record.readiness_materialize_ms)
+                for name in ('facts', 'identity_rows', 'identity_digest'):
+                    value = getattr(record, f'readiness_materialize_{name}_ms', None)
+                    if value is not None:
+                        publish_phases_ms[f'snapshot_materialize_{name}'].append(value)
+                for name in ('plan', 'cards', 'context', 'decisions'):
+                    value = getattr(record, f'readiness_materialize_facts_{name}_ms', None)
+                    if value is not None:
+                        publish_phases_ms[f'snapshot_materialize_facts_{name}'].append(value)
                 for table, elapsed in record.readiness_query_ms.items():
                     publish_phases_ms.setdefault(f'snapshot_query_{table}', []).append(elapsed)
             elif record.msg == 'readiness.stage_phases':
