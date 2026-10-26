@@ -54,6 +54,7 @@ MAX_HISTORY = 10000
 MAX_FACTS = 20000
 MAX_PROJECTION_RECORD_CACHE_ROWS = 25000
 MAX_PROJECTION_RECORD_CACHE_SCOPE_ROWS = 5000
+MAX_PROJECTION_CARD_PARTS_PER_SCOPE = 200
 FINGERPRINT_VERSION = 'delivery-readiness-snapshot/v2'
 
 
@@ -176,7 +177,8 @@ def _resolve_persisted_policy(*, actor, board_id, realm_id, owner_id, share,
 
 class _BatchFacts(CommunityDeliveryEvidenceStore):
     """Only storage access is replaced; admission/selection rules are inherited."""
-    def __init__(self, session, rows, *, inventory=None, cached_plan=None):
+    def __init__(self, session, rows, *, inventory=None, cached_plan=None,
+                 changed_card_ids=()):
         super().__init__(session, inventory=inventory)
         self.rows = rows
         self.index = {model: {r.id: r for r in values} for model, values in rows.items()}
@@ -199,6 +201,8 @@ class _BatchFacts(CommunityDeliveryEvidenceStore):
         self.plan = None
         self.cached_plan = cached_plan
         self.native = None
+        self.changed_card_ids = frozenset(changed_card_ids)
+        self.card_parts = {}
 
     async def lock_scope(self, scope):
         raise RuntimeError('readiness_write_forbidden')
@@ -296,11 +300,22 @@ class _BatchFacts(CommunityDeliveryEvidenceStore):
         implementations, tests, rejections = [], [], []
         complete = facts_complete = True
         active_cards = [c for c in self.rows[Card] if not c.archived]
+        retain_parts = len(active_cards) <= MAX_PROJECTION_CARD_PARTS_PER_SCOPE
+        cached_parts = (self.cached_plan[5] if retain_parts and self.cached_plan is not None
+            and len(self.cached_plan) > 5 else {})
+        reused_parts = 0
         phase_started = perf_counter()
         for card in active_cards:
-            part = await self.load_card_snapshot(CardDeliveryScope(scope.board_id, card.id,
-                scope.spec_id, scope.edition), plan=plan, records=self.card_records[card.id],
-                native_verification=native, native_runs=native_runs)
+            part = (cached_parts.get(card.id) if card.id not in self.changed_card_ids
+                else None)
+            if part is None:
+                part = await self.load_card_snapshot(CardDeliveryScope(scope.board_id, card.id,
+                    scope.spec_id, scope.edition), plan=plan, records=self.card_records[card.id],
+                    native_verification=native, native_runs=native_runs)
+            else:
+                reused_parts += 1
+            if retain_parts:
+                self.card_parts[card.id] = part
             implementations.extend(part.implementations)
             tests.extend(part.tests)
             rejections.extend(part.rejected_records)
@@ -323,6 +338,7 @@ class _BatchFacts(CommunityDeliveryEvidenceStore):
             phase_metrics.update({
                 'readiness_materialize_facts_plan_ms': plan_ms,
                 'readiness_materialize_facts_cards_ms': cards_ms,
+                'readiness_materialize_facts_card_parts_reused': float(reused_parts),
                 'readiness_materialize_facts_context_ms': context_ms,
                 'readiness_materialize_facts_decisions_ms':
                     (perf_counter() - phase_started) * 1000,
@@ -624,12 +640,14 @@ class CommunityDeliveryReadinessReader:
         return await self._snapshot_from_rows(rows)
 
     async def _snapshot_from_rows(self, rows, *, phase_metrics=None,
-                                  cached_plan=None, return_plan=False):
+                                  cached_plan=None, changed_card_ids=(),
+                                  return_plan=False):
         """Build facts from an immutable row set; no database call is allowed."""
         spec = rows[Spec][0]
         phase_started = perf_counter()
         facts_phases = {}
-        batch = _BatchFacts(None, rows, inventory=self.inventory, cached_plan=cached_plan)
+        batch = _BatchFacts(None, rows, inventory=self.inventory, cached_plan=cached_plan,
+            changed_card_ids=changed_card_ids)
         facts = await batch.snapshot(
             phase_metrics=facts_phases)
         facts_ms = (perf_counter() - phase_started) * 1000
@@ -678,7 +696,7 @@ class CommunityDeliveryReadinessReader:
             skip_delivery_evidence=spec.skip_delivery_evidence is True)
         if return_plan:
             return result, (batch.plan, batch.names, batch.obligations,
-                batch.by_card, batch.native)
+                batch.by_card, batch.native, batch.card_parts)
         return result
 
     async def load(self, *, board_id, spec_id, card_id=None, actor=None):
@@ -836,6 +854,7 @@ class CommunityDeliveryReadinessReader:
             snapshot, plan = await blocking_execution.run(
                 lambda: asyncio.run(self._snapshot_from_rows(rows,
                     phase_metrics=materialize_phases, cached_plan=cached_plan,
+                    changed_card_ids=progress_counts or (),
                     return_plan=True)))
             self._projection_plan_cache[cache_key] = (captured_revision, plan)
             self._projection_plan_cache.move_to_end(cache_key)
