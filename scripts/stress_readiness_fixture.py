@@ -113,6 +113,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
     measuring = args.warmup_seconds == 0
     read_phases_ms: dict[str, list[float]] = {
         'checkout': [], 'auth_before': [], 'projection': [], 'auth_after': [],
+        'store_db': [], 'store_decode': [],
+        'identity': [], 'presets': [], 'policy': [],
     }
     publish_phases_ms: dict[str, list[float]] = {
         'snapshot': [], 'compute': [], 'stage': [], 'publish': [],
@@ -130,6 +132,13 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 read_phases_ms['auth_before'].append(record.readiness_auth_before_ms)
                 read_phases_ms['projection'].append(record.readiness_projection_ms)
                 read_phases_ms['auth_after'].append(record.readiness_auth_after_ms)
+            elif record.msg == 'readiness.persisted_store_phases':
+                read_phases_ms['store_db'].append(record.readiness_store_db_ms)
+                read_phases_ms['store_decode'].append(record.readiness_store_decode_ms)
+            elif record.msg == 'readiness.access_phases':
+                read_phases_ms['identity'].append(record.readiness_identity_ms)
+                read_phases_ms['presets'].append(record.readiness_presets_ms)
+                read_phases_ms['policy'].append(record.readiness_policy_ms)
             elif record.msg == 'readiness.projection_snapshot_phases':
                 publish_phases_ms['snapshot_checkout'].append(record.readiness_checkout_ms)
                 publish_phases_ms['snapshot_rows'].append(record.readiness_read_rows_ms)
@@ -162,6 +171,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
     worker_publications = 0
     burst_elapsed_ms = None
     rss_bytes, pool_checkouts, blocking_tasks, wal_samples = [], [], [], []
+    resource_sample_ms: list[float] = []
     event_loop_lag_ms: list[float] = []
     cpu_start = process_time()
 
@@ -351,22 +361,30 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         async def resource_loop():
             process = psutil.Process()
             wal = path.with_name(path.name + '-wal')
+
+            def sample_filesystem_and_processes():
+                child_rss = 0
+                for child in process.children(recursive=True):
+                    try:
+                        child_rss += child.memory_info().rss
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                return (process.memory_info().rss + child_rss,
+                    wal.stat().st_size if wal.exists() else 0)
+
             while not stop_load.is_set():
                 deadline = monotonic() + .5
                 await asyncio.sleep(max(0, deadline - monotonic()))
                 if measuring:
                     event_loop_lag_ms.append(max(0, (monotonic() - deadline) * 1000))
-                    child_rss = 0
-                    for child in process.children(recursive=True):
-                        try:
-                            child_rss += child.memory_info().rss
-                        except (psutil.NoSuchProcess, psutil.AccessDenied):
-                            pass
-                    rss_bytes.append(process.memory_info().rss + child_rss)
+                    sample_started = perf_counter()
+                    rss, wal_size = await asyncio.to_thread(sample_filesystem_and_processes)
+                    resource_sample_ms.append((perf_counter() - sample_started) * 1000)
+                    rss_bytes.append(rss)
                     pool_checkouts.append(engine.sync_engine.pool.checkedout())
                     blocking_tasks.append(sum(item.blocking_execution.pending_count
                         for item in workers))
-                    wal_samples.append(wal.stat().st_size if wal.exists() else 0)
+                    wal_samples.append(wal_size)
 
         started_at = monotonic()
         projection_tasks = ([asyncio.create_task(projection_loop(item)) for item in workers]
@@ -455,6 +473,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 'pool_checked_out_max': max(pool_checkouts, default=0),
                 'blocking_tasks_max': max(blocking_tasks, default=0),
                 'wal_max_bytes': max(wal_samples, default=0),
+                'resource_sample_p95_ms': round(percentile(resource_sample_ms, .95), 3)
+                    if resource_sample_ms else None,
                 'event_loop_lag_p95_ms': round(percentile(event_loop_lag_ms, .95), 3)
                     if event_loop_lag_ms else None},
             'pool': engine.sync_engine.pool.status(),
@@ -479,6 +499,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 'burst_publish': [round(v, 3) for v in burst_lag_ms]},
             'resource_samples': {'rss_bytes': rss_bytes, 'pool_checkouts': pool_checkouts,
                 'blocking_tasks': blocking_tasks, 'wal_bytes': wal_samples,
+                'resource_sample_ms': [round(v, 3) for v in resource_sample_ms],
                 'event_loop_lag_ms': [round(v, 3) for v in event_loop_lag_ms]},
         }
     finally:

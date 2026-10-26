@@ -184,9 +184,12 @@ class CommunityPersistedReadinessStore:
                 error_code = header['job_error']
             finally:
                 await connection.rollback()
+        db_ms = (perf_counter() - started) * 1000
+        decode_started = perf_counter()
         summaries = tuple(json.loads(value) for value in summary_json)
         units = tuple(json.loads(value) for value in unit_json)
         diagnostics = json.loads(diagnostic_json) if diagnostic_json else None
+        decode_ms = (perf_counter() - decode_started) * 1000
         result = ProjectionRead(board_id, spec_id, edition, source_revision,
             generation_id, captured_revision, evaluated_at, freshness,
             error_code, summaries, units, unit_total, source_snapshot_id,
@@ -194,6 +197,10 @@ class CommunityPersistedReadinessStore:
         logger.debug("readiness.read board=%s spec=%s freshness=%s summaries=%d units=%d elapsed_ms=%.3f",
             board_id, spec_id, freshness, len(summaries), len(units),
             (perf_counter() - started) * 1000)
+        logger.debug('readiness.persisted_store_phases', extra={
+            'readiness_store_db_ms': db_ms,
+            'readiness_store_decode_ms': decode_ms,
+        })
         return result
 
     async def claim(self, *, owner: str) -> ReadinessClaim | None:

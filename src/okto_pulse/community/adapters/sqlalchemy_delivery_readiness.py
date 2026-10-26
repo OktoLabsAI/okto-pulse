@@ -354,6 +354,7 @@ class CommunityDeliveryReadinessReader:
             or actor.board_id is not None and actor.board_id != board_id):
             raise ReadinessReadError('readiness_scope_mismatch')
         realm_id = actor.realm_id or LOCAL_REALM_ID
+        identity_started = perf_counter()
         if actor.actor_kind == 'agent':
             identity = (await session.execute(select(
                 Board.owner_id, Board.realm_id, Agent.id.label('agent_id'),
@@ -387,6 +388,7 @@ class CommunityDeliveryReadinessReader:
             member = identity is not None and board_membership_allows_read(
                 owner_id=identity.owner_id, actor_id=actor.actor_id,
                 share_permission=share)
+        identity_done = perf_counter()
         if (identity is None or (identity.realm_id or LOCAL_REALM_ID) != realm_id
             or not member):
             raise ReadinessReadError('readiness_scope_mismatch')
@@ -399,13 +401,20 @@ class CommunityDeliveryReadinessReader:
             if len(presets) > 5000:
                 raise ReadinessReadError('readiness_limit_exceeded',
                     native_code='readiness_population_limit')
-        return _resolve_persisted_policy(actor=actor, board_id=board_id,
+        presets_done = perf_counter()
+        access = _resolve_persisted_policy(actor=actor, board_id=board_id,
             realm_id=realm_id, owner_id=identity.owner_id, share=share,
             agent_flags=identity.permission_flags if identity.agent_id is not None else None,
             preset_id=identity.preset_id if identity.agent_id is not None else None,
             presets=tuple(PermissionPresetLineageNode(p.id, p.flags, p.base_preset_id)
                 for p in presets),
             board_overrides=identity.permission_overrides if identity.agent_id is not None else None)
+        logger.debug('readiness.access_phases', extra={
+            'readiness_identity_ms': (identity_done - identity_started) * 1000,
+            'readiness_presets_ms': (presets_done - identity_done) * 1000,
+            'readiness_policy_ms': (perf_counter() - presets_done) * 1000,
+        })
+        return access
 
     async def _load_transaction(self, session, board_id, spec_id, card_id, counts,
                                 *, defer_facts=False):
@@ -589,7 +598,7 @@ class CommunityDeliveryReadinessReader:
             CommunityPersistedReadinessStore,
         )
 
-        async def authorize(connection):
+        async def authorize(connection, *, check_source_revision=False):
             await connection.exec_driver_sql('BEGIN')
             try:
                 async with AsyncSession(bind=connection, autoflush=False) as session:
@@ -611,7 +620,13 @@ class CommunityDeliveryReadinessReader:
                             Card.archived.is_(False)))).scalar_one_or_none()
                         if card_policy_version is None:
                             raise ReadinessReadError('readiness_scope_mismatch')
-                    return access, spec.edition, spec.version, card_policy_version
+                    source_revision = None
+                    if check_source_revision:
+                        source_revision = (await connection.exec_driver_sql(
+                            'SELECT source_revision FROM readiness_scope WHERE board_id=? '
+                            'AND spec_id=? AND edition=? AND tombstone=0 LIMIT 1',
+                            (board_id, spec_id, spec.edition))).scalar_one_or_none()
+                    return access, spec.edition, spec.version, card_policy_version, source_revision
             finally:
                 await connection.rollback()
 
@@ -652,10 +667,17 @@ class CommunityDeliveryReadinessReader:
                 projected_at = perf_counter()
                 current_version = (await authority_connection.exec_driver_sql(
                     'PRAGMA data_version')).scalar_one()
-                after = (before if current_version == observed_version
-                    else await authorize(authority_connection))
+                if current_version == observed_version:
+                    after = before
+                    stable_version = current_version
+                else:
+                    after = await authorize(authority_connection, check_source_revision=True)
+                    stable_version = (await authority_connection.exec_driver_sql(
+                        'PRAGMA data_version')).scalar_one()
                 reauthorized_at = perf_counter()
-            if before == after:
+            same_source = (current_version == observed_version
+                or (after[4] == (projection.source_revision if projection else None)))
+            if before[:4] == after[:4] and same_source and stable_version == current_version:
                 logger.debug('readiness.persisted_read_phases', extra={
                     'readiness_checkout_ms': checkout_ms,
                     'readiness_auth_before_ms': (authorized_at - started) * 1000,
