@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 from time import perf_counter
+from types import SimpleNamespace
 
 from pydantic import BaseModel
 from sqlalchemy import and_, event, or_, select
@@ -285,11 +286,27 @@ class CommunityDeliveryReadinessReader:
         self.engine, self.clock, self.inventory = engine, clock, inventory
 
     async def _rows(self, session, statement, limit, counts):
+        started = perf_counter() if 'query_ms' in counts else None
         rows = tuple((await session.scalars(statement.limit(limit + 1))).all())
+        if started is not None:
+            entity = statement.column_descriptions[0].get('entity')
+            name = entity.__tablename__ if entity is not None else 'unknown'
+            counts['query_ms'][name] = (perf_counter() - started) * 1000
         if len(rows) > limit:
             raise ReadinessReadError('readiness_limit_exceeded', native_code='readiness_population_limit')
         counts['facts'] += len(rows)
         return rows
+
+    async def _projection_record_rows(self, session, statement, limit, counts):
+        """Keep the projection's large ledger batch out of the ORM identity map."""
+        started = perf_counter()
+        values = (await session.execute(statement.limit(limit + 1))).all()
+        if 'query_ms' in counts:
+            counts['query_ms'][CardRecord.__tablename__] = (perf_counter() - started) * 1000
+        if len(values) > limit:
+            raise ReadinessReadError('readiness_limit_exceeded', native_code='readiness_population_limit')
+        counts['facts'] += len(values)
+        return tuple(SimpleNamespace(**row._mapping) for row in values)
 
     async def _access(self, session, actor, board_id, counts):
         """Load native identity/ACL/preset facts before reading delivery content."""
@@ -431,9 +448,18 @@ class CommunityDeliveryReadinessReader:
         rows[Card] = await self._rows(session, select(Card).where(Card.id.in_(cards)).order_by(Card.id), MAX_CARDS, counts)
         if card_id is not None and not any(c.id == card_id and not c.archived for c in rows[Card]):
             raise ReadinessReadError('readiness_scope_mismatch')
-        rows[CardRecord] = await self._rows(session, select(CardRecord).where(CardRecord.board_id == board_id,
+        record_filter = (CardRecord.board_id == board_id,
             CardRecord.spec_id == spec_id, CardRecord.spec_edition == spec.edition,
-            CardRecord.card_id.in_(cards)).order_by(CardRecord.created_at, CardRecord.id), MAX_FACTS, counts)
+            CardRecord.card_id.in_(cards))
+        record_order = (CardRecord.created_at, CardRecord.id)
+        if defer_facts:
+            rows[CardRecord] = await self._projection_record_rows(session,
+                select(*CardRecord.__table__.columns).where(*record_filter)
+                .order_by(*record_order), MAX_FACTS, counts)
+        else:
+            rows[CardRecord] = await self._rows(session,
+                select(CardRecord).where(*record_filter).order_by(*record_order),
+                MAX_FACTS, counts)
         rows[Record] = await self._rows(session, select(Record).where(Record.board_id == board_id,
             Record.spec_id == spec_id).order_by(Record.created_at, Record.id), MAX_HISTORY, counts)
         rows[SpecHistory] = await self._rows(session, select(SpecHistory).where(SpecHistory.spec_id == spec_id)
@@ -534,7 +560,8 @@ class CommunityDeliveryReadinessReader:
             logger.debug('readiness_batch_read elapsed_ms=%.3f queries=%d facts=%d',
                 (perf_counter() - started) * 1000, counts['queries'], counts['facts'])
 
-    async def load_for_projection(self, *, board_id, spec_id, blocking_execution):
+    async def load_for_projection(self, *, board_id, spec_id, blocking_execution,
+                                  phase_metrics=None):
         """Capture one source revision and immutable facts without actor state.
 
         The worker releases this connection before calling the CPU evaluator.
@@ -543,12 +570,15 @@ class CommunityDeliveryReadinessReader:
         """
         from okto_pulse.community.adapters.sqlalchemy_models import ReadinessScopeRow
 
-        counts = {'queries': 0, 'facts': 0}
+        counts = {'queries': 0, 'facts': 0, 'query_ms': {}}
         started = perf_counter()
         async with self.engine.connect() as connection:
             checkout_ms = (perf_counter() - started) * 1000
+            phase_started = perf_counter()
             await connection.exec_driver_sql('BEGIN')
+            begin_ms = (perf_counter() - phase_started) * 1000
             try:
+                phase_started = perf_counter()
                 async with AsyncSession(bind=connection, autoflush=False, expire_on_commit=False) as session:
                     scope = (await session.scalars(select(ReadinessScopeRow).where(
                         ReadinessScopeRow.board_id == board_id,
@@ -557,6 +587,8 @@ class CommunityDeliveryReadinessReader:
                         ReadinessScopeRow.edition.desc()).limit(1))).first()
                     if scope is None:
                         raise ReadinessReadError('readiness_scope_mismatch')
+                    scope_ms = (perf_counter() - phase_started) * 1000
+                    phase_started = perf_counter()
                     try:
                         rows = await self._load_transaction(
                             session, board_id, spec_id, None, counts, defer_facts=True)
@@ -567,8 +599,11 @@ class CommunityDeliveryReadinessReader:
                         overflow = await self._capacity_snapshot(session, board_id, spec_id, None, counts, exc)
                     captured_revision = scope.source_revision
                     edition = scope.edition
+                    source_ms = (perf_counter() - phase_started) * 1000
             finally:
+                phase_started = perf_counter()
                 await connection.rollback()
+                rollback_ms = (perf_counter() - phase_started) * 1000
         read_rows_ms = (perf_counter() - started) * 1000 - checkout_ms
         materialize_started = perf_counter()
         if rows is None:
@@ -577,11 +612,19 @@ class CommunityDeliveryReadinessReader:
             import asyncio
             snapshot = await blocking_execution.run(
                 lambda: asyncio.run(self._snapshot_from_rows(rows)))
-        logger.debug('readiness.projection_snapshot_phases', extra={
+        metrics = {
             'readiness_checkout_ms': checkout_ms,
+            'readiness_begin_ms': begin_ms,
+            'readiness_scope_ms': scope_ms,
+            'readiness_source_ms': source_ms,
+            'readiness_rollback_ms': rollback_ms,
+            'readiness_query_ms': counts['query_ms'],
             'readiness_read_rows_ms': read_rows_ms,
             'readiness_materialize_ms': (perf_counter() - materialize_started) * 1000,
-        })
+        }
+        logger.debug('readiness.projection_snapshot_phases', extra=metrics)
+        if phase_metrics is not None:
+            phase_metrics.update(metrics)
         if snapshot.facts.scope.edition != edition:
             raise ReadinessReadError('readiness_snapshot_changed')
         return snapshot, captured_revision

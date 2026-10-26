@@ -63,10 +63,11 @@ def _project_and_stage_from_database(database_path, claim, deadline):
         reader = CommunityDeliveryReadinessReader(engine,
             clock=CommunityReadinessClock())
         store = CommunityPersistedReadinessStore(engine)
+        snapshot_phases = {}
         started = monotonic()
         snapshot, revision = await reader.load_for_projection(
             board_id=claim.board_id, spec_id=claim.spec_id,
-            blocking_execution=TrackedBlockingExecution())
+            blocking_execution=TrackedBlockingExecution(), phase_metrics=snapshot_phases)
         snapshot_ms = (monotonic() - started) * 1000
         if revision < 0:
             raise ValueError("readiness_revision_invalid")
@@ -80,7 +81,8 @@ def _project_and_stage_from_database(database_path, claim, deadline):
         started = monotonic()
         generation_id = await store.stage(claim, generation, phase_metrics=phases)
         stage_ms = (monotonic() - started) * 1000
-        return generation_id, revision, len(generation.units), snapshot_ms, compute_ms, stage_ms, phases
+        return (generation_id, revision, len(generation.units), snapshot_ms,
+            compute_ms, stage_ms, snapshot_phases, phases)
 
     return runner.run(project_and_stage())
 
@@ -209,10 +211,11 @@ class ReadinessProjectionProcessor:
                         str(self.database_path), claim,
                         snapshot_started + 30)
                     (generation_id, captured_revision, unit_count, snapshot_ms,
-                        compute_ms, child_stage_ms, phases) = await asyncio.shield(future)
+                        compute_ms, child_stage_ms, snapshot_phases, phases) = await asyncio.shield(future)
                     process_completed = True
                     stage_ms = max(child_stage_ms,
                         (monotonic() - snapshot_started) * 1000 - snapshot_ms - compute_ms)
+                    logger.debug('readiness.projection_snapshot_phases', extra=snapshot_phases)
                     logger.debug('readiness.stage_phases', extra=phases)
                 except BrokenProcessPool:
                     # The durable claim survives child failure. Continue in the

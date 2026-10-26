@@ -118,7 +118,9 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
     }
     publish_phases_ms: dict[str, list[float]] = {
         'snapshot': [], 'compute': [], 'stage': [], 'publish': [],
-        'snapshot_checkout': [], 'snapshot_rows': [], 'snapshot_materialize': [],
+        'snapshot_checkout': [], 'snapshot_begin': [], 'snapshot_scope': [],
+        'snapshot_source': [], 'snapshot_rollback': [],
+        'snapshot_rows': [], 'snapshot_materialize': [],
         'stage_metadata': [], 'stage_pack': [], 'stage_heartbeat': [],
         'stage_insert': [], 'stage_verify': [],
     }
@@ -141,8 +143,14 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 read_phases_ms['policy'].append(record.readiness_policy_ms)
             elif record.msg == 'readiness.projection_snapshot_phases':
                 publish_phases_ms['snapshot_checkout'].append(record.readiness_checkout_ms)
+                publish_phases_ms['snapshot_begin'].append(record.readiness_begin_ms)
+                publish_phases_ms['snapshot_scope'].append(record.readiness_scope_ms)
+                publish_phases_ms['snapshot_source'].append(record.readiness_source_ms)
+                publish_phases_ms['snapshot_rollback'].append(record.readiness_rollback_ms)
                 publish_phases_ms['snapshot_rows'].append(record.readiness_read_rows_ms)
                 publish_phases_ms['snapshot_materialize'].append(record.readiness_materialize_ms)
+                for table, elapsed in record.readiness_query_ms.items():
+                    publish_phases_ms.setdefault(f'snapshot_query_{table}', []).append(elapsed)
             elif record.msg == 'readiness.stage_phases':
                 for key in ('metadata', 'pack', 'heartbeat', 'insert', 'verify'):
                     publish_phases_ms[f'stage_{key}'].append(

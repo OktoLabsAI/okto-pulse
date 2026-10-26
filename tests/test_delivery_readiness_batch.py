@@ -13,6 +13,7 @@ from test_delivery_readiness_verification import prepare_reports
 from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import CommunityDeliveryReadinessReader
 from okto_pulse.community.adapters.sqlalchemy_models import Board, Card, Spec
 from okto_pulse.community.adapters.sqlalchemy_code_traceability import CommunitySqlAlchemyCodeTraceabilityStore
+from okto_pulse.community.adapters.worker_runners import TrackedBlockingExecution
 from okto_pulse.core.domain.delivery_assessment import assess_obligation_delivery, aggregate_delivery_metrics
 from okto_pulse.core.domain.enums import CardType
 from okto_pulse.core.ports.delivery_readiness import ReadinessReadError
@@ -60,6 +61,11 @@ async def test_batch_matches_native_facts_including_unbound_negative_results(led
     with statements(session.bind) as sql:
         actual = await read(reader(session), card_id='task')
     assert actual.facts == expected
+    projected, _revision = await reader(session).load_for_projection(
+        board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID,
+        blocking_execution=TrackedBlockingExecution())
+    assert projected.facts == actual.facts
+    assert projected.snapshot_id == actual.snapshot_id
     assert actual.spec_status == 'in_progress'
     assert actual.facts.effective_context.native_verification.runs[0].outcome == outcome
     assert actual.scenarios[0].given == 'The delivered revision'
