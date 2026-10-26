@@ -4,6 +4,8 @@ from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +18,12 @@ from okto_pulse.community.adapters.readiness_schema_upgrade import (
     PREDECESSOR_SHA256, PREDECESSOR_VERSION, READINESS_V401_SHA256,
     READINESS_V401_VERSION, READINESS_V402_SHA256, READINESS_V402_VERSION,
     _fingerprint, upgrade_readiness_schema,
+)
+from okto_pulse.community.adapters.readiness_invalidation_schema import (
+    readiness_trigger_statements,
+)
+from okto_pulse.community.adapters.readiness_rollback_assessment import (
+    assess_readiness_rollback, source_inventory,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
     GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION, GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION,
@@ -235,3 +243,120 @@ def test_v402_upgrade_replaces_only_readiness_triggers(tmp_path):
     with closing(sqlite3.connect(path)) as current, closing(sqlite3.connect(backup)) as old:
         assert _fingerprint(old) == READINESS_V402_SHA256
         assert inspect_current_schema(current.cursor(), current_schema_contract()) is False
+
+
+@pytest.mark.parametrize("trigger_index", [0, -1])
+def test_v401_partial_trigger_ddl_failure_restores_exact_predecessor(
+    tmp_path, monkeypatch, trigger_index,
+):
+    path = tmp_path / "pulse.sqlite3"
+    _v401_predecessor(path)
+    with closing(sqlite3.connect(path)) as source:
+        source_before = source_inventory(source)
+    statements = readiness_trigger_statements()
+    stop_at = trigger_index % len(statements)
+
+    def fail_during_trigger_install(connection):
+        for index, statement in enumerate(statements):
+            connection.exec_driver_sql(statement)
+            if index == stop_at:
+                raise RuntimeError("injected_partial_trigger_ddl")
+
+    monkeypatch.setattr(
+        "okto_pulse.community.adapters.readiness_schema_upgrade."
+        "install_readiness_invalidation_triggers", fail_during_trigger_install,
+    )
+    with pytest.raises(RuntimeError, match="injected_partial_trigger_ddl"):
+        upgrade_readiness_schema(path)
+    with closing(sqlite3.connect(path)) as source:
+        assert source.execute("PRAGMA user_version").fetchone()[0] == READINESS_V401_VERSION
+        assert _fingerprint(source) == READINESS_V401_SHA256
+        assert source_inventory(source) == source_before
+        assert source.execute("PRAGMA quick_check(1)").fetchone() == ("ok",)
+        assert source.execute("PRAGMA foreign_key_check").fetchone() is None
+    backups = list(tmp_path.glob("*.bak"))
+    assert len(backups) == 1
+    with closing(sqlite3.connect(backups[0])) as preserved:
+        assert _fingerprint(preserved) == READINESS_V401_SHA256
+        assert source_inventory(preserved) == source_before
+
+
+def test_rollback_assessment_refuses_source_writes_and_revision_advance(tmp_path):
+    path = tmp_path / "pulse.sqlite3"
+    _v401_predecessor(path)
+    with closing(sqlite3.connect(path)) as source:
+        source.execute("INSERT INTO boards (id,name,owner_id,realm_id) "
+                       "VALUES ('board','Board','owner','local')")
+        source.execute("INSERT INTO specs "
+                       "(id,board_id,title,status,version,created_by,architecture_adoption) "
+                       "VALUES ('spec','board','Spec','in_progress',1,'owner','{}')")
+        source.commit()
+    backup = upgrade_readiness_schema(path)
+    pristine = assess_readiness_rollback(path, backup)
+    assert pristine["restore_allowed_without_preservation_plan"] is True
+    assert pristine["changed_source_tables"] == []
+    command = [sys.executable, str(Path(__file__).parents[1] / "scripts" /
+        "check_readiness_rollback.py"), str(path), str(backup)]
+    permitted = subprocess.run(command, capture_output=True, text=True, timeout=60)
+    assert permitted.returncode == 0, permitted.stderr
+    assert json.loads(permitted.stdout)["restore_allowed_without_preservation_plan"] is True
+
+    with closing(sqlite3.connect(path)) as source:
+        source.execute("INSERT INTO app_settings (key,value) "
+                       "VALUES ('post_upgrade_report','durable')")
+        source.commit()
+    changed = assess_readiness_rollback(path, backup)
+    assert changed["restore_allowed_without_preservation_plan"] is False
+    assert "app_settings" in changed["changed_source_tables"]
+    refused = subprocess.run(command, capture_output=True, text=True, timeout=60)
+    assert refused.returncode == 2, refused.stderr
+    assert json.loads(refused.stdout)["restore_allowed_without_preservation_plan"] is False
+
+    with closing(sqlite3.connect(path)) as source:
+        source.execute("DELETE FROM app_settings WHERE key='post_upgrade_report'")
+        source.execute("UPDATE readiness_scope SET source_revision=source_revision+1 "
+                       "WHERE spec_id='spec'")
+        source.commit()
+    reverted = assess_readiness_rollback(path, backup)
+    assert reverted["restore_allowed_without_preservation_plan"] is False
+    assert "global_discovery_source_revision" in reverted["changed_source_tables"]
+    assert reverted["advanced_existing_scopes"] == ["spec:1"]
+
+
+def test_rollback_assessment_refuses_revision_advance_with_identical_source(tmp_path):
+    path = tmp_path / "pulse.sqlite3"
+    _v401_predecessor(path)
+    with closing(sqlite3.connect(path)) as source:
+        source.execute("INSERT INTO boards (id,name,owner_id,realm_id) "
+                       "VALUES ('board','Board','owner','local')")
+        source.execute("INSERT INTO specs "
+                       "(id,board_id,title,status,version,created_by,architecture_adoption) "
+                       "VALUES ('spec','board','Spec','in_progress',1,'owner','{}')")
+        source.commit()
+    backup = upgrade_readiness_schema(path)
+    with closing(sqlite3.connect(path)) as source:
+        source.execute("UPDATE readiness_scope SET source_revision=source_revision+1 "
+                       "WHERE spec_id='spec'")
+        source.commit()
+    assessed = assess_readiness_rollback(path, backup)
+    assert assessed["restore_allowed_without_preservation_plan"] is False
+    assert assessed["changed_source_tables"] == []
+    assert assessed["advanced_existing_scopes"] == ["spec:1"]
+
+
+def test_rollback_assessment_preserves_new_operation_audit(tmp_path):
+    path = tmp_path / "pulse.sqlite3"
+    _v401_predecessor(path)
+    backup = upgrade_readiness_schema(path)
+    with closing(sqlite3.connect(path)) as source:
+        source.execute("INSERT INTO readiness_operation_audit "
+                       "(id,scope_id,board_id,operation,actor_id,actor_kind,"
+                       "target_revision,created_at) VALUES "
+                       "('audit-new','spec:1','board','requeue_terminal','owner',"
+                       "'human',8,'2026-01-02 00:00:00')")
+        source.commit()
+    assessed = assess_readiness_rollback(path, backup)
+    assert assessed["restore_allowed_without_preservation_plan"] is False
+    assert assessed["changed_source_tables"] == []
+    assert assessed["advanced_existing_scopes"] == []
+    assert assessed["operation_audit_changed"] is True

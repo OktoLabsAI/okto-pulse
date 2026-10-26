@@ -15,6 +15,7 @@ Estado: revisão antes da janela de migração. Este documento descreve uma oper
 2. Executar `python scripts/validate_readiness_upgrade.py <caminho-absoluto-do-pulse.db>` a partir do checkout Community que será instalado. O script usa `sqlite3.Connection.backup()` para copiar a fonte em modo leitura, migra apenas a cópia temporária e compara hash e contagem de cada tabela de fonte antes/depois e no backup retido.
 3. Exigir `source_unchanged=true`, `backup_verified=true`, `upgraded_schema_version=403`, `quick_check=ok` e `foreign_key_check` vazio. Se falhar, não iniciar a janela.
 4. Em banco descartável v403, iniciar somente o worker de readiness e observar reconciliação paginada, criação de `readiness_scope`/`readiness_job`, publicação de pelo menos uma geração e GET com `freshness=current`. Testar restart durante backfill e avanço da página seguinte; GET não deve criar job.
+5. Com o wheel anterior retido e seu SHA256 conhecido, executar `python scripts/verify_readiness_previous_binary.py <pulse.db-predecessor> <wheel-anterior.whl> <sha256>`. O script migra apenas uma cópia descartável e exige que o binário anterior recuse v403 sem alterar o banco ou seus sidecars.
 
 ## Janela de instalação
 
@@ -27,7 +28,8 @@ Estado: revisão antes da janela de migração. Este documento descreve uma oper
 
 ## Falha e retorno
 
-- Antes do primeiro write no schema novo, parar o serviço, preservar o banco falho para diagnóstico e restaurar o backup pré-upgrade verificado. Reinstalar o par de binários anterior; nunca iniciar binário antigo sobre schema v403 incompatível.
+- Com todos os escritores parados, executar `python scripts/check_readiness_rollback.py <pulse.db-v403> <backup-pre-upgrade.bak>` antes de qualquer restauração. O comando só lê os arquivos, exige predecessor e schema v403 exatos, verifica integridade e compara hashes de todas as tabelas de fonte, revisões de scopes preexistentes e o ledger de auditoria operacional. Exit 0 indica que não detectou writes autoritativos; exit 2 recusa restauração sem plano de preservação. O resultado não substitui a prova operacional de serviço parado nem detecta toda mutação externa que tenha sido integralmente revertida.
+- Antes do primeiro write no schema novo, após o preflight exit 0 e verificação do hash do backup retido, preservar o banco falho para diagnóstico e restaurar o backup pré-upgrade verificado. Reinstalar o par de binários anterior; nunca iniciar binário antigo sobre schema v403 incompatível.
 - Depois de qualquer write novo, não restaurar o backup antigo sobre o banco atual. Isso perderia reports, provas e alterações de Card/Spec. Preservar ambos, reconciliar o delta de fonte de forma auditável e só então decidir recuperação ou manter o novo binário em modo de leitura compatível. Não existe rollback automático seguro após writes novos.
 - Falha de um job não autoriza reabrir Done nem alterar provas. Corrigir a causa e usar o requeue autenticado, com `edition`, revisão alvo e auditoria; consultar o runbook `READINESS_PERSISTED_RECOVERY.md`.
 

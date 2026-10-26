@@ -629,6 +629,93 @@ async def test_reconcile_cursor_resumes_bounded_pages_after_restart(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_backfill_completes_all_scopes_with_reports_and_three_worker_restarts(tmp_path):
+    database = tmp_path / 'pulse.sqlite3'
+    engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
+    try:
+        await _seed_one_spec(engine)
+        rows = [(f'spec-{number:03d}', json.dumps({
+            'contract_version': 'spec-execution-contract/v1',
+            'board_id': 'board', 'spec_id': f'spec-{number:03d}',
+            'adopted_in_edition': 1, 'actor_id': 'owner', 'origin': 'new_spec',
+        })) for number in range(100)]
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(
+                "INSERT INTO specs (id,board_id,title,status,version,created_by,"
+                "architecture_adoption,execution_contract) "
+                "VALUES (?,'board','Spec','in_progress',1,'owner','{}',?)", rows)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        assert await worker.store.reconcile_once(limit=100) == 100
+        pending = await worker.store.read(board_id='board', spec_id='spec-050', edition=1)
+        assert pending is not None and pending.freshness == 'pending_initial'
+        assert pending.generation_id is None and pending.summaries == ()
+
+        # A restart resumes the persisted cursor rather than starting another
+        # full scan. The final scope is discovered in a second bounded page.
+        await engine.dispose()
+        engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        assert await worker.store.reconcile_once(limit=100) == 1
+        async with engine.connect() as connection:
+            assert (await connection.exec_driver_sql(
+                "SELECT count(*) FROM readiness_job")).scalar_one() == 101
+            assert (await connection.exec_driver_sql(
+                "SELECT count(DISTINCT scope_id) FROM readiness_job")).scalar_one() == 101
+
+        processed = 0
+        initial_attempts = 0
+        while processed < 25 and initial_attempts < 100:
+            processed += await worker.process_once()
+            initial_attempts += 1
+            if processed < 25:
+                await asyncio.sleep(0.06)
+        assert processed == 25
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(
+                "UPDATE specs SET title='Report during backfill' WHERE id='spec-050'")
+        await engine.dispose()
+        engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        attempts = 0
+        while attempts < 250:
+            processed += await worker.process_once()
+            attempts += 1
+            if attempts == 35:
+                await engine.dispose()
+                engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
+                worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+            if attempts % 10 == 0 or processed >= 101:
+                async with engine.connect() as connection:
+                    complete = (await connection.exec_driver_sql(
+                        "SELECT count(*) FROM readiness_scope s JOIN readiness_job j "
+                        "ON j.scope_id=s.id WHERE s.active_generation_id IS NOT NULL "
+                        "AND j.state='idle' AND j.requested_revision=s.source_revision"
+                    )).scalar_one()
+                if complete == 101:
+                    break
+            await asyncio.sleep(0.06)
+        assert processed >= 101
+        async with engine.connect() as connection:
+            rows = (await connection.exec_driver_sql(
+                "SELECT s.spec_id,s.source_revision,s.active_generation_id,"
+                "j.requested_revision,j.state FROM readiness_scope s "
+                "JOIN readiness_job j ON j.scope_id=s.id ORDER BY s.spec_id"
+            )).all()
+        assert len(rows) == 101
+        assert all(row.active_generation_id and row.state == 'idle' and
+                   row.requested_revision == row.source_revision for row in rows)
+        assert next(row for row in rows if row.spec_id == 'spec-050').source_revision >= 2
+        for row in rows:
+            visible = await worker.store.read(board_id='board', spec_id=row.spec_id, edition=1)
+            assert visible is not None and visible.freshness == 'current'
+            assert visible.generation_id == row.active_generation_id
+            assert visible.summaries[0]['implementation']['percent'] is None
+            assert visible.summaries[0]['verification']['percent'] is None
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_unrelated_board_commit_does_not_retry_projection_snapshot(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
     try:

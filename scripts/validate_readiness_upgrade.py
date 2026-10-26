@@ -9,9 +9,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import closing
-from hashlib import sha256
 import json
-import pickle
 from pathlib import Path
 import sqlite3
 import sys
@@ -21,31 +19,17 @@ WORKSPACE = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(WORKSPACE / 'okto-pulse' / 'src'),
                 str(WORKSPACE / 'okto-pulse-core' / 'src')]
 
-from okto_pulse.community.adapters.current_relational_schema import (
+from okto_pulse.community.adapters.current_relational_schema import (  # noqa: E402
     current_schema_contract, inspect_current_schema,
 )
-from okto_pulse.community.adapters.readiness_schema_upgrade import (
+from okto_pulse.community.adapters.readiness_schema_upgrade import (  # noqa: E402
     PREDECESSOR_SHA256, PREDECESSOR_VERSION, READINESS_V401_SHA256,
     READINESS_V401_VERSION, READINESS_V402_SHA256, READINESS_V402_VERSION,
     _fingerprint, upgrade_readiness_schema,
 )
-
-
-def source_inventory(db: sqlite3.Connection) -> dict[str, tuple[int, str]]:
-    tables = [name for (name,) in db.execute("SELECT name FROM sqlite_schema "
-        "WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-        if not name.startswith('readiness_')]
-    result = {}
-    for table in tables:
-        digest = sha256()
-        count = 0
-        for row in db.execute(f'SELECT * FROM "{table}"'):
-            encoded = pickle.dumps(tuple(row), protocol=4)
-            digest.update(len(encoded).to_bytes(8, 'big'))
-            digest.update(encoded)
-            count += 1
-        result[table] = (count, digest.hexdigest())
-    return result
+from okto_pulse.community.adapters.readiness_rollback_assessment import (  # noqa: E402
+    source_inventory,
+)
 
 
 def validate(source: Path) -> dict:
