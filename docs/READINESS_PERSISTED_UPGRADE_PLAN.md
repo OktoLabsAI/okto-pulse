@@ -8,6 +8,7 @@ Estado: revisão antes da janela de migração. Este documento descreve uma oper
 - O upgrade admite somente `user_version=400`, `401`, `402`, `403` ou `404` com `application_id` e fingerprint exatos. Qualquer formato desconhecido ou alterado é recusado, sem DDL parcial.
 - A instância Pulse e todos os demais escritores do mesmo `DATA_DIR` devem estar parados. Confirmar caminho absoluto do banco, identidade do runtime, ausência de novos writes e `quick_check`/`foreign_key_check` antes da janela.
 - O ensaio isolado de 26/10/2026 do banco ativo v401 preservou 153 tabelas de fonte e 58.115 linhas, verificou o backup e resultou em v404. Esses números são evidência histórica da cópia ensaiada, não pré-condição para a janela; repetir a checagem na cópia mais recente.
+- Novo ensaio isolado de 26/10/2026, após incluir o log de deltas, migrou uma cópia v401 para v405: 153 tabelas e 58.179 linhas de fonte preservadas, backup verificado, `quick_check=ok`, `foreign_key_check` vazio e ambas as tabelas de deltas presentes. A fonte ativa não foi modificada. Repetir o ensaio com a cópia mais recente antes da janela.
 
 ## Ensaio isolado antes da janela
 
