@@ -54,6 +54,9 @@ function initialProjection() {
 }
 
 let serverProjection = initialProjection();
+const healthyProjection = generation('healthy-g1', 2, 2);
+healthyProjection.scope.spec_id = 'healthy';
+let primaryFails = false;
 let holdNext = false;
 let releaseRead: (() => void) | null = null;
 const originalFetch = window.fetch.bind(window);
@@ -62,6 +65,10 @@ window.fetch = async (input, init) => {
   if (!url.startsWith('/api/v1/')) return originalFetch(input, init);
   if (url.includes('/boards/other/')) return new Response(JSON.stringify({ detail: 'Denied' }), { status: 403 });
   if (url.includes('/delivery-readiness-projection')) {
+    if (url.includes('/specs/healthy/'))
+      return new Response(JSON.stringify(healthyProjection), { status: 200,
+        headers: { 'Content-Type': 'application/json' } });
+    if (primaryFails) return new Response(JSON.stringify({ detail: 'Primary Spec unavailable' }), { status: 503 });
     if (holdNext) {
       holdNext = false;
       await new Promise<void>(resolve => { releaseRead = resolve; });
@@ -77,6 +84,7 @@ window.fetch = async (input, init) => {
 
 function App() {
   const [boardId, setBoardId] = useState('b');
+  const [showHealthy, setShowHealthy] = useState(false);
   return <ApiProvider><main className="mx-auto max-w-5xl space-y-4 p-5">
     <h1>Readiness browser fixture</h1>
     <div className="flex flex-wrap gap-2">
@@ -90,11 +98,18 @@ function App() {
       <button type="button" onClick={() => { releaseRead?.(); releaseRead = null; }}>Release read</button>
       <button type="button" onClick={() => {
         serverProjection = generation('g2', 4, 3);
+        (window as Window & { __readinessPublishedAt?: number }).__readinessPublishedAt = performance.now();
         window.dispatchEvent(new Event('pulse:delivery-evidence-changed'));
       }}>Publish g2</button>
+      <button type="button" onClick={() => { setShowHealthy(true); }}>Show healthy Spec</button>
+      <button type="button" onClick={() => {
+        primaryFails = true;
+        window.dispatchEvent(new Event('pulse:delivery-evidence-changed'));
+      }}>Fail primary Spec</button>
       <button type="button" onClick={() => { setBoardId('other'); }}>Switch board</button>
     </div>
     <DeliveryEvidencePanel boardId={boardId} specId="s" />
+    {showHealthy && <DeliveryEvidencePanel boardId={boardId} specId="healthy" />}
   </main></ApiProvider>;
 }
 

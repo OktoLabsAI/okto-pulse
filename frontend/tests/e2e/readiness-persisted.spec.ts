@@ -18,12 +18,32 @@ test('SC19: a delayed report retains g1 and swaps totals with obligation rows at
   await expect(coverage.getByRole('row', { name: /FR \(four\)/ })).toContainText('Pending');
   await expect(panel.getByRole('progressbar', { name: 'Implementation' })).toHaveAttribute('aria-valuenow', '75');
   await page.getByRole('button', { name: 'Release read' }).click();
+  await page.evaluate(() => {
+    const observed = window as Window & { __readinessPerceivedAt?: number };
+    const root = document.getElementById('root')!;
+    const observer = new MutationObserver(() => {
+      if (root.textContent?.includes('Generation g2')) {
+        observed.__readinessPerceivedAt = performance.now();
+        observer.disconnect();
+      }
+    });
+    observer.observe(root, { subtree: true, childList: true, characterData: true });
+  });
   await page.getByRole('button', { name: 'Publish g2' }).click();
   await expect(panel.getByRole('status').filter({ hasText: 'Generation g2' })).toContainText('Implementation 100% · Verification 75%');
   await expect(panel.getByRole('progressbar', { name: 'Implementation' })).toHaveAttribute('aria-valuenow', '100');
   await expect(panel.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');
   await expect(coverage.getByRole('row', { name: /FR \(four\)/ })).toContainText('Current proof');
   await expect(coverage.getByRole('row', { name: /FR \(three\)/ })).toContainText('Verified');
+  const perceptionMs = await page.evaluate(() => {
+    const observed = window as Window & { __readinessPublishedAt?: number; __readinessPerceivedAt?: number };
+    return observed.__readinessPerceivedAt! - observed.__readinessPublishedAt!;
+  });
+  await test.info().attach('readiness-ui-perception-ms', {
+    body: perceptionMs.toFixed(3), contentType: 'text/plain',
+  });
+  console.log(`SC19 browser perception: ${perceptionMs.toFixed(3)} ms`);
+  expect(perceptionMs).toBeLessThanOrEqual(1000);
 });
 
 test('SC20: initial, unknown and N/A states remain distinct; changing board clears the prior generation', async ({ page }) => {
@@ -43,6 +63,22 @@ test('SC20: initial, unknown and N/A states remain distinct; changing board clea
   await expect(panel.getByRole('alert')).toContainText('Denied');
   await expect(panel.getByTestId('delivery-coverage-table')).toHaveCount(0);
   await expect(panel.getByRole('progressbar')).toHaveCount(0);
+});
+
+test('SC20: a failing Spec retains its prior generation while another Spec remains current', async ({ page }) => {
+  await page.goto(fixture);
+  await page.getByRole('button', { name: 'Show healthy Spec' }).click();
+  const panels = page.getByRole('region', { name: 'Implementation and verification' });
+  const primary = panels.first();
+  const healthy = panels.last();
+  await expect(primary.getByRole('status').filter({ hasText: 'Generation g1' })).toBeVisible();
+  await expect(healthy.getByRole('status').filter({ hasText: 'Generation healthy-g1' })).toContainText('Current');
+
+  await page.getByRole('button', { name: 'Fail primary Spec' }).click();
+  await expect(primary.getByRole('status').filter({ hasText: 'Generation g1' })).toContainText('Calculation unavailable');
+  await expect(primary.getByRole('progressbar', { name: 'Implementation' })).toHaveAttribute('aria-valuenow', '75');
+  await expect(healthy.getByRole('status').filter({ hasText: 'Generation healthy-g1' })).toContainText('Current');
+  await expect(healthy.getByRole('progressbar', { name: 'Implementation' })).toHaveAttribute('aria-valuenow', '50');
 });
 
 test('SC21: accessible labels expose phase, freshness and proof state to keyboard and assistive technology', async ({ page }) => {
