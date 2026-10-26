@@ -233,6 +233,7 @@ class ReadinessProjectionProcessor:
         try:
             snapshot_started = monotonic()
             process_completed = False
+            process_dispatch_ms = 0.0
             if self.full_projection_executor is not None:
                 if self.database_path is None:
                     raise ValueError("readiness_process_database_path_required")
@@ -245,9 +246,10 @@ class ReadinessProjectionProcessor:
                         predecessor_ms, compute_ms, child_stage_ms, projection_mode,
                         snapshot_phases, phases) = await asyncio.shield(future)
                     process_completed = True
-                    stage_ms = max(child_stage_ms,
+                    stage_ms = child_stage_ms
+                    process_dispatch_ms = max(0.0,
                         (monotonic() - snapshot_started) * 1000 - snapshot_ms
-                        - predecessor_ms - compute_ms)
+                        - predecessor_ms - compute_ms - stage_ms)
                     logger.debug('readiness.projection_snapshot_phases', extra=snapshot_phases)
                     logger.debug('readiness.stage_phases', extra=phases)
                 except BrokenProcessPool:
@@ -303,12 +305,12 @@ class ReadinessProjectionProcessor:
                 datetime.now(timezone.utc) - claim.source_updated_at).total_seconds() * 1000)
             logger.info("readiness.published board=%s spec=%s revision=%d units=%d mode=%s "
                 "snapshot_ms=%.3f predecessor_ms=%.3f compute_ms=%.3f "
-                "stage_ms=%.3f publish_ms=%.3f "
+                "stage_ms=%.3f process_dispatch_ms=%.3f publish_ms=%.3f "
                 "source_to_publish_ms=%.3f",
                 claim.board_id, claim.spec_id, captured_revision, unit_count,
                 projection_mode,
                 snapshot_ms, predecessor_ms, compute_ms, stage_ms,
-                publish_ms, source_to_publish_ms)
+                process_dispatch_ms, publish_ms, source_to_publish_ms)
             return 1
         except asyncio.CancelledError:
             raise

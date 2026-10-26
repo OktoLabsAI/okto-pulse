@@ -186,7 +186,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         'identity': [], 'presets': [], 'policy': [],
     }
     publish_phases_ms: dict[str, list[float]] = {
-        'snapshot': [], 'predecessor': [], 'compute': [], 'stage': [], 'publish': [],
+        'snapshot': [], 'predecessor': [], 'compute': [], 'stage': [],
+        'process_dispatch': [], 'publish': [],
         'snapshot_checkout': [], 'snapshot_begin': [], 'snapshot_scope': [],
         'snapshot_source': [], 'snapshot_rollback': [],
         'snapshot_rows': [], 'snapshot_materialize': [],
@@ -234,8 +235,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             elif isinstance(record.msg, str) and record.msg.startswith('readiness.published '):
                 projection_modes[record.args[4]] = projection_modes.get(record.args[4], 0) + 1
                 for name, value in zip(
-                    ('snapshot', 'predecessor', 'compute', 'stage', 'publish'),
-                    record.args[5:10], strict=True):
+                    ('snapshot', 'predecessor', 'compute', 'stage', 'process_dispatch',
+                        'publish'), record.args[5:11], strict=True):
                     publish_phases_ms[name].append(float(value))
             elif isinstance(record.msg, str) and record.msg.startswith('readiness.projection_failed '):
                 detail = str(record.exc_info[1]).splitlines()[0][:160] if record.exc_info else ''
