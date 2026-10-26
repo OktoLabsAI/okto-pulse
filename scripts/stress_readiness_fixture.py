@@ -38,7 +38,9 @@ import httpx
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from benchmark_readiness_fixture import seed, percentile
+from benchmark_readiness_fixture import (
+    seed, percentile, register_fixture_verifier, enrich_mixed_fixture, audit_fixture,
+)
 from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
 from okto_pulse.community.adapters.sqlalchemy_database import install_community_sqlite_pragmas
 from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import (
@@ -49,6 +51,7 @@ from okto_pulse.community.api import code_traceability as readiness_api
 from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.ports.delivery_readiness import ReadinessActor
 from okto_pulse.core.ports.permission_policy import registered_permission_flags
+from okto_pulse.core.ports.test_evidence import reset_test_evidence_write_verifier_for_tests
 from okto_pulse.core.services.delivery_readiness import DeliveryReadinessService
 
 ACTOR = ReadinessActor('benchmark-agent', 'agent', 'local', 'benchmark-board')
@@ -93,7 +96,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             finally:
                 cursor.close()
     executor = (ProcessPoolExecutor(max_workers=args.worker_concurrency,
-        mp_context=get_context('spawn'))
+        mp_context=get_context('spawn'), initializer=register_fixture_verifier,
+        initargs=(path,))
         if args.full_projection_process else None)
     workers = [ReadinessProjectionProcessor(engine, TrackedBlockingExecution(),
         full_projection_executor=executor, database_path=path,
@@ -561,6 +565,7 @@ if __name__ == '__main__':
     parser.add_argument('--scenarios', type=int, default=200)
     parser.add_argument('--facts', type=int, default=2000)
     parser.add_argument('--history', type=int, default=50)
+    parser.add_argument('--fixture-profile', choices=('simple', 'mixed'), default='mixed')
     parser.add_argument('--overload-first', action='store_true')
     parser.add_argument('--overload-cards', type=int, default=500)
     parser.add_argument('--overload-obligations', type=int, default=500)
@@ -597,8 +602,14 @@ if __name__ == '__main__':
                 for name in names:
                     connection.execute(f'DROP TRIGGER "{name}"')
                 connection.commit()
-        result = asyncio.run(run(path, args))
-        result['fixture_seed'] = 'readiness-deterministic-v2'
+        register_fixture_verifier(path)
+        try:
+            asyncio.run(enrich_mixed_fixture(path, args))
+            result = asyncio.run(run(path, args))
+        finally:
+            reset_test_evidence_write_verifier_for_tests()
+        result['fixture_seed'] = f'readiness-deterministic-v3-{args.fixture_profile}'
+        result['fixture_audit'] = audit_fixture(path, args)
         result['seed_sha256'] = sha256(Path(seed.__code__.co_filename).read_bytes()).hexdigest()
         result['harness_sha256'] = sha256(Path(__file__).read_bytes()).hexdigest()
         result['command'] = ['stress_readiness_fixture.py', *sys.argv[1:]]
