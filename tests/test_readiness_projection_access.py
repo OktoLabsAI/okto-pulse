@@ -1,6 +1,7 @@
 """Persisted reads reauthorize each page and bind cursors to the actor."""
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -41,6 +42,12 @@ async def test_projection_skips_second_policy_query_without_concurrent_commit(le
         spec_id=delivery.SPEC_ID, actor=ACTOR)
     assert result.freshness == 'current'
     assert calls == 1
+    async with session.bind.connect() as connection:
+        stored = (await connection.exec_driver_sql(
+            'SELECT payload FROM readiness_summary WHERE generation_id=? ORDER BY card_key',
+            (result.generation_id,))).scalars().all()
+    assert len(stored) > 1
+    assert result.summaries == tuple(json.loads(payload) for payload in stored)
 
 
 async def test_projection_pages_are_actor_bound_and_reauthorized(ledger, monkeypatch):

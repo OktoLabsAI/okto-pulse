@@ -150,6 +150,7 @@ class CommunityPersistedReadinessStore:
                 else:
                     freshness = 'updating'
                 summary_json: tuple[str, ...] = ()
+                aggregate_summary_json: str | None = None
                 unit_json: tuple[str, ...] = ()
                 diagnostic_json: str | None = None
                 unit_total = 0
@@ -159,9 +160,10 @@ class CommunityPersistedReadinessStore:
                             "SELECT payload FROM readiness_summary WHERE generation_id=? "
                             "AND card_key=?", (header['gen_id'], card_id or ''))).all())
                     else:
-                        summary_json = tuple(row[0] for row in (await connection.exec_driver_sql(
-                            "SELECT payload FROM readiness_summary WHERE generation_id=? "
-                            "ORDER BY card_key", (header['gen_id'],))).all())
+                        aggregate_summary_json = (await connection.exec_driver_sql(
+                            "SELECT json_group_array(json(payload)) FROM "
+                            "(SELECT payload FROM readiness_summary WHERE generation_id=? "
+                            "ORDER BY card_key)", (header['gen_id'],))).scalar_one()
                     if unit_limit:
                         key = card_id or ''
                         unit_total = int((await connection.exec_driver_sql(
@@ -186,7 +188,9 @@ class CommunityPersistedReadinessStore:
                 await connection.rollback()
         db_ms = (perf_counter() - started) * 1000
         decode_started = perf_counter()
-        summaries = tuple(json.loads(value) for value in summary_json)
+        summaries = (tuple(json.loads(aggregate_summary_json))
+            if aggregate_summary_json is not None else
+            tuple(json.loads(value) for value in summary_json))
         units = tuple(json.loads(value) for value in unit_json)
         diagnostics = json.loads(diagnostic_json) if diagnostic_json else None
         decode_ms = (perf_counter() - decode_started) * 1000
