@@ -316,6 +316,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         'snapshot_record_gc_pause_gen2': [],
         'snapshot_record_gc_count_gen0': [], 'snapshot_record_gc_count_gen1': [],
         'snapshot_record_gc_count_gen2': [],
+        'snapshot_plan_cache_chain': [], 'snapshot_plan_cache_chain_length': [],
         'predecessor_read': [], 'predecessor_decode': [],
         'predecessor_digest': [], 'predecessor_construct': [],
         'predecessor_chain': [], 'predecessor_chain_length': [],
@@ -371,6 +372,10 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 cache_hit = getattr(record, 'readiness_materialize_facts_plan_cache_hit', None)
                 if cache_hit is not None:
                     plan_cache_samples.append(cache_hit)
+                publish_phases_ms['snapshot_plan_cache_chain'].append(
+                    record.readiness_plan_cache_chain_ms)
+                publish_phases_ms['snapshot_plan_cache_chain_length'].append(
+                    record.readiness_plan_cache_chain_length)
                 for name in ('facts', 'identity_rows', 'identity_digest'):
                     value = getattr(record, f'readiness_materialize_{name}_ms', None)
                     if value is not None:

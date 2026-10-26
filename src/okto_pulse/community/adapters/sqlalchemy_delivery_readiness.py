@@ -668,11 +668,17 @@ class CommunityDeliveryReadinessReader:
         instead of retrying an unrelated global ``PRAGMA data_version`` change.
         """
         from okto_pulse.community.adapters.sqlalchemy_models import (
-            ReadinessScopeRow, ReadinessSourceDeltaRow,
+            ReadinessScopeRow, ReadinessSourceDeltaRow, ReadinessSourceDeltaEventRow,
+        )
+        from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import (
+            MAX_PROGRESS_CHAIN,
         )
 
         counts = {'queries': 0, 'facts': 0, 'query_ms': {}}
         started = perf_counter()
+        cached_plan = None
+        plan_chain_ms = 0.0
+        plan_chain_length = 0
         async with self.engine.connect() as connection:
             checkout_ms = (perf_counter() - started) * 1000
             phase_started = perf_counter()
@@ -704,6 +710,33 @@ class CommunityDeliveryReadinessReader:
                         overflow = await self._capacity_snapshot(session, board_id, spec_id, None, counts, exc)
                     captured_revision = scope.source_revision
                     edition = scope.edition
+                    cache_key = (board_id, spec_id, edition)
+                    previous = self._projection_plan_cache.get(cache_key)
+                    if (rows is not None and previous is not None and delta is not None
+                            and delta.source_revision == captured_revision
+                            and delta.kind == 'card_progress_insert' and delta.card_id):
+                        span = captured_revision - previous[0]
+                        if span == 1:
+                            cached_plan = previous[1]
+                        elif 1 < span <= MAX_PROGRESS_CHAIN:
+                            chain_started = perf_counter()
+                            chain = (await session.execute(select(
+                                ReadinessSourceDeltaEventRow.source_revision,
+                                ReadinessSourceDeltaEventRow.kind,
+                                ReadinessSourceDeltaEventRow.card_id).where(
+                                ReadinessSourceDeltaEventRow.scope_id == scope.id,
+                                ReadinessSourceDeltaEventRow.source_revision > previous[0],
+                                ReadinessSourceDeltaEventRow.source_revision <= captured_revision)
+                                .order_by(ReadinessSourceDeltaEventRow.source_revision)
+                                .limit(span + 1))).all()
+                            plan_chain_ms = (perf_counter() - chain_started) * 1000
+                            plan_chain_length = len(chain)
+                            if (len(chain) == span and all(
+                                    event.source_revision == previous[0] + index
+                                    and event.kind == 'card_progress_insert'
+                                    and event.card_id
+                                    for index, event in enumerate(chain, start=1))):
+                                cached_plan = previous[1]
                     source_ms = (perf_counter() - phase_started) * 1000
             finally:
                 phase_started = perf_counter()
@@ -716,12 +749,6 @@ class CommunityDeliveryReadinessReader:
             snapshot = overflow
         else:
             import asyncio
-            cache_key = (board_id, spec_id, edition)
-            previous = self._projection_plan_cache.get(cache_key)
-            cached_plan = (previous[1] if previous is not None
-                and previous[0] == captured_revision - 1
-                and delta is not None and delta.source_revision == captured_revision
-                and delta.kind == 'card_progress_insert' and delta.card_id else None)
             snapshot, plan = await blocking_execution.run(
                 lambda: asyncio.run(self._snapshot_from_rows(rows,
                     phase_metrics=materialize_phases, cached_plan=cached_plan,
@@ -739,6 +766,8 @@ class CommunityDeliveryReadinessReader:
             'readiness_query_ms': counts['query_ms'],
             'readiness_record_query_detail_ms': counts.get('record_query_detail_ms', {}),
             'readiness_read_rows_ms': read_rows_ms,
+            'readiness_plan_cache_chain_ms': plan_chain_ms,
+            'readiness_plan_cache_chain_length': float(plan_chain_length),
             'readiness_materialize_ms': (perf_counter() - materialize_started) * 1000,
             **materialize_phases,
         }
