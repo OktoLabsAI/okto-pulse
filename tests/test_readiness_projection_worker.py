@@ -10,6 +10,7 @@ from hashlib import sha256
 import json
 import logging
 from multiprocessing import get_context
+import orjson
 import sqlite3
 import threading
 import time
@@ -452,6 +453,34 @@ async def test_invalid_staging_manifest_never_becomes_active(tmp_path):
                 "JOIN readiness_job j ON j.scope_id=s.id WHERE s.spec_id='spec'"
             )).one()
             assert state == ('running', None)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_stage_verifier_checks_canonical_payload_and_typed_card_key(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        await asyncio.sleep(.06)
+        claim = await worker.store.claim(owner='canonical-stage-test')
+        assert claim is not None
+        snapshot, revision = await worker.reader.load_for_projection(
+            board_id='board', spec_id='spec', blocking_execution=worker.blocking_execution)
+        generation = build_readiness_generation(snapshot, captured_revision=revision)
+        generation_id = await worker.store.stage(claim, generation)
+        async with engine.begin() as connection:
+            payload = (await connection.exec_driver_sql(
+                "SELECT payload FROM readiness_summary WHERE generation_id=?",
+                (generation_id,))).scalar_one()
+            assert payload == orjson.dumps(orjson.loads(payload),
+                option=orjson.OPT_SORT_KEYS).decode()
+            await connection.exec_driver_sql(
+                "UPDATE readiness_summary SET card_key='wrong' WHERE generation_id=?",
+                (generation_id,))
+        with pytest.raises(ValueError, match='readiness_stage_manifest_mismatch'):
+            await worker.store.verify_stage(claim, generation_id)
     finally:
         await engine.dispose()
 

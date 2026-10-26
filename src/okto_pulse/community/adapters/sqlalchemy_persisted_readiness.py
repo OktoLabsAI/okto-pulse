@@ -21,6 +21,7 @@ from sqlalchemy.orm import aliased
 from okto_pulse.core.services.persisted_delivery_readiness import (
     EVALUATOR_VERSION, ProjectedDiagnostic, ProjectedSummary, ProjectedUnit,
     ReadinessGeneration, readiness_manifest_digest,
+    readiness_manifest_digest_stored,
 )
 from okto_pulse.core.models.delivery_readiness import DeliveryMetric
 from okto_pulse.core.ports.delivery_readiness import ReadinessAccessDenied, ReadinessReadError
@@ -318,7 +319,7 @@ class CommunityPersistedReadinessStore:
                     break
                 # JSON1 expands one bounded parameter into rows inside SQLite.
                 # The table/column SQL is constant above; payloads are bound.
-                packed = json.dumps(batch, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+                packed = orjson.dumps(batch, option=orjson.OPT_SORT_KEYS).decode()
                 pack_ms += (perf_counter() - pack_started) * 1000
                 heartbeat_started = perf_counter()
                 await self.heartbeat(claim)
@@ -374,52 +375,50 @@ class CommunityPersistedReadinessStore:
                     return False
                 rows = (await connection.exec_driver_sql(
                     "SELECT 0 AS category,card_key,'' AS kind,'' AS ref,"
-                    "'' AS semantic_sha256,payload FROM readiness_summary WHERE generation_id=? "
-                    "UNION ALL SELECT 1,card_key,'','','',payload FROM readiness_diagnostic "
-                    "WHERE generation_id=? "
-                    "UNION ALL SELECT 2,card_key,kind,ref,semantic_sha256,payload "
+                    "'' AS semantic_sha256,payload,json_valid(payload),"
+                    "CASE WHEN json_valid(payload) THEN json_extract(payload,'$.card_id') END,"
+                    "NULL,NULL,NULL FROM readiness_summary WHERE generation_id=? "
+                    "UNION ALL SELECT 1,card_key,'','','',payload,json_valid(payload),"
+                    "NULL,NULL,NULL,NULL FROM readiness_diagnostic WHERE generation_id=? "
+                    "UNION ALL SELECT 2,card_key,kind,ref,semantic_sha256,payload,"
+                    "json_valid(payload),"
+                    "CASE WHEN json_valid(payload) THEN json_extract(payload,'$.card_id') END,"
+                    "CASE WHEN json_valid(payload) THEN json_extract(payload,'$.kind') END,"
+                    "CASE WHEN json_valid(payload) THEN json_extract(payload,'$.ref') END,"
+                    "CASE WHEN json_valid(payload) THEN json_extract(payload,'$.semantic_sha256') END "
                     "FROM readiness_unit WHERE generation_id=? "
                     "ORDER BY category,card_key,kind,ref,semantic_sha256",
                     (generation_id, generation_id, generation_id))).all()
             finally:
                 await connection.rollback()
         read_ms = (perf_counter() - read_started) * 1000
-        decode_started = perf_counter()
-        summaries = []
-        diagnostics = []
-        units = []
-        try:
-            for category, card_key, _kind, _ref, _semantic_sha256, payload in rows:
-                value = orjson.loads(payload)
-                if category == 0:
-                    summaries.append(value)
-                elif category == 1:
-                    diagnostics.append({"card_id": card_key or None, "payload": value})
-                else:
-                    units.append(value)
-        except (TypeError, ValueError):
-            return False
-        decode_ms = (perf_counter() - decode_started) * 1000
         validate_started = perf_counter()
         revision, snapshot_id, evaluator, summary_count, unit_count, manifest = header
-        if (len(summaries) != summary_count or len(units) != unit_count
-                or len(diagnostics) != summary_count
-                or any('card_id' not in row for row in summaries)
-                or {row['card_id'] for row in diagnostics} != {row['card_id'] for row in summaries}):
+        summary_keys = {row[1] for row in rows if row[0] == 0}
+        diagnostic_keys = {row[1] for row in rows if row[0] == 1}
+        if (len(summary_keys) != summary_count
+                or sum(row[0] == 0 for row in rows) != summary_count
+                or sum(row[0] == 1 for row in rows) != summary_count
+                or sum(row[0] == 2 for row in rows) != unit_count
+                or summary_keys != diagnostic_keys
+                or any(not row[6] or row[0] in (0, 2) and (
+                    row[1] != (row[7] or '')
+                    or row[0] == 2 and (row[2], row[3], row[4]) != row[8:11])
+                    for row in rows)):
             return False
         validate_ms = (perf_counter() - validate_started) * 1000
         digest_started = perf_counter()
         try:
-            digest = readiness_manifest_digest(board_id=board_id, spec_id=spec_id,
+            digest = readiness_manifest_digest_stored(board_id=board_id, spec_id=spec_id,
                 edition=edition, captured_revision=revision,
                 source_snapshot_id=snapshot_id, evaluator_version=evaluator,
-                summaries=summaries, units=units, diagnostics=diagnostics)
-        except (KeyError, TypeError, ValueError):
+                rows=[row[:6] for row in rows])
+        except (AttributeError, TypeError, ValueError):
             return False
         if phase_metrics is not None:
             phase_metrics.update({
                 'readiness_stage_verify_read_ms': read_ms,
-                'readiness_stage_verify_decode_ms': decode_ms,
+                'readiness_stage_verify_decode_ms': 0.0,
                 'readiness_stage_verify_validate_ms': validate_ms,
                 'readiness_stage_verify_digest_ms': (perf_counter() - digest_started) * 1000,
                 'readiness_stage_verify_row_count': float(len(rows)),
