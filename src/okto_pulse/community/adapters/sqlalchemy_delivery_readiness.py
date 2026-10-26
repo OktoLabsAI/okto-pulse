@@ -198,6 +198,7 @@ class _BatchFacts(CommunityDeliveryEvidenceStore):
         self.names = {}
         self.plan = None
         self.cached_plan = cached_plan
+        self.native = None
 
     async def lock_scope(self, scope):
         raise RuntimeError('readiness_write_forbidden')
@@ -244,7 +245,7 @@ class _BatchFacts(CommunityDeliveryEvidenceStore):
     async def _execution_plan(self, spec):
         execution_contract(spec)
         if self.cached_plan is not None:
-            self.plan, self.names, self.obligations, self.by_card = self.cached_plan
+            self.plan, self.names, self.obligations, self.by_card = self.cached_plan[:4]
             return self.plan
         fields = ('id', 'board_id', 'spec_id', 'card_type', 'status', 'archived',
                   'test_scenario_ids', 'title', 'description', 'details')
@@ -282,7 +283,9 @@ class _BatchFacts(CommunityDeliveryEvidenceStore):
         scope = DeliveryScope(spec.board_id, spec.id, int(spec.edition))
         phase_started = perf_counter()
         plan = await self._execution_plan(spec)
-        native = native_verification_population(spec)
+        native = (self.cached_plan[4] if self.cached_plan is not None
+            else native_verification_population(spec))
+        self.native = native
         plan_ms = (perf_counter() - phase_started) * 1000
         if not plan.inventory.population_complete:
             return self._with_effective_context(DeliveryEvidenceSnapshot(scope, (), complete=False,
@@ -674,7 +677,8 @@ class CommunityDeliveryReadinessReader:
             delivery_gate_mode=resolve_delivery_gate_policy(rows[Board][0].settings),
             skip_delivery_evidence=spec.skip_delivery_evidence is True)
         if return_plan:
-            return result, (batch.plan, batch.names, batch.obligations, batch.by_card)
+            return result, (batch.plan, batch.names, batch.obligations,
+                batch.by_card, batch.native)
         return result
 
     async def load(self, *, board_id, spec_id, card_id=None, actor=None):
