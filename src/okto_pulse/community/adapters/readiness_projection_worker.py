@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
+from concurrent.futures.process import BrokenProcessPool
 from datetime import datetime, timezone
 import logging
 from time import monotonic
@@ -15,11 +17,65 @@ from .sqlalchemy_persisted_readiness import CommunityPersistedReadinessStore, Re
 logger = logging.getLogger("okto_pulse.readiness_projection")
 
 
+_process_runner = None
+_process_engine = None
+_process_database_path = None
+
+
+def _close_projection_child() -> None:
+    if _process_runner is not None:
+        try:
+            if _process_engine is not None:
+                _process_runner.run(_process_engine.dispose())
+        finally:
+            _process_runner.close()
+
+
+atexit.register(_close_projection_child)
+
+
+def _project_from_database(database_path, board_id, spec_id, deadline):
+    """Project on a persistent child event loop, isolated from API reads."""
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from .sqlalchemy_database import install_community_sqlite_pragmas
+    from .worker_runners import TrackedBlockingExecution
+
+    global _process_runner, _process_engine, _process_database_path
+    if _process_runner is None:
+        _process_runner = asyncio.Runner()
+        _process_engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}",
+            pool_size=2, max_overflow=0)
+        install_community_sqlite_pragmas(_process_engine)
+        _process_database_path = database_path
+    elif _process_database_path != database_path:
+        raise ValueError("readiness_process_database_path_changed")
+
+    async def project():
+        reader = CommunityDeliveryReadinessReader(_process_engine,
+            clock=CommunityReadinessClock())
+        started = monotonic()
+        snapshot, revision = await reader.load_for_projection(
+            board_id=board_id, spec_id=spec_id,
+            blocking_execution=TrackedBlockingExecution())
+        snapshot_ms = (monotonic() - started) * 1000
+        started = monotonic()
+        generation = build_readiness_generation(snapshot,
+            captured_revision=revision, deadline=deadline)
+        compute_ms = (monotonic() - started) * 1000
+        return generation, revision, snapshot_ms, compute_ms
+
+    return _process_runner.run(project())
+
+
 class ReadinessProjectionProcessor:
-    def __init__(self, engine, blocking_execution):
+    def __init__(self, engine, blocking_execution, *, full_projection_executor=None,
+                 database_path=None, maintenance_enabled=True):
         self.store = CommunityPersistedReadinessStore(engine)
         self.reader = CommunityDeliveryReadinessReader(engine, clock=CommunityReadinessClock())
         self.blocking_execution = blocking_execution
+        self.full_projection_executor = full_projection_executor
+        self.database_path = database_path
+        self.maintenance_enabled = maintenance_enabled
         self.owner = uuid4().hex
         self._last_reconcile = 0.0
         self._last_queue_probe = 0.0
@@ -29,6 +85,25 @@ class ReadinessProjectionProcessor:
         self._gc_backlog = False
 
     async def process_once(self) -> int:
+        if self.maintenance_enabled:
+            await self._maintenance_once()
+        claim = await self.store.claim(owner=self.owner)
+        if claim is None:
+            return 0
+        heartbeat = asyncio.create_task(self._heartbeats(claim), name="readiness.heartbeat")
+        try:
+            return await self._process_claim(claim, heartbeat)
+        finally:
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("readiness.heartbeat_failed board=%s spec=%s",
+                    claim.board_id, claim.spec_id)
+
+    async def _maintenance_once(self) -> None:
         if monotonic() - self._last_reconcile >= 60:
             scanned = await self.store.reconcile_once()
             self._last_reconcile = monotonic()
@@ -53,23 +128,53 @@ class ReadinessProjectionProcessor:
         if self._gc_backlog or monotonic() - self._last_gc >= 5:
             self._gc_backlog = await self.store.gc_once()
             self._last_gc = monotonic()
-        claim = await self.store.claim(owner=self.owner)
-        if claim is None:
-            return 0
-        heartbeat = asyncio.create_task(self._heartbeats(claim), name="readiness.heartbeat")
+
+    async def _process_claim(self, claim, heartbeat) -> int:
         try:
             snapshot_started = monotonic()
-            snapshot, captured_revision = await self.reader.load_for_projection(
-                board_id=claim.board_id, spec_id=claim.spec_id,
-                blocking_execution=self.blocking_execution)
-            snapshot_ms = (monotonic() - snapshot_started) * 1000
+            if self.full_projection_executor is None:
+                snapshot, captured_revision = await self.reader.load_for_projection(
+                    board_id=claim.board_id, spec_id=claim.spec_id,
+                    blocking_execution=self.blocking_execution)
+                snapshot_ms = (monotonic() - snapshot_started) * 1000
+            else:
+                if self.database_path is None:
+                    raise ValueError("readiness_process_database_path_required")
+                try:
+                    future = asyncio.get_running_loop().run_in_executor(
+                        self.full_projection_executor, _project_from_database,
+                        str(self.database_path), claim.board_id, claim.spec_id,
+                        snapshot_started + 30)
+                    generation, captured_revision, snapshot_ms, compute_ms = await asyncio.shield(future)
+                except BrokenProcessPool:
+                    # The durable claim survives child failure. Continue in the
+                    # existing thread lane until a runtime restart repairs the pool.
+                    logger.exception("readiness.process_pool_unavailable board=%s spec=%s",
+                        claim.board_id, claim.spec_id)
+                    self.full_projection_executor = None
+                    snapshot, captured_revision = await self.reader.load_for_projection(
+                        board_id=claim.board_id, spec_id=claim.spec_id,
+                        blocking_execution=self.blocking_execution)
+                    snapshot_ms = (monotonic() - snapshot_started) * 1000
+                except asyncio.CancelledError:
+                    while not future.done():
+                        try:
+                            await asyncio.shield(future)
+                        except asyncio.CancelledError:
+                            continue
+                        except BaseException:
+                            break
+                    if future.done() and not future.cancelled():
+                        future.exception()
+                    raise
             if captured_revision < 0:
                 raise ValueError("readiness_revision_invalid")
-            started = monotonic()
-            generation = await self.blocking_execution.run(
-                lambda: build_readiness_generation(snapshot, captured_revision=captured_revision,
-                    deadline=snapshot_started + 30))
-            compute_ms = (monotonic() - started) * 1000
+            if self.full_projection_executor is None:
+                started = monotonic()
+                generation = await self.blocking_execution.run(
+                    lambda: build_readiness_generation(snapshot, captured_revision=captured_revision,
+                        deadline=snapshot_started + 30))
+                compute_ms = (monotonic() - started) * 1000
             if heartbeat.done():
                 heartbeat.result()
             if monotonic() - snapshot_started > 30:
@@ -102,15 +207,6 @@ class ReadinessProjectionProcessor:
                 claim.board_id, claim.spec_id, code)
             await self.store.fail(claim, error_code=code)
             return 0
-        finally:
-            heartbeat.cancel()
-            try:
-                await heartbeat
-            except asyncio.CancelledError:
-                pass
-            except Exception:
-                logger.exception("readiness.heartbeat_failed board=%s spec=%s",
-                    claim.board_id, claim.spec_id)
 
     async def _heartbeats(self, claim) -> None:
         while True:

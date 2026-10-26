@@ -1,6 +1,8 @@
 """A committed Spec intent can publish a durable generation without KG."""
 
 import asyncio
+from concurrent.futures import Future
+from concurrent.futures.process import BrokenProcessPool
 from contextlib import closing
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
@@ -38,6 +40,32 @@ async def _seed_one_spec(engine):
             (json.dumps({"contract_version": "spec-execution-contract/v1", "board_id": "board",
                 "spec_id": "spec", "adopted_in_edition": 1, "actor_id": "owner",
                 "origin": "new_spec"}),))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('submit_raises', [False, True])
+async def test_broken_projection_process_falls_back_and_publishes(tmp_path, submit_raises):
+    database = tmp_path / 'pulse.sqlite3'
+    engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
+
+    class BrokenExecutor:
+        def submit(self, *_args, **_kwargs):
+            if submit_raises:
+                raise BrokenProcessPool('pool already broken')
+            result = Future()
+            result.set_exception(BrokenProcessPool('child stopped'))
+            return result
+
+    try:
+        await _seed_one_spec(engine)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution(),
+            full_projection_executor=BrokenExecutor(), database_path=database)
+        assert await worker.process_once() == 1
+        assert worker.full_projection_executor is None
+        visible = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert visible is not None and visible.freshness == 'current'
+    finally:
+        await engine.dispose()
 
 
 def _seed_migrated_v401_many_specs(database):

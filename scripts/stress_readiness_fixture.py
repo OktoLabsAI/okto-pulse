@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from concurrent.futures import ProcessPoolExecutor
 from contextlib import closing
 from hashlib import sha256
 import json
 import logging
+from multiprocessing import get_context
 import os
 from pathlib import Path
 import platform
@@ -60,7 +62,14 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 cursor.execute('PRAGMA foreign_keys=ON')
             finally:
                 cursor.close()
-    worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+    executor = (ProcessPoolExecutor(max_workers=args.worker_concurrency,
+        mp_context=get_context('spawn'))
+        if args.full_projection_process else None)
+    workers = [ReadinessProjectionProcessor(engine, TrackedBlockingExecution(),
+        full_projection_executor=executor, database_path=path,
+        maintenance_enabled=index == 0)
+        for index in range(args.worker_concurrency)]
+    worker = workers[0]
     reader = CommunityDeliveryReadinessReader(engine, clock=CommunityReadinessClock())
     service = DeliveryReadinessService(reader, None)
     read_ms, write_ms, lag_ms, burst_write_ms, burst_lag_ms = [], [], [], [], []
@@ -115,7 +124,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         if args.mode == 'persisted':
             published = 0
             while published < args.specs:
-                published += await worker.process_once()
+                published += sum(await asyncio.gather(
+                    *(item.process_once() for item in workers)))
                 await asyncio.sleep(.06)
         # Exclude connection/thread cold start from steady-state write latency.
         async with engine.begin() as connection:
@@ -125,15 +135,17 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             await asyncio.sleep(.06)
             await worker.process_once()
 
-        async def projection_loop():
+        async def projection_loop(item):
             nonlocal worker_publications
             while not stop_worker.is_set():
                 processed = 0
                 try:
-                    processed = await worker.process_once()
+                    processed = await item.process_once()
                     worker_publications += processed
                 except Exception as exc:
-                    (errors if measuring else warmup_errors).append(f'worker:{type(exc).__name__}')
+                    detail = str(exc).splitlines()[0][:160]
+                    (errors if measuring else warmup_errors).append(
+                        f'worker:{type(exc).__name__}:{detail}')
                 await asyncio.sleep(0 if processed else .1)
 
         async def reader_loop(client_number: int):
@@ -276,13 +288,21 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 await asyncio.sleep(max(0, deadline - monotonic()))
                 if measuring:
                     event_loop_lag_ms.append(max(0, (monotonic() - deadline) * 1000))
-                    rss_bytes.append(process.memory_info().rss)
+                    child_rss = 0
+                    for child in process.children(recursive=True):
+                        try:
+                            child_rss += child.memory_info().rss
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
+                    rss_bytes.append(process.memory_info().rss + child_rss)
                     pool_checkouts.append(engine.sync_engine.pool.checkedout())
-                    blocking_tasks.append(worker.blocking_execution.pending_count)
+                    blocking_tasks.append(sum(item.blocking_execution.pending_count
+                        for item in workers))
                     wal_samples.append(wal.stat().st_size if wal.exists() else 0)
 
         started_at = monotonic()
-        projection_task = asyncio.create_task(projection_loop()) if args.mode == 'persisted' else None
+        projection_tasks = ([asyncio.create_task(projection_loop(item)) for item in workers]
+            if args.mode == 'persisted' else [])
         observation_task = asyncio.create_task(observation_loop()) if args.mode == 'persisted' else None
         tasks = [asyncio.create_task(writer_loop(started_at)),
             *(asyncio.create_task(reader_loop(index)) for index in range(args.clients)),
@@ -298,8 +318,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         if observation_task is not None:
             await observation_task
         stop_worker.set()
-        if projection_task is not None:
-            await projection_task
+        if projection_tasks:
+            await asyncio.gather(*projection_tasks)
         lagging = []
         if args.mode == 'persisted':
             async with engine.connect() as connection:
@@ -325,6 +345,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                     'facts': args.overload_facts} if args.overload_first else None},
             'reads': len(read_ms), 'writes': len(write_ms), 'errors': errors[:25],
             'worker_publications': worker_publications,
+            'worker_concurrency': args.worker_concurrency,
+            'full_projection_process': args.full_projection_process,
             'lagging_scopes': [tuple(row) for row in lagging],
             'read_p50_ms': round(median(read_ms), 3) if read_ms else None,
             'read_p95_ms': round(percentile(read_ms, .95), 3) if read_ms else None,
@@ -395,11 +417,15 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         publish_logger.removeHandler(phase_handler)
         publish_logger.setLevel(previous_publish_level)
         await engine.dispose()
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=['legacy', 'persisted'], required=True)
+    parser.add_argument('--full-projection-process', action='store_true')
+    parser.add_argument('--worker-concurrency', type=int, default=1)
     parser.add_argument('--read-surface', choices=['internal', 'service'])
     parser.add_argument('--duration-seconds', type=int, default=60)
     parser.add_argument('--warmup-seconds', type=int, default=0)
@@ -431,6 +457,8 @@ if __name__ == '__main__':
         parser.error('burst-at-seconds must fall inside the run')
     if args.writes_per_second < 0:
         parser.error('writes-per-second must be nonnegative')
+    if args.worker_concurrency < 1 or args.worker_concurrency > 4:
+        parser.error('worker-concurrency must be between 1 and 4')
     with TemporaryDirectory(prefix='readiness-stress-') as folder:
         path = Path(folder) / 'pulse.db'
         seed(path, args)

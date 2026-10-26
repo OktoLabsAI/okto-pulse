@@ -27,6 +27,49 @@ def test_r08c_community_worker_registry_declares_baseline_families(monkeypatch) 
 
 
 @pytest.mark.asyncio
+async def test_file_backed_readiness_starts_two_workers_and_drains_pool(
+    tmp_path, monkeypatch,
+) -> None:
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.db'}")
+    monkeypatch.setattr(sqlalchemy_database, 'get_engine', lambda: engine)
+    events = []
+
+    class FakePool:
+        def __init__(self, *, max_workers, mp_context):
+            assert max_workers == 2 and mp_context.get_start_method() == 'spawn'
+
+        def shutdown(self, *, wait, cancel_futures):
+            assert wait and cancel_futures
+            events.append('pool:closed')
+
+    async def start(runner):
+        events.append(f'start:{runner.name}')
+        return runner
+
+    async def stop(runner, timeout=10.0):
+        assert timeout == 45.0
+        events.append(f'stop:{runner.name}')
+
+    monkeypatch.setattr(worker_adapters, 'ProcessPoolExecutor', FakePool)
+    monkeypatch.setattr(worker_adapters, 'start_runner', start)
+    monkeypatch.setattr(worker_adapters.PollingRunner, 'stop', stop)
+    registry = build_community_worker_registry(object())
+    spec = registry._specs['readiness_projection_worker']
+    primary = await spec.start()
+    assert primary.processor.maintenance_enabled is True
+    assert primary.processor.full_projection_executor is not None
+    await spec.stop(primary)
+    assert events == [
+        'start:community.readiness_projection',
+        'start:community.readiness_projection.secondary',
+        'stop:community.readiness_projection',
+        'stop:community.readiness_projection.secondary',
+        'pool:closed',
+    ]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_r08c_community_worker_registry_preserves_shutdown_order(
     monkeypatch,
 ) -> None:

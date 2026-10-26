@@ -6,7 +6,7 @@ does not start a database snapshot for SELECT merely on Session.begin().
 """
 from collections import defaultdict
 from contextlib import contextmanager
-from dataclasses import asdict, is_dataclass, replace
+from dataclasses import fields, is_dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 from functools import lru_cache
@@ -51,7 +51,7 @@ logger = logging.getLogger(__name__)
 MAX_CARDS = 5000
 MAX_HISTORY = 10000
 MAX_FACTS = 20000
-FINGERPRINT_VERSION = 'delivery-readiness-snapshot/v1'
+FINGERPRINT_VERSION = 'delivery-readiness-snapshot/v2'
 
 
 class CommunityReadinessClock:
@@ -72,6 +72,11 @@ def _count_queries(connection, counts):
         event.remove(connection.sync_connection, 'before_cursor_execute', count)
 
 
+@lru_cache(maxsize=128)
+def _dataclass_field_names(model):
+    return tuple(field.name for field in fields(model))
+
+
 def _json_value(value):
     if isinstance(value, (set, frozenset)):
         return sorted(value, key=lambda item: json.dumps(item, default=_json_value, sort_keys=True))
@@ -81,8 +86,10 @@ def _json_value(value):
         return value.value
     if isinstance(value, BaseModel):
         return value.model_dump(mode='json')
-    if is_dataclass(value):
-        return asdict(value)
+    if is_dataclass(value) and not isinstance(value, type):
+        # The JSON encoder visits nested dataclasses itself. Avoid recursively
+        # copying the entire facts graph before encoding the same values.
+        return {name: getattr(value, name) for name in _dataclass_field_names(type(value))}
     raise TypeError(f'Unsupported readiness identity type: {type(value).__name__}')
 
 
@@ -447,7 +454,9 @@ class CommunityDeliveryReadinessReader:
             {c.key: getattr(r, c.key) for c in model.__table__.columns}) for r in values)
             for model, values in rows.items()}
         def calculate_identity():
-            identities = {name: sorted((row_id, _digest(value)) for row_id, value in values)
+            # One canonical serialization retains every column while avoiding
+            # thousands of separate JSON encodes and intermediate row hashes.
+            identities = {name: sorted(values, key=lambda row: row[0])
                 for name, values in identity_values.items()}
             return _digest({'contract_version': 'delivery-readiness/v1',
                 'fingerprint_version': FINGERPRINT_VERSION,

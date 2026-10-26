@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
-from itertools import chain, islice
+from itertools import islice
 import json
 import logging
 import secrets
@@ -260,20 +260,33 @@ class CommunityPersistedReadinessStore:
                 summary_count=len(generation.summaries), unit_count=len(generation.units),
                 manifest_sha256=generation.manifest_sha256, created_at=now,
                 evaluated_at=generation.evaluated_at))
-        rows = chain(
-            (ReadinessSummaryRow(generation_id=generation_id, card_key=summary.card_id or "",
-                payload=summary.payload()) for summary in generation.summaries),
-            (ReadinessDiagnosticRow(generation_id=generation_id,
-                card_key=diagnostic.card_id or "", payload=diagnostic.payload)
-                for diagnostic in generation.diagnostics),
-            (ReadinessUnitRow(generation_id=generation_id, card_key=unit.card_id or "",
-                kind=unit.kind, ref=unit.ref, semantic_sha256=unit.semantic_sha256,
-                payload=asdict(unit)) for unit in generation.units),
+        groups = (
+            ("readiness_summary", "card_key,payload",
+                "json_extract(value,'$.card_key'),json_extract(value,'$.payload')",
+                ({"card_key": summary.card_id or "", "payload": summary.payload()}
+                    for summary in generation.summaries)),
+            ("readiness_diagnostic", "card_key,payload",
+                "json_extract(value,'$.card_key'),json_extract(value,'$.payload')",
+                ({"card_key": diagnostic.card_id or "", "payload": diagnostic.payload}
+                    for diagnostic in generation.diagnostics)),
+            ("readiness_unit", "card_key,kind,ref,semantic_sha256,payload",
+                "json_extract(value,'$.card_key'),json_extract(value,'$.kind'),"
+                "json_extract(value,'$.ref'),json_extract(value,'$.semantic_sha256'),"
+                "json_extract(value,'$.payload')",
+                ({"card_key": unit.card_id or "", "kind": unit.kind,
+                    "ref": unit.ref, "semantic_sha256": unit.semantic_sha256,
+                    "payload": asdict(unit)} for unit in generation.units)),
         )
-        while batch := list(islice(rows, STAGE_BATCH_SIZE)):
-            await self.heartbeat(claim)
-            async with AsyncSession(self.engine) as session, session.begin():
-                session.add_all(batch)
+        for table, columns, fields, rows in groups:
+            while batch := list(islice(rows, STAGE_BATCH_SIZE)):
+                # JSON1 expands one bounded parameter into rows inside SQLite.
+                # The table/column SQL is constant above; payloads are bound.
+                packed = json.dumps(batch, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+                await self.heartbeat(claim)
+                async with self.engine.begin() as connection:
+                    await connection.exec_driver_sql(
+                        f"INSERT INTO {table} (generation_id,{columns}) "
+                        f"SELECT ?,{fields} FROM json_each(?)", (generation_id, packed))
         await self.verify_stage(claim, generation_id)
         return generation_id
 

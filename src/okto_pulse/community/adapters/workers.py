@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ProcessPoolExecutor
+from multiprocessing import get_context
+from pathlib import Path
 from typing import Any
 
 from okto_pulse.core.application.processors import (
@@ -80,14 +84,62 @@ def build_community_worker_registry(
     outbox_blocking_execution = TrackedBlockingExecution()
     readiness_blocking_execution = TrackedBlockingExecution()
     from okto_pulse.community.adapters.sqlalchemy_database import get_engine
+    readiness_engine = get_engine()
+    database = readiness_engine.url.database
+    file_backed = bool(database and database != ':memory:'
+        and readiness_engine.url.query.get('uri') != 'true')
+    readiness_pool = (ProcessPoolExecutor(max_workers=2, mp_context=get_context('spawn'))
+        if file_backed else None)
+    database_path = str(Path(database).resolve()) if file_backed else None
     readiness_runner = PollingRunner(
-        ReadinessProjectionProcessor(get_engine(), readiness_blocking_execution),
+        ReadinessProjectionProcessor(readiness_engine, readiness_blocking_execution,
+            full_projection_executor=readiness_pool, database_path=database_path),
         name="community.readiness_projection",
         interval_seconds=0.1,
         active_interval_seconds=0.0,
         operation_name="process_once",
         blocking_execution=readiness_blocking_execution,
     )
+    readiness_runners = [readiness_runner]
+    if readiness_pool is not None:
+        secondary_blocking_execution = TrackedBlockingExecution()
+        readiness_runners.append(PollingRunner(
+            ReadinessProjectionProcessor(readiness_engine, secondary_blocking_execution,
+                full_projection_executor=readiness_pool, database_path=database_path,
+                maintenance_enabled=False),
+            name="community.readiness_projection.secondary",
+            interval_seconds=0.1,
+            active_interval_seconds=0.0,
+            operation_name="process_once",
+            blocking_execution=secondary_blocking_execution,
+        ))
+
+    async def start_readiness():
+        started = []
+        try:
+            for runner in readiness_runners:
+                await start_runner(runner)
+                started.append(runner)
+        except BaseException:
+            for runner in reversed(started):
+                await runner.stop(timeout=45.0)
+            if readiness_pool is not None:
+                await asyncio.to_thread(readiness_pool.shutdown, wait=True,
+                    cancel_futures=True)
+            raise
+        return readiness_runner
+
+    async def stop_readiness(_runner):
+        outcomes = await asyncio.gather(
+            *(runner.stop(timeout=45.0) for runner in readiness_runners),
+            return_exceptions=True)
+        failures = [outcome for outcome in outcomes if isinstance(outcome, BaseException)]
+        if failures:
+            raise failures[0]
+        if readiness_pool is not None:
+            await asyncio.to_thread(readiness_pool.shutdown, wait=True,
+                cancel_futures=True)
+
     event_processor = DomainEventDeliveryProcessor(
         CommunitySqlAlchemyDomainEventDeliveryStore(
             session_factory,
@@ -154,8 +206,8 @@ def build_community_worker_registry(
     registry.register(
         RuntimeWorkerSpec(
             family="readiness_projection_worker",
-            start=lambda: start_runner(readiness_runner),
-            stop=lambda runner: runner.stop(timeout=45.0),
+            start=start_readiness,
+            stop=stop_readiness,
             stop_priority=225,
         )
     )
