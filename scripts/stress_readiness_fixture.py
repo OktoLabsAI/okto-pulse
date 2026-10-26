@@ -42,6 +42,7 @@ from benchmark_readiness_fixture import (
     seed, percentile, register_fixture_verifier, enrich_mixed_fixture, audit_fixture,
 )
 from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
+from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import CommunityPersistedReadinessStore
 from okto_pulse.community.adapters.sqlalchemy_database import install_community_sqlite_pragmas
 from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import (
     CommunityDeliveryReadinessReader, CommunityReadinessClock,
@@ -53,8 +54,72 @@ from okto_pulse.core.ports.delivery_readiness import ReadinessActor
 from okto_pulse.core.ports.permission_policy import registered_permission_flags
 from okto_pulse.core.ports.test_evidence import reset_test_evidence_write_verifier_for_tests
 from okto_pulse.core.services.delivery_readiness import DeliveryReadinessService
+from okto_pulse.core.services.persisted_delivery_readiness import build_readiness_generation
 
 ACTOR = ReadinessActor('benchmark-agent', 'agent', 'local', 'benchmark-board')
+
+
+async def audit_source_projection_parity(path: Path, args: argparse.Namespace) -> dict:
+    """Outside the timed run, compare every stored manifest to its current source."""
+    engine = create_async_engine(f'sqlite+aiosqlite:///{path}', pool_size=20, max_overflow=0)
+    install_community_sqlite_pragmas(engine)
+    store = CommunityPersistedReadinessStore(engine)
+    worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution(),
+        maintenance_enabled=False)
+
+    class FixedClock:
+        def __init__(self, value):
+            self.value = value
+
+        def now(self):
+            return self.value
+
+    drained = 0
+    deadline = monotonic() + max(60, args.specs * 10)
+    try:
+        while True:
+            async with engine.connect() as connection:
+                rows = (await connection.exec_driver_sql(
+                    "SELECT s.spec_id,s.source_revision,g.captured_revision,j.state,j.error_code "
+                    "FROM readiness_scope s LEFT JOIN readiness_generation g "
+                    "ON g.id=s.active_generation_id JOIN readiness_job j ON j.scope_id=s.id "
+                    "WHERE s.board_id='benchmark-board'")).all()
+            if len(rows) != args.specs:
+                raise AssertionError(f'parity_scope_count:{len(rows)}/{args.specs}')
+            terminal = [(row[0], row[4]) for row in rows if row[3] == 'terminal']
+            if terminal:
+                raise AssertionError(f'parity_terminal:{terminal}')
+            if all(row[1] == row[2] for row in rows):
+                break
+            if monotonic() >= deadline:
+                raise TimeoutError('parity_drain_deadline')
+            drained += await worker.process_once()
+            await asyncio.sleep(.1)
+
+        for number in range(args.specs):
+            spec_id = f'benchmark-spec-{number:03d}'
+            projected = await store.read(board_id='benchmark-board', spec_id=spec_id, edition=1)
+            if projected is None or projected.freshness != 'current' or projected.evaluated_at is None:
+                raise AssertionError(f'parity_generation_unavailable:{spec_id}')
+            if not await store.audit_active_generation(spec_id=spec_id):
+                raise AssertionError(f'parity_manifest_corrupt:{spec_id}')
+            reader = CommunityDeliveryReadinessReader(engine, clock=FixedClock(projected.evaluated_at))
+            snapshot, revision = await reader.load_for_projection(
+                board_id='benchmark-board', spec_id=spec_id,
+                blocking_execution=TrackedBlockingExecution())
+            expected = await asyncio.to_thread(build_readiness_generation, snapshot,
+                captured_revision=revision)
+            async with engine.connect() as connection:
+                manifest = (await connection.exec_driver_sql(
+                    'SELECT manifest_sha256 FROM readiness_generation WHERE id=?',
+                    (projected.generation_id,))).scalar_one()
+            if (revision != projected.captured_revision
+                    or expected.source_snapshot_id != projected.source_snapshot_id
+                    or expected.manifest_sha256 != manifest):
+                raise AssertionError(f'parity_source_mismatch:{spec_id}')
+        return {'status': 'pass', 'scopes': args.specs, 'drained_publications': drained}
+    finally:
+        await engine.dispose()
 
 
 def rest_client(service: DeliveryReadinessService) -> httpx.AsyncClient:
@@ -198,7 +263,13 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 (f'{phase}-{index}', spec_id))
             return
         record_id = f'{spec_id}-write-{phase}-{index}'
-        payload = json.dumps({'note': f'Benchmark {phase} report {index}'})
+        # A valid material checkpoint changes proof qualification for the
+        # target Card; a free-form note would only churn the snapshot hash.
+        payload = json.dumps({'progress': {
+            'contract_version': 'delivery-progress/v2', 'material_change': 'unknown',
+            'source_state': {'workspace_state': 'unknown', 'recoverability': 'unknown'},
+            'target_ids': [], 'remaining': f'Benchmark {phase} work {index}',
+        }, 'justification': f'Benchmark {phase} report {index}'})
         await connection.exec_driver_sql(
             'INSERT INTO card_delivery_evidence_records '
             '(id,board_id,card_id,spec_id,spec_edition,kind,actor_id,actor_kind,'
@@ -210,6 +281,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 datetime.now(timezone.utc).isoformat()))
 
     try:
+        initial_fixture_audit = None
         if args.mode == 'persisted':
             published = 0
             while published < args.specs:
@@ -218,6 +290,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 if (await worker.store.queue_status())['counts'].get('terminal', 0):
                     raise RuntimeError(f'readiness_fixture_initial_terminal:{warmup_errors[-3:]}')
                 await asyncio.sleep(.06)
+            initial_fixture_audit = audit_fixture(path, args)
         # Exclude connection/thread cold start from steady-state write latency.
         async with engine.begin() as connection:
             await write_source(connection, index=-1,
@@ -451,6 +524,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 )).all()
         return {
             'mode': args.mode, 'duration_s': args.duration_seconds,
+            'fixture_audit': initial_fixture_audit,
             'read_surface': args.read_surface,
             'writes_per_second': args.writes_per_second,
             'write_kind': args.write_kind,
@@ -561,7 +635,7 @@ if __name__ == '__main__':
     parser.add_argument('--reads-per-second', type=int, default=10)
     parser.add_argument('--writes-per-second', type=float, default=1)
     parser.add_argument('--write-kind', choices=('spec_description', 'delivery_evidence_append'),
-        default='spec_description')
+        default='delivery_evidence_append')
     parser.add_argument('--clients', type=int, default=5)
     parser.add_argument('--resource-sample-seconds', type=float, default=.5,
         help='Resource sampler interval; 0 disables resource sampling for diagnosis')
@@ -612,10 +686,17 @@ if __name__ == '__main__':
         try:
             asyncio.run(enrich_mixed_fixture(path, args))
             result = asyncio.run(run(path, args))
+            if args.mode == 'persisted':
+                try:
+                    result['post_load_parity'] = asyncio.run(audit_source_projection_parity(path, args))
+                except Exception as exc:
+                    result['post_load_parity'] = {'status': 'failed',
+                        'code': type(exc).__name__, 'detail': str(exc)[:200]}
         finally:
             reset_test_evidence_write_verifier_for_tests()
         result['fixture_seed'] = f'readiness-deterministic-v3-{args.fixture_profile}'
-        result['fixture_audit'] = audit_fixture(path, args)
+        if result['fixture_audit'] is None:
+            result['fixture_audit'] = audit_fixture(path, args)
         result['seed_sha256'] = sha256(Path(seed.__code__.co_filename).read_bytes()).hexdigest()
         result['harness_sha256'] = sha256(Path(__file__).read_bytes()).hexdigest()
         result['command'] = ['stress_readiness_fixture.py', *sys.argv[1:]]
@@ -627,5 +708,6 @@ if __name__ == '__main__':
             print(json.dumps({k: v for k, v in result.items() if k not in {'samples_ms', 'resource_samples'}}, sort_keys=True), flush=True)
         else:
             print(json.dumps({k: v for k, v in result.items() if k not in {'samples_ms', 'resource_samples'}}, sort_keys=True), flush=True)
-        if result['error_count'] or result['warmup_error_count'] or not result['reads']:
+        if (result['error_count'] or result['warmup_error_count'] or not result['reads']
+                or args.mode == 'persisted' and result['post_load_parity']['status'] != 'pass'):
             raise SystemExit(1)
