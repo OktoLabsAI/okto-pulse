@@ -2,7 +2,7 @@ import { resolveDeliveryGateMode } from '@/components/board/deliveryGateSettings
 import { DeliveryReadinessPanel } from './DeliveryReadinessPanel';
 import { DeliveryExceptionDetails } from './DeliveryExceptionDetails';
 import type { ReadinessSpecLocation } from './readinessNavigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { useDashboardApi } from '@/services/api';
@@ -11,6 +11,7 @@ import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 import { isPersistedReadinessProjection, type PersistedReadinessProjection, type ReadinessMetric } from '@/types/delivery-readiness';
 import { decisionStatusLabel } from '@/components/specs/DecisionReviewSection';
 import { readinessReadMode } from '@/lib/readinessMode';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { isRetriableReadinessError, ReadinessContractError } from './readinessTransport';
 
 class ReadinessGenerationChangedError extends Error {}
@@ -105,6 +106,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
   const [storedProjection, setProjection] = useState<PersistedReadinessProjection | null>(null);
   const [projectionOwner, setProjectionOwner] = useState<{ api: typeof api; key: string }>();
   const [projectionError, setProjectionError] = useState('');
+  const acceptedProjection = useRef<{ api: typeof api; key: string; value: PersistedReadinessProjection }>();
   const [showDetails, setShowDetails] = useState(legacyMode);
   const scopeKey = JSON.stringify([boardId, specId, revision, reload]);
   const projectionScopeKey = JSON.stringify([boardId, specId, legacyMode]);
@@ -127,6 +129,8 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
 
   useEffect(() => {
     const controller = new AbortController();
+    if (acceptedProjection.current?.api !== api || acceptedProjection.current.key !== projectionScopeKey)
+      acceptedProjection.current = undefined;
     setProjection(current => projectionOwner?.api === api && projectionOwner.key === projectionScopeKey
       && current?.projection.generation_id
       ? { ...current, projection: { ...current.projection, freshness: 'updating' } } : null);
@@ -150,8 +154,15 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
             const cursor = page.page.next_cursor;
             if (!cursor || seen.has(cursor)) throw new ReadinessContractError('Readiness page cursor invalid.');
             seen.add(cursor);
-            const next = await api.getPersistedReadinessProjection(boardId, specId,
-              { unitLimit: 250, cursor }, controller.signal);
+            let next: PersistedReadinessProjection;
+            try {
+              next = await api.getPersistedReadinessProjection(boardId, specId,
+                { unitLimit: 250, cursor }, controller.signal);
+            } catch (failure) {
+              if (failure instanceof AuthenticatedFetchError && failure.status === 409)
+                throw new ReadinessGenerationChangedError('Readiness cursor expired. Restarting this view.');
+              throw failure;
+            }
             if (!isPersistedReadinessProjection(next) || next.scope.board_id !== boardId || next.scope.spec_id !== specId
               || next.scope.card_id !== null) throw new ReadinessContractError('Readiness page scope mismatch.');
             if (next.projection.generation_id !== page.projection.generation_id
@@ -161,7 +172,21 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
             rows.push(...next.units);
             page = next;
           }
+          const previous = acceptedProjection.current?.value;
+          if (previous && page.scope.spec_edition !== null && previous.scope.spec_edition !== null
+            && (page.scope.spec_edition < previous.scope.spec_edition
+              || page.scope.spec_edition === previous.scope.spec_edition
+                && page.projection.source_revision !== null && previous.projection.source_revision !== null
+                && page.projection.source_revision < previous.projection.source_revision))
+            throw new ReadinessGenerationChangedError('Older readiness generation ignored. Retrying current view.');
+          if (previous && page.projection.generation_id && previous.projection.generation_id
+            && page.scope.spec_edition === previous.scope.spec_edition
+            && page.projection.source_revision === previous.projection.source_revision
+            && page.projection.evaluated_at && previous.projection.evaluated_at
+            && Date.parse(page.projection.evaluated_at) < Date.parse(previous.projection.evaluated_at))
+            throw new ReadinessGenerationChangedError('Older readiness generation ignored. Retrying current view.');
           if (!controller.signal.aborted) {
+            acceptedProjection.current = { api, key: projectionScopeKey, value: { ...page, units: rows } };
             setProjectionOwner({ api, key: projectionScopeKey });
             setProjection({ ...page, units: rows });
           }
@@ -176,6 +201,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
             continue;
           }
           if (!isRetriableReadinessError(failure)) {
+            acceptedProjection.current = undefined;
             setProjection(null);
             return;
           }

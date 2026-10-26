@@ -1,12 +1,14 @@
 import type { AuthAdapter } from './types';
 
 const LocalProvider: AuthAdapter['Provider'] = ({ children }) => children;
+const getLocalToken = async () => null as string | null;
 
 function useLocalAuth() {
   return {
     isLoaded: true,
     isSignedIn: true,
-    getToken: async () => null as string | null,
+    identityKey: 'local',
+    getToken: getLocalToken,
   };
 }
 

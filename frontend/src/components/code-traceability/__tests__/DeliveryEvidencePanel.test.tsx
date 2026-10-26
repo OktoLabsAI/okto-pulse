@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { DeliveryEvidencePanel } from '../DeliveryEvidencePanel';
 import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 import { persistedProjection, readiness } from './readinessFixture';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
 
 const api = vi.hoisted(() => ({
   getDeliveryEvidence: vi.fn(),
@@ -129,6 +130,44 @@ it('restarts pagination when a newer generation replaces a page mid-read', async
   render(<DeliveryEvidencePanel boardId="b" specId="s" />);
   await waitFor(() => expect(screen.getByTestId('delivery-coverage-table')).toHaveTextContent('FR (new)'));
   expect(screen.getByTestId('delivery-coverage-table')).not.toHaveTextContent('FR (old)');
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(3);
+});
+
+it('retries an expired page cursor from the first page without mixing obligation rows', async () => {
+  const first = persistedProjection();
+  first.units = [{ card_id: null, kind: 'obligation', ref: 'fr:old', semantic_sha256: 'a'.repeat(64),
+    spec_edition: 1, contribution_card_ids: [], implementation_state: 'satisfied',
+    verification_state: 'missing', implementation_reason_codes: [], verification_reason_codes: [] }];
+  first.page = { offset: 0, limit: 1, total: 2, has_more: true, next_cursor: 'expired' };
+  const current = persistedProjection();
+  current.projection.generation_id = 'generation-2';
+  current.units = [{ ...first.units[0], ref: 'fr:new' }];
+  api.getPersistedReadinessProjection.mockResolvedValueOnce(first)
+    .mockRejectedValueOnce(new AuthenticatedFetchError({ status: 409, message: 'Cursor expired' }))
+    .mockResolvedValue(current);
+  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  await waitFor(() => expect(screen.getByTestId('delivery-coverage-table')).toHaveTextContent('FR (new)'));
+  expect(screen.getByTestId('delivery-coverage-table')).not.toHaveTextContent('FR (old)');
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(3);
+});
+
+it('does not replace a newer visible generation with a regressive response', async () => {
+  const current = persistedProjection();
+  current.projection.generation_id = 'generation-2';
+  current.projection.source_revision = 2;
+  const stale = persistedProjection();
+  stale.projection.source_revision = 1;
+  const latest = persistedProjection();
+  latest.projection.generation_id = 'generation-3';
+  latest.projection.source_revision = 3;
+  api.getPersistedReadinessProjection.mockResolvedValueOnce(current).mockResolvedValueOnce(stale)
+    .mockResolvedValue(latest);
+  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  await screen.findByText(/Generation generation-2/);
+  fireEvent(window, new Event('pulse:delivery-evidence-changed'));
+  await waitFor(() => expect(screen.getByText(/Generation generation-2/)).toHaveTextContent('Updating'));
+  expect(screen.queryByText(/Generation generation-1/)).not.toBeInTheDocument();
+  await screen.findByText(/Generation generation-3/);
   expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(3);
 });
 
