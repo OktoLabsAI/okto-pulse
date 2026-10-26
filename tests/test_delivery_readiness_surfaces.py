@@ -68,6 +68,12 @@ async def test_persisted_rest_reads_published_generation_with_current_authorizat
     await session.commit()
     worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
     assert await worker.process_once() == 1
+    import okto_pulse.community.api.code_traceability as rest_module
+
+    def redundant_native_walk(*_args, **_kwargs):
+        raise AssertionError('persisted_rest_reconverted_json_native_projection')
+
+    monkeypatch.setattr(rest_module, '_native', redundant_native_walk)
     path = url().replace('/delivery-evidence', '/delivery-readiness-projection')
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=rest), base_url='http://test') as client:
         response = await client.get(path, params={'unit_limit': 2})

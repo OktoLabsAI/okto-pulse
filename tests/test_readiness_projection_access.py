@@ -147,10 +147,7 @@ async def test_projection_changing_scope_retries_once_then_fails_closed(ledger, 
     assert calls == 2
 
 
-@pytest.mark.parametrize('mutate_each_read', [False, True])
-async def test_projection_source_revision_change_during_read_retries(
-    ledger, monkeypatch, mutate_each_read,
-):
+async def test_projection_source_revision_change_during_read_is_updating(ledger, monkeypatch):
     session, _, _ = ledger
     await setup(session)
     worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
@@ -164,7 +161,7 @@ async def test_projection_source_revision_change_during_read_retries(
         nonlocal calls, first_revision
         result = await original_read(store, **kwargs)
         calls += 1
-        if calls == 1 or mutate_each_read:
+        if calls == 1:
             first_revision = result.source_revision
             async with session.bind.begin() as connection:
                 await connection.exec_driver_sql(
@@ -173,16 +170,12 @@ async def test_projection_source_revision_change_during_read_retries(
         return result
 
     monkeypatch.setattr(CommunityPersistedReadinessStore, 'read', change_source_after_read)
-    if mutate_each_read:
-        with pytest.raises(ReadinessReadError, match='readiness_snapshot_changed'):
-            await reader.load_persisted(board_id=delivery.BOARD_ID,
-                spec_id=delivery.SPEC_ID, actor=ACTOR)
-    else:
-        result, _, _, _ = await reader.load_persisted(board_id=delivery.BOARD_ID,
-            spec_id=delivery.SPEC_ID, actor=ACTOR)
-        assert result.source_revision > first_revision
-        assert result.freshness == 'updating'
-    assert calls == 2
+    result, _, _, _ = await reader.load_persisted(board_id=delivery.BOARD_ID,
+        spec_id=delivery.SPEC_ID, actor=ACTOR)
+    assert calls == 1
+    assert result.source_revision > first_revision
+    assert result.captured_revision == first_revision
+    assert result.freshness == 'updating'
 
 
 async def test_projection_cursor_keeps_original_generation_until_retention(ledger, monkeypatch):

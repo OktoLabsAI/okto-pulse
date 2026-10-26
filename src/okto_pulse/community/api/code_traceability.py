@@ -29,6 +29,7 @@ import json
 from typing import Literal, Mapping
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, create_model
 
 from okto_pulse.community.api.auth_deps import require_principal
@@ -544,6 +545,7 @@ async def _execute(
     principal: Principal,
     uow: PulseUnitOfWork,
     cursor_binding: str | None = None,
+    json_ready: bool = False,
 ) -> object:
     try:
         result = await getattr(use_case, "execute")(
@@ -561,7 +563,7 @@ async def _execute(
         ValueError,
     ) as exc:
         raise _http_error(exc) from exc
-    return _native(result, cursor_binding=cursor_binding)
+    return result if json_ready else _native(result, cursor_binding=cursor_binding)
 
 
 @router.post("/{board_id}/code-investigations", status_code=status.HTTP_201_CREATED)
@@ -1245,10 +1247,11 @@ async def get_persisted_delivery_readiness(board_id: str, spec_id: str, response
     from okto_pulse.core.application.use_cases.delivery_evidence import GetPersistedDeliveryReadinessUseCase
 
     response.headers['Cache-Control'] = 'no-store'
-    return await _execute(GetPersistedDeliveryReadinessUseCase(),
+    result = await _execute(GetPersistedDeliveryReadinessUseCase(),
         PersistedReadinessQuery(board_id=board_id, spec_id=spec_id,
             card_id=card_id, unit_limit=unit_limit, cursor=cursor),
-        board_id=board_id, principal=principal, uow=uow)
+        board_id=board_id, principal=principal, uow=uow, json_ready=True)
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
 
 
 class ReadinessRequeueInput(BaseModel):

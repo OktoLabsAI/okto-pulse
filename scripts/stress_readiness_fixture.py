@@ -252,6 +252,14 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                             freshness[observed_freshness] = freshness.get(observed_freshness, 0) + 1
                     if measuring:
                         read_ms.append((perf_counter() - started) * 1000)
+                except httpx.HTTPStatusError as exc:
+                    try:
+                        detail = exc.response.json().get('detail')
+                        code = detail.get('code') if isinstance(detail, dict) else None
+                    except (ValueError, AttributeError):
+                        code = None
+                    (errors if measuring else warmup_errors).append(
+                        f'read:http_{exc.response.status_code}:{code or "unknown"}')
                 except Exception as exc:
                     (errors if measuring else warmup_errors).append(
                         f'read:{getattr(exc, "code", type(exc).__name__)}')
@@ -359,6 +367,9 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             burst_elapsed_ms = (perf_counter() - launched_at) * 1000
 
         async def resource_loop():
+            if args.resource_sample_seconds == 0:
+                await stop_load.wait()
+                return
             process = psutil.Process()
             wal = path.with_name(path.name + '-wal')
 
@@ -373,10 +384,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                     wal.stat().st_size if wal.exists() else 0)
 
             while not stop_load.is_set():
-                deadline = monotonic() + .5
-                await asyncio.sleep(max(0, deadline - monotonic()))
+                await asyncio.sleep(args.resource_sample_seconds)
                 if measuring:
-                    event_loop_lag_ms.append(max(0, (monotonic() - deadline) * 1000))
                     sample_started = perf_counter()
                     rss, wal_size = await asyncio.to_thread(sample_filesystem_and_processes)
                     resource_sample_ms.append((perf_counter() - sample_started) * 1000)
@@ -386,13 +395,20 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                         for item in workers))
                     wal_samples.append(wal_size)
 
+        async def event_loop_monitor():
+            while not stop_load.is_set():
+                deadline = monotonic() + .5
+                await asyncio.sleep(max(0, deadline - monotonic()))
+                if measuring:
+                    event_loop_lag_ms.append(max(0, (monotonic() - deadline) * 1000))
+
         started_at = monotonic()
         projection_tasks = ([asyncio.create_task(projection_loop(item)) for item in workers]
             if args.mode == 'persisted' else [])
         observation_task = asyncio.create_task(observation_loop()) if args.mode == 'persisted' else None
         tasks = [asyncio.create_task(writer_loop(started_at)),
             *(asyncio.create_task(reader_loop(index)) for index in range(args.clients)),
-            asyncio.create_task(resource_loop())]
+            asyncio.create_task(resource_loop()), asyncio.create_task(event_loop_monitor())]
         if args.warmup_seconds:
             await asyncio.sleep(args.warmup_seconds)
             measuring = True
@@ -529,6 +545,8 @@ if __name__ == '__main__':
     parser.add_argument('--write-kind', choices=('spec_description', 'delivery_evidence_append'),
         default='spec_description')
     parser.add_argument('--clients', type=int, default=5)
+    parser.add_argument('--resource-sample-seconds', type=float, default=.5,
+        help='Resource sampler interval; 0 disables resource sampling for diagnosis')
     parser.add_argument('--specs', type=int, default=10)
     parser.add_argument('--cards', type=int, default=100)
     parser.add_argument('--obligations', type=int, default=100)
@@ -554,6 +572,8 @@ if __name__ == '__main__':
         parser.error('burst-at-seconds must fall inside the run')
     if args.writes_per_second < 0:
         parser.error('writes-per-second must be nonnegative')
+    if args.resource_sample_seconds < 0:
+        parser.error('resource-sample-seconds must be nonnegative')
     if args.worker_concurrency < 1 or args.worker_concurrency > 4:
         parser.error('worker-concurrency must be between 1 and 4')
     if args.pipeline_depth > 1 and args.worker_concurrency != 1:

@@ -669,15 +669,22 @@ class CommunityDeliveryReadinessReader:
                     'PRAGMA data_version')).scalar_one()
                 if current_version == observed_version:
                     after = before
-                    stable_version = current_version
                 else:
                     after = await authorize(authority_connection, check_source_revision=True)
-                    stable_version = (await authority_connection.exec_driver_sql(
-                        'PRAGMA data_version')).scalar_one()
                 reauthorized_at = perf_counter()
-            same_source = (current_version == observed_version
-                or (after[4] == (projection.source_revision if projection else None)))
-            if before[:4] == after[:4] and same_source and stable_version == current_version:
+            if before[:4] == after[:4]:
+                if current_version != observed_version:
+                    latest_revision = after[4]
+                    # The authorization and target revision are one SQLite
+                    # snapshot. A source edit may follow the projection read;
+                    # the immutable generation is then still safe to show as
+                    # updating, with its captured revision kept intact.
+                    if (projection is None) != (latest_revision is None):
+                        continue
+                    if projection is not None and latest_revision != projection.source_revision:
+                        projection = replace(projection, source_revision=latest_revision,
+                            freshness=('updating' if projection.freshness == 'current'
+                                else projection.freshness))
                 logger.debug('readiness.persisted_read_phases', extra={
                     'readiness_checkout_ms': checkout_ms,
                     'readiness_auth_before_ms': (authorized_at - started) * 1000,
