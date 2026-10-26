@@ -169,7 +169,10 @@ def _project_and_stage_from_database(database_path, claim, deadline):
         phases = {}
         started = monotonic()
         cpu_started = process_time()
-        generation_id = await store.stage(claim, generation, phase_metrics=phases)
+        generation_id = await store.stage(claim, generation,
+            predecessor=candidate[0] if candidate is not None
+                and projection_mode == 'incremental' else None,
+            phase_metrics=phases)
         stage_ms = (monotonic() - started) * 1000
         snapshot_phases["readiness_stage_cpu_ms"] = (
             process_time() - cpu_started) * 1000
@@ -367,7 +370,9 @@ class ReadinessProjectionProcessor:
                 if monotonic() - snapshot_started > 30:
                     raise TimeoutError("readiness_calculation_budget_exceeded")
                 stage_started = monotonic()
-                generation_id = await self._stage_locally(claim, generation)
+                generation_id = await self._stage_locally(claim, generation,
+                    predecessor=candidate[0] if candidate is not None
+                        and projection_mode == 'incremental' else None)
                 stage_ms = (monotonic() - stage_started) * 1000
                 unit_count = len(generation.units)
             if heartbeat.done():
@@ -431,9 +436,10 @@ class ReadinessProjectionProcessor:
                 future.exception()
             raise
 
-    async def _stage_locally(self, claim, generation):
+    async def _stage_locally(self, claim, generation, *, predecessor=None):
         phases = {}
-        generation_id = await self.store.stage(claim, generation, phase_metrics=phases)
+        generation_id = await self.store.stage(claim, generation,
+            predecessor=predecessor, phase_metrics=phases)
         logger.debug('readiness.stage_phases', extra=phases)
         return generation_id
 

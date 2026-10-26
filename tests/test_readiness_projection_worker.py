@@ -31,7 +31,7 @@ from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import (
 from okto_pulse.community.adapters.worker_runners import TrackedBlockingExecution
 from okto_pulse.core.ports.delivery_readiness import ReadinessReadError
 from okto_pulse.core.services.persisted_delivery_readiness import (
-    build_readiness_generation, readiness_manifest_digest,
+    ProjectedUnit, build_readiness_generation, readiness_manifest_digest,
 )
 from test_readiness_schema_upgrade import _v401_predecessor
 
@@ -603,6 +603,81 @@ async def test_stage_verifier_checks_canonical_payload_and_typed_card_key(tmp_pa
                 (generation_id,))
         with pytest.raises(ValueError, match='readiness_stage_manifest_mismatch'):
             await worker.store.verify_stage(claim, generation_id)
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_incremental_stage_copies_only_unchanged_units_and_verifies_payload(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        await asyncio.sleep(.06)
+        first_claim = await worker.store.claim(owner='copy-test')
+        assert first_claim is not None
+        snapshot, revision = await worker.reader.load_for_projection(
+            board_id='board', spec_id='spec', blocking_execution=worker.blocking_execution)
+        base = build_readiness_generation(snapshot, captured_revision=revision)
+        unchanged = ProjectedUnit('card-a', 'obligation', 'ac:a', 'a' * 64, 1,
+            ('card-a',), 'satisfied', 'satisfied', (), ())
+        changed = ProjectedUnit('card-b', 'obligation', 'ac:b', 'b' * 64, 1,
+            ('card-b',), 'missing', 'missing', (), ())
+
+        def with_units(source, *, captured_revision, snapshot_id, units):
+            digest = readiness_manifest_digest(board_id=source.board_id,
+                spec_id=source.spec_id, edition=source.spec_edition,
+                captured_revision=captured_revision, source_snapshot_id=snapshot_id,
+                evaluator_version=source.evaluator_version,
+                summaries=[row.payload() for row in source.summaries],
+                units=[row.row() for row in units],
+                diagnostics=[row.row() for row in source.diagnostics])
+            return replace(source, captured_revision=captured_revision,
+                source_snapshot_id=snapshot_id, units=units, manifest_sha256=digest)
+
+        first = with_units(base, captured_revision=revision,
+            snapshot_id=base.source_snapshot_id, units=(unchanged, changed))
+        first_id = await worker.store.stage(first_claim, first)
+        assert await worker.store.publish(first_claim, first_id)
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql("UPDATE specs SET title='New source' WHERE id='spec'")
+        await asyncio.sleep(.06)
+        second_claim = await worker.store.claim(owner='copy-test')
+        assert second_claim is not None
+        second = with_units(base, captured_revision=revision + 1,
+            snapshot_id='next-source-snapshot',
+            units=(unchanged, replace(changed, implementation_state='satisfied')))
+        phases = {}
+        second_id = await worker.store.stage(second_claim, second,
+            predecessor=first, phase_metrics=phases)
+        assert phases['readiness_stage_copied_unit_count'] == 1
+        assert phases['readiness_stage_rebuilt_unit_count'] == 1
+        async with engine.connect() as connection:
+            original = (await connection.exec_driver_sql(
+                "SELECT payload FROM readiness_unit WHERE generation_id=? AND card_key='card-a'",
+                (first_id,))).scalar_one()
+            copied = (await connection.exec_driver_sql(
+                "SELECT payload FROM readiness_unit WHERE generation_id=? AND card_key='card-a'",
+                (second_id,))).scalar_one()
+            assert copied == original
+        assert await worker.store.publish(second_claim, second_id)
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql("UPDATE specs SET title='Third source' WHERE id='spec'")
+            await connection.exec_driver_sql(
+                "UPDATE readiness_unit SET payload=json_set(payload,'$.implementation_state','failed') "
+                "WHERE generation_id=? AND card_key='card-a'", (second_id,))
+        await asyncio.sleep(.06)
+        third_claim = await worker.store.claim(owner='copy-test')
+        assert third_claim is not None
+        third = with_units(base, captured_revision=revision + 2,
+            snapshot_id='third-source-snapshot', units=second.units)
+        with pytest.raises(ValueError, match='readiness_stage_manifest_mismatch'):
+            await worker.store.stage(third_claim, third, predecessor=second)
+        async with engine.connect() as connection:
+            active_id = (await connection.exec_driver_sql(
+                "SELECT active_generation_id FROM readiness_scope WHERE spec_id='spec'"
+            )).scalar_one()
+            assert active_id == second_id
     finally:
         await engine.dispose()
 

@@ -313,13 +313,27 @@ class CommunityPersistedReadinessStore:
             row.updated_at = now
 
     async def stage(self, claim: ReadinessClaim, generation: ReadinessGeneration,
-                    *, phase_metrics: dict[str, float | int] | None = None) -> str:
+                    *, predecessor: ReadinessGeneration | None = None,
+                    phase_metrics: dict[str, float | int] | None = None) -> str:
         if (claim.board_id, claim.spec_id, claim.edition) != (
             generation.board_id, generation.spec_id, generation.spec_edition):
             raise ValueError("readiness_generation_scope_mismatch")
         generation_id = uuid4().hex
         now = datetime.now(timezone.utc)
+        copy_keys: tuple[str, ...] = ()
+        copy_count = 0
+        if predecessor is not None:
+            prior_by_card: dict[str, list[ProjectedUnit]] = {}
+            current_by_card: dict[str, list[ProjectedUnit]] = {}
+            for unit in predecessor.units:
+                prior_by_card.setdefault(unit.card_id or '', []).append(unit)
+            for unit in generation.units:
+                current_by_card.setdefault(unit.card_id or '', []).append(unit)
+            copy_keys = tuple(sorted(key for key, prior in prior_by_card.items()
+                if prior == current_by_card.get(key)))
+            copy_count = sum(len(prior_by_card[key]) for key in copy_keys)
         metadata_started = perf_counter()
+        copy_source_id = None
         async with AsyncSession(self.engine) as session, session.begin():
             job = await session.get(ReadinessJobRow, claim.scope_id)
             if job is None or job.owner != claim.owner or job.lease_epoch != claim.epoch or job.state != "running":
@@ -331,6 +345,21 @@ class CommunityPersistedReadinessStore:
                 ReadinessGenerationRow.state == "staging"))).first()
             if old is not None:
                 old.state = "expired"  # GC removes rows in bounded transactions.
+            if copy_count:
+                copy_source_id = await session.scalar(select(ReadinessGenerationRow.id).join(
+                    ReadinessScopeRow,
+                    ReadinessScopeRow.active_generation_id == ReadinessGenerationRow.id).where(
+                    ReadinessScopeRow.id == claim.scope_id,
+                    ReadinessScopeRow.board_id == claim.board_id,
+                    ReadinessScopeRow.spec_id == claim.spec_id,
+                    ReadinessScopeRow.edition == claim.edition,
+                    ReadinessGenerationRow.scope_id == claim.scope_id,
+                    ReadinessGenerationRow.state == 'complete',
+                    ReadinessGenerationRow.captured_revision == predecessor.captured_revision,
+                    ReadinessGenerationRow.spec_version == predecessor.spec_version,
+                    ReadinessGenerationRow.evaluator_version == predecessor.evaluator_version,
+                    ReadinessGenerationRow.source_snapshot_id == predecessor.source_snapshot_id,
+                    ReadinessGenerationRow.manifest_sha256 == predecessor.manifest_sha256))
             session.add(ReadinessGenerationRow(id=generation_id, scope_id=claim.scope_id,
                 captured_revision=generation.captured_revision, spec_version=generation.spec_version,
                 evaluator_version=generation.evaluator_version,
@@ -339,8 +368,26 @@ class CommunityPersistedReadinessStore:
                 manifest_sha256=generation.manifest_sha256, created_at=now,
                 evaluated_at=generation.evaluated_at))
         metadata_ms = (perf_counter() - metadata_started) * 1000
-        pack_ms = heartbeat_ms = insert_ms = 0.0
+        pack_ms = heartbeat_ms = insert_ms = copy_ms = 0.0
         batch_count = 0
+        if copy_source_id is not None:
+            await self.heartbeat(claim)
+            copy_started = perf_counter()
+            async with self.engine.begin() as connection:
+                copied = await connection.exec_driver_sql(
+                    "INSERT INTO readiness_unit "
+                    "(generation_id,card_key,kind,ref,semantic_sha256,payload) "
+                    "SELECT ?,card_key,kind,ref,semantic_sha256,payload "
+                    "FROM readiness_unit WHERE generation_id=? "
+                    "AND card_key IN (SELECT value FROM json_each(?))",
+                    (generation_id, copy_source_id, orjson.dumps(copy_keys).decode()))
+            copy_ms = (perf_counter() - copy_started) * 1000
+            if copied.rowcount != copy_count:
+                raise ValueError('readiness_stage_predecessor_unit_count_mismatch')
+        else:
+            copy_keys = ()
+            copy_count = 0
+        copied_keys = frozenset(copy_keys)
         groups = (
             ("readiness_summary", "card_key,payload",
                 "json_extract(value,'$.card_key'),json_extract(value,'$.payload')",
@@ -356,7 +403,8 @@ class CommunityPersistedReadinessStore:
                 "json_extract(value,'$.payload')",
                 ({"card_key": unit.card_id or "", "kind": unit.kind,
                     "ref": unit.ref, "semantic_sha256": unit.semantic_sha256,
-                    "payload": unit.row()} for unit in generation.units)),
+                    "payload": unit.row()} for unit in generation.units
+                    if (unit.card_id or '') not in copied_keys)),
         )
         for table, columns, fields, rows in groups:
             while True:
@@ -386,6 +434,9 @@ class CommunityPersistedReadinessStore:
             'readiness_stage_pack_ms': pack_ms,
             'readiness_stage_heartbeat_ms': heartbeat_ms,
             'readiness_stage_insert_ms': insert_ms,
+            'readiness_stage_copy_ms': copy_ms,
+            'readiness_stage_copied_unit_count': copy_count,
+            'readiness_stage_rebuilt_unit_count': len(generation.units) - copy_count,
             'readiness_stage_verify_ms': (perf_counter() - verify_started) * 1000,
             'readiness_stage_batch_count': batch_count,
             **verify_metrics,

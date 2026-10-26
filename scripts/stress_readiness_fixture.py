@@ -319,8 +319,9 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         'predecessor_read': [], 'predecessor_decode': [],
         'predecessor_digest': [], 'predecessor_construct': [],
         'predecessor_chain': [], 'predecessor_chain_length': [],
-        'stage_metadata': [], 'stage_pack': [], 'stage_heartbeat': [],
-        'stage_insert': [], 'stage_verify': [],
+        'stage_metadata': [], 'stage_copy': [], 'stage_pack': [],
+        'stage_heartbeat': [], 'stage_insert': [], 'stage_verify': [],
+        'stage_copied_unit_count': [], 'stage_rebuilt_unit_count': [],
         'stage_verify_read': [], 'stage_verify_decode': [],
         'stage_verify_validate': [], 'stage_verify_digest': [],
         'publish_checkout': [], 'publish_begin': [], 'publish_fetch': [],
@@ -393,9 +394,12 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 if cache_hit is not None:
                     predecessor_cache_samples.append(cache_hit)
             elif record.msg == 'readiness.stage_phases':
-                for key in ('metadata', 'pack', 'heartbeat', 'insert', 'verify'):
+                for key in ('metadata', 'copy', 'pack', 'heartbeat', 'insert', 'verify'):
                     publish_phases_ms[f'stage_{key}'].append(
                         getattr(record, f'readiness_stage_{key}_ms'))
+                for key in ('copied', 'rebuilt'):
+                    publish_phases_ms[f'stage_{key}_unit_count'].append(
+                        getattr(record, f'readiness_stage_{key}_unit_count'))
                 for key in ('read', 'decode', 'validate', 'digest'):
                     value = getattr(record, f'readiness_stage_verify_{key}_ms', None)
                     if value is not None:
