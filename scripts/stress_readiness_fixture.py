@@ -45,6 +45,7 @@ from benchmark_readiness_fixture import (
     seed, percentile, register_fixture_verifier, enrich_mixed_fixture, audit_fixture,
 )
 from okto_pulse.community.adapters.current_relational_schema import SCHEMA_VERSION
+from okto_pulse.community.adapters import readiness_projection_worker as worker_module
 from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
 from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import CommunityPersistedReadinessStore
 from okto_pulse.community.adapters.sqlalchemy_database import install_community_sqlite_pragmas
@@ -59,6 +60,7 @@ from okto_pulse.core.ports.permission_policy import registered_permission_flags
 from okto_pulse.core.ports.test_evidence import reset_test_evidence_write_verifier_for_tests
 from okto_pulse.core.services.delivery_readiness import DeliveryReadinessService
 from okto_pulse.core.services.persisted_delivery_readiness import build_readiness_generation
+from okto_pulse.core.services import persisted_delivery_readiness as evaluator_module
 
 ACTOR = ReadinessActor('benchmark-agent', 'agent', 'local', 'benchmark-board')
 _SAFE_CODE = re.compile(r'[A-Za-z0-9_.:-]{1,64}\Z')
@@ -1012,6 +1014,9 @@ if __name__ == '__main__':
             result['fixture_audit'] = audit_fixture(path, args)
         result['seed_sha256'] = sha256(Path(seed.__code__.co_filename).read_bytes()).hexdigest()
         result['harness_sha256'] = sha256(Path(__file__).read_bytes()).hexdigest()
+        result['build'] = {'schema_version': SCHEMA_VERSION,
+            'community_worker_sha256': sha256(Path(worker_module.__file__).read_bytes()).hexdigest(),
+            'core_evaluator_sha256': sha256(Path(evaluator_module.__file__).read_bytes()).hexdigest()}
         result['command'] = _safe_command(sys.argv[1:])
         result['host'] = {'platform': platform.platform(), 'python': platform.python_version(),
             'logical_cpus': os.cpu_count()}
