@@ -1,12 +1,19 @@
 # Grafx-only Community
 
-Community targets `okto-grafx[accel]==0.0.7`. Ladybug/Kuzu is no longer a runtime,
+Community targets `okto-grafx[accel]==0.0.8`. Ladybug/Kuzu is no longer a runtime,
 installation dependency, configurable backend, recovery implementation or
 logical-transfer endpoint. Core runtime and contracts remain unchanged and engine-agnostic: it
 continues to consume graph ports and explicit capability declarations.
 
 The shared executable architecture matrix and the paired Core README now describe
 edition-owned graph adapters generically, rather than mandating a named database.
+
+## Current dependency
+
+The Community manifest and `uv.lock` pin the published Grafx 0.0.8 release with
+the `accel` extra. The release artifact gate verifies this exact version.
+The installation notes below record an earlier 0.0.7 qualification and do not
+describe the current dependency.
 
 ## Published 0.0.7 installation — 2026-09-14
 

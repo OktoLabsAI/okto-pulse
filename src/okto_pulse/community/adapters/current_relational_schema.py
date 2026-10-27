@@ -20,7 +20,7 @@ from .sqlalchemy_models import Base
 
 
 APPLICATION_ID = 0x4F50554C  # OPUL
-SCHEMA_VERSION = 400
+SCHEMA_VERSION = 405
 _SCHEMA_QUERY = (
     "SELECT type, name, tbl_name, sql FROM main.sqlite_schema "
     "WHERE name NOT GLOB 'sqlite_*' ORDER BY type, name"
@@ -87,6 +87,10 @@ def create_current_schema_objects(connection: Any) -> None:
     from .sqlite_validation_revisions import install_validation_revision_triggers
 
     install_validation_revision_triggers(connection, Base.metadata)
+
+    from .readiness_invalidation_schema import install_readiness_invalidation_triggers
+
+    install_readiness_invalidation_triggers(connection)
 
 
 def seed_current_schema_fences(connection: Any) -> None:

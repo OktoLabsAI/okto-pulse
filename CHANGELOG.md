@@ -7,6 +7,30 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ---
 
+## [0.4.2] - 2026-10-21
+
+### Fixed
+
+- A Card awaiting a graph prerequisite no longer repeats a failed consolidation
+  when there are no old graph links to remove. The pending work remains visible
+  and can resume when its prerequisite is available.
+- Community 0.4.2 pairs with Core 0.4.2, which contains the corrected native
+  commit receipt and writer guard handling.
+- Test Card completion now checks current cross-card verification evidence. The
+  Kanban cover marks Done Cards with pending Delivery and labels the execution
+  completeness report separately from the verification percentage.
+- Done Tasks with complete implementation and pending tests now explicitly say
+  `Implementation done · Verification pending`; new Task and Bug Card Done
+  transitions require current verification. Historical Done status is retained.
+- Snapshot reads used by the completion gate skip per-Card display summaries,
+  reducing database work during the transition.
+
+### Upgrade
+
+- Stop all 0.4.1 Pulse processes before starting the paired 0.4.2 packages
+  against the same data home. Existing 0.4.1 data remains in place; this patch
+  does not require a fresh data home.
+
 ## [0.4.0] - 2026-10-16
 
 ### BREAKING CHANGE — no compatibility with earlier Pulse versions

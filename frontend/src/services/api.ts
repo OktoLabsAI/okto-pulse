@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import type { DeliveryReadiness, DeliveryReadinessBoardSummary, ReadinessQuery, ReadinessResponse, ReadinessDetail } from '@/types/delivery-readiness';
+import type { DeliveryReadiness, DeliveryReadinessBoardSummary, PersistedReadinessProjection, ReadinessQuery, ReadinessResponse, ReadinessDetail } from '@/types/delivery-readiness';
 import type { DecisionReviewInput, DecisionReviewProjection } from '@/types/decision-reviews';
 import type { ArchitectureCandidatesResponse } from '@/types/architecture-candidates';
 import type { ArchitectureClassificationsResponse, ArchitectureReviewState, ArchitectureClassificationBatch, ArchitectureClassificationReceipt } from '@/types/architecture-classifications';
@@ -559,6 +559,16 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     async getDeliveryReadinessSummary(boardId: string, specId: string, signal?: AbortSignal): Promise<DeliveryReadinessBoardSummary> {
       return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-readiness-summary`, { signal });
+    },
+
+    async getPersistedReadinessProjection(boardId: string, specId: string,
+      options?: { cardId?: string; unitLimit?: number; cursor?: string }, signal?: AbortSignal): Promise<PersistedReadinessProjection> {
+      const query = new URLSearchParams();
+      if (options?.cardId) query.set('card_id', options.cardId);
+      if (options?.unitLimit != null) query.set('unit_limit', String(options.unitLimit));
+      if (options?.cursor) query.set('cursor', options.cursor);
+      const suffix = query.size ? `?${query}` : '';
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-readiness-projection${suffix}`, { signal });
     },
 
     async getDeliveryReadinessPage(boardId: string, specId: string, options: ReadinessQuery, signal?: AbortSignal): Promise<ReadinessResponse | ReadinessDetail> {

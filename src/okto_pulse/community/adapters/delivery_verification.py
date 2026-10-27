@@ -13,6 +13,7 @@ from okto_pulse.core.domain.verification_report import (
 from okto_pulse.core.ports.test_evidence import (
     require_supported_test_verification_method, resolve_test_evidence_write_verifier,
 )
+from okto_pulse.core.models.schemas import TestCompanionSourceRevision
 from okto_pulse.core.services.test_scenario_lifecycle import compute_test_scenario_semantic_sha256
 
 
@@ -67,6 +68,15 @@ def native_scenario_run(spec, scenario, *, verifier=None):
                 if isinstance(basis, dict) and isinstance(basis.get('source_ref'), str) and isinstance(basis.get('revision'), str):
                     sources = (VerificationSourceFact(basis['source_ref'], basis['revision'],
                         None, 'execution_attestation.execution_basis'),)
+                    companions = basis.get('companion_sources')
+                    if companions is not None:
+                        if not isinstance(companions, list) or len(companions) != 1:
+                            raise ValueError('verification_companion_sources_invalid')
+                        companion = TestCompanionSourceRevision.model_validate(companions[0])
+                        if companion.source_ref == basis['source_ref']:
+                            raise ValueError('verification_companion_source_duplicate')
+                        sources += (VerificationSourceFact(companion.source_ref, companion.revision,
+                            None, 'execution_attestation.execution_basis.companion_sources'),)
                 observed_at = datetime.fromisoformat(attestation['executed_at'].replace('Z', '+00:00'))
                 if observed_at.tzinfo is None or observed_at.utcoffset() is None:
                     raise ValueError('verification_timestamp_timezone_required')

@@ -849,7 +849,7 @@ Tasks are created within a spec context. Each task links back to its parent spec
 
 ### Task lifecycle (columns)
 
-\`not_started\` → \`started\` → \`in_progress\` → \`validation\` → \`done\`
+\`not_started\` → \`in_progress\` → \`validation\` → \`done\`
 
 If a governed completion decision fails for a normal Task or Bug, Pulse moves it from \`validation\` to **\`rejected\`**. Rejected means **rework is required**, not that the card is waiting for another evaluator. Its only manual exit is \`rejected\` → \`in_progress\`; after rework, a new execution report and Current technical traceability are required before returning to \`validation\`.
 
@@ -1310,7 +1310,7 @@ When \`require_task_validation\` is enabled in board settings, tasks must pass t
 
 Pass → task moves to \`done\`. An admitted failed validation or governed completion blocker → normal Task/Bug moves to \`rejected\` with one current causal feedback record. Rejected cards are executor work: move only to \`in_progress\`, address the feedback, record a new execution report and Current traceability, then submit a fresh handoff to \`validation\`. Test Cards are unchanged and never enter Rejected.
 
-### Task → Started gates
+### Task → In Progress gates
 
 | Rule | What it checks |
 |------|---------------|
@@ -1358,7 +1358,7 @@ Resource Gate tracks all three resource types, but their authority is different:
 - **Architecture designs and screen mockups are blocking.** Before entity completion, each must be present or explicitly marked N/A with a real justification. At \`spec_validation\` and \`spec_done\`, every effective Architecture/Mockup root must also be covered by a non-cancelled task.
 - **Knowledge Base entries are advisory.** They remain visible with lineage, relevance and provenance, but a missing or uncovered KB never blocks entity completion, spec validation or spec completion. Attach or copy a KB when it materially improves implementation context; do not create filler solely to satisfy a gate.
 - Effective N/A marks and resources inherit down the ideation → refinement → spec → card chain. Clear an inherited or local N/A only when the resource becomes applicable.
-- Cards move freely through \`started\`/\`in_progress\`/\`validation\`; \`validation → done\` enforces the blocking Architecture/Mockup policy and architecture findings.
+- Cards enter \`in_progress\` after the execution gates pass; \`validation → done\` enforces the blocking Architecture/Mockup policy and architecture findings.
 - The **Resource Gate Summary** shows each resource's \`blocking\` or \`advisory\` authority instead of treating all three as peers.
 
 ### Architecture Finding Done Gate

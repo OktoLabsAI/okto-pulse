@@ -4,7 +4,9 @@ import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { AccessibleTabList, AccessibleTabPanel } from '@/components/shared/AccessibleTabs';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { DeliveryEvidencePanel } from '@/components/code-traceability/DeliveryEvidencePanel';
+import { useDeliveryReadiness } from '@/components/code-traceability/useDeliveryReadiness';
 import type { ReadinessSpecLocation } from '@/components/code-traceability/readinessNavigation';
+import type { ReadinessMetric } from '@/types/delivery-readiness';
 import type { CoverageSection, SpecCoverageResponse } from './specCoverageTypes';
 
 const dimensions: [string, string, string, CoverageSection][] = [
@@ -32,6 +34,13 @@ function ratio(covered: unknown, total: unknown) {
     ? { covered, total, percent: total ? Math.round(covered / total * 100) : null } : null;
 }
 
+function persistedRatio(metric?: ReadinessMetric) {
+  if (!metric) return null;
+  if (metric.status === 'not_applicable') return { covered: 0, total: 0, percent: null };
+  return metric.status === 'known' && metric.percent !== null && metric.applicable !== null
+    ? { covered: metric.satisfied, total: metric.applicable, percent: metric.percent } : null;
+}
+
 function CoverageBar({ label, covered, total }: { label: string; covered: number; total: number }) {
   return <div role="progressbar" aria-label={label} aria-valuenow={covered} aria-valuemin={0} aria-valuemax={total}
     className="my-3 h-2 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
@@ -39,12 +48,12 @@ function CoverageBar({ label, covered, total }: { label: string; covered: number
   </div>;
 }
 
-function Meter({ label, value, description }: { label: string;
-  value: ReturnType<typeof ratio>; description: string }) {
+function Meter({ label, value, description, emptyLabel = 'Unavailable', zeroLabel = 'No items' }: { label: string;
+  value: ReturnType<typeof ratio>; description: string; emptyLabel?: string; zeroLabel?: string }) {
   return <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
     <p className="text-sm font-medium text-gray-600 dark:text-gray-300">{label}</p>
     <p className="mt-2 text-3xl font-semibold tracking-tight text-gray-900 dark:text-white">
-      {!value ? 'Unavailable' : value.percent === null ? 'No items' : `${value.percent}%`}
+      {!value ? emptyLabel : value.percent === null ? zeroLabel : `${value.percent}%`}
     </p>
     {value && value.total > 0 && <>
       <CoverageBar label={label} covered={value.covered} total={value.total} />
@@ -65,6 +74,10 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
 }) {
   const api = useDashboardApi();
   const [view, setView] = useState<CoverageView>(canReadSummary ? 'overview' : 'implementation');
+  const availableViews = views.filter(([id]) => id === 'implementation' ? canReadImplementation : canReadSummary);
+  const activeView = availableViews.some(([id]) => id === view) ? view : availableViews[0]?.[0] ?? 'overview';
+  const readiness = useDeliveryReadiness(boardId, specId, undefined, revision,
+    canReadImplementation && activeView !== 'implementation', 'projection');
   useEffect(() => { if (focusExceptionId && canReadImplementation) setView('implementation'); }, [focusExceptionId, canReadImplementation]);
   const [data, setData] = useState<SpecCoverageResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -95,12 +108,10 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
     }
   }, [api, boardId, specId]);
   useEffect(() => {
-    if (canReadSummary) void load();
+    if (canReadSummary && activeView !== 'implementation') void load();
     else setData(null);
     return () => request.current?.abort();
-  }, [load, revision, canReadSummary]);
-  const availableViews = views.filter(([id]) => id === 'implementation' ? canReadImplementation : canReadSummary);
-  const activeView = availableViews.some(([id]) => id === view) ? view : availableViews[0]?.[0] ?? 'overview';
+  }, [load, revision, canReadSummary, activeView]);
   const tabId = `spec-coverage-${specId}`;
   const summary = data?.structure.summary;
   const planning = dimensions.map(([label, numerator, denominator, section]) => ({
@@ -111,10 +122,10 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
   const planningValue = data?.structure.complete_for_scope && planning.every(row => row.value)
     ? ratio(applicable.filter(row => row.value!.covered === row.value!.total).length, applicable.length) : null;
   const proofAvailable = data?.delivery.state === 'available' && data.delivery.complete_for_scope;
-  const implementationValue = proofAvailable
-    ? ratio(data.delivery.counts.implementation_proven, data.delivery.counts.obligations) : null;
-  const verificationValue = proofAvailable
-    ? ratio(data.delivery.counts.verification_proven, data.delivery.counts.obligations) : null;
+  const implementationValue = persistedRatio(readiness.persisted?.summary?.implementation);
+  const verificationValue = persistedRatio(readiness.persisted?.summary?.verification);
+  const proofEmptyLabel = readiness.loading || readiness.persisted?.freshness === 'pending_initial'
+    ? 'Waiting for calculation' : readiness.persisted?.summary ? 'Unable to evaluate' : 'Unavailable';
   const gaps = planning.filter(row => row.value && row.value.covered < row.value.total);
   return <section className="space-y-5 text-sm text-gray-700 dark:text-gray-300" aria-label="Spec coverage">
     <div className="flex flex-wrap items-start justify-between gap-3">
@@ -139,11 +150,20 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
       <AccessibleTabPanel idBase={tabId} tabId="overview" value={activeView} className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <Meter label="Planning coverage" value={planningValue} description="Applicable link dimensions fully covered. Empty dimensions are excluded." />
-          <Meter label="Implementation proof" value={implementationValue} description="Obligations with admitted implementation proof." />
+          <Meter label="Implementation proof" value={implementationValue} emptyLabel={proofEmptyLabel}
+            zeroLabel="Not applicable" description="Persisted proof for applicable obligations." />
           <Meter label="Decision adherence" value={proofAvailable ? ratio(data.delivery.counts.decisions_verified, data.delivery.counts.decisions) : null}
             description="Current obligation evidence and inspections required by Decisions." />
-          <Meter label="Verification proof" value={verificationValue} description="Obligations with admitted verification proof." />
+          <Meter label="Verification proof" value={verificationValue} emptyLabel={proofEmptyLabel}
+            zeroLabel="Not applicable" description="Persisted proof for applicable obligations." />
         </div>
+        {readiness.persisted && <p role="status" className="text-xs text-gray-500">
+          {readiness.persisted.freshness === 'current' ? 'Current' : readiness.persisted.freshness === 'updating'
+            ? 'Updating · previous coherent generation' : readiness.persisted.freshness === 'pending_initial'
+              ? 'Waiting for calculation' : 'Calculation unavailable'}
+          {readiness.persisted.generationId ? ` · Generation ${readiness.persisted.generationId}` : ''}
+        </p>}
+        {readiness.error && <p role="alert" className="text-xs text-amber-700">{readiness.error}</p>}
         <section aria-label="Next steps" className="rounded-xl border border-gray-200 p-4 dark:border-gray-700">
           <h4 className="font-semibold text-gray-900 dark:text-white">Next steps</h4>
           <ul className="mt-3 space-y-3">

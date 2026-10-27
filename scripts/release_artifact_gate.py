@@ -30,12 +30,12 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-EXPECTED_VERSION = "0.4.1"
-EXPECTED_GRAFX_VERSION = "0.0.7"
-# DV2 (Core 437ea9d0) added the two native Decision review tools before
-# the readiness plan baseline; readiness itself adds no new MCP tool.
-EXPECTED_MCP_TOOL_COUNT = 285
-EXPECTED_CANONICAL_TOOL_COUNT = 285
+EXPECTED_VERSION = "0.4.2"
+EXPECTED_GRAFX_VERSION = "0.0.8"
+# DV2 added two native Decision review tools; persisted readiness adds the
+# delivery-readiness-summary MCP surface to the release inventory.
+EXPECTED_MCP_TOOL_COUNT = 288
+EXPECTED_CANONICAL_TOOL_COUNT = 288
 EXPECTED_TOOL_ALIAS_COUNT = 0
 EXPECTED_RESOURCE_COUNT = 54
 MINIMUM_SUPPORTED_PYTHON = (3, 11)

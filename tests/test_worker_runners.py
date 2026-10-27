@@ -17,6 +17,7 @@ from okto_pulse.community.adapters.core_import_boundary import (
     audit_community_core_import_boundary,
 )
 from okto_pulse.core.kg.blocking_io import run_blocking_graph_io
+from okto_pulse.core.kg.guarded_write import GuardedWriteError
 from okto_pulse.core.ports.runtime_workers import WorkerDrainIncomplete
 
 
@@ -101,6 +102,14 @@ class _ProjectionRecoveryFailureProcessor(_Processor):
         return 1
 
 
+class _ProjectionRecoveryContentionProcessor(_ProjectionRecoveryFailureProcessor):
+    async def recover_projection_operations(self) -> int:
+        raise GuardedWriteError(
+            "lock_contention", "another writer currently owns the board graph",
+            retryable=True,
+        )
+
+
 @pytest.mark.asyncio
 async def test_projection_recovery_failure_does_not_starve_stale_claims() -> None:
     processor = _ProjectionRecoveryFailureProcessor()
@@ -117,6 +126,27 @@ async def test_projection_recovery_failure_does_not_starve_stale_claims() -> Non
         runner._running = False
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_projection_recovery_writer_contention_is_deferred(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    processor = _ProjectionRecoveryContentionProcessor()
+    runner = ConsolidationRunner(
+        processor, blocking_execution=_BlockingExecution(),
+        heartbeat_seconds=60, recovery_interval_seconds=0.01,
+        max_concurrent_workers=1,
+    )
+    runner._running = True
+    task = asyncio.create_task(runner.run_recovery_forever())
+    try:
+        await asyncio.wait_for(processor.stale_claim_recovered.wait(), timeout=1)
+    finally:
+        runner._running = False
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert "consolidation projection recovery failed" not in caplog.text
 
 
 async def _assert_notify_is_marshaled_to_event_loop(runner, processor) -> None:

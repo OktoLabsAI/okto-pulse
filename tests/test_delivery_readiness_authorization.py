@@ -127,6 +127,32 @@ async def test_current_membership_and_policy_are_read_only_and_secret_free(ledge
     assert not session.new and not session.dirty and not session.deleted
 
 
+@pytest.mark.parametrize('actor', [ACTOR, ReadinessActor('owner', 'human', 'local'),
+    ReadinessActor('shared', 'human', 'local')])
+async def test_persisted_access_matches_native_policy_for_agent_owner_and_share(ledger, actor):
+    session, _, _ = ledger
+    await setup(session)
+    native_reader = reader(session)
+    expected = await native_reader._access(session, actor, delivery.BOARD_ID,
+        {'queries': 0, 'facts': 0})
+    actual = await native_reader._access_persisted(session, actor, delivery.BOARD_ID)
+    assert actual == expected
+
+
+async def test_persisted_access_matches_human_agent_policy_inheritance(ledger):
+    session, _, _ = ledger
+    await setup(session)
+    actor = ReadinessActor('agent-creator', 'human', 'local')
+    session.add(BoardShare(id='agent-creator-share', board_id=delivery.BOARD_ID,
+        user_id=actor.actor_id, realm_id='local', permission='editor', shared_by='owner'))
+    await session.commit()
+    native_reader = reader(session)
+    expected = await native_reader._access(session, actor, delivery.BOARD_ID,
+        {'queries': 0, 'facts': 0})
+    actual = await native_reader._access_persisted(session, actor, delivery.BOARD_ID)
+    assert actual == expected
+
+
 @pytest.mark.parametrize('realm_id', ['local', 'tenant-readiness'])
 async def test_native_spec_gate_is_evaluated_in_authorized_snapshot_without_writes(ledger, realm_id):
     session, _, _ = ledger

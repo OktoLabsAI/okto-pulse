@@ -1,5 +1,7 @@
 # Delivery readiness implementation report — community
 
+> 0.4.2 update (2026-10-21): The historical implementation-only Card gate described below has been superseded. Normal and Bug Cards now require current implementation and verification proof before Done; Test Cards require current verification proof. Stored Done status remains historical when proof becomes stale.
+
 ## Scope and baseline (2026-10-13)
 
 Normative plan: `../PLANO_CODEX_PULSE_ENTREGA_VERIFICACAO_READINESS_v1.md` in the shared workspace.

@@ -4,18 +4,20 @@ The dedicated connection never joins the writer's UoW and never commits. An
 explicit deferred transaction is necessary because SQLite's legacy driver mode
 does not start a database snapshot for SELECT merely on Session.begin().
 """
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from contextlib import contextmanager
-from dataclasses import asdict, is_dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
+from functools import lru_cache
+import gc
 import hashlib
 import json
 import logging
-from time import perf_counter
+from time import perf_counter, process_time
 
 from pydantic import BaseModel
-from sqlalchemy import event, or_, select
+from sqlalchemy import and_, event, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from okto_pulse.community.adapters.delivery_verification import native_verification_population
@@ -36,20 +38,49 @@ from okto_pulse.core.domain.enums import CardType
 from okto_pulse.core.domain.execution_contract import execution_contract
 from okto_pulse.core.domain.realm import LOCAL_REALM_ID, RealmScope
 from okto_pulse.core.ports.delivery_readiness import (
-    ReadinessActor, ReadinessCard, ReadinessReadError, ReadinessScenarioProcedure, ReadinessSnapshot,
+    ReadinessAccessDenied, ReadinessActor, ReadinessCard, ReadinessReadError,
+    ReadinessScenarioProcedure, ReadinessSnapshot,
     resolve_readiness_access, resolve_delivery_gate_policy,
 )
 from okto_pulse.core.ports.permission_policy import (
     PermissionPresetLineageNode, board_membership_allows_read, resolve_agent_permission_facts,
 )
 from okto_pulse.core.ports.test_evidence import supported_test_verification_methods
+from okto_pulse.core.services.persisted_delivery_readiness import EVALUATOR_VERSION
 
 logger = logging.getLogger(__name__)
 MAX_CARDS = 5000
 MAX_HISTORY = 10000
 MAX_FACTS = 20000
-FINGERPRINT_VERSION = 'delivery-readiness-snapshot/v1'
-EVALUATOR_VERSION = 'delivery-readiness-evaluator/v1'
+MAX_PROJECTION_RECORD_CACHE_ROWS = 25000
+MAX_PROJECTION_RECORD_CACHE_SCOPE_ROWS = 5000
+MAX_PROJECTION_CARD_PARTS_PER_SCOPE = 200
+FINGERPRINT_VERSION = 'delivery-readiness-snapshot/v2'
+
+
+@dataclass(frozen=True, slots=True)
+class ReadinessSourceDelta:
+    """Last invalidation observed in the same SQLite snapshot as its revision."""
+
+    source_revision: int
+    kind: str
+    card_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ProjectionCardRecord:
+    id: str
+    board_id: str
+    card_id: str
+    spec_id: str
+    spec_edition: int
+    kind: str
+    actor_id: str
+    actor_kind: str
+    idempotency_key: str
+    payload_sha256: str
+    payload: dict
+    created_at: datetime
 
 
 class CommunityReadinessClock:
@@ -70,6 +101,11 @@ def _count_queries(connection, counts):
         event.remove(connection.sync_connection, 'before_cursor_execute', count)
 
 
+@lru_cache(maxsize=128)
+def _dataclass_field_names(model):
+    return tuple(field.name for field in fields(model))
+
+
 def _json_value(value):
     if isinstance(value, (set, frozenset)):
         return sorted(value, key=lambda item: json.dumps(item, default=_json_value, sort_keys=True))
@@ -79,8 +115,10 @@ def _json_value(value):
         return value.value
     if isinstance(value, BaseModel):
         return value.model_dump(mode='json')
-    if is_dataclass(value):
-        return asdict(value)
+    if is_dataclass(value) and not isinstance(value, type):
+        # The JSON encoder visits nested dataclasses itself. Avoid recursively
+        # copying the entire facts graph before encoding the same values.
+        return {name: getattr(value, name) for name in _dataclass_field_names(type(value))}
     raise TypeError(f'Unsupported readiness identity type: {type(value).__name__}')
 
 
@@ -89,9 +127,58 @@ def _digest(value):
         ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode('utf-8')).hexdigest()
 
 
+def _resolve_readiness_policy(*, actor, board_id, realm_id, owner_id, share,
+                              agent_flags, preset_id, presets, board_overrides):
+    permissions = resolve_agent_permission_facts(
+        agent_flags=agent_flags, preset_id=preset_id, presets=presets,
+        board_overrides=board_overrides)
+    spec_write_access = board_membership_allows_read(
+        owner_id=owner_id, actor_id=actor.actor_id,
+        share_permission=share,
+        verified_agent_board_access=actor.actor_kind == 'agent',
+        allowed_share_permissions={'editor', 'admin'})
+    access = resolve_readiness_access(actor=actor, board_id=board_id,
+        realm_id=realm_id, permissions=permissions,
+        spec_write_access=spec_write_access)
+    access.require('code_traceability.evidence.read')
+    access.require('spec.entity.read')
+    return access
+
+
+def _policy_fact_key(value):
+    """Canonicalize freshly queried policy facts, never an actor's claims."""
+    return json.dumps(value, default=_json_value, sort_keys=True,
+        ensure_ascii=False, separators=(',', ':'), allow_nan=False)
+
+
+@lru_cache(maxsize=256)
+def _resolve_persisted_policy_facts(actor, board_id, realm_id, owner_id, share,
+                                    preset_id, agent_flags_key, presets_key,
+                                    board_overrides_key):
+    # Only the pure policy resolution is reused. Every read still queries Board,
+    # membership, Spec/Card and current policy facts before and after projection.
+    preset_rows = json.loads(presets_key)
+    return _resolve_readiness_policy(actor=actor, board_id=board_id,
+        realm_id=realm_id, owner_id=owner_id, share=share,
+        agent_flags=json.loads(agent_flags_key), preset_id=preset_id,
+        presets=tuple(PermissionPresetLineageNode(row['id'], row['flags'],
+            row['base_preset_id']) for row in preset_rows),
+        board_overrides=json.loads(board_overrides_key))
+
+
+def _resolve_persisted_policy(*, actor, board_id, realm_id, owner_id, share,
+                              agent_flags, preset_id, presets, board_overrides):
+    return _resolve_persisted_policy_facts(actor, board_id, realm_id, owner_id,
+        share, preset_id, _policy_fact_key(agent_flags),
+        _policy_fact_key(tuple({'id': p.id, 'flags': p.flags,
+            'base_preset_id': p.base_preset_id} for p in presets)),
+        _policy_fact_key(board_overrides))
+
+
 class _BatchFacts(CommunityDeliveryEvidenceStore):
     """Only storage access is replaced; admission/selection rules are inherited."""
-    def __init__(self, session, rows, *, inventory=None):
+    def __init__(self, session, rows, *, inventory=None, cached_plan=None,
+                 changed_card_ids=()):
         super().__init__(session, inventory=inventory)
         self.rows = rows
         self.index = {model: {r.id: r for r in values} for model, values in rows.items()}
@@ -111,6 +198,11 @@ class _BatchFacts(CommunityDeliveryEvidenceStore):
         self.obligations = None
         self.by_card = None
         self.names = {}
+        self.plan = None
+        self.cached_plan = cached_plan
+        self.native = None
+        self.changed_card_ids = frozenset(changed_card_ids)
+        self.card_parts = {}
 
     async def lock_scope(self, scope):
         raise RuntimeError('readiness_write_forbidden')
@@ -156,11 +248,15 @@ class _BatchFacts(CommunityDeliveryEvidenceStore):
 
     async def _execution_plan(self, spec):
         execution_contract(spec)
+        if self.cached_plan is not None:
+            self.plan, self.names, self.obligations, self.by_card = self.cached_plan[:4]
+            return self.plan
         fields = ('id', 'board_id', 'spec_id', 'card_type', 'status', 'archived',
                   'test_scenario_ids', 'title', 'description', 'details')
         plan = self.inventory.execution_plan(spec=spec,
             cards=[{field: getattr(c, field, None) for field in fields} for c in self.rows[Card]],
             admitted_methods=supported_test_verification_methods())
+        self.plan = plan
         if not plan.inventory.population_complete:
             self.obligations, self.by_card = (), {}
             return plan
@@ -186,11 +282,15 @@ class _BatchFacts(CommunityDeliveryEvidenceStore):
         return super()._with_effective_context(snapshot, plan, records, spec,
             native_verification=native_verification)
 
-    async def snapshot(self):
+    async def snapshot(self, *, phase_metrics=None):
         spec = self.spec
         scope = DeliveryScope(spec.board_id, spec.id, int(spec.edition))
+        phase_started = perf_counter()
         plan = await self._execution_plan(spec)
-        native = native_verification_population(spec)
+        native = (self.cached_plan[4] if self.cached_plan is not None
+            else native_verification_population(spec))
+        self.native = native
+        plan_ms = (perf_counter() - phase_started) * 1000
         if not plan.inventory.population_complete:
             return self._with_effective_context(DeliveryEvidenceSnapshot(scope, (), complete=False,
                 facts_complete=False), plan, (), spec, native_verification=native)
@@ -200,24 +300,49 @@ class _BatchFacts(CommunityDeliveryEvidenceStore):
         implementations, tests, rejections = [], [], []
         complete = facts_complete = True
         active_cards = [c for c in self.rows[Card] if not c.archived]
+        retain_parts = len(active_cards) <= MAX_PROJECTION_CARD_PARTS_PER_SCOPE
+        cached_parts = (self.cached_plan[5] if retain_parts and self.cached_plan is not None
+            and len(self.cached_plan) > 5 else {})
+        reused_parts = 0
+        phase_started = perf_counter()
         for card in active_cards:
-            part = await self.load_card_snapshot(CardDeliveryScope(scope.board_id, card.id,
-                scope.spec_id, scope.edition), plan=plan, records=self.card_records[card.id],
-                native_verification=native, native_runs=native_runs)
+            part = (cached_parts.get(card.id) if card.id not in self.changed_card_ids
+                else None)
+            if part is None:
+                part = await self.load_card_snapshot(CardDeliveryScope(scope.board_id, card.id,
+                    scope.spec_id, scope.edition), plan=plan, records=self.card_records[card.id],
+                    native_verification=native, native_runs=native_runs)
+            else:
+                reused_parts += 1
+            if retain_parts:
+                self.card_parts[card.id] = part
             implementations.extend(part.implementations)
             tests.extend(part.tests)
             rejections.extend(part.rejected_records)
             complete = complete and part.complete is True
             facts_complete = facts_complete and part.facts_complete is True
+        cards_ms = (perf_counter() - phase_started) * 1000
+        phase_started = perf_counter()
         result = DeliveryEvidenceSnapshot(scope, self.obligations, tuple(implementations), tuple(tests),
             tuple(await self._rollup_waivers(scope)), complete=complete,
             rejected_records=tuple(rejections), facts_complete=facts_complete)
         result = self._with_effective_context(result, plan, self.rows[CardRecord], spec, native_verification=native)
+        context_ms = (perf_counter() - phase_started) * 1000
+        phase_started = perf_counter()
         if result.effective_context and any(r.decision_plan and r.decision_plan.complete
                 and r.decision_plan.verification.inspection for r in result.effective_context.inventory.rows):
             _, states, _, _, _ = await CommunityDecisionReviews(self).material(spec, result,
                 sources=(self.rows[Board][0], self.rows[Record], self.rows[SpecHistory], active_cards))
             result = replace(result, effective_context=replace(result.effective_context, decision_inspections=states))
+        if phase_metrics is not None:
+            phase_metrics.update({
+                'readiness_materialize_facts_plan_ms': plan_ms,
+                'readiness_materialize_facts_cards_ms': cards_ms,
+                'readiness_materialize_facts_card_parts_reused': float(reused_parts),
+                'readiness_materialize_facts_context_ms': context_ms,
+                'readiness_materialize_facts_decisions_ms':
+                    (perf_counter() - phase_started) * 1000,
+            })
         return result
 
 
@@ -226,12 +351,116 @@ class CommunityDeliveryReadinessReader:
         if engine.url.get_backend_name() != 'sqlite':
             raise ValueError('community_readiness_requires_sqlite')
         self.engine, self.clock, self.inventory = engine, clock, inventory
+        self._projection_plan_cache = OrderedDict()
+        self._projection_record_cache = OrderedDict()
+        self._projection_record_cache_rows = 0
+
+    def _remember_projection_records(self, key, revision, records):
+        prior = self._projection_record_cache.pop(key, None)
+        if prior is not None:
+            self._projection_record_cache_rows -= len(prior[1])
+        if len(records) > MAX_PROJECTION_RECORD_CACHE_SCOPE_ROWS:
+            return
+        self._projection_record_cache[key] = (revision, records)
+        self._projection_record_cache_rows += len(records)
+        while self._projection_record_cache_rows > MAX_PROJECTION_RECORD_CACHE_ROWS:
+            _, (_, evicted) = self._projection_record_cache.popitem(last=False)
+            self._projection_record_cache_rows -= len(evicted)
+
+    async def _progress_record_rows(self, session, statement, cached, progress_counts, counts):
+        """Reuse immutable rows only after a complete durable progress chain."""
+        changed = tuple(progress_counts)
+        current = await self._projection_record_rows(session,
+            statement.where(CardRecord.card_id.in_(changed)), MAX_FACTS, counts)
+        old_by_card = defaultdict(set)
+        new_by_card = defaultdict(set)
+        for row in cached:
+            if row.card_id in progress_counts:
+                old_by_card[row.card_id].add(row.id)
+        for row in current:
+            new_by_card[row.card_id].add(row.id)
+        if not all(old_by_card[card_id] <= new_by_card[card_id]
+                and len(new_by_card[card_id]) == len(old_by_card[card_id]) + added
+                for card_id, added in progress_counts.items()):
+            return None
+        combined = tuple(sorted((*(row for row in cached
+            if row.card_id not in progress_counts), *current),
+            key=lambda row: (row.created_at, row.id)))
+        if len(combined) > MAX_FACTS:
+            raise ReadinessReadError('readiness_limit_exceeded',
+                native_code='readiness_population_limit')
+        counts['record_cache_hit'] = 1.0
+        counts['record_cache_reused_rows'] = float(len(combined) - len(current))
+        counts['facts'] += len(combined) - len(current)
+        return combined
 
     async def _rows(self, session, statement, limit, counts):
+        started = perf_counter() if 'query_ms' in counts else None
         rows = tuple((await session.scalars(statement.limit(limit + 1))).all())
+        if started is not None:
+            entity = statement.column_descriptions[0].get('entity')
+            name = entity.__tablename__ if entity is not None else 'unknown'
+            counts['query_ms'][name] = (perf_counter() - started) * 1000
         if len(rows) > limit:
             raise ReadinessReadError('readiness_limit_exceeded', native_code='readiness_population_limit')
         counts['facts'] += len(rows)
+        return rows
+
+    async def _projection_record_rows(self, session, statement, limit, counts):
+        """Keep the projection's large ledger batch out of the ORM identity map."""
+        gc_started = None
+        gc_pause_ms = 0.0
+        gc_collections = 0
+        gc_pause_by_generation = [0.0, 0.0, 0.0]
+        gc_count_by_generation = [0, 0, 0]
+
+        def observe_gc(phase, info):
+            nonlocal gc_started, gc_pause_ms, gc_collections
+            if phase == 'start':
+                gc_started = perf_counter()
+            elif phase == 'stop' and gc_started is not None:
+                pause_ms = (perf_counter() - gc_started) * 1000
+                gc_pause_ms += pause_ms
+                gc_collections += 1
+                generation = info.get('generation')
+                if isinstance(generation, int) and 0 <= generation < 3:
+                    gc_pause_by_generation[generation] += pause_ms
+                    gc_count_by_generation[generation] += 1
+                gc_started = None
+
+        gc.callbacks.append(observe_gc)
+        started = perf_counter()
+        cpu_started = process_time()
+        try:
+            result = await session.execute(statement.limit(limit + 1))
+            execute_ms = (perf_counter() - started) * 1000
+            fetch_started = perf_counter()
+            values = result.all()
+            fetch_ms = (perf_counter() - fetch_started) * 1000
+            if 'query_ms' in counts:
+                counts['query_ms'][CardRecord.__tablename__] = (perf_counter() - started) * 1000
+            if len(values) > limit:
+                raise ReadinessReadError('readiness_limit_exceeded', native_code='readiness_population_limit')
+            counts['facts'] += len(values)
+            wrap_started = perf_counter()
+            rows = tuple(_ProjectionCardRecord(**row._mapping) for row in values)
+            wrap_ms = (perf_counter() - wrap_started) * 1000
+            cpu_ms = (process_time() - cpu_started) * 1000
+        finally:
+            gc.callbacks.remove(observe_gc)
+        if 'query_ms' in counts:
+            counts['record_query_detail_ms'] = {
+                'execute': execute_ms,
+                'fetch': fetch_ms,
+                'wrap': wrap_ms,
+                'cpu': cpu_ms,
+                'gc_pause': gc_pause_ms,
+                'gc_collections': float(gc_collections),
+                **{f'gc_pause_gen{generation}': gc_pause_by_generation[generation]
+                   for generation in range(3)},
+                **{f'gc_count_gen{generation}': float(gc_count_by_generation[generation])
+                   for generation in range(3)},
+            }
         return rows
 
     async def _access(self, session, actor, board_id, counts):
@@ -277,21 +506,91 @@ class CommunityDeliveryReadinessReader:
             raise ReadinessReadError('readiness_scope_mismatch')
         presets = await self._rows(session, select(PermissionPreset).order_by(PermissionPreset.id), 5000, counts
             ) if agent is not None and agent.preset_id else ()
-        permissions = resolve_agent_permission_facts(
+        return _resolve_readiness_policy(actor=actor, board_id=board_id,
+            realm_id=realm_id, owner_id=board.owner_id, share=share,
             agent_flags=agent.permission_flags if agent is not None else None,
             preset_id=agent.preset_id if agent is not None else None,
-            presets=tuple(PermissionPresetLineageNode(p.id, p.flags, p.base_preset_id) for p in presets),
+            presets=tuple(PermissionPresetLineageNode(p.id, p.flags, p.base_preset_id)
+                for p in presets),
             board_overrides=binding.permission_overrides if binding is not None else None)
-        spec_write_access = board_membership_allows_read(owner_id=board.owner_id, actor_id=actor.actor_id,
-            share_permission=share, verified_agent_board_access=actor.actor_kind == 'agent',
-            allowed_share_permissions={'editor', 'admin'})
-        access = resolve_readiness_access(actor=actor, board_id=board_id, realm_id=realm_id,
-            permissions=permissions, spec_write_access=spec_write_access)
-        access.require('code_traceability.evidence.read')
-        access.require('spec.entity.read')
+
+    async def _access_persisted(self, session, actor, board_id):
+        """Resolve current authority with only the columns used by the policy.
+
+        The source evaluator keeps its existing batch reader. This path is
+        called before and after an indexed generation read, so loading full
+        Board/Agent ORM rows twice would inflate the hot request.
+        """
+        if (not isinstance(actor, ReadinessActor) or not actor.actor_id
+            or actor.actor_kind not in {'human', 'user', 'agent'}
+            or actor.board_id is not None and actor.board_id != board_id):
+            raise ReadinessReadError('readiness_scope_mismatch')
+        realm_id = actor.realm_id or LOCAL_REALM_ID
+        identity_started = perf_counter()
+        if actor.actor_kind == 'agent':
+            identity = (await session.execute(select(
+                Board.owner_id, Board.realm_id, Agent.id.label('agent_id'),
+                Agent.permission_flags, Agent.preset_id,
+                AgentBoard.permission_overrides,
+            ).select_from(Board).join(Agent, and_(
+                Agent.id == actor.actor_id, Agent.is_active.is_(True)))
+                .join(AgentBoard, and_(AgentBoard.agent_id == Agent.id,
+                    AgentBoard.board_id == Board.id))
+                .where(Board.id == board_id))).first()
+            share = None
+            member = identity is not None and board_membership_allows_read(
+                owner_id=identity.owner_id, actor_id=actor.actor_id,
+                verified_agent_board_access=True)
+        else:
+            first_agent_id = select(Agent.id).where(
+                Agent.created_by == actor.actor_id).limit(1).scalar_subquery()
+            identity = (await session.execute(select(
+                Board.owner_id, Board.realm_id, BoardShare.permission,
+                Agent.id.label('agent_id'), Agent.permission_flags,
+                Agent.preset_id, AgentBoard.permission_overrides,
+            ).select_from(Board).outerjoin(BoardShare, and_(
+                BoardShare.board_id == Board.id,
+                BoardShare.user_id == actor.actor_id,
+                BoardShare.realm_id == realm_id))
+                .outerjoin(Agent, Agent.id == first_agent_id)
+                .outerjoin(AgentBoard, and_(AgentBoard.agent_id == Agent.id,
+                    AgentBoard.board_id == Board.id))
+                .where(Board.id == board_id))).first()
+            share = identity.permission if identity is not None else None
+            member = identity is not None and board_membership_allows_read(
+                owner_id=identity.owner_id, actor_id=actor.actor_id,
+                share_permission=share)
+        identity_done = perf_counter()
+        if (identity is None or (identity.realm_id or LOCAL_REALM_ID) != realm_id
+            or not member):
+            raise ReadinessReadError('readiness_scope_mismatch')
+        presets = ()
+        if identity.agent_id is not None and identity.preset_id:
+            presets = tuple((await session.execute(select(
+                PermissionPreset.id, PermissionPreset.flags,
+                PermissionPreset.base_preset_id,
+            ).order_by(PermissionPreset.id).limit(5001))).all())
+            if len(presets) > 5000:
+                raise ReadinessReadError('readiness_limit_exceeded',
+                    native_code='readiness_population_limit')
+        presets_done = perf_counter()
+        access = _resolve_persisted_policy(actor=actor, board_id=board_id,
+            realm_id=realm_id, owner_id=identity.owner_id, share=share,
+            agent_flags=identity.permission_flags if identity.agent_id is not None else None,
+            preset_id=identity.preset_id if identity.agent_id is not None else None,
+            presets=tuple(PermissionPresetLineageNode(p.id, p.flags, p.base_preset_id)
+                for p in presets),
+            board_overrides=identity.permission_overrides if identity.agent_id is not None else None)
+        logger.debug('readiness.access_phases', extra={
+            'readiness_identity_ms': (identity_done - identity_started) * 1000,
+            'readiness_presets_ms': (presets_done - identity_done) * 1000,
+            'readiness_policy_ms': (perf_counter() - presets_done) * 1000,
+        })
         return access
 
-    async def _load_transaction(self, session, board_id, spec_id, card_id, counts):
+    async def _load_transaction(self, session, board_id, spec_id, card_id, counts,
+                                *, defer_facts=False, cached_records=None,
+                                progress_counts=None):
         rows = {}
         rows[Spec] = await self._rows(session, select(Spec).where(Spec.id == spec_id,
             Spec.board_id == board_id, Spec.archived.is_(False)), 1, counts)
@@ -305,9 +604,22 @@ class CommunityDeliveryReadinessReader:
         rows[Card] = await self._rows(session, select(Card).where(Card.id.in_(cards)).order_by(Card.id), MAX_CARDS, counts)
         if card_id is not None and not any(c.id == card_id and not c.archived for c in rows[Card]):
             raise ReadinessReadError('readiness_scope_mismatch')
-        rows[CardRecord] = await self._rows(session, select(CardRecord).where(CardRecord.board_id == board_id,
+        record_filter = (CardRecord.board_id == board_id,
             CardRecord.spec_id == spec_id, CardRecord.spec_edition == spec.edition,
-            CardRecord.card_id.in_(cards)).order_by(CardRecord.created_at, CardRecord.id), MAX_FACTS, counts)
+            CardRecord.card_id.in_(cards))
+        record_order = (CardRecord.created_at, CardRecord.id)
+        if defer_facts:
+            statement = (select(*CardRecord.__table__.columns)
+                .where(*record_filter).order_by(*record_order))
+            reused = (await self._progress_record_rows(session, statement,
+                cached_records, progress_counts, counts)
+                if cached_records is not None and progress_counts else None)
+            rows[CardRecord] = (reused if reused is not None else
+                await self._projection_record_rows(session, statement, MAX_FACTS, counts))
+        else:
+            rows[CardRecord] = await self._rows(session,
+                select(CardRecord).where(*record_filter).order_by(*record_order),
+                MAX_FACTS, counts)
         rows[Record] = await self._rows(session, select(Record).where(Record.board_id == board_id,
             Record.spec_id == spec_id).order_by(Record.created_at, Record.id), MAX_HISTORY, counts)
         rows[SpecHistory] = await self._rows(session, select(SpecHistory).where(SpecHistory.spec_id == spec_id)
@@ -323,14 +635,41 @@ class CommunityDeliveryReadinessReader:
             Receipt.id.in_(receipts)).order_by(Receipt.id), MAX_FACTS, counts)
         rows[Revocation] = await self._rows(session, select(Revocation).where(Revocation.receipt_id.in_(receipts))
             .order_by(Revocation.id), MAX_FACTS, counts)
-        facts = await _BatchFacts(session, rows, inventory=self.inventory).snapshot()
+        if defer_facts:
+            return rows
+        return await self._snapshot_from_rows(rows)
+
+    async def _snapshot_from_rows(self, rows, *, phase_metrics=None,
+                                  cached_plan=None, changed_card_ids=(),
+                                  return_plan=False):
+        """Build facts from an immutable row set; no database call is allowed."""
+        spec = rows[Spec][0]
+        phase_started = perf_counter()
+        facts_phases = {}
+        batch = _BatchFacts(None, rows, inventory=self.inventory, cached_plan=cached_plan,
+            changed_card_ids=changed_card_ids)
+        facts = await batch.snapshot(
+            phase_metrics=facts_phases)
+        facts_ms = (perf_counter() - phase_started) * 1000
+        phase_started = perf_counter()
         # Hash actual content as well as identities. No mutable ORM objects,
         # raw ledger payloads, credentials or full Board configuration escape.
-        identities = {model.__tablename__: sorted((r.id, _digest({c.key: getattr(r, c.key)
-            for c in model.__table__.columns})) for r in values) for model, values in rows.items()}
-        identity = _digest({'contract_version': 'delivery-readiness/v1', 'fingerprint_version': FINGERPRINT_VERSION,
-            'evaluator_version': EVALUATOR_VERSION,
-            'inputs': identities, 'effective_facts': facts})
+        identity_values = {model.__tablename__: tuple((r.id,
+            {c.key: getattr(r, c.key) for c in model.__table__.columns}) for r in values)
+            for model, values in rows.items()}
+        identity_rows_ms = (perf_counter() - phase_started) * 1000
+        def calculate_identity():
+            # One canonical serialization retains every column while avoiding
+            # thousands of separate JSON encodes and intermediate row hashes.
+            identities = {name: sorted(values, key=lambda row: row[0])
+                for name, values in identity_values.items()}
+            return _digest({'contract_version': 'delivery-readiness/v1',
+                'fingerprint_version': FINGERPRINT_VERSION,
+                'evaluator_version': EVALUATOR_VERSION,
+                'inputs': identities, 'effective_facts': facts})
+        phase_started = perf_counter()
+        identity = calculate_identity()
+        identity_digest_ms = (perf_counter() - phase_started) * 1000
         evaluated_at = self.clock.now()
         if evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None:
             raise ReadinessReadError('readiness_assessment_unavailable', native_code='readiness_clock_timezone_required')
@@ -341,12 +680,24 @@ class CommunityDeliveryReadinessReader:
             ('title', 'verification_method', 'given', 'when', 'then', 'notes')),
             tuple(v for v in (s.get('linked_criteria') or ()) if isinstance(v, str)))
             for s in spec.test_scenarios if isinstance(s, dict) and isinstance(s.get('id'), str)) if isinstance(spec.test_scenarios, list) else ()
-        return ReadinessSnapshot(facts, identity, evaluated_at.astimezone(timezone.utc), int(spec.version), spec.status.value,
+        if phase_metrics is not None:
+            phase_metrics.update({
+                'readiness_materialize_facts_ms': facts_ms,
+                'readiness_materialize_identity_rows_ms': identity_rows_ms,
+                'readiness_materialize_identity_digest_ms': identity_digest_ms,
+                'readiness_materialize_facts_plan_cache_hit': float(cached_plan is not None),
+                **facts_phases,
+            })
+        result = ReadinessSnapshot(facts, identity, evaluated_at.astimezone(timezone.utc), int(spec.version), spec.status.value,
             tuple(ReadinessCard(c.id, c.card_type, c.status, c.policy_version,
                 tuple(c.test_scenario_ids) if c.test_scenario_ids is not None else None, c.assignee_id)
                 for c in rows[Card] if not c.archived), scenarios,
             delivery_gate_mode=resolve_delivery_gate_policy(rows[Board][0].settings),
             skip_delivery_evidence=spec.skip_delivery_evidence is True)
+        if return_plan:
+            return result, (batch.plan, batch.names, batch.obligations,
+                batch.by_card, batch.native, batch.card_parts)
+        return result
 
     async def load(self, *, board_id, spec_id, card_id=None, actor=None):
         # Actor-less reads are internal fact-loader compatibility only. Public
@@ -392,6 +743,303 @@ class CommunityDeliveryReadinessReader:
         finally:
             logger.debug('readiness_batch_read elapsed_ms=%.3f queries=%d facts=%d',
                 (perf_counter() - started) * 1000, counts['queries'], counts['facts'])
+
+    async def load_for_projection(self, *, board_id, spec_id, blocking_execution,
+                                  phase_metrics=None, include_source_delta=False):
+        """Capture one source revision and immutable facts without actor state.
+
+        The worker releases this connection before calling the CPU evaluator.
+        Later writes may advance the source; publication fences that revision
+        instead of retrying an unrelated global ``PRAGMA data_version`` change.
+        """
+        from okto_pulse.community.adapters.sqlalchemy_models import (
+            ReadinessScopeRow, ReadinessSourceDeltaRow, ReadinessSourceDeltaEventRow,
+        )
+        from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import (
+            MAX_PROGRESS_CHAIN,
+        )
+
+        counts = {'queries': 0, 'facts': 0, 'query_ms': {}}
+        started = perf_counter()
+        cached_plan = None
+        plan_chain_ms = 0.0
+        plan_chain_length = 0
+        counts['record_cache_hit'] = 0.0
+        counts['record_cache_reused_rows'] = 0.0
+        async with self.engine.connect() as connection:
+            checkout_ms = (perf_counter() - started) * 1000
+            phase_started = perf_counter()
+            await connection.exec_driver_sql('BEGIN')
+            begin_ms = (perf_counter() - phase_started) * 1000
+            try:
+                phase_started = perf_counter()
+                async with AsyncSession(bind=connection, autoflush=False, expire_on_commit=False) as session:
+                    scope = (await session.scalars(select(ReadinessScopeRow).where(
+                        ReadinessScopeRow.board_id == board_id,
+                        ReadinessScopeRow.spec_id == spec_id,
+                        ReadinessScopeRow.tombstone.is_(False)).order_by(
+                        ReadinessScopeRow.edition.desc()).limit(1))).first()
+                    if scope is None:
+                        raise ReadinessReadError('readiness_scope_mismatch')
+                    delta_row = (await session.get(ReadinessSourceDeltaRow, scope.id)
+                        if include_source_delta else None)
+                    delta = (ReadinessSourceDelta(delta_row.source_revision,
+                        delta_row.kind, delta_row.card_id) if delta_row is not None else None)
+                    scope_ms = (perf_counter() - phase_started) * 1000
+                    phase_started = perf_counter()
+                    captured_revision = scope.source_revision
+                    edition = scope.edition
+                    cache_key = (board_id, spec_id, edition)
+                    previous = self._projection_plan_cache.get(cache_key)
+                    record_cache = self._projection_record_cache.get(cache_key)
+                    progress_counts = None
+                    if (previous is not None and delta is not None
+                            and delta.source_revision == captured_revision
+                            and delta.kind == 'card_progress_insert' and delta.card_id):
+                        span = captured_revision - previous[0]
+                        chain = ()
+                        if span == 1:
+                            chain = (delta,)
+                        elif 1 < span <= MAX_PROGRESS_CHAIN:
+                            chain_started = perf_counter()
+                            events = (await session.execute(select(
+                                ReadinessSourceDeltaEventRow.source_revision,
+                                ReadinessSourceDeltaEventRow.kind,
+                                ReadinessSourceDeltaEventRow.card_id).where(
+                                ReadinessSourceDeltaEventRow.scope_id == scope.id,
+                                ReadinessSourceDeltaEventRow.source_revision > previous[0],
+                                ReadinessSourceDeltaEventRow.source_revision <= captured_revision)
+                                .order_by(ReadinessSourceDeltaEventRow.source_revision)
+                                .limit(span + 1))).all()
+                            plan_chain_ms = (perf_counter() - chain_started) * 1000
+                            plan_chain_length = len(events)
+                            if (len(events) == span and all(
+                                    event.source_revision == previous[0] + index
+                                    and event.kind == 'card_progress_insert'
+                                    and event.card_id
+                                    for index, event in enumerate(events, start=1))):
+                                chain = tuple(ReadinessSourceDelta(
+                                    event.source_revision, event.kind, event.card_id)
+                                    for event in events)
+                        if chain:
+                            cached_plan = previous[1]
+                            progress_counts = defaultdict(int)
+                            for event in chain:
+                                progress_counts[event.card_id] += 1
+                    cached_records = (record_cache[1] if record_cache is not None
+                        and previous is not None and record_cache[0] == previous[0]
+                        and progress_counts else None)
+                    try:
+                        rows = await self._load_transaction(
+                            session, board_id, spec_id, None, counts, defer_facts=True,
+                            cached_records=cached_records,
+                            progress_counts=progress_counts)
+                    except ReadinessReadError as exc:
+                        if exc.code != 'readiness_limit_exceeded':
+                            raise
+                        rows = None
+                        overflow = await self._capacity_snapshot(session, board_id, spec_id, None, counts, exc)
+                    source_ms = (perf_counter() - phase_started) * 1000
+            finally:
+                phase_started = perf_counter()
+                await connection.rollback()
+                rollback_ms = (perf_counter() - phase_started) * 1000
+        read_rows_ms = (perf_counter() - started) * 1000 - checkout_ms
+        materialize_started = perf_counter()
+        materialize_phases = {}
+        if rows is None:
+            snapshot = overflow
+        else:
+            import asyncio
+            snapshot, plan = await blocking_execution.run(
+                lambda: asyncio.run(self._snapshot_from_rows(rows,
+                    phase_metrics=materialize_phases, cached_plan=cached_plan,
+                    changed_card_ids=progress_counts or (),
+                    return_plan=True)))
+            self._projection_plan_cache[cache_key] = (captured_revision, plan)
+            self._projection_plan_cache.move_to_end(cache_key)
+            if len(self._projection_plan_cache) > 16:
+                self._projection_plan_cache.popitem(last=False)
+            self._remember_projection_records(cache_key, captured_revision, rows[CardRecord])
+        metrics = {
+            'readiness_checkout_ms': checkout_ms,
+            'readiness_begin_ms': begin_ms,
+            'readiness_scope_ms': scope_ms,
+            'readiness_source_ms': source_ms,
+            'readiness_rollback_ms': rollback_ms,
+            'readiness_query_ms': counts['query_ms'],
+            'readiness_record_query_detail_ms': counts.get('record_query_detail_ms', {}),
+            'readiness_read_rows_ms': read_rows_ms,
+            'readiness_plan_cache_chain_ms': plan_chain_ms,
+            'readiness_plan_cache_chain_length': float(plan_chain_length),
+            'readiness_record_cache_hit': counts['record_cache_hit'],
+            'readiness_record_cache_reused_rows': counts['record_cache_reused_rows'],
+            'readiness_record_cache_rows': float(self._projection_record_cache_rows),
+            'readiness_materialize_ms': (perf_counter() - materialize_started) * 1000,
+            **materialize_phases,
+        }
+        logger.debug('readiness.projection_snapshot_phases', extra=metrics)
+        if phase_metrics is not None:
+            phase_metrics.update(metrics)
+        if snapshot.facts.scope.edition != edition:
+            raise ReadinessReadError('readiness_snapshot_changed')
+        if include_source_delta:
+            return snapshot, captured_revision, delta
+        return snapshot, captured_revision
+
+    async def load_persisted(self, *, board_id, spec_id, actor, card_id=None,
+                             unit_limit=0, cursor=None, include_diagnostics=False):
+        """Authorize current actor around a bounded projection read.
+
+        No proof facts, historical versions or diagnostics are loaded. A commit
+        during the read triggers fresh authorization; changed ACL/Spec/Card
+        facts are retried once, then fail closed.
+        """
+        from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import (
+            CommunityPersistedReadinessStore,
+        )
+
+        async def authorize(connection, *, check_source_revision=False):
+            await connection.exec_driver_sql('BEGIN')
+            try:
+                async with AsyncSession(bind=connection, autoflush=False) as session:
+                    access = await self._access_persisted(session, actor, board_id)
+                    # The unscoped projection contains Card identities and
+                    # metrics as well as the Spec summary. Authorize that
+                    # population before reading or returning any row.
+                    access.require('card.entity.read')
+                    spec = (await session.execute(select(Spec.edition, Spec.version).where(
+                        Spec.id == spec_id, Spec.board_id == board_id,
+                        Spec.archived.is_(False)))).first()
+                    if spec is None:
+                        raise ReadinessReadError('readiness_scope_mismatch')
+                    card_policy_version = None
+                    if card_id is not None:
+                        card_policy_version = (await session.execute(select(Card.policy_version).where(
+                            Card.id == card_id,
+                            Card.board_id == board_id, Card.spec_id == spec_id,
+                            Card.archived.is_(False)))).scalar_one_or_none()
+                        if card_policy_version is None:
+                            raise ReadinessReadError('readiness_scope_mismatch')
+                    source_revision = None
+                    if check_source_revision:
+                        source_revision = (await connection.exec_driver_sql(
+                            'SELECT source_revision FROM readiness_scope WHERE board_id=? '
+                            'AND spec_id=? AND edition=? AND tombstone=0 LIMIT 1',
+                            (board_id, spec_id, spec.edition))).scalar_one_or_none()
+                    return access, spec.edition, spec.version, card_policy_version, source_revision
+            finally:
+                await connection.rollback()
+
+        store = CommunityPersistedReadinessStore(self.engine)
+        async def read_projected(before, authority_connection):
+            generation_id = None
+            unit_offset = 0
+            if cursor is not None:
+                if not unit_limit and not include_diagnostics:
+                    raise ReadinessReadError('readiness_query_invalid')
+                from okto_pulse.core import get_settings
+                from .delivery_readiness_cursor import CommunityReadinessCursorCodec
+                codec = CommunityReadinessCursorCodec.from_settings(get_settings())
+                if include_diagnostics:
+                    generation_id = codec.peek_detail_generation(cursor)
+                else:
+                    generation_id, unit_offset = codec.decode_projection(cursor,
+                        actor_id=actor.actor_id, board_id=board_id, spec_id=spec_id,
+                        edition=before[1], card_id=card_id, limit=unit_limit)
+            projection = await store.read(board_id=board_id, spec_id=spec_id,
+                edition=before[1], card_id=card_id, unit_limit=unit_limit,
+                unit_offset=unit_offset, generation_id_override=generation_id,
+                include_diagnostics=include_diagnostics, connection=authority_connection)
+            return projection, unit_offset
+
+        for _ in range(2):
+            started = perf_counter()
+            async with self.engine.connect() as authority_connection:
+                checkout_ms = (perf_counter() - started) * 1000
+                # data_version is comparable only on the same SQLite connection.
+                # Release each read transaction before beginning the next one;
+                # reuse the connection so a concurrent commit remains detectable.
+                observed_version = (await authority_connection.exec_driver_sql(
+                    'PRAGMA data_version')).scalar_one()
+                before = await authorize(authority_connection)
+                authorized_at = perf_counter()
+                projection, unit_offset = await read_projected(before, authority_connection)
+                projected_at = perf_counter()
+                current_version = (await authority_connection.exec_driver_sql(
+                    'PRAGMA data_version')).scalar_one()
+                if current_version == observed_version:
+                    after = before
+                else:
+                    after = await authorize(authority_connection, check_source_revision=True)
+                reauthorized_at = perf_counter()
+            if before[:4] == after[:4]:
+                if current_version != observed_version:
+                    latest_revision = after[4]
+                    # The authorization and target revision are one SQLite
+                    # snapshot. A source edit may follow the projection read;
+                    # the immutable generation is then still safe to show as
+                    # updating, with its captured revision kept intact.
+                    if (projection is None) != (latest_revision is None):
+                        continue
+                    if projection is not None and latest_revision != projection.source_revision:
+                        projection = replace(projection, source_revision=latest_revision,
+                            freshness=('updating' if projection.freshness == 'current'
+                                else projection.freshness))
+                logger.debug('readiness.persisted_read_phases', extra={
+                    'readiness_checkout_ms': checkout_ms,
+                    'readiness_auth_before_ms': (authorized_at - started) * 1000,
+                    'readiness_projection_ms': (projected_at - authorized_at) * 1000,
+                    'readiness_auth_after_ms': (reauthorized_at - projected_at) * 1000,
+                })
+                has_more = bool(projection and unit_limit
+                    and unit_offset + len(projection.units) < projection.unit_total)
+                next_cursor = None
+                if has_more:
+                    from okto_pulse.core import get_settings
+                    from .delivery_readiness_cursor import CommunityReadinessCursorCodec
+                    next_cursor = CommunityReadinessCursorCodec.from_settings(
+                        get_settings()).encode_projection(actor_id=actor.actor_id,
+                        board_id=board_id, spec_id=spec_id, edition=before[1],
+                        card_id=card_id, limit=unit_limit,
+                        generation_id=projection.generation_id,
+                        offset=unit_offset + len(projection.units))
+                result = (projection, before[1], before[2], {'offset': unit_offset,
+                    'limit': unit_limit, 'total': projection.unit_total if projection else 0,
+                    'has_more': has_more, 'next_cursor': next_cursor})
+                return (*result, after[0]) if include_diagnostics else result
+        raise ReadinessReadError('readiness_snapshot_changed')
+
+    async def requeue_terminal(self, *, board_id, spec_id, actor,
+                               edition, expected_revision, idempotency_key, reason):
+        from .sqlalchemy_persisted_readiness import CommunityPersistedReadinessStore
+
+        counts = {'queries': 0, 'facts': 0}
+        async with AsyncSession(self.engine, autoflush=False) as session:
+            access = await self._access(session, actor, board_id, counts)
+            access.require('readiness.requeue')
+            if actor.actor_kind in {'human', 'user'}:
+                board = await session.get(Board, board_id)
+                if board is None:
+                    raise ReadinessReadError('readiness_scope_mismatch')
+                if board.owner_id != actor.actor_id:
+                    share = (await session.scalars(select(BoardShare.permission).where(
+                        BoardShare.board_id == board_id,
+                        BoardShare.user_id == actor.actor_id,
+                        BoardShare.realm_id == (actor.realm_id or LOCAL_REALM_ID)))).first()
+                    if share != 'admin':
+                        raise ReadinessAccessDenied('readiness.requeue')
+            spec = await session.get(Spec, spec_id)
+            if spec is None or spec.board_id != board_id or spec.archived:
+                raise ReadinessReadError('readiness_scope_mismatch')
+            if spec.edition != edition:
+                raise ReadinessReadError('readiness_requeue_conflict')
+            scope_id = f'{spec_id}:{spec.edition}'
+        return await CommunityPersistedReadinessStore(self.engine).requeue_terminal(
+            scope_id=scope_id, board_id=board_id,
+            actor_id=actor.actor_id, actor_kind=actor.actor_kind,
+            expected_revision=expected_revision, idempotency_key=idempotency_key,
+            reason=reason)
 
     async def _capacity_snapshot(self, session, board_id, spec_id, card_id, counts, error):
         """Keep an authorized scope header, never the prefix of overflowing facts.

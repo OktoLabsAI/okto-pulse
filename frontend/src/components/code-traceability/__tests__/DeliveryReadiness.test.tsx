@@ -4,14 +4,19 @@ import { DeliveryReadinessView } from '../DeliveryReadinessView';
 import { KanbanCard } from '@/components/kanban/KanbanCard';
 import { CardDeliveryDoDPanel } from '../CardDeliveryDoDPanel';
 import { DeliveryEvidencePanel } from '../DeliveryEvidencePanel';
-import { emptyCounts, metric, readiness, task } from './readinessFixture';
+import { emptyCounts, metric, persistedProjection, readiness, task } from './readinessFixture';
 
-const api = vi.hoisted(() => ({ getDeliveryReadiness: vi.fn(), getDeliveryEvidence: vi.fn(), getBoard: vi.fn() }));
+const api = vi.hoisted(() => ({ getDeliveryReadiness: vi.fn(), getPersistedReadinessProjection: vi.fn(), getDeliveryEvidence: vi.fn(), getBoard: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 vi.mock('@dnd-kit/sortable', () => ({ useSortable: () => ({ setNodeRef: vi.fn(), attributes: {}, listeners: {} }) }));
 beforeEach(() => {
   vi.clearAllMocks();
   api.getDeliveryReadiness.mockImplementation((_board, _spec, cardId) => Promise.resolve(readiness(cardId ?? null)));
+  api.getPersistedReadinessProjection.mockImplementation((_board, _spec, options) => {
+    const value = persistedProjection();
+    value.scope.card_id = options?.cardId ?? null;
+    return Promise.resolve(value);
+  });
   api.getDeliveryEvidence.mockResolvedValue({ board_id: 'b', spec_id: 's', edition: 1, version: 1, complete: true,
     candidates: [], implementations: [], rows: [], tests: [], rejected_record_ids: [], per_card: [] });
   api.getBoard.mockResolvedValue({ settings: {} });
@@ -37,7 +42,28 @@ it.each(['normal', 'bug', 'test'] as const)('U01: %s cover and Delivery share ba
 it('Spec Delivery consumes its own context, without averaging card percentages', async () => {
   render(<DeliveryEvidencePanel boardId="b" specId="s" />);
   expect(await screen.findByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');
-  expect(api.getDeliveryReadiness).toHaveBeenCalledWith('b', 's', undefined, expect.any(AbortSignal));
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledWith('b', 's', { unitLimit: 250 }, expect.any(AbortSignal));
+  expect(api.getDeliveryReadiness).not.toHaveBeenCalled();
+});
+
+it('refreshes the obligation table when diagnosis belongs to a newer generation', async () => {
+  let projectionReads = 0;
+  api.getPersistedReadinessProjection.mockImplementation(() => {
+    const value = persistedProjection();
+    if (++projectionReads > 1) value.projection.generation_id = 'generation-2';
+    return Promise.resolve(value);
+  });
+  api.getDeliveryReadiness.mockImplementation(() => {
+    const value = readiness(null);
+    value.projection = { projection_version: 1, generation_id: 'generation-2', snapshot_id: value.snapshot_id };
+    return Promise.resolve(value);
+  });
+  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  expect(await screen.findByText(/Generation generation-1/)).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'What is missing?' }));
+  await waitFor(() => expect(projectionReads).toBeGreaterThan(1));
+  expect(await screen.findByText(/Generation generation-2/)).toBeVisible();
+  expect(screen.queryByText(/Generation generation-1/)).not.toBeInTheDocument();
 });
 
 it('U02: 100/100 remains closure pending while native lifecycle is open', () => {
@@ -51,10 +77,38 @@ it('U02: 100/100 remains closure pending while native lifecycle is open', () => 
 it('U04: Done remains historical when current qualification diverges', () => {
   const value = readiness(); value.lifecycle.stored_status = 'done';
   value.summary.message_code = 'historical_completion_diverged';
+  value.implementation = metric(75, 6);
   render(<DeliveryReadinessView value={value} />);
   expect(screen.getByText('Status: done')).toBeVisible();
   expect(screen.getByText('Historical completion · current qualification pending')).toBeVisible();
   expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');
+});
+
+it('Done Test Card cover distinguishes its execution report from pending Delivery proof', () => {
+  const value = readiness(); value.scope.card_type = 'test'; value.lifecycle.stored_status = 'done';
+  value.summary.message_code = 'historical_completion_diverged';
+  value.implementation = { ...metric(0, 0), status: 'not_applicable', percent: null };
+  value.verification = { ...metric(0, 0), unit: 'scenario' };
+  render(<KanbanCard card={{ ...task, card_type: 'test', status: 'done',
+    conclusions: [{ text: 'Execution finished', author_id: 'agent', created_at: '2026-10-21',
+      completeness: 100, completeness_justification: 'All execution steps ran', drift: 0,
+      drift_justification: 'No drift reported', source: 'move_to_done' }] }}
+    nameMap={{}} onClick={vi.fn()} deliveryReadiness={{ value }} />);
+  expect(screen.getByRole('status')).toHaveTextContent('Execution done · Delivery pending');
+  expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '0');
+  expect(screen.getByText('Execution report: 100%')).toBeVisible();
+  expect(screen.queryByText('100% complete')).not.toBeInTheDocument();
+});
+
+it('Done Task with complete implementation identifies verification as the remaining work', () => {
+  const value = readiness(); value.lifecycle.stored_status = 'done';
+  value.summary.message_code = 'historical_completion_diverged';
+  value.verification = metric(0, 0);
+  render(<><KanbanCard card={{ ...task, status: 'done' }} nameMap={{}} onClick={vi.fn()}
+    deliveryReadiness={{ value }} /><DeliveryReadinessView value={value} /></>);
+  expect(screen.getByRole('status')).toHaveTextContent('Implementation done · Verification pending');
+  expect(screen.getByText('Implementation complete · verification pending')).toBeVisible();
+  expect(screen.getAllByRole('progressbar', { name: 'Verification' })).toHaveLength(2);
 });
 
 it('Test Card shows verification alone and scenario counts with failure text even when Done', () => {

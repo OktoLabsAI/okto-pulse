@@ -1,0 +1,536 @@
+"""Readiness projection processor, independent of KG and global outbox."""
+
+from __future__ import annotations
+
+import asyncio
+import atexit
+from concurrent.futures.process import BrokenProcessPool
+from contextlib import suppress
+from datetime import datetime, timezone
+import gc
+import hashlib
+import logging
+import re
+from multiprocessing import current_process
+from pathlib import Path
+from threading import get_ident
+from time import monotonic, process_time
+from uuid import uuid4
+
+from okto_pulse.core.services.persisted_delivery_readiness import (
+    IncrementalReadinessUnavailable, ReadinessSourceDelta,
+    build_readiness_generation,
+)
+from .sqlalchemy_delivery_readiness import CommunityDeliveryReadinessReader, CommunityReadinessClock
+from .sqlalchemy_persisted_readiness import CommunityPersistedReadinessStore, ReadinessLeaseLost
+
+logger = logging.getLogger("okto_pulse.readiness_projection")
+_SAFE_LOG_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
+
+
+def _log_id(value: str) -> str:
+    """Keep correlation IDs useful without logging arbitrary source text."""
+    if _SAFE_LOG_ID.fullmatch(value):
+        return value
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+def _error_code(exc: BaseException) -> str:
+    name = type(exc).__name__
+    return name if _SAFE_LOG_ID.fullmatch(name) else "UnknownError"
+PIPELINE_BATCH_SECONDS = 5.0
+PIPELINE_BATCH_CLAIMS = 16
+PROJECTION_CHILD_MIN_GEN2_THRESHOLD = 100
+
+
+_process_runner = None
+_process_engine = None
+_process_database_path = None
+_process_reader = None
+_process_store = None
+
+
+def _close_projection_child() -> None:
+    if _process_runner is not None:
+        try:
+            if _process_engine is not None:
+                _process_runner.run(_process_engine.dispose())
+        finally:
+            _process_runner.close()
+
+
+atexit.register(_close_projection_child)
+
+
+def _projection_child_runtime(database_path):
+    """Reuse one child engine and event loop for capture and stage verification."""
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from .sqlalchemy_database import install_community_sqlite_pragmas
+
+    global _process_runner, _process_engine, _process_database_path
+    requested_path = str(Path(database_path).resolve())
+    if _process_runner is None:
+        runner = asyncio.Runner()
+        engine = None
+        try:
+            engine = create_async_engine(f"sqlite+aiosqlite:///{requested_path}",
+                pool_size=2, max_overflow=0)
+            install_community_sqlite_pragmas(engine)
+        except BaseException:
+            # A failed first attempt must not poison all later claims in this
+            # process or mask the original database admission error.
+            if engine is not None:
+                with suppress(Exception):
+                    runner.run(engine.dispose())
+            with suppress(Exception):
+                runner.close()
+            raise
+        if current_process().name != 'MainProcess':
+            gen0, gen1, gen2 = gc.get_threshold()
+            if gen2 < PROJECTION_CHILD_MIN_GEN2_THRESHOLD:
+                gc.set_threshold(gen0, gen1, PROJECTION_CHILD_MIN_GEN2_THRESHOLD)
+            logger.info('readiness.projection_child_gc_threshold gen2=%d',
+                gc.get_threshold()[2])
+        _process_runner, _process_engine, _process_database_path = (
+            runner, engine, requested_path)
+    elif _process_database_path is None:
+        raise RuntimeError("readiness_process_database_uninitialized")
+    elif _process_database_path != requested_path:
+        previous_id = hashlib.sha256(_process_database_path.encode()).hexdigest()[:12]
+        requested_id = hashlib.sha256(requested_path.encode()).hexdigest()[:12]
+        raise ValueError("readiness_process_database_path_changed: "
+            f"previous={previous_id} requested={requested_id}")
+    return _process_runner, _process_engine
+
+
+async def _candidate_predecessor(store, claim, revision, delta, *, phase_metrics=None):
+    if (delta is None or delta.source_revision != revision
+            or delta.kind != "card_progress_insert" or not delta.card_id
+            or revision < 1):
+        return None
+    predecessor = await store.load_verified_predecessor(scope_id=claim.scope_id,
+        board_id=claim.board_id, spec_id=claim.spec_id, edition=claim.edition,
+        expected_revision=revision - 1, phase_metrics=phase_metrics)
+    if predecessor is not None:
+        return predecessor, (ReadinessSourceDelta(
+            revision, delta.kind, delta.card_id),)
+    active_revision = await store.active_predecessor_revision(
+        scope_id=claim.scope_id, board_id=claim.board_id, spec_id=claim.spec_id,
+        edition=claim.edition, before_revision=revision)
+    if active_revision is None:
+        return None
+    chain = await store.load_progress_delta_chain(scope_id=claim.scope_id,
+        after_revision=active_revision, through_revision=revision,
+        phase_metrics=phase_metrics)
+    if chain is None or chain[-1].card_id != delta.card_id:
+        return None
+    predecessor = await store.load_verified_predecessor(scope_id=claim.scope_id,
+        board_id=claim.board_id, spec_id=claim.spec_id, edition=claim.edition,
+        expected_revision=active_revision, phase_metrics=phase_metrics)
+    return (predecessor, chain) if predecessor is not None else None
+
+
+def _build_with_predecessor(snapshot, revision, deadline, candidate, *, phase_metrics=None):
+    if candidate is not None:
+        predecessor, progress_deltas = candidate
+        try:
+            phases = {}
+            generation = build_readiness_generation(snapshot, captured_revision=revision,
+                deadline=deadline, predecessor=predecessor,
+                progress_deltas=progress_deltas, phase_metrics=phases)
+            if phase_metrics is not None:
+                phase_metrics.update(phases)
+            return generation, "incremental"
+        except IncrementalReadinessUnavailable as exc:
+            logger.debug("readiness.incremental_fallback code=%s", _error_code(exc))
+    phases = {}
+    generation = build_readiness_generation(snapshot, captured_revision=revision,
+        deadline=deadline, phase_metrics=phases)
+    if phase_metrics is not None:
+        phase_metrics.update(phases)
+    return generation, "full"
+
+
+def _project_and_stage_from_database(database_path, claim, deadline):
+    """Keep the large generation in one child until its rows are durable."""
+    from .worker_runners import TrackedBlockingExecution
+
+    runner, engine = _projection_child_runtime(database_path)
+    global _process_reader, _process_store
+    if _process_reader is None:
+        _process_reader = CommunityDeliveryReadinessReader(engine,
+            clock=CommunityReadinessClock())
+    if _process_store is None:
+        _process_store = CommunityPersistedReadinessStore(engine)
+
+    gc_phase = {'name': 'snapshot'}
+    gc_started = {}
+    gc_pause_ms = {}
+    gc_counts = {}
+
+    def observe_gc(event, info):
+        thread_id = get_ident()
+        if event == 'start':
+            gc_started[thread_id] = (monotonic(), gc_phase['name'])
+        elif event == 'stop':
+            started = gc_started.pop(thread_id, None)
+            if started is None:
+                return
+            began_at, name = started
+            generation = info.get('generation')
+            if not isinstance(generation, int) or generation not in (0, 1, 2):
+                return
+            key = (name, generation)
+            gc_pause_ms[key] = gc_pause_ms.get(key, 0.0) + (monotonic() - began_at) * 1000
+            gc_counts[key] = gc_counts.get(key, 0) + 1
+
+    async def project_and_stage():
+        reader = _process_reader
+        store = _process_store
+        snapshot_phases = {}
+        started = monotonic()
+        cpu_started = process_time()
+        snapshot, revision, delta = await reader.load_for_projection(
+            board_id=claim.board_id, spec_id=claim.spec_id,
+            blocking_execution=TrackedBlockingExecution(), phase_metrics=snapshot_phases,
+            include_source_delta=True)
+        snapshot_ms = (monotonic() - started) * 1000
+        snapshot_phases["readiness_snapshot_cpu_ms"] = (
+            process_time() - cpu_started) * 1000
+        if revision < 0:
+            raise ValueError("readiness_revision_invalid")
+        gc_phase['name'] = 'predecessor'
+        started = monotonic()
+        candidate = await _candidate_predecessor(store, claim, revision, delta,
+            phase_metrics=snapshot_phases)
+        predecessor_ms = (monotonic() - started) * 1000
+        gc_phase['name'] = 'compute'
+        started = monotonic()
+        cpu_started = process_time()
+        generation, projection_mode = _build_with_predecessor(snapshot, revision, deadline,
+            candidate, phase_metrics=snapshot_phases)
+        compute_ms = (monotonic() - started) * 1000
+        snapshot_phases["readiness_compute_cpu_ms"] = (
+            process_time() - cpu_started) * 1000
+        if monotonic() > deadline:
+            raise TimeoutError("readiness_calculation_budget_exceeded")
+        gc_phase['name'] = 'stage'
+        phases = {}
+        started = monotonic()
+        cpu_started = process_time()
+        generation_id = await store.stage(claim, generation,
+            predecessor=candidate[0] if candidate is not None
+                and projection_mode == 'incremental' else None,
+            phase_metrics=phases)
+        stage_ms = (monotonic() - started) * 1000
+        snapshot_phases["readiness_stage_cpu_ms"] = (
+            process_time() - cpu_started) * 1000
+        return (generation_id, revision, len(generation.units), snapshot_ms,
+            predecessor_ms, compute_ms, stage_ms, projection_mode,
+            snapshot_phases, phases)
+
+    gc.callbacks.append(observe_gc)
+    try:
+        result = runner.run(project_and_stage())
+    finally:
+        gc.callbacks.remove(observe_gc)
+    snapshot_phases = result[8]
+    for name in ('snapshot', 'predecessor', 'compute', 'stage'):
+        for generation in range(3):
+            key = (name, generation)
+            snapshot_phases[f'readiness_gc_{name}_pause_gen{generation}_ms'] = (
+                gc_pause_ms.get(key, 0.0))
+            snapshot_phases[f'readiness_gc_{name}_count_gen{generation}'] = (
+                float(gc_counts.get(key, 0)))
+    return result
+
+
+def _stage_from_database(database_path, claim, generation):
+    """Stage and verify committed rows off the API event loop."""
+    runner, engine = _projection_child_runtime(database_path)
+    store = CommunityPersistedReadinessStore(engine)
+    phases = {}
+    generation_id = runner.run(store.stage(claim, generation, phase_metrics=phases))
+    return generation_id, phases
+
+
+class ReadinessProjectionProcessor:
+    def __init__(self, engine, blocking_execution, *, full_projection_executor=None,
+                 database_path=None, maintenance_enabled=True, max_inflight=1):
+        self.store = CommunityPersistedReadinessStore(engine)
+        self.reader = CommunityDeliveryReadinessReader(engine, clock=CommunityReadinessClock())
+        self.blocking_execution = blocking_execution
+        self.full_projection_executor = full_projection_executor
+        self.database_path = database_path
+        self.maintenance_enabled = maintenance_enabled
+        if max_inflight not in (1, 2):
+            raise ValueError("readiness_max_inflight_invalid")
+        self.max_inflight = max_inflight
+        self._fallback_calculation_lock = asyncio.Lock()
+        self.owner = uuid4().hex
+        self._last_reconcile = 0.0
+        self._last_queue_probe = 0.0
+        self._last_queue_log = 0.0
+        self._last_lag_warning = 0.0
+        self._last_gc = 0.0
+        self._gc_backlog = False
+
+    async def process_once(self) -> int:
+        if self.maintenance_enabled:
+            await self._maintenance_once()
+        claim_started = monotonic()
+        claim = await self.store.claim(owner=self.owner)
+        if claim is None:
+            return 0
+        source_timestamp = getattr(claim, 'source_updated_at', None)
+        source_to_claim_ms = (max(0.0, (
+            datetime.now(timezone.utc) - source_timestamp).total_seconds() * 1000)
+            if isinstance(source_timestamp, datetime) and source_timestamp.tzinfo else 0.0)
+        logger.debug('readiness.claim_phases', extra={
+            'readiness_claim_ms': (monotonic() - claim_started) * 1000,
+            'readiness_source_to_claim_ms': source_to_claim_ms,
+        })
+        if self.max_inflight > 1:
+            return await self._process_pipeline(claim)
+        return await self._run_claim(claim)
+
+    async def _process_pipeline(self, first_claim) -> int:
+        """Overlap one pending snapshot with staging, never a second CPU slot."""
+        running = {asyncio.create_task(self._run_claim(first_claim),
+            name="readiness.pipeline.claim")}
+        processed = 0
+        started = monotonic()
+        claims = 1
+        try:
+            while running:
+                # Return to the PollingRunner for reconciliation, GC and queue
+                # health even when writers keep the debt continuously nonempty.
+                if (len(running) < self.max_inflight
+                        and claims < PIPELINE_BATCH_CLAIMS
+                        and monotonic() - started < PIPELINE_BATCH_SECONDS
+                        and await self.store.eligible_pending_count() >= 2):
+                    claim = await self.store.claim(owner=self.owner)
+                    if claim is not None:
+                        claims += 1
+                        running.add(asyncio.create_task(self._run_claim(claim),
+                            name="readiness.pipeline.claim"))
+                done, running = await asyncio.wait(running, timeout=0.1,
+                    return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    processed += task.result()
+            return processed
+        finally:
+            for task in running:
+                task.cancel()
+            if running:
+                await asyncio.gather(*running, return_exceptions=True)
+
+    async def _run_claim(self, claim) -> int:
+        heartbeat = asyncio.create_task(self._heartbeats(claim), name="readiness.heartbeat")
+        try:
+            return await self._process_claim(claim, heartbeat)
+        finally:
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.error("readiness.heartbeat_failed board=%s spec=%s revision=%d epoch=%d code=%s",
+                    _log_id(claim.board_id), _log_id(claim.spec_id),
+                    claim.requested_revision, claim.epoch, _error_code(exc))
+
+    async def _maintenance_once(self) -> None:
+        started = monotonic()
+        reconcile_ms = queue_ms = gc_ms = 0.0
+        if monotonic() - self._last_reconcile >= 60:
+            phase_started = monotonic()
+            scanned = await self.store.reconcile_once()
+            reconcile_ms = (monotonic() - phase_started) * 1000
+            self._last_reconcile = monotonic()
+        else:
+            scanned = 0
+        if monotonic() - self._last_queue_probe >= 5:
+            phase_started = monotonic()
+            queue = await self.store.queue_status()
+            queue_ms = (monotonic() - phase_started) * 1000
+            now = monotonic()
+            self._last_queue_probe = now
+            if now - self._last_queue_log >= 60:
+                logger.info("readiness.queue scanned=%d counts=%s oldest_s=%s "
+                    "revision_lag_max=%d retrying=%d pool_checked_out=%d",
+                    scanned, queue["counts"], queue["oldest_s"],
+                    queue.get("revision_lag_max", 0), queue.get("retrying", 0),
+                    getattr(self.store.engine.sync_engine.pool, 'checkedout', lambda: 0)())
+                self._last_queue_log = now
+            if queue['oldest_s'] is not None and queue['oldest_s'] >= 65:
+                if now - self._last_lag_warning >= 60:
+                    logger.warning("readiness.queue_lag oldest_s=%.3f counts=%s",
+                        queue['oldest_s'], queue['counts'])
+                    self._last_lag_warning = now
+            else:
+                self._last_lag_warning = 0.0
+        if self._gc_backlog or monotonic() - self._last_gc >= 5:
+            phase_started = monotonic()
+            self._gc_backlog = await self.store.gc_once()
+            gc_ms = (monotonic() - phase_started) * 1000
+            self._last_gc = monotonic()
+        if reconcile_ms or queue_ms or gc_ms:
+            logger.debug('readiness.maintenance_phases', extra={
+                'readiness_maintenance_ms': (monotonic() - started) * 1000,
+                'readiness_maintenance_reconcile_ms': reconcile_ms,
+                'readiness_maintenance_queue_ms': queue_ms,
+                'readiness_maintenance_gc_ms': gc_ms,
+                'readiness_maintenance_gc_backlog': float(self._gc_backlog),
+            })
+
+    async def _process_claim(self, claim, heartbeat) -> int:
+        try:
+            snapshot_started = monotonic()
+            process_completed = False
+            process_dispatch_ms = 0.0
+            if self.full_projection_executor is not None:
+                if self.database_path is None:
+                    raise ValueError("readiness_process_database_path_required")
+                try:
+                    future = asyncio.get_running_loop().run_in_executor(
+                        self.full_projection_executor, _project_and_stage_from_database,
+                        str(self.database_path), claim,
+                        snapshot_started + 30)
+                    (generation_id, captured_revision, unit_count, snapshot_ms,
+                        predecessor_ms, compute_ms, child_stage_ms, projection_mode,
+                        snapshot_phases, phases) = await asyncio.shield(future)
+                    process_completed = True
+                    stage_ms = child_stage_ms
+                    process_dispatch_ms = max(0.0,
+                        (monotonic() - snapshot_started) * 1000 - snapshot_ms
+                        - predecessor_ms - compute_ms - stage_ms)
+                    logger.debug('readiness.projection_snapshot_phases', extra=snapshot_phases)
+                    logger.debug('readiness.stage_phases', extra=phases)
+                except BrokenProcessPool:
+                    # The durable claim survives child failure. Continue in the
+                    # existing thread lane until a runtime restart repairs the pool.
+                    logger.error("readiness.process_pool_unavailable board=%s spec=%s revision=%d epoch=%d code=BrokenProcessPool",
+                        _log_id(claim.board_id), _log_id(claim.spec_id),
+                        claim.requested_revision, claim.epoch)
+                    self.full_projection_executor = None
+                except asyncio.CancelledError:
+                    while not future.done():
+                        try:
+                            await asyncio.shield(future)
+                        except asyncio.CancelledError:
+                            continue
+                        except BaseException:
+                            break
+                    if future.done() and not future.cancelled():
+                        future.exception()
+                    raise
+            if not process_completed:
+                snapshot, captured_revision, delta = await self.reader.load_for_projection(
+                    board_id=claim.board_id, spec_id=claim.spec_id,
+                    blocking_execution=self.blocking_execution,
+                    include_source_delta=True)
+                snapshot_ms = (monotonic() - snapshot_started) * 1000
+                if captured_revision < 0:
+                    raise ValueError("readiness_revision_invalid")
+                predecessor_started = monotonic()
+                candidate = await _candidate_predecessor(self.store, claim,
+                    captured_revision, delta)
+                predecessor_ms = (monotonic() - predecessor_started) * 1000
+                started = monotonic()
+                # A broken child pool may fail several queued claims at once.
+                # Keep the thread fallback at the same single calculation slot.
+                async with self._fallback_calculation_lock:
+                    generation, projection_mode = await self.blocking_execution.run(
+                        lambda: _build_with_predecessor(snapshot, captured_revision,
+                            snapshot_started + 30, candidate))
+                compute_ms = (monotonic() - started) * 1000
+                if monotonic() - snapshot_started > 30:
+                    raise TimeoutError("readiness_calculation_budget_exceeded")
+                stage_started = monotonic()
+                generation_id = await self._stage_locally(claim, generation,
+                    predecessor=candidate[0] if candidate is not None
+                        and projection_mode == 'incremental' else None)
+                stage_ms = (monotonic() - stage_started) * 1000
+                unit_count = len(generation.units)
+            if heartbeat.done():
+                heartbeat.result()
+            publish_started = monotonic()
+            publish_phases = {}
+            if not await self.store.publish(claim, generation_id,
+                    phase_metrics=publish_phases):
+                raise ReadinessLeaseLost("readiness_publication_fence_lost")
+            publish_ms = (monotonic() - publish_started) * 1000
+            logger.debug('readiness.publish_phases', extra=publish_phases)
+            source_to_publish_ms = max(0.0, (
+                datetime.now(timezone.utc) - claim.source_updated_at).total_seconds() * 1000)
+            logger.info("readiness.published board=%s spec=%s revision=%d units=%d mode=%s "
+                "snapshot_ms=%.3f predecessor_ms=%.3f compute_ms=%.3f "
+                "stage_ms=%.3f process_dispatch_ms=%.3f publish_ms=%.3f "
+                "source_to_publish_ms=%.3f epoch=%d generation=%s",
+                _log_id(claim.board_id), _log_id(claim.spec_id), captured_revision, unit_count,
+                projection_mode,
+                snapshot_ms, predecessor_ms, compute_ms, stage_ms,
+                process_dispatch_ms, publish_ms, source_to_publish_ms,
+                claim.epoch, _log_id(generation_id))
+            return 1
+        except asyncio.CancelledError:
+            raise
+        except ReadinessLeaseLost:
+            # A newer owner or source mutation already owns the job. Its lease
+            # and requested revision must not be modified by this attempt.
+            logger.info("readiness.lease_lost board=%s spec=%s revision=%d epoch=%d",
+                _log_id(claim.board_id), _log_id(claim.spec_id),
+                claim.requested_revision, claim.epoch)
+            return 0
+        except Exception as exc:
+            code = _error_code(exc)
+            outcome = await self.store.fail(claim, error_code=code)
+            if outcome is not None:
+                state, attempt = outcome
+                log = logger.error if state == "terminal" else logger.warning
+                log("readiness.projection_failed board=%s spec=%s code=%s "
+                    "revision=%d epoch=%d state=%s attempt=%d",
+                    _log_id(claim.board_id), _log_id(claim.spec_id), code,
+                    claim.requested_revision, claim.epoch, state, attempt)
+            return 0
+
+    async def _stage_generation(self, claim, generation):
+        if self.full_projection_executor is None:
+            return await self._stage_locally(claim, generation)
+        try:
+            future = asyncio.get_running_loop().run_in_executor(
+                self.full_projection_executor, _stage_from_database,
+                str(self.database_path), claim, generation)
+            generation_id, phases = await asyncio.shield(future)
+            logger.debug('readiness.stage_phases', extra=phases)
+            return generation_id
+        except BrokenProcessPool:
+            logger.error("readiness.process_pool_unavailable board=%s spec=%s revision=%d epoch=%d code=BrokenProcessPool",
+                _log_id(claim.board_id), _log_id(claim.spec_id),
+                claim.requested_revision, claim.epoch)
+            self.full_projection_executor = None
+            return await self._stage_locally(claim, generation)
+        except asyncio.CancelledError:
+            while not future.done():
+                try:
+                    await asyncio.shield(future)
+                except asyncio.CancelledError:
+                    continue
+                except BaseException:
+                    break
+            if future.done() and not future.cancelled():
+                future.exception()
+            raise
+
+    async def _stage_locally(self, claim, generation, *, predecessor=None):
+        phases = {}
+        generation_id = await self.store.stage(claim, generation,
+            predecessor=predecessor, phase_metrics=phases)
+        logger.debug('readiness.stage_phases', extra=phases)
+        return generation_id
+
+    async def _heartbeats(self, claim) -> None:
+        while True:
+            await asyncio.sleep(10)
+            await self.store.heartbeat(claim)

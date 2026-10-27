@@ -24,7 +24,7 @@ export function CardProgressPanel({ boardId, specId, edition, card, canWrite, re
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const retry = useRef<{ body: string; key: string } | null>(null);
-  const writable = canWrite && ['started', 'in_progress'].includes(card.status) && !!card.card_version && card.delivery_revision !== undefined;
+  const writable = canWrite && card.status === 'in_progress' && !!card.card_version && card.delivery_revision !== undefined;
   const currentBasis = { edition, cardVersion: card.card_version, deliveryRevision: card.delivery_revision };
   const captureBasis = () => setBasis(value => value ?? currentBasis);
   const basisChanged = basis !== null && (basis.edition !== edition || basis.cardVersion !== card.card_version || basis.deliveryRevision !== card.delivery_revision);

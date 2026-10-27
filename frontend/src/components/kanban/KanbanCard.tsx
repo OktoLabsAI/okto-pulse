@@ -258,8 +258,8 @@ export function KanbanCard({ card, onClick, nameMap, canDrag = true, cognitiveBa
               : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300';
             return (
               <div className="flex gap-1 mt-1.5">
-                <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium ${cColor}`} title={`Completeness: ${cPct}%`}>
-                  {cPct}% complete
+                <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium ${cColor}`} title={`Executor-reported completeness: ${cPct}%. Delivery verification is separate.`}>
+                  Execution report: {cPct}%
                 </span>
                 <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium ${dColor}`} title={`Drift: ${dPct}%`}>
                   {dPct}% drift

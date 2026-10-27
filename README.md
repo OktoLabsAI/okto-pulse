@@ -508,7 +508,7 @@ for the human review workflow, waiver effects, failed-processing navigation and 
 See [KG Health: observe, diagnose and recover](docs/KG_HEALTH_DASHBOARD.md)
 for the operations dashboard, contextual help, action impacts and recovery safeguards.
 
-Community uses **Okto Grafx only**, pinned to the published `okto-grafx[accel]==0.0.7` release. `uv.lock` resolves Grafx from the official PyPI artifacts. See [Grafx-only runtime, settings, retirement and data preservation](docs/GRAFX_ONLY_COMMUNITY.md). The Core remains storage-agnostic.
+Community uses **Okto Grafx only**, pinned to the published `okto-grafx[accel]==0.0.8` release. `uv.lock` resolves Grafx from the official PyPI artifacts. See [Grafx-only runtime, settings, retirement and data preservation](docs/GRAFX_ONLY_COMMUNITY.md). The Core remains storage-agnostic.
 
 ## SaaS Closure Audit
 

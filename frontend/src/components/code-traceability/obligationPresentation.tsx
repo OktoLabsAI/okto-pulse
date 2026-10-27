@@ -35,7 +35,7 @@ export function ObligationRefText({ value }: { value: string }) {
     <span className="text-xs">
       <span className={`font-medium ${type.className}`}>{type.label}</span>
       {' '}
-      <span className="text-gray-400 dark:text-gray-500">({id})</span>
+      <span className="text-gray-600 dark:text-gray-300">({id})</span>
     </span>
   );
 }
