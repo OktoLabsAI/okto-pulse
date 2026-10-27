@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+import gc
 import json
 import logging
 from multiprocessing import get_context
@@ -60,6 +61,13 @@ from okto_pulse.core.services.delivery_readiness import DeliveryReadinessService
 from okto_pulse.core.services.persisted_delivery_readiness import build_readiness_generation
 
 ACTOR = ReadinessActor('benchmark-agent', 'agent', 'local', 'benchmark-board')
+
+
+def _initialize_projection_child(path: Path, gen2_threshold: int | None) -> None:
+    register_fixture_verifier(path)
+    if gen2_threshold is not None:
+        gen0, gen1, _ = gc.get_threshold()
+        gc.set_threshold(gen0, gen1, gen2_threshold)
 
 
 def _fixture_cache_identity(args: argparse.Namespace) -> dict:
@@ -273,8 +281,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             finally:
                 cursor.close()
     executor = (ProcessPoolExecutor(max_workers=args.worker_concurrency,
-        mp_context=get_context('spawn'), initializer=register_fixture_verifier,
-        initargs=(path,))
+        mp_context=get_context('spawn'), initializer=_initialize_projection_child,
+        initargs=(path, args.child_gc_gen2_threshold))
         if args.full_projection_process else None)
     workers = [ReadinessProjectionProcessor(engine, TrackedBlockingExecution(),
         full_projection_executor=executor, database_path=path,
@@ -882,6 +890,8 @@ if __name__ == '__main__':
     parser.add_argument('--full-projection-process', action='store_true')
     parser.add_argument('--worker-concurrency', type=int, default=1)
     parser.add_argument('--pipeline-depth', type=int, choices=(1, 2), default=1)
+    parser.add_argument('--child-gc-gen2-threshold', type=int,
+        help='Diagnostic only: override Python gen2 collection threshold in the projection child.')
     parser.add_argument('--read-surface', choices=['internal', 'service', 'rest'])
     parser.add_argument('--duration-seconds', type=int, default=60)
     parser.add_argument('--warmup-seconds', type=int, default=0)
@@ -928,6 +938,9 @@ if __name__ == '__main__':
         parser.error('worker-concurrency must be between 1 and 4')
     if args.pipeline_depth > 1 and args.worker_concurrency != 1:
         parser.error('pipeline-depth=2 requires one claim worker')
+    if args.child_gc_gen2_threshold is not None and (
+            not args.full_projection_process or args.child_gc_gen2_threshold < 1):
+        parser.error('child-gc-gen2-threshold requires a projection child and a positive value')
     with TemporaryDirectory(prefix='readiness-stress-') as folder:
         path = Path(folder) / 'pulse.db'
         cache_identity = _fixture_cache_identity(args) if args.fixture_cache else None

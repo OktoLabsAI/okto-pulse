@@ -83,6 +83,24 @@ def test_projection_child_does_not_cache_failed_initialization(tmp_path, monkeyp
         runner.close()
 
 
+def test_projection_child_sets_bounded_gen2_threshold(tmp_path, monkeypatch):
+    monkeypatch.setattr(worker_module, '_process_runner', None)
+    monkeypatch.setattr(worker_module, '_process_engine', None)
+    monkeypatch.setattr(worker_module, '_process_database_path', None)
+    monkeypatch.setattr(worker_module, 'current_process',
+        lambda: SimpleNamespace(name='SpawnProcess-1'))
+    thresholds = [700, 10, 10]
+    monkeypatch.setattr(worker_module.gc, 'get_threshold', lambda: tuple(thresholds))
+    monkeypatch.setattr(worker_module.gc, 'set_threshold',
+        lambda *values: thresholds.__setitem__(slice(None), values))
+    runner, engine = worker_module._projection_child_runtime(tmp_path / 'pulse.sqlite3')
+    try:
+        assert thresholds == [700, 10, worker_module.PROJECTION_CHILD_MIN_GEN2_THRESHOLD]
+    finally:
+        runner.run(engine.dispose())
+        runner.close()
+
+
 async def _seed_one_spec(engine):
     async with engine.begin() as connection:
         await connection.run_sync(create_current_schema_objects)

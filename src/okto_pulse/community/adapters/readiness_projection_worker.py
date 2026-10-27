@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import gc
 import hashlib
 import logging
+from multiprocessing import current_process
 from pathlib import Path
 from threading import get_ident
 from time import monotonic, process_time
@@ -25,6 +26,7 @@ from .sqlalchemy_persisted_readiness import CommunityPersistedReadinessStore, Re
 logger = logging.getLogger("okto_pulse.readiness_projection")
 PIPELINE_BATCH_SECONDS = 5.0
 PIPELINE_BATCH_CLAIMS = 16
+PROJECTION_CHILD_MIN_GEN2_THRESHOLD = 100
 
 
 _process_runner = None
@@ -69,6 +71,12 @@ def _projection_child_runtime(database_path):
             with suppress(Exception):
                 runner.close()
             raise
+        if current_process().name != 'MainProcess':
+            gen0, gen1, gen2 = gc.get_threshold()
+            if gen2 < PROJECTION_CHILD_MIN_GEN2_THRESHOLD:
+                gc.set_threshold(gen0, gen1, PROJECTION_CHILD_MIN_GEN2_THRESHOLD)
+            logger.info('readiness.projection_child_gc_threshold gen2=%d',
+                gc.get_threshold()[2])
         _process_runner, _process_engine, _process_database_path = (
             runner, engine, requested_path)
     elif _process_database_path is None:
