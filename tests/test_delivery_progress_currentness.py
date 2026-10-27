@@ -52,13 +52,12 @@ async def test_progress_recomputes_exact_sets_candidates_and_pre_done_gate(compo
     ids = [entry["execution_id"] for entry in saved["entries"][:2]]
     assert candidate_ids == (set(ids) if mode == "none" else {ids[0]} if mode != "unknown" else set())
     from okto_pulse.core.services import delivery_evidence as service
-    monkeypatch.setattr(service, "card_delivery_store", lambda _: store)
+    monkeypatch.setattr(service, "delivery_store", lambda _: store)
     card, spec, _ = await store._card_scope_guard(CardDeliveryScope("b", "c", "s", 1))
-    if mode == "none":
+    # Implementation may be current in the clean-note case, but Done still
+    # requires independent verification of every applicable obligation.
+    with pytest.raises(ValueError, match="delivery_evidence_incomplete"):
         await require_card_delivery(session, card, spec)
-    else:
-        with pytest.raises(ValueError, match="delivery_evidence_incomplete"):
-            await require_card_delivery(session, card, spec)
     # No lifecycle/version/history mutation is hidden inside the projection.
     assert card.status == "in_progress" and card.policy_version == 1
     assert spec.version == 1

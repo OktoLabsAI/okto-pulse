@@ -80,7 +80,7 @@ async def test_mixed_declarations_persist_and_gate_matches_rollup(
     from okto_pulse.core.services import delivery_evidence as gate
 
     monkeypatch.setattr(
-        gate, "card_delivery_store", lambda _: uow.services.delivery_evidence
+        gate, "delivery_store", lambda _: uow.services.delivery_evidence
     )
     with pytest.raises(ValueError, match="obligations=fr:fr, tr:tr$"):
         await require_card_delivery(

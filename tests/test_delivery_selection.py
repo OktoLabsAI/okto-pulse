@@ -145,7 +145,7 @@ async def test_seal_rejects_stale_or_foreign_selection_without_writes(composed, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("composed", [("target", "target-two")], indirect=True)
-async def test_real_card_report_and_delivery_store_share_manifest_and_gate(composed):
+async def test_real_card_report_and_delivery_store_share_manifest_and_gate(composed, monkeypatch):
     from okto_pulse.community.adapters.sqlalchemy_application_persistence import CommunitySqlAlchemyApplicationPersistence
     from okto_pulse.core.ports.application_persistence import register_application_persistence_port
     from okto_pulse.core.domain.realm import RealmScope
@@ -191,5 +191,8 @@ async def test_real_card_report_and_delivery_store_share_manifest_and_gate(compo
         assert [row["id"] for row in manifest["records"]] == [identity]
         store = CommunityDeliveryEvidenceStore(reader)
         card, spec, _ = await store._card_scope_guard(SCOPE)
-        await require_card_delivery(reader, card, spec)
+        from okto_pulse.core.services import delivery_evidence as delivery_gate
+        monkeypatch.setattr(delivery_gate, "delivery_store", lambda _: store)
+        with pytest.raises(ValueError, match="verification_not_run"):
+            await require_card_delivery(reader, card, spec)
         assert (await counts(reader))[:2] == [2, 3]

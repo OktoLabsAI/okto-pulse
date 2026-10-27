@@ -22,7 +22,11 @@ class PulseOutboxScenarioTests(unittest.TestCase):
 
         core_checkout = os.environ.get("OKTO_PULSE_CORE_REPO")
         self.assertIsNotNone(core_checkout, "Immutable paired Core checkout required")
-        result = pytest.main(["-q", "-p", "no:cacheprovider", *selectors])
+        resolved = []
+        for selector in selectors:
+            path, separator, case = selector.partition("::")
+            resolved.append(str(ROOT / path) + (separator + case if separator else ""))
+        result = pytest.main(["-q", "-p", "no:cacheprovider", *resolved])
         from okto_pulse.community.adapters.legacy_card_status_normalization import (
             normalize_legacy_card_status,
         )
