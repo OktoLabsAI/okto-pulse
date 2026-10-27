@@ -364,8 +364,7 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
             assert current.status == 'validated'
             preserved = copy.deepcopy((current.validations, current.evaluations, current.current_validation_id))
         await call(client, 'okto_pulse_move_spec', **scope, status='in_progress')
-        for state in ('started', 'in_progress'):
-            await call(client, 'okto_pulse_move_card', board_id='board', card_id='task', status=state)
+        await call(client, 'okto_pulse_move_card', board_id='board', card_id='task', status='in_progress')
         checkpoint_scope = await call(client, 'okto_pulse_get_delivery_evidence', **scope, card_id='task', view='resume')
         checkpoint = await call(client, 'okto_pulse_record_delivery_evidence', **scope, card_id='task', evidence=dict(
             kind='progress', expected_card_version=checkpoint_scope['card_version'],
@@ -397,23 +396,16 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
                 drift_justification='Matches the approved procedure scope'))
         delivered = await call(client, 'okto_pulse_record_delivery_evidence', **scope, card_id='task', evidence=report)
         resume = await call(client, 'okto_pulse_get_delivery_evidence', **scope, card_id='task', view='resume')
-        reviewed = await review_call(client, 'okto_pulse_submit_task_validation', board_id='board', card_id='task',
-            expected_subject_version=resume['card_version'], idempotency_key='solo-review',
-            confidence=95, confidence_justification='Inspected the accepted implementation record',
-            estimated_completeness=100, completeness_justification='All allocated implementation is present',
-            estimated_drift=0, drift_justification='No difference from the assigned scope',
-            general_justification='Inspected the preserved implementation and report under permitted self-review',
-            recommendation='approve')
-        assert reviewed['card_status'] == 'done', reviewed
-        # T07 in the same continuous flow: accepted implementation and task
-        # review still cannot replace the independent test-phase evidence.
+        # The implementation report alone leaves the task in validation and
+        # cannot close the Spec before independent test proof exists.
         refused = await client.call_tool('okto_pulse_move_spec', {**scope, 'status': 'done'}, raise_on_error=False)
         refusal = json.loads(refused.content[0].text)
-        assert refused.is_error and refusal['error_code'] == 'delivery_evidence_incomplete', refusal
-        readiness = await call(client, 'okto_pulse_get_delivery_evidence', **scope, view='readiness')
-        assert readiness['implementation']['percent'] == 100
-        assert readiness['verification']['percent'] == 0
-        assert 'verification_not_run' in json.dumps(readiness), json.dumps(readiness)
+        assert refused.is_error and refusal['error_code'] == 'cards_incomplete', refusal
+        from okto_pulse.community.adapters.sqlalchemy_delivery_evidence import CommunityDeliveryEvidenceStore
+        async with factory() as reader:
+            pending_projection = await CommunityDeliveryEvidenceStore(reader).projection('board', 'spec')
+        assert not pending_projection['allowed']
+        assert any(not row['test_satisfied'] for row in pending_projection['rows'])
         async with factory() as reader:
             current = await reader.get(Spec, 'spec')
             assert current.status == 'in_progress'
@@ -422,8 +414,7 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
             assert {record.id for record in records} == {checkpoint['id'], delivered['entries'][0]['id']}
             implementation_payload = copy.deepcopy(next(
                 record.payload for record in records if record.id == delivered['entries'][0]['id']))
-        for state in ('started', 'in_progress'):
-            await call(client, 'okto_pulse_move_card', board_id='board', card_id='test', status=state)
+        await call(client, 'okto_pulse_move_card', board_id='board', card_id='test', status='in_progress')
         executed = await call(client, 'okto_pulse_execute_test_scenario_evidence', **scope,
             scenario_id='scenario', status='passed',
             replay=json.dumps({'runner_ref': 'procedure', 'revision': revision}))
@@ -444,6 +435,14 @@ async def test_one_agent_preserves_assessments_and_evidence_through_spec_done(
         tested = await call(client, 'okto_pulse_record_delivery_evidence', **scope, card_id='test', evidence=test_report)
         replayed = await call(client, 'okto_pulse_record_delivery_evidence', **scope, card_id='test', evidence=test_report)
         assert replayed['replayed'] and replayed['entries'] == tested['entries']
+        reviewed = await review_call(client, 'okto_pulse_submit_task_validation', board_id='board', card_id='task',
+            expected_subject_version=resume['card_version'], idempotency_key='solo-review',
+            confidence=95, confidence_justification='Inspected the accepted implementation record',
+            estimated_completeness=100, completeness_justification='All allocated implementation is present',
+            estimated_drift=0, drift_justification='No difference from the assigned scope',
+            general_justification='Inspected the preserved implementation and report under permitted self-review',
+            recommendation='approve')
+        assert reviewed['card_status'] == 'done', reviewed
         await call(client, 'okto_pulse_move_spec', **scope, status='done')
         rollup = await call(client, 'okto_pulse_get_delivery_evidence', **scope)
         assert rollup['allowed']
