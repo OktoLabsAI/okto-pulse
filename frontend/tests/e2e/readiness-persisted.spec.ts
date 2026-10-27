@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { AxeBuilder } from '@axe-core/playwright';
+import { mkdirSync, writeFileSync } from 'node:fs';
 
 const fixture = '/tests/fixtures/readiness-persisted.html';
 
@@ -100,4 +101,55 @@ test('SC21: accessible labels expose phase, freshness and proof state to keyboar
     .withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze();
   expect(audit.violations.map(violation => ({ id: violation.id,
     targets: violation.nodes.map(node => node.target) }))).toEqual([]);
+});
+
+test('persisted panel renders percentages within one second in 100 warm openings', async ({ page }) => {
+  await page.addInitScript(() => {
+    const measured = window as Window & { __readinessFirstReadyMs?: number };
+    const check = () => {
+      if (measured.__readinessFirstReadyMs !== undefined) return;
+      const panel = document.querySelector('section[aria-label="Implementation and verification"]');
+      const implementation = panel?.querySelector('[role="progressbar"][aria-label="Implementation"]');
+      const verification = panel?.querySelector('[role="progressbar"][aria-label="Verification"]');
+      if (implementation?.getAttribute('aria-valuenow') === '75'
+          && verification?.getAttribute('aria-valuenow') === '50') {
+        measured.__readinessFirstReadyMs = performance.now();
+        observer.disconnect();
+      }
+    };
+    const observer = new MutationObserver(check);
+    document.addEventListener('DOMContentLoaded', () => {
+      observer.observe(document.documentElement, { subtree: true, childList: true,
+        attributes: true, attributeFilter: ['aria-valuenow'] });
+      check();
+    }, { once: true });
+  });
+
+  // Warm the browser and Vite before measuring. Each following navigation is a
+  // fresh document; the init script records the first DOM commit with both metrics.
+  await page.goto(fixture);
+  await expect(page.getByRole('progressbar', { name: 'Implementation' })).toHaveAttribute('aria-valuenow', '75');
+  const samples: number[] = [];
+  for (let index = 0; index < 100; index++) {
+    await page.goto(`${fixture}?opening=${index}`, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => Number.isFinite(
+      (window as Window & { __readinessFirstReadyMs?: number }).__readinessFirstReadyMs));
+    samples.push(await page.evaluate(() =>
+      (window as Window & { __readinessFirstReadyMs: number }).__readinessFirstReadyMs));
+  }
+  const sorted = [...samples].sort((a, b) => a - b);
+  const report = {
+    openings: samples.length,
+    p50_ms: sorted[49], p95_ms: sorted[94], p99_ms: sorted[98], max_ms: sorted[99],
+    samples_ms: samples,
+    surface: 'disposable React panel fixture; full installed board still requires separate proof',
+  };
+  await test.info().attach('readiness-panel-100-openings.json', {
+    body: JSON.stringify(report, null, 2), contentType: 'application/json',
+  });
+  mkdirSync('output/playwright', { recursive: true });
+  writeFileSync('output/playwright/readiness-panel-100-openings.json',
+    JSON.stringify(report, null, 2), 'utf8');
+  expect(samples).toHaveLength(100);
+  expect(report.max_ms).toBeLessThanOrEqual(1000);
 });
