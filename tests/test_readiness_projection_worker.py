@@ -1197,6 +1197,41 @@ async def test_stage_storage_failure_keeps_previous_generation_until_repair(tmp_
 
 
 @pytest.mark.asyncio
+async def test_terminal_projection_error_is_correlated_without_leaking_exception_payload(
+        tmp_path, monkeypatch, caplog):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(
+                "UPDATE readiness_job SET attempt=7 WHERE scope_id='spec:1'")
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        sentinel = 'EVIDENCE_SENTINEL token=SECRET_SENTINEL https://host/mcp?api_key=SECRET_SENTINEL'
+
+        async def failing_stage(*_args, **_kwargs):
+            raise OSError(sentinel)
+
+        monkeypatch.setattr(worker.store, 'stage', failing_stage)
+        with caplog.at_level('INFO', logger='okto_pulse.readiness_projection'):
+            assert await worker.process_once() == 0
+            assert await worker.process_once() == 0
+        events = [record.getMessage() for record in caplog.records
+            if record.name == 'okto_pulse.readiness_projection'
+            and record.msg.startswith('readiness.projection_failed ')]
+        assert len(events) == 1
+        assert all(sentinel_part not in caplog.text for sentinel_part in
+            ('EVIDENCE_SENTINEL', 'SECRET_SENTINEL', 'api_key='))
+        assert 'board=board spec=spec code=OSError revision=1 epoch=1' in events[0]
+        assert 'state=terminal attempt=8' in events[0]
+        async with engine.connect() as connection:
+            assert (await connection.exec_driver_sql(
+                "SELECT state,attempt,error_code FROM readiness_job WHERE scope_id='spec:1'"
+            )).one() == ('terminal', 8, 'OSError')
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_sustained_queue_lag_is_warned_without_exposing_payload(tmp_path, monkeypatch, caplog):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
     try:

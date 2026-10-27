@@ -808,7 +808,8 @@ class CommunityPersistedReadinessStore:
                 await connection.rollback()
                 raise
 
-    async def fail(self, claim: ReadinessClaim, *, error_code: str) -> None:
+    async def fail(self, claim: ReadinessClaim, *, error_code: str) -> tuple[str, int] | None:
+        """Record one failed attempt and return its committed state for audit logs."""
         now = datetime.now(timezone.utc)
         async with AsyncSession(self.engine) as session, session.begin():
             job = await session.get(ReadinessJobRow, claim.scope_id)
@@ -821,6 +822,7 @@ class CommunityPersistedReadinessStore:
             base = min(30, 2 ** (job.attempt - 1))
             job.due_at = now + timedelta(seconds=base * (1 + secrets.randbelow(21) / 100))
             job.updated_at = now
+            return job.state, job.attempt
 
     async def requeue_terminal(self, *, scope_id: str, board_id: str,
                                actor_id: str, actor_kind: str,
@@ -1006,8 +1008,11 @@ class CommunityPersistedReadinessStore:
         for spec_id in spec_ids:
             try:
                 await self.audit_active_generation(spec_id=spec_id)
-            except Exception:
-                logger.exception("readiness.reconcile_audit_failed spec=%s", spec_id)
+            except Exception as exc:
+                # Exception messages may contain evidence or connection URLs.
+                # The Spec ID and class name suffice to correlate the attempt.
+                logger.error("readiness.reconcile_audit_failed spec=%s code=%s",
+                    spec_id, type(exc).__name__)
         async with AsyncSession(self.engine) as session, session.begin():
             state = await session.get(AppSetting, "readiness_reconcile_cursor")
             if state is None:

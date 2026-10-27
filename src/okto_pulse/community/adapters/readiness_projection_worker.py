@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import gc
 import hashlib
 import logging
+import re
 from multiprocessing import current_process
 from pathlib import Path
 from threading import get_ident
@@ -24,6 +25,19 @@ from .sqlalchemy_delivery_readiness import CommunityDeliveryReadinessReader, Com
 from .sqlalchemy_persisted_readiness import CommunityPersistedReadinessStore, ReadinessLeaseLost
 
 logger = logging.getLogger("okto_pulse.readiness_projection")
+_SAFE_LOG_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
+
+
+def _log_id(value: str) -> str:
+    """Keep correlation IDs useful without logging arbitrary source text."""
+    if _SAFE_LOG_ID.fullmatch(value):
+        return value
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+def _error_code(exc: BaseException) -> str:
+    name = type(exc).__name__
+    return name if _SAFE_LOG_ID.fullmatch(name) else "UnknownError"
 PIPELINE_BATCH_SECONDS = 5.0
 PIPELINE_BATCH_CLAIMS = 16
 PROJECTION_CHILD_MIN_GEN2_THRESHOLD = 100
@@ -128,7 +142,7 @@ def _build_with_predecessor(snapshot, revision, deadline, candidate, *, phase_me
                 phase_metrics.update(phases)
             return generation, "incremental"
         except IncrementalReadinessUnavailable as exc:
-            logger.debug("readiness.incremental_fallback reason=%s", exc)
+            logger.debug("readiness.incremental_fallback code=%s", _error_code(exc))
     phases = {}
     generation = build_readiness_generation(snapshot, captured_revision=revision,
         deadline=deadline, phase_metrics=phases)
@@ -321,9 +335,10 @@ class ReadinessProjectionProcessor:
                 await heartbeat
             except asyncio.CancelledError:
                 pass
-            except Exception:
-                logger.exception("readiness.heartbeat_failed board=%s spec=%s",
-                    claim.board_id, claim.spec_id)
+            except Exception as exc:
+                logger.error("readiness.heartbeat_failed board=%s spec=%s revision=%d epoch=%d code=%s",
+                    _log_id(claim.board_id), _log_id(claim.spec_id),
+                    claim.requested_revision, claim.epoch, _error_code(exc))
 
     async def _maintenance_once(self) -> None:
         started = monotonic()
@@ -393,8 +408,9 @@ class ReadinessProjectionProcessor:
                 except BrokenProcessPool:
                     # The durable claim survives child failure. Continue in the
                     # existing thread lane until a runtime restart repairs the pool.
-                    logger.exception("readiness.process_pool_unavailable board=%s spec=%s",
-                        claim.board_id, claim.spec_id)
+                    logger.error("readiness.process_pool_unavailable board=%s spec=%s revision=%d epoch=%d code=BrokenProcessPool",
+                        _log_id(claim.board_id), _log_id(claim.spec_id),
+                        claim.requested_revision, claim.epoch)
                     self.full_projection_executor = None
                 except asyncio.CancelledError:
                     while not future.done():
@@ -449,24 +465,32 @@ class ReadinessProjectionProcessor:
             logger.info("readiness.published board=%s spec=%s revision=%d units=%d mode=%s "
                 "snapshot_ms=%.3f predecessor_ms=%.3f compute_ms=%.3f "
                 "stage_ms=%.3f process_dispatch_ms=%.3f publish_ms=%.3f "
-                "source_to_publish_ms=%.3f",
-                claim.board_id, claim.spec_id, captured_revision, unit_count,
+                "source_to_publish_ms=%.3f epoch=%d generation=%s",
+                _log_id(claim.board_id), _log_id(claim.spec_id), captured_revision, unit_count,
                 projection_mode,
                 snapshot_ms, predecessor_ms, compute_ms, stage_ms,
-                process_dispatch_ms, publish_ms, source_to_publish_ms)
+                process_dispatch_ms, publish_ms, source_to_publish_ms,
+                claim.epoch, _log_id(generation_id))
             return 1
         except asyncio.CancelledError:
             raise
         except ReadinessLeaseLost:
             # A newer owner or source mutation already owns the job. Its lease
             # and requested revision must not be modified by this attempt.
-            logger.info("readiness.lease_lost board=%s spec=%s", claim.board_id, claim.spec_id)
+            logger.info("readiness.lease_lost board=%s spec=%s revision=%d epoch=%d",
+                _log_id(claim.board_id), _log_id(claim.spec_id),
+                claim.requested_revision, claim.epoch)
             return 0
         except Exception as exc:
-            code = type(exc).__name__
-            logger.exception("readiness.projection_failed board=%s spec=%s code=%s",
-                claim.board_id, claim.spec_id, code)
-            await self.store.fail(claim, error_code=code)
+            code = _error_code(exc)
+            outcome = await self.store.fail(claim, error_code=code)
+            if outcome is not None:
+                state, attempt = outcome
+                log = logger.error if state == "terminal" else logger.warning
+                log("readiness.projection_failed board=%s spec=%s code=%s "
+                    "revision=%d epoch=%d state=%s attempt=%d",
+                    _log_id(claim.board_id), _log_id(claim.spec_id), code,
+                    claim.requested_revision, claim.epoch, state, attempt)
             return 0
 
     async def _stage_generation(self, claim, generation):
@@ -480,8 +504,9 @@ class ReadinessProjectionProcessor:
             logger.debug('readiness.stage_phases', extra=phases)
             return generation_id
         except BrokenProcessPool:
-            logger.exception("readiness.process_pool_unavailable board=%s spec=%s",
-                claim.board_id, claim.spec_id)
+            logger.error("readiness.process_pool_unavailable board=%s spec=%s revision=%d epoch=%d code=BrokenProcessPool",
+                _log_id(claim.board_id), _log_id(claim.spec_id),
+                claim.requested_revision, claim.epoch)
             self.full_projection_executor = None
             return await self._stage_locally(claim, generation)
         except asyncio.CancelledError:
