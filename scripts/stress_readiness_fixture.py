@@ -341,6 +341,11 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
 
     class ReadPhaseHandler(logging.Handler):
         def emit(self, record: logging.LogRecord) -> None:
+            if isinstance(record.msg, str) and record.msg.startswith('readiness.projection_failed '):
+                detail = str(record.exc_info[1]).splitlines()[0][:160] if record.exc_info else ''
+                (errors if measuring else warmup_errors).append(
+                    f'worker:{record.args[2]}:{detail}')
+                return
             if not measuring:
                 return
             if record.msg == 'readiness.persisted_read_phases':
@@ -436,10 +441,6 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                     ('snapshot', 'predecessor', 'compute', 'stage', 'process_dispatch',
                         'publish'), record.args[5:11], strict=True):
                     publish_phases_ms[name].append(float(value))
-            elif isinstance(record.msg, str) and record.msg.startswith('readiness.projection_failed '):
-                detail = str(record.exc_info[1]).splitlines()[0][:160] if record.exc_info else ''
-                (errors if measuring else warmup_errors).append(
-                    f'worker:{record.args[2]}:{detail}')
 
     phase_logger = logging.getLogger(
         'okto_pulse.community.adapters.sqlalchemy_delivery_readiness')
@@ -501,7 +502,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                         terminal = (await connection.exec_driver_sql(
                             "SELECT scope_id,error_code,attempt FROM readiness_job "
                             "WHERE state='terminal' ORDER BY scope_id LIMIT 5")).all()
-                    raise RuntimeError(f'readiness_fixture_initial_terminal:{terminal!r}')
+                    raise RuntimeError(f'readiness_fixture_initial_terminal:{terminal!r} '
+                        f'failures={warmup_errors[-8:]}')
                 await asyncio.sleep(.06)
             initial_fixture_audit = audit_fixture(path, args)
         # Exclude connection/thread cold start from steady-state write latency.

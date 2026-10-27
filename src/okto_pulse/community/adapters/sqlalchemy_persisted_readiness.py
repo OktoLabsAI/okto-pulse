@@ -389,32 +389,26 @@ class CommunityPersistedReadinessStore:
             copy_count = 0
         copied_keys = frozenset(copy_keys)
         groups = (
-            ("readiness_summary", "card_key,payload",
-                "json_extract(value,'$.card_key'),json_extract(value,'$.payload')",
+            ("readiness_summary", ("card_key", "payload"),
                 ({"card_key": summary.card_id or "", "payload": summary.payload()}
                     for summary in generation.summaries)),
-            ("readiness_diagnostic", "card_key,payload",
-                "json_extract(value,'$.card_key'),json_extract(value,'$.payload')",
+            ("readiness_diagnostic", ("card_key", "payload"),
                 ({"card_key": diagnostic.card_id or "", "payload": diagnostic.payload}
                     for diagnostic in generation.diagnostics)),
-            ("readiness_unit", "card_key,kind,ref,semantic_sha256,payload",
-                "json_extract(value,'$.card_key'),json_extract(value,'$.kind'),"
-                "json_extract(value,'$.ref'),json_extract(value,'$.semantic_sha256'),"
-                "json_extract(value,'$.payload')",
+            ("readiness_unit", ("card_key", "kind", "ref", "semantic_sha256", "payload"),
                 ({"card_key": unit.card_id or "", "kind": unit.kind,
                     "ref": unit.ref, "semantic_sha256": unit.semantic_sha256,
                     "payload": unit.row()} for unit in generation.units
                     if (unit.card_id or '') not in copied_keys)),
         )
-        for table, columns, fields, rows in groups:
+        for table, keys, rows in groups:
             while True:
                 pack_started = perf_counter()
                 batch = list(islice(rows, STAGE_BATCH_SIZE))
                 if not batch:
                     break
-                # JSON1 expands one bounded parameter into rows inside SQLite.
-                # The table/column SQL is constant above; payloads are bound.
-                packed = orjson.dumps(batch, option=orjson.OPT_SORT_KEYS).decode()
+                bound = [(generation_id, *(orjson.dumps(row[key], option=orjson.OPT_SORT_KEYS).decode()
+                    if key == 'payload' else row[key] for key in keys)) for row in batch]
                 pack_ms += (perf_counter() - pack_started) * 1000
                 heartbeat_started = perf_counter()
                 await self.heartbeat(claim)
@@ -422,8 +416,8 @@ class CommunityPersistedReadinessStore:
                 insert_started = perf_counter()
                 async with self.engine.begin() as connection:
                     await connection.exec_driver_sql(
-                        f"INSERT INTO {table} (generation_id,{columns}) "
-                        f"SELECT ?,{fields} FROM json_each(?)", (generation_id, packed))
+                        f"INSERT INTO {table} (generation_id,{','.join(keys)}) "
+                        f"VALUES ({','.join('?' for _ in range(len(keys) + 1))})", bound)
                 insert_ms += (perf_counter() - insert_started) * 1000
                 batch_count += 1
         verify_started = perf_counter()
