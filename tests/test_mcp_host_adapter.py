@@ -336,7 +336,7 @@ async def test_community_host_narrows_live_policy_board_schema_only_locally() ->
     # inventory assertion explicit so a
     # schema silently falling back to FastMCP inference is still detected.
     # The Decision-review read/write pair also opts into the closed contract.
-    assert len(opted_in) == 46
+    assert len(opted_in) == 49
     assert {"okto_pulse_get_decision_reviews", "okto_pulse_record_decision_reviews"} <= {
         tool.name for tool in opted_in
     }
