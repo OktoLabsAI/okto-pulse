@@ -49,7 +49,7 @@ export function DeliveryReadinessView({ value, persisted, loading, error, compac
   compact?: boolean; onInspect?: () => void; onRefresh?: () => void;
 }) {
   const current = !loading && !error && isDeliveryReadiness(value) ? value : undefined;
-  const projected = !loading && !error ? persisted?.summary : undefined;
+  const projected = !loading ? persisted?.summary : undefined;
   const verificationOnly = (current?.scope.card_type === 'test' && current.implementation.status === 'not_applicable')
     || (projected?.card_type === 'test' && projected.implementation.status === 'not_applicable');
   const incompatible = !loading && !error && value != null && !current;
@@ -93,7 +93,8 @@ export function DeliveryReadinessView({ value, persisted, loading, error, compac
       {persisted?.freshness === 'updating' && <p role="status" className="text-amber-800 dark:text-amber-300">Updating · showing the previous coherent generation.</p>}
       {persisted?.freshness === 'pending_initial' && <p role="status">Waiting for the first calculation.</p>}
       {persisted?.freshness === 'unavailable' && <p role="status" className="text-amber-800 dark:text-amber-300">Calculation unavailable{persisted.errorCode ? ` · ${persisted.errorCode}` : ''}.</p>}
-      {!loading && !current && !persisted && <p role="status" className="text-amber-800 dark:text-amber-300">{incompatible ? 'Readiness contract unavailable or incompatible. Refresh after updating the backend.' : error || 'Current readiness is unavailable. Refresh to retry.'}</p>}
+      {!loading && error && <p role="alert" className="text-amber-800 dark:text-amber-300">{error}</p>}
+      {!loading && !error && !current && !persisted && <p role="status" className="text-amber-800 dark:text-amber-300">{incompatible ? 'Readiness contract unavailable or incompatible. Refresh after updating the backend.' : 'Current readiness is unavailable. Refresh to retry.'}</p>}
     </div>
     <details className="text-xs text-gray-500 dark:text-gray-400"><summary className="cursor-pointer">How these counts work</summary><p className="mt-2">{explanation}</p></details>
     {(onInspect || onRefresh) && <div className="flex shrink-0 flex-wrap gap-2">

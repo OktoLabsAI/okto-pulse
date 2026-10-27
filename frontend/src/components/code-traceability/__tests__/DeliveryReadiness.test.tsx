@@ -170,6 +170,15 @@ it.each(['loading', 'error', 'unknown', 'incompatible'] as const)('U03/U10: %s n
   if (state === 'incompatible') expect(screen.getByText(/contract unavailable or incompatible/)).toBeVisible();
 });
 
+it('shows diagnosis failures alongside the last coherent persisted metrics', () => {
+  const summary = persistedProjection().summaries[0];
+  render(<DeliveryReadinessView persisted={{ summary, freshness: 'current', generationId: 'generation-1', errorCode: null }}
+    error="Diagnosis request failed. Refresh to retry." />);
+  expect(screen.getByRole('alert')).toHaveTextContent('Diagnosis request failed. Refresh to retry.');
+  expect(screen.getByRole('progressbar', { name: 'Implementation' })).toHaveAttribute('aria-valuenow', '100');
+  expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');
+});
+
 it('N/A and waiver counts remain visible without adding proof credit', () => {
   const value = readiness(); value.verification.not_applicable = 1; value.verification.waived = 1;
   render(<DeliveryReadinessView value={value} />);
