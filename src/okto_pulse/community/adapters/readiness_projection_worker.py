@@ -256,9 +256,18 @@ class ReadinessProjectionProcessor:
     async def process_once(self) -> int:
         if self.maintenance_enabled:
             await self._maintenance_once()
+        claim_started = monotonic()
         claim = await self.store.claim(owner=self.owner)
         if claim is None:
             return 0
+        source_timestamp = getattr(claim, 'source_updated_at', None)
+        source_to_claim_ms = (max(0.0, (
+            datetime.now(timezone.utc) - source_timestamp).total_seconds() * 1000)
+            if isinstance(source_timestamp, datetime) and source_timestamp.tzinfo else 0.0)
+        logger.debug('readiness.claim_phases', extra={
+            'readiness_claim_ms': (monotonic() - claim_started) * 1000,
+            'readiness_source_to_claim_ms': source_to_claim_ms,
+        })
         if self.max_inflight > 1:
             return await self._process_pipeline(claim)
         return await self._run_claim(claim)
@@ -309,13 +318,19 @@ class ReadinessProjectionProcessor:
                     claim.board_id, claim.spec_id)
 
     async def _maintenance_once(self) -> None:
+        started = monotonic()
+        reconcile_ms = queue_ms = gc_ms = 0.0
         if monotonic() - self._last_reconcile >= 60:
+            phase_started = monotonic()
             scanned = await self.store.reconcile_once()
+            reconcile_ms = (monotonic() - phase_started) * 1000
             self._last_reconcile = monotonic()
         else:
             scanned = 0
         if monotonic() - self._last_queue_probe >= 5:
+            phase_started = monotonic()
             queue = await self.store.queue_status()
+            queue_ms = (monotonic() - phase_started) * 1000
             now = monotonic()
             self._last_queue_probe = now
             if now - self._last_queue_log >= 60:
@@ -331,8 +346,18 @@ class ReadinessProjectionProcessor:
             else:
                 self._last_lag_warning = 0.0
         if self._gc_backlog or monotonic() - self._last_gc >= 5:
+            phase_started = monotonic()
             self._gc_backlog = await self.store.gc_once()
+            gc_ms = (monotonic() - phase_started) * 1000
             self._last_gc = monotonic()
+        if reconcile_ms or queue_ms or gc_ms:
+            logger.debug('readiness.maintenance_phases', extra={
+                'readiness_maintenance_ms': (monotonic() - started) * 1000,
+                'readiness_maintenance_reconcile_ms': reconcile_ms,
+                'readiness_maintenance_queue_ms': queue_ms,
+                'readiness_maintenance_gc_ms': gc_ms,
+                'readiness_maintenance_gc_backlog': float(self._gc_backlog),
+            })
 
     async def _process_claim(self, claim, heartbeat) -> int:
         try:

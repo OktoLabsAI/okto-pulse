@@ -306,6 +306,10 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         'compute_units': [], 'compute_digest': [],
         'snapshot_cpu': [], 'compute_cpu': [], 'stage_cpu': [],
         'process_dispatch': [], 'publish': [], 'source_to_publish': [],
+        'claim': [], 'source_to_claim': [],
+        'maintenance': [], 'maintenance_reconcile': [],
+        'maintenance_queue': [], 'maintenance_gc': [],
+        'maintenance_gc_backlog': [],
         'snapshot_checkout': [], 'snapshot_begin': [], 'snapshot_scope': [],
         'snapshot_source': [], 'snapshot_rollback': [],
         'snapshot_rows': [], 'snapshot_materialize': [],
@@ -441,6 +445,18 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 for name in ('checkout', 'begin', 'fetch', 'counts', 'flush', 'commit'):
                     publish_phases_ms[f'publish_{name}'].append(
                         getattr(record, f'readiness_publish_{name}_ms'))
+            elif record.msg == 'readiness.claim_phases':
+                publish_phases_ms['claim'].append(record.readiness_claim_ms)
+                publish_phases_ms['source_to_claim'].append(
+                    record.readiness_source_to_claim_ms)
+            elif record.msg == 'readiness.maintenance_phases':
+                for name in ('maintenance', 'maintenance_reconcile',
+                             'maintenance_queue', 'maintenance_gc'):
+                    attribute = ('readiness_maintenance_ms' if name == 'maintenance'
+                        else f'readiness_{name}_ms')
+                    publish_phases_ms[name].append(getattr(record, attribute))
+                publish_phases_ms['maintenance_gc_backlog'].append(
+                    record.readiness_maintenance_gc_backlog)
             elif isinstance(record.msg, str) and record.msg.startswith('readiness.published '):
                 projection_modes[record.args[4]] = projection_modes.get(record.args[4], 0) + 1
                 for name, value in zip(
