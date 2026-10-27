@@ -28,13 +28,13 @@ import os
 from pathlib import Path
 import platform
 import psutil
+import re
 import shutil
 import sqlite3
 from statistics import median
 import sys
 from tempfile import TemporaryDirectory
 from time import monotonic, perf_counter, process_time
-import traceback
 
 from fastapi import FastAPI
 import httpx
@@ -61,6 +61,30 @@ from okto_pulse.core.services.delivery_readiness import DeliveryReadinessService
 from okto_pulse.core.services.persisted_delivery_readiness import build_readiness_generation
 
 ACTOR = ReadinessActor('benchmark-agent', 'agent', 'local', 'benchmark-board')
+_SAFE_CODE = re.compile(r'[A-Za-z0-9_.:-]{1,64}\Z')
+
+
+def _safe_error_code(value: object) -> str:
+    return value if isinstance(value, str) and _SAFE_CODE.fullmatch(value) else 'unknown'
+
+
+def _safe_command(argv: list[str]) -> list[str]:
+    """Keep load settings reproducible without persisting local paths or tokens."""
+    result = ['stress_readiness_fixture.py']
+    redact_next = False
+    for value in argv:
+        if redact_next:
+            result.append('<redacted-path>')
+            redact_next = False
+        elif value in ('--output', '--fixture-cache'):
+            result.append(value)
+            redact_next = True
+        elif value.startswith(('--output=', '--fixture-cache=')):
+            option, _, _ = value.partition('=')
+            result.append(f'{option}=<redacted-path>')
+        else:
+            result.append(value)
+    return result
 
 
 def _initialize_projection_child(path: Path, gen2_threshold: int | None) -> None:
@@ -356,13 +380,11 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
     class ReadPhaseHandler(logging.Handler):
         def emit(self, record: logging.LogRecord) -> None:
             if isinstance(record.msg, str) and record.msg.startswith('readiness.projection_failed '):
-                detail = str(record.exc_info[1]).splitlines()[0][:160] if record.exc_info else ''
+                code = _safe_error_code(record.args[2])
                 (errors if measuring else warmup_errors).append(
-                    f'worker:{record.args[2]}:{detail}')
+                    f'worker:{code}')
                 if not measuring:
-                    warmup_failures.append({'code': str(record.args[2]), 'message': detail,
-                        'traceback': ''.join(traceback.format_exception(*record.exc_info))[-6000:]
-                            if record.exc_info else ''})
+                    warmup_failures.append({'code': code})
                 return
             if not measuring:
                 return
@@ -535,9 +557,11 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                     *(item.process_once() for item in workers)))
                 if (await worker.store.queue_status())['counts'].get('terminal', 0):
                     async with engine.connect() as connection:
-                        terminal = (await connection.exec_driver_sql(
+                        terminal_rows = (await connection.exec_driver_sql(
                             "SELECT scope_id,error_code,attempt FROM readiness_job "
                             "WHERE state='terminal' ORDER BY scope_id LIMIT 5")).all()
+                    terminal = [(_safe_error_code(scope), _safe_error_code(code), attempt)
+                        for scope, code, attempt in terminal_rows]
                     if args.output is not None:
                         diagnostic = args.output.with_name(args.output.stem + '.initial-failure.json')
                         diagnostic.parent.mkdir(parents=True, exist_ok=True)
@@ -566,9 +590,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                     processed = await item.process_once()
                     worker_publications += processed
                 except Exception as exc:
-                    detail = str(exc).splitlines()[0][:160]
                     (errors if measuring else warmup_errors).append(
-                        f'worker:{type(exc).__name__}:{detail}')
+                        f'worker:{_safe_error_code(type(exc).__name__)}')
                 await asyncio.sleep(0 if processed else .1)
 
         async def reader_loop(client_number: int):
@@ -609,10 +632,10 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                     except (ValueError, AttributeError):
                         code = None
                     (errors if measuring else warmup_errors).append(
-                        f'read:http_{exc.response.status_code}:{code or "unknown"}')
+                        f'read:http_{exc.response.status_code}:{_safe_error_code(code)}')
                 except Exception as exc:
                     (errors if measuring else warmup_errors).append(
-                        f'read:{getattr(exc, "code", type(exc).__name__)}')
+                        f'read:{_safe_error_code(getattr(exc, "code", type(exc).__name__))}')
                 index += args.clients
                 await asyncio.sleep(max(0, period - (perf_counter() - started)))
 
@@ -668,7 +691,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                         spec_id, revision, committed,
                         burst_lag_ms if burst else lag_ms)
                 except Exception as exc:
-                    (errors if measured else warmup_errors).append(f'write:{type(exc).__name__}')
+                    (errors if measured else warmup_errors).append(
+                        f'write:{_safe_error_code(type(exc).__name__)}')
 
         async def observation_loop():
             while not stop_load.is_set() or pending_observations:
@@ -810,7 +834,10 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             'predecessor_cache_samples': len(predecessor_cache_samples),
             'worker_concurrency': args.worker_concurrency,
             'full_projection_process': args.full_projection_process,
-            'lagging_scopes': [tuple(row) for row in lagging],
+            'lagging_scopes': [(_safe_error_code(scope), source_revision,
+                captured_revision, _safe_error_code(state),
+                _safe_error_code(code) if code is not None else None)
+                for scope, source_revision, captured_revision, state, code in lagging],
             'read_p50_ms': round(median(read_ms), 3) if read_ms else None,
             'read_p95_ms': round(percentile(read_ms, .95), 3) if read_ms else None,
             'read_p99_ms': round(percentile(read_ms, .99), 3) if read_ms else None,
@@ -975,7 +1002,7 @@ if __name__ == '__main__':
                     result['post_load_parity'] = asyncio.run(audit_source_projection_parity(path, args))
                 except Exception as exc:
                     result['post_load_parity'] = {'status': 'failed',
-                        'code': type(exc).__name__, 'detail': str(exc)[:200]}
+                        'code': _safe_error_code(type(exc).__name__)}
         finally:
             reset_test_evidence_write_verifier_for_tests()
         result['fixture_seed'] = f'readiness-deterministic-v3-{args.fixture_profile}'
@@ -985,7 +1012,7 @@ if __name__ == '__main__':
             result['fixture_audit'] = audit_fixture(path, args)
         result['seed_sha256'] = sha256(Path(seed.__code__.co_filename).read_bytes()).hexdigest()
         result['harness_sha256'] = sha256(Path(__file__).read_bytes()).hexdigest()
-        result['command'] = ['stress_readiness_fixture.py', *sys.argv[1:]]
+        result['command'] = _safe_command(sys.argv[1:])
         result['host'] = {'platform': platform.platform(), 'python': platform.python_version(),
             'logical_cpus': os.cpu_count()}
         if args.output:

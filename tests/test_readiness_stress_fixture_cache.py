@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from stress_readiness_fixture import (  # noqa: E402
-    _restore_fixture_cache, _save_fixture_cache,
+    _restore_fixture_cache, _save_fixture_cache, _safe_command, _safe_error_code,
 )
 from okto_pulse.community.adapters.current_relational_schema import SCHEMA_VERSION  # noqa: E402
 
@@ -39,3 +39,15 @@ def test_fixture_cache_restores_evidence_and_rejects_tampering(tmp_path):
         '{"accepted":false}', encoding='utf-8')
     with pytest.raises(ValueError, match='fixture_cache_evidence_digest_mismatch'):
         _restore_fixture_cache(cache, tmp_path / 'tampered.db', identity)
+
+
+def test_harness_audit_redacts_paths_and_untrusted_error_details():
+    sentinel = 'EVIDENCE_SENTINEL?api_key=SECRET_SENTINEL'
+    command = _safe_command(['--mode', 'persisted', '--output', sentinel,
+        f'--fixture-cache={sentinel}', '--specs', '10'])
+    assert command == ['stress_readiness_fixture.py', '--mode', 'persisted',
+        '--output', '<redacted-path>', '--fixture-cache=<redacted-path>',
+        '--specs', '10']
+    assert sentinel not in str(command)
+    assert _safe_error_code(f'OSError:{sentinel}') == 'unknown'
+    assert _safe_error_code('readiness_lease_lost') == 'readiness_lease_lost'
