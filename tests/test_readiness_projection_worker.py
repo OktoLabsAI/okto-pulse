@@ -1232,6 +1232,44 @@ async def test_terminal_projection_error_is_correlated_without_leaking_exception
 
 
 @pytest.mark.asyncio
+async def test_failed_scope_does_not_block_another_scope(tmp_path, monkeypatch):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(
+                "INSERT INTO specs (id,board_id,title,status,version,created_by,"
+                "architecture_adoption,execution_contract) "
+                "VALUES ('z-spec','board','Other','in_progress',1,'owner','{}',?)",
+                (json.dumps({"contract_version": "spec-execution-contract/v1",
+                    "board_id": "board", "spec_id": "z-spec", "adopted_in_edition": 1,
+                    "actor_id": "owner", "origin": "new_spec"}),),
+            )
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        original_stage = worker.store.stage
+
+        async def fail_one_scope(claim, *args, **kwargs):
+            if claim.spec_id == 'spec':
+                raise OSError('isolated_storage_failure')
+            return await original_stage(claim, *args, **kwargs)
+
+        monkeypatch.setattr(worker.store, 'stage', fail_one_scope)
+        assert await worker.process_once() == 0
+        assert await worker.process_once() == 1
+        failed = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        healthy = await worker.store.read(board_id='board', spec_id='z-spec', edition=1)
+        assert failed is not None and failed.freshness == 'pending_initial'
+        assert healthy is not None and healthy.freshness == 'current'
+        async with engine.connect() as connection:
+            states = (await connection.exec_driver_sql(
+                "SELECT scope_id,state,attempt FROM readiness_job ORDER BY scope_id"
+            )).all()
+        assert states == [('spec:1', 'pending', 1), ('z-spec:1', 'idle', 0)]
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_queue_status_exposes_revision_debt_and_retry_count(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
     try:
