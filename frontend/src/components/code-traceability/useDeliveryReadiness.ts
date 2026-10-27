@@ -45,7 +45,8 @@ export function useDeliveryReadiness(boardId: string, specId: string, cardId?: s
             const summary = projected.summaries.find(row => row.card_id === (cardId ?? null));
             if (!summary && projected.projection.freshness === 'current') throw new ReadinessContractError('Readiness scope is unavailable.');
             if (!controller.signal.aborted) setResult({ api, key: scopeKey, state: { persisted: {
-              summary, freshness: summary ? projected.projection.freshness : 'pending_initial',
+              summary, freshness: summary ? projected.projection.freshness
+                : projected.projection.freshness === 'unavailable' ? 'unavailable' : 'pending_initial',
               generationId: projected.projection.generation_id,
               errorCode: projected.projection.error_code } } });
             backoff = 1000;

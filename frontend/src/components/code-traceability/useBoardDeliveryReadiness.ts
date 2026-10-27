@@ -69,7 +69,8 @@ export function useBoardDeliveryReadiness(boardId: string, cards: CardSummary[],
         for (const card of selected) {
           const summary = rows.get(card.id);
           if (!summary && data.projection.freshness === 'current') throw new ReadinessContractError('Readiness card scope is unavailable.');
-          values[card.id] = { persisted: { summary, freshness: summary ? data.projection.freshness : 'pending_initial',
+          values[card.id] = { persisted: { summary, freshness: summary ? data.projection.freshness
+            : data.projection.freshness === 'unavailable' ? 'unavailable' : 'pending_initial',
             generationId: data.projection.generation_id, errorCode: data.projection.error_code } };
         }
         if (data.projection.freshness === 'updating' || data.projection.freshness === 'pending_initial') pending.add(specId);
