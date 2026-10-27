@@ -50,6 +50,20 @@ it('polls a healthy delayed generation at 500 ms without overlapping a slow resp
   expect(view.result.current.c.persisted?.freshness).toBe('current');
 });
 
+it('rotates four pending Specs through three polling slots', async () => {
+  const manyCards = Array.from({ length: 4 }, (_, index) => ({ ...cards[0], id: `card-${index}`, spec_id: `spec-${index}` }));
+  api.getPersistedReadinessProjection.mockImplementation((_board, specId) => {
+    const value = pending();
+    value.scope.spec_id = specId;
+    return Promise.resolve(value);
+  });
+  renderHook(() => useBoardDeliveryReadiness('b', manyCards, true, '0'));
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(4);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+  expect(api.getPersistedReadinessProjection.mock.calls.filter(([, specId]) => specId === 'spec-3').length).toBeGreaterThan(1);
+});
+
 it('retries transient failures at 1, 2 and 5 seconds without overlapping a slow request', async () => {
   api.getPersistedReadinessProjection.mockRejectedValue(new TypeError('offline'));
   const view = renderHook(() => useBoardDeliveryReadiness('b', cards, true, '0'));

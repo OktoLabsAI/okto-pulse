@@ -249,6 +249,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
       && <DeliveryExceptionDetails data={data} recordId={focusExceptionId} />}
     {projection && <DeliveryReadinessPanel boardId={boardId} specId={specId} revision={`${revision ?? ''}:${reload}`}
       persistedValue={projection} onGenerationMismatch={() => setReload(value => value + 1)}
+      onRefreshProjection={() => setReload(value => value + 1)}
       onOpenReadinessSpec={onOpenReadinessSpec} />}
     {legacyMode && <DeliveryReadinessPanel boardId={boardId} specId={specId}
       revision={`${revision ?? ''}:${reload}`} onOpenReadinessSpec={onOpenReadinessSpec} />}

@@ -73,7 +73,10 @@ export function useBoardDeliveryReadiness(boardId: string, cards: CardSummary[],
             : data.projection.freshness === 'unavailable' ? 'unavailable' : 'pending_initial',
             generationId: data.projection.generation_id, errorCode: data.projection.error_code } };
         }
-        if (data.projection.freshness === 'updating' || data.projection.freshness === 'pending_initial') pending.add(specId);
+        if (data.projection.freshness === 'updating' || data.projection.freshness === 'pending_initial') {
+          pending.delete(specId);
+          pending.add(specId);
+        }
         else pending.delete(specId);
         retryAt.delete(specId);
         retryDelay.delete(specId);
@@ -87,6 +90,7 @@ export function useBoardDeliveryReadiness(boardId: string, cards: CardSummary[],
             : { error: error instanceof Error ? error.message : 'Readiness could not be loaded.' };
         }
         if (retriable) {
+          pending.delete(specId);
           pending.add(specId);
           const nextDelay = !retryDelay.has(specId) ? 1000 : retryDelay.get(specId) === 1000 ? 2000 : 5000;
           retryDelay.set(specId, nextDelay);
