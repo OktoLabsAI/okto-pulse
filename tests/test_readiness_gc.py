@@ -121,6 +121,16 @@ async def test_gc_keeps_active_and_three_recent_generations_in_bounded_batches(t
                 "SELECT id FROM readiness_generation ORDER BY id"
             )).scalars().all()
         assert generations == ['g2', 'g3', 'g4', 'g5']
+        async with engine.connect() as connection:
+            covered_deltas = (await connection.exec_driver_sql(
+                "SELECT count(*) FROM readiness_source_delta_event WHERE scope_id='spec:1'"
+            )).scalar_one()
+        assert covered_deltas == 1
+        assert await store.gc_once()  # The next bounded pass clears the covered delta.
+        async with engine.connect() as connection:
+            assert (await connection.exec_driver_sql(
+                "SELECT count(*) FROM readiness_source_delta_event WHERE scope_id='spec:1'"
+            )).scalar_one() == 0
         assert not await store.gc_once()
     finally:
         await engine.dispose()
