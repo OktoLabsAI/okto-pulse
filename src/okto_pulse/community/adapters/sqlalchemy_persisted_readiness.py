@@ -10,6 +10,7 @@ from hashlib import sha256
 from itertools import islice
 import json
 import logging
+import re
 import secrets
 from time import perf_counter
 from uuid import uuid4
@@ -38,6 +39,15 @@ MAX_ATTEMPTS = 8
 STAGE_BATCH_SIZE = 250
 MAX_PROGRESS_CHAIN = 10000
 logger = logging.getLogger("okto_pulse.readiness_projection")
+_SAFE_LOG_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
+
+
+def _audit_log_id(value: str | None) -> str:
+    if value is None:
+        return "none"
+    if _SAFE_LOG_ID.fullmatch(value):
+        return value
+    return "sha256:" + sha256(value.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass(frozen=True, slots=True)
@@ -727,7 +737,8 @@ class CommunityPersistedReadinessStore:
             if gen is not None:
                 gen.state = "expired"
         logger.error("readiness.active_manifest_mismatch board=%s spec=%s generation=%s",
-            identity[1], identity[2], generation_id)
+            _audit_log_id(identity[1]), _audit_log_id(identity[2]),
+            _audit_log_id(generation_id))
         return False
 
     async def publish(self, claim: ReadinessClaim, generation_id: str,
@@ -879,9 +890,17 @@ class CommunityPersistedReadinessStore:
                                 or previous.target_revision != expected_revision):
                             raise ReadinessReadError("readiness_requeue_conflict")
                         audit_id = previous.id
+                        current_epoch = job.lease_epoch
+                        current_generation = scope.active_generation_id
+                        previous_code = previous.previous_error_code
                         await connection.rollback()
-                        logger.info("readiness.requeued board=%s scope=%s revision=%d audit_id=%s replayed=true",
-                            board_id, scope_id, expected_revision, audit_id)
+                        logger.info("readiness.requeued board=%s scope=%s revision=%d "
+                            "current_epoch=%d current_generation=%s previous_code=%s "
+                            "audit_id=%s replayed=true",
+                            _audit_log_id(board_id), _audit_log_id(scope_id),
+                            expected_revision, current_epoch,
+                            _audit_log_id(current_generation),
+                            _audit_log_id(previous_code), audit_id)
                         return {"scope": scope_id, "requested_revision": expected_revision,
                             "queued": True, "audit_id": audit_id, "replayed": True}
                     if (scope.source_revision != expected_revision
@@ -889,6 +908,8 @@ class CommunityPersistedReadinessStore:
                             or job.state != "terminal"):
                         raise ReadinessReadError("readiness_requeue_conflict")
                     previous_error = job.error_code
+                    current_epoch = job.lease_epoch
+                    current_generation = scope.active_generation_id
                     job.state, job.due_at, job.updated_at = "pending", now, now
                     job.owner, job.lease_until, job.error_code, job.attempt = None, None, None, 0
                     audit_id = uuid4().hex
@@ -899,8 +920,13 @@ class CommunityPersistedReadinessStore:
                         reason=reason.strip(), created_at=now))
                     await session.flush()
                 await connection.commit()
-                logger.info("readiness.requeued board=%s scope=%s revision=%d audit_id=%s replayed=false",
-                    board_id, scope_id, expected_revision, audit_id)
+                logger.info("readiness.requeued board=%s scope=%s revision=%d "
+                    "current_epoch=%d current_generation=%s previous_code=%s "
+                    "audit_id=%s replayed=false",
+                    _audit_log_id(board_id), _audit_log_id(scope_id),
+                    expected_revision, current_epoch,
+                    _audit_log_id(current_generation),
+                    _audit_log_id(previous_error), audit_id)
                 return {"scope": scope_id, "requested_revision": expected_revision,
                     "queued": True, "audit_id": audit_id, "replayed": False}
             except BaseException:
@@ -1021,7 +1047,7 @@ class CommunityPersistedReadinessStore:
                 # Exception messages may contain evidence or connection URLs.
                 # The Spec ID and class name suffice to correlate the attempt.
                 logger.error("readiness.reconcile_audit_failed spec=%s code=%s",
-                    spec_id, type(exc).__name__)
+                    _audit_log_id(spec_id), _audit_log_id(type(exc).__name__))
         async with AsyncSession(self.engine) as session, session.begin():
             state = await session.get(AppSetting, "readiness_reconcile_cursor")
             if state is None:

@@ -1232,6 +1232,43 @@ async def test_terminal_projection_error_is_correlated_without_leaking_exception
 
 
 @pytest.mark.asyncio
+async def test_requeue_log_correlates_generation_without_leaking_reason(tmp_path, caplog):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        assert await worker.process_once() == 1
+        current = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert current is not None and current.generation_id
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(
+                "UPDATE readiness_job SET state='terminal',error_code='OSError' "
+                "WHERE scope_id='spec:1'")
+        reason = 'EVIDENCE_SENTINEL https://host/mcp?api_key=SECRET_SENTINEL'
+        with caplog.at_level('INFO', logger='okto_pulse.readiness_projection'):
+            queued = await worker.store.requeue_terminal(scope_id='spec:1',
+                board_id='board', actor_id='owner', actor_kind='human',
+                expected_revision=1, idempotency_key='safe-audit', reason=reason)
+            replay = await worker.store.requeue_terminal(scope_id='spec:1',
+                board_id='board', actor_id='owner', actor_kind='human',
+                expected_revision=1, idempotency_key='safe-audit', reason=reason)
+        events = [record.getMessage() for record in caplog.records
+            if record.name == 'okto_pulse.readiness_projection'
+            and record.msg.startswith('readiness.requeued ')]
+        assert queued['audit_id'] == replay['audit_id']
+        assert len(events) == 2
+        assert all(f'current_generation={current.generation_id}' in event
+            and 'current_epoch=1' in event and 'previous_code=OSError' in event
+            for event in events)
+        assert 'replayed=false' in events[0] and 'replayed=true' in events[1]
+        assert 'EVIDENCE_SENTINEL' not in caplog.text
+        assert 'SECRET_SENTINEL' not in caplog.text
+        assert 'api_key=' not in caplog.text
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_failed_scope_does_not_block_another_scope(tmp_path, monkeypatch):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
     try:
