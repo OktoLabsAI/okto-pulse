@@ -384,10 +384,15 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                     if value is not None:
                         publish_phases_ms[f'{name}_cpu'].append(value)
                 for name in ('predecessor', 'evaluation', 'impact', 'assessments',
-                             'context', 'rows', 'units', 'digest'):
+                             'context', 'context_setup', 'context_spec', 'rows',
+                             'rows_changed_context', 'rows_changed_diagnostic',
+                             'units', 'digest'):
                     value = getattr(record, f'readiness_compute_{name}_ms', None)
                     if value is not None:
-                        publish_phases_ms[f'compute_{name}'].append(value)
+                        publish_phases_ms.setdefault(f'compute_{name}', []).append(value)
+                reused = getattr(record, 'readiness_compute_rows_reused_count', None)
+                if reused is not None:
+                    publish_phases_ms.setdefault('compute_rows_reused_count', []).append(reused)
                 for name in ('snapshot', 'predecessor', 'compute', 'stage'):
                     for generation in range(3):
                         for metric in ('pause', 'count'):
