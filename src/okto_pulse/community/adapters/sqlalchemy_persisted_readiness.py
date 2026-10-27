@@ -145,8 +145,17 @@ class CommunityPersistedReadinessStore:
                 ReadinessJobRow, ReadinessJobRow.scope_id == ReadinessScopeRow.id).where(
                 ReadinessJobRow.state.in_(("pending", "running")),
                 ReadinessScopeRow.tombstone.is_(False)))
+            revision_lag, retrying = (await session.execute(text(
+                "SELECT COALESCE(MAX(s.source_revision - COALESCE(g.captured_revision, 0)), 0), "
+                "COALESCE(SUM(CASE WHEN j.state='pending' AND j.attempt>0 "
+                "THEN 1 ELSE 0 END), 0) "
+                "FROM readiness_job j JOIN readiness_scope s ON s.id=j.scope_id "
+                "LEFT JOIN readiness_generation g ON g.id=s.active_generation_id "
+                "WHERE s.tombstone=0"
+            ))).one()
         return {"counts": {state: int(count) for state, count in grouped},
-            "oldest_s": max(0.0, (datetime.now(timezone.utc) - oldest).total_seconds()) if oldest else None}
+            "oldest_s": max(0.0, (datetime.now(timezone.utc) - oldest).total_seconds()) if oldest else None,
+            "revision_lag_max": int(revision_lag), "retrying": int(retrying)}
 
     async def read(self, *, board_id: str, spec_id: str, edition: int,
                    card_id: str | None = None, unit_limit: int = 0,

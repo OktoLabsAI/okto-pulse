@@ -1232,6 +1232,26 @@ async def test_terminal_projection_error_is_correlated_without_leaking_exception
 
 
 @pytest.mark.asyncio
+async def test_queue_status_exposes_revision_debt_and_retry_count(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        store = CommunityPersistedReadinessStore(engine)
+        initial = await store.queue_status()
+        assert initial['counts']['pending'] == 1
+        assert initial['revision_lag_max'] == 1
+        assert initial['retrying'] == 0
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(
+                "UPDATE readiness_job SET attempt=2 WHERE scope_id='spec:1'")
+        retried = await store.queue_status()
+        assert retried['revision_lag_max'] == 1
+        assert retried['retrying'] == 1
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_sustained_queue_lag_is_warned_without_exposing_payload(tmp_path, monkeypatch, caplog):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
     try:

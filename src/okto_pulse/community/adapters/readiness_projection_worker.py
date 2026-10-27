@@ -357,8 +357,10 @@ class ReadinessProjectionProcessor:
             now = monotonic()
             self._last_queue_probe = now
             if now - self._last_queue_log >= 60:
-                logger.info("readiness.queue scanned=%d counts=%s oldest_s=%s pool_checked_out=%d",
+                logger.info("readiness.queue scanned=%d counts=%s oldest_s=%s "
+                    "revision_lag_max=%d retrying=%d pool_checked_out=%d",
                     scanned, queue["counts"], queue["oldest_s"],
+                    queue.get("revision_lag_max", 0), queue.get("retrying", 0),
                     getattr(self.store.engine.sync_engine.pool, 'checkedout', lambda: 0)())
                 self._last_queue_log = now
             if queue['oldest_s'] is not None and queue['oldest_s'] >= 65:
