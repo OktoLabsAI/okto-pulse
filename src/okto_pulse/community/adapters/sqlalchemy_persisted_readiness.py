@@ -725,6 +725,7 @@ class CommunityPersistedReadinessStore:
                       *, phase_metrics: dict[str, float] | None = None) -> bool:
         """CAS-activate a complete generation; return False for a lost fence."""
         now = datetime.now(timezone.utc)
+        now_sql = now.replace(tzinfo=None).strftime('%Y-%m-%d %H:%M:%S.%f')
         phase_started = perf_counter()
         async with self.engine.connect() as connection:
             checkout_ms = (perf_counter() - phase_started) * 1000
@@ -733,45 +734,63 @@ class CommunityPersistedReadinessStore:
             begin_ms = (perf_counter() - phase_started) * 1000
             try:
                 phase_started = perf_counter()
-                async with AsyncSession(bind=connection, expire_on_commit=False) as session:
-                    scope = await session.get(ReadinessScopeRow, claim.scope_id)
-                    job = await session.get(ReadinessJobRow, claim.scope_id)
-                    gen = await session.get(ReadinessGenerationRow, generation_id)
-                    fetch_ms = (perf_counter() - phase_started) * 1000
-                    if (scope is None or job is None or gen is None or scope.tombstone
-                        or gen.scope_id != claim.scope_id or gen.state != "staging"
-                        or job.owner != claim.owner or job.lease_epoch != claim.epoch
-                        or job.state != "running" or job.lease_until is None or job.lease_until <= now
-                        or scope.edition != claim.edition or gen.captured_revision > scope.source_revision
-                        or gen.evaluator_version != EVALUATOR_VERSION):
-                        await connection.rollback()
-                        return False
-                    phase_started = perf_counter()
-                    summaries = await session.scalar(select(func.count()).select_from(ReadinessSummaryRow).where(
-                        ReadinessSummaryRow.generation_id == generation_id))
-                    units = await session.scalar(select(func.count()).select_from(ReadinessUnitRow).where(
-                        ReadinessUnitRow.generation_id == generation_id))
-                    if summaries != gen.summary_count or units != gen.unit_count:
-                        await connection.rollback()
-                        return False
-                    counts_ms = (perf_counter() - phase_started) * 1000
-                    phase_started = perf_counter()
-                    active = await session.get(ReadinessGenerationRow, scope.active_generation_id) if scope.active_generation_id else None
-                    if active is not None and active.captured_revision > gen.captured_revision:
-                        await connection.rollback()
-                        return False
-                    gen.state = "complete"
-                    scope.active_generation_id = generation_id
-                    scope.updated_at = now
-                    job.requested_revision = max(job.requested_revision, scope.source_revision)
-                    job.state = "idle" if gen.captured_revision == scope.source_revision else "pending"
-                    job.owner, job.lease_until = None, None
-                    job.attempt = 0
-                    job.error_code = None
-                    job.due_at = now
-                    job.updated_at = now
-                    await session.flush()
-                    flush_ms = (perf_counter() - phase_started) * 1000
+                row = (await connection.exec_driver_sql(
+                    "SELECT s.source_revision,s.edition,s.tombstone,"
+                    "j.owner,j.lease_epoch,j.state AS job_state,j.lease_until,"
+                    "j.requested_revision,g.scope_id AS gen_scope_id,"
+                    "g.state AS gen_state,g.captured_revision,g.evaluator_version,"
+                    "g.summary_count,g.unit_count,a.captured_revision AS active_revision "
+                    "FROM readiness_scope s "
+                    "LEFT JOIN readiness_job j ON j.scope_id=s.id "
+                    "LEFT JOIN readiness_generation g ON g.id=? "
+                    "LEFT JOIN readiness_generation a ON a.id=s.active_generation_id "
+                    "WHERE s.id=?",
+                    (generation_id, claim.scope_id))).mappings().one_or_none()
+                fetch_ms = (perf_counter() - phase_started) * 1000
+                lease_until = row['lease_until'] if row is not None else None
+                if isinstance(lease_until, str):
+                    lease_until = datetime.fromisoformat(lease_until)
+                if isinstance(lease_until, datetime) and lease_until.tzinfo is None:
+                    lease_until = lease_until.replace(tzinfo=timezone.utc)
+                if (row is None or row['tombstone'] or row['gen_scope_id'] != claim.scope_id
+                    or row['gen_state'] != 'staging'
+                    or row['owner'] != claim.owner or row['lease_epoch'] != claim.epoch
+                    or row['job_state'] != 'running' or lease_until is None
+                    or lease_until <= now or row['edition'] != claim.edition
+                    or row['captured_revision'] > row['source_revision']
+                    or row['evaluator_version'] != EVALUATOR_VERSION
+                    or (row['active_revision'] is not None
+                        and row['active_revision'] > row['captured_revision'])):
+                    await connection.rollback()
+                    return False
+                phase_started = perf_counter()
+                counts = (await connection.exec_driver_sql(
+                    "SELECT (SELECT count(*) FROM readiness_summary WHERE generation_id=?),"
+                    "(SELECT count(*) FROM readiness_unit WHERE generation_id=?)",
+                    (generation_id, generation_id))).one()
+                if counts != (row['summary_count'], row['unit_count']):
+                    await connection.rollback()
+                    return False
+                counts_ms = (perf_counter() - phase_started) * 1000
+                phase_started = perf_counter()
+                generation_update = await connection.exec_driver_sql(
+                    "UPDATE readiness_generation SET state='complete' WHERE id=?",
+                    (generation_id,))
+                scope_update = await connection.exec_driver_sql(
+                    "UPDATE readiness_scope SET active_generation_id=?,updated_at=? WHERE id=?",
+                    (generation_id, now_sql, claim.scope_id))
+                job_update = await connection.exec_driver_sql(
+                    "UPDATE readiness_job SET requested_revision=?,state=?,owner=NULL,"
+                    "lease_until=NULL,attempt=0,error_code=NULL,due_at=?,updated_at=? "
+                    "WHERE scope_id=?",
+                    (max(row['requested_revision'], row['source_revision']),
+                     'idle' if row['captured_revision'] == row['source_revision'] else 'pending',
+                     now_sql, now_sql, claim.scope_id))
+                if any(result.rowcount != 1 for result in
+                       (generation_update, scope_update, job_update)):
+                    await connection.rollback()
+                    return False
+                flush_ms = (perf_counter() - phase_started) * 1000
                 phase_started = perf_counter()
                 await connection.commit()
                 if phase_metrics is not None:
