@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { SpecCoveragePanel } from '../SpecCoveragePanel';
 import type { SpecCoverageResponse } from '../specCoverageTypes';
 import { persistedProjection } from '@/components/code-traceability/__tests__/readinessFixture';
@@ -55,6 +55,23 @@ it('uses the persisted Spec generation for Overview proof percentages', async ()
   expect(screen.getByText(/Generation generation-1/)).toBeVisible();
   expect(api.getSpecCoverage).toHaveBeenCalledOnce();
   expect(api.getPersistedReadinessProjection).toHaveBeenCalledOnce();
+});
+
+it('reloads persisted proof with structural coverage after calculation becomes available', async () => {
+  const unavailable = persistedProjection();
+  unavailable.projection.freshness = 'unavailable';
+  unavailable.projection.generation_id = null;
+  unavailable.summaries = [];
+  const recovered = persistedProjection();
+  recovered.summaries[0].implementation.percent = 75;
+  api.getPersistedReadinessProjection.mockResolvedValueOnce(unavailable).mockResolvedValueOnce(recovered);
+  render(<SpecCoveragePanel boardId="b" specId="s" revision="1" onOpenSection={() => {}} />);
+  await screen.findByText('Calculation unavailable');
+  fireEvent.click(screen.getByRole('button', { name: 'Reload coverage' }));
+  await waitFor(() => expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(2));
+  const implementation = screen.getByText('Implementation proof');
+  await waitFor(() => expect(within(implementation.closest('div')!).getByText('75%')).toBeVisible());
+  expect(api.getSpecCoverage).toHaveBeenCalledTimes(2);
 });
 
 it('does not invoke the structural coverage query on the Implementation tab', () => {

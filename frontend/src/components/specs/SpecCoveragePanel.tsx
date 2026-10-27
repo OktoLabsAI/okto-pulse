@@ -74,9 +74,10 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
 }) {
   const api = useDashboardApi();
   const [view, setView] = useState<CoverageView>(canReadSummary ? 'overview' : 'implementation');
+  const [readinessReload, setReadinessReload] = useState(0);
   const availableViews = views.filter(([id]) => id === 'implementation' ? canReadImplementation : canReadSummary);
   const activeView = availableViews.some(([id]) => id === view) ? view : availableViews[0]?.[0] ?? 'overview';
-  const readiness = useDeliveryReadiness(boardId, specId, undefined, revision,
+  const readiness = useDeliveryReadiness(boardId, specId, undefined, JSON.stringify([revision, readinessReload]),
     canReadImplementation && activeView !== 'implementation', 'projection');
   useEffect(() => { if (focusExceptionId && canReadImplementation) setView('implementation'); }, [focusExceptionId, canReadImplementation]);
   const [data, setData] = useState<SpecCoverageResponse | null>(null);
@@ -132,7 +133,10 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
       <div><h3 className="text-lg font-semibold text-gray-900 dark:text-white">Coverage</h3>
         <p className="mt-1 text-gray-500 dark:text-gray-400">Find planning gaps and track proof of delivery.</p>
       </div>
-      {activeView !== 'implementation' && <button type="button" className={button} disabled={loading} onClick={() => void load()}>Reload coverage</button>}
+      {activeView !== 'implementation' && <button type="button" className={button} disabled={loading} onClick={() => {
+        void load();
+        setReadinessReload(value => value + 1);
+      }}>Reload coverage</button>}
     </div>
     <AccessibleTabList idBase={tabId} ariaLabel="Coverage views" variant="secondary"
       items={availableViews.map(([id, label]) => ({ id, label }))} value={activeView} onValueChange={setView} />
