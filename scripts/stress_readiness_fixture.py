@@ -33,6 +33,7 @@ from statistics import median
 import sys
 from tempfile import TemporaryDirectory
 from time import monotonic, perf_counter, process_time
+import traceback
 
 from fastapi import FastAPI
 import httpx
@@ -289,6 +290,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
     source_update_ms, source_commit_ms = [], []
     errors: list[str] = []
     warmup_errors: list[str] = []
+    warmup_failures: list[dict[str, str]] = []
     freshness: dict[str, int] = {}
     measuring = args.warmup_seconds == 0
     read_phases_ms: dict[str, list[float]] = {
@@ -345,6 +347,10 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                 detail = str(record.exc_info[1]).splitlines()[0][:160] if record.exc_info else ''
                 (errors if measuring else warmup_errors).append(
                     f'worker:{record.args[2]}:{detail}')
+                if not measuring:
+                    warmup_failures.append({'code': str(record.args[2]), 'message': detail,
+                        'traceback': ''.join(traceback.format_exception(*record.exc_info))[-6000:]
+                            if record.exc_info else ''})
                 return
             if not measuring:
                 return
@@ -502,6 +508,12 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                         terminal = (await connection.exec_driver_sql(
                             "SELECT scope_id,error_code,attempt FROM readiness_job "
                             "WHERE state='terminal' ORDER BY scope_id LIMIT 5")).all()
+                    if args.output is not None:
+                        diagnostic = args.output.with_name(args.output.stem + '.initial-failure.json')
+                        diagnostic.parent.mkdir(parents=True, exist_ok=True)
+                        diagnostic.write_text(json.dumps({'terminal': [tuple(row) for row in terminal],
+                            'failures': warmup_failures[-8:]}, ensure_ascii=False, indent=2),
+                            encoding='utf-8')
                     raise RuntimeError(f'readiness_fixture_initial_terminal:{terminal!r} '
                         f'failures={warmup_errors[-8:]}')
                 await asyncio.sleep(.06)
