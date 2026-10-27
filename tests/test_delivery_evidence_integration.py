@@ -100,6 +100,8 @@ async def ledger(tmp_path, request):
                  "Use the authoritative release version in the compiled bundle."),
             )
         if native_lifecycle:
+            await conn.exec_driver_sql("UPDATE cards SET test_scenario_ids=? WHERE id='test'",
+                (json.dumps([SCENARIO["id"]]),))
             await conn.exec_driver_sql(
                 "INSERT INTO cards (id, board_id, spec_id, title, status, position, created_by, card_type, test_scenario_ids) VALUES ('origin', ?, ?, 'Original implementation', 'done', 0, 'owner', 'normal', ?)",
                 (BOARD_ID, SPEC_ID, json.dumps([SCENARIO["id"]])),
