@@ -374,6 +374,7 @@ async def _seed_full_context(session_factory) -> None:  # noqa: ANN001
                     title="Build About page",
                     status="done",
                     card_type="normal",
+                    test_scenario_ids=["scenario-regression"],
                     created_by="agent",
                 ),
                 Card(
@@ -383,6 +384,7 @@ async def _seed_full_context(session_factory) -> None:  # noqa: ANN001
                     title="Verify compiled About version",
                     status="done",
                     card_type="test",
+                    test_scenario_ids=["scenario-regression"],
                     conclusions=[{"text": "Runtime rendered v0.3.0."}],
                     validations=[{"outcome": "success"}],
                     created_by="agent",

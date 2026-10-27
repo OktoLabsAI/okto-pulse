@@ -43,7 +43,7 @@ def test_community_source_has_zero_private_core_reach_ins() -> None:
 
 def test_community_metadata_matches_complete_current_schema_contract() -> None:
     table_names = set(Base.metadata.tables)
-    assert len(table_names) == 153
+    assert len(table_names) == 162
     assert {"validation_source_revisions", "spec_validation_operation_receipts"} <= table_names
     assert not table_names & {
         "sprints", "sprint_history", "sprint_qa_items", "sprint_activation_baselines",

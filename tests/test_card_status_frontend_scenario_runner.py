@@ -13,10 +13,13 @@ import subprocess
 from typing import get_args
 import unittest
 
+import pytest
+
 
 _DEPENDENCIES = Path(r"D:\Projetos\Techridy\okto-pulse\frontend\node_modules")
 
 
+@pytest.mark.skipif(os.name != "nt", reason="local Windows junction runner")
 class CardStatusFrontendScenarios(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
