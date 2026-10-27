@@ -305,7 +305,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
         'compute_context': [], 'compute_rows': [],
         'compute_units': [], 'compute_digest': [],
         'snapshot_cpu': [], 'compute_cpu': [], 'stage_cpu': [],
-        'process_dispatch': [], 'publish': [],
+        'process_dispatch': [], 'publish': [], 'source_to_publish': [],
         'snapshot_checkout': [], 'snapshot_begin': [], 'snapshot_scope': [],
         'snapshot_source': [], 'snapshot_rollback': [],
         'snapshot_rows': [], 'snapshot_materialize': [],
@@ -447,6 +447,7 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                     ('snapshot', 'predecessor', 'compute', 'stage', 'process_dispatch',
                         'publish'), record.args[5:11], strict=True):
                     publish_phases_ms[name].append(float(value))
+                publish_phases_ms['source_to_publish'].append(float(record.args[11]))
 
     phase_logger = logging.getLogger(
         'okto_pulse.community.adapters.sqlalchemy_delivery_readiness')

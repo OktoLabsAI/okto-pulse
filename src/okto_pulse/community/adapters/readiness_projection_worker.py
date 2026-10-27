@@ -7,7 +7,9 @@ import atexit
 from concurrent.futures.process import BrokenProcessPool
 from datetime import datetime, timezone
 import gc
+import hashlib
 import logging
+from pathlib import Path
 from threading import get_ident
 from time import monotonic, process_time
 from uuid import uuid4
@@ -49,14 +51,18 @@ def _projection_child_runtime(database_path):
     from .sqlalchemy_database import install_community_sqlite_pragmas
 
     global _process_runner, _process_engine, _process_database_path
+    requested_path = str(Path(database_path).resolve())
     if _process_runner is None:
         _process_runner = asyncio.Runner()
-        _process_engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}",
+        _process_engine = create_async_engine(f"sqlite+aiosqlite:///{requested_path}",
             pool_size=2, max_overflow=0)
         install_community_sqlite_pragmas(_process_engine)
-        _process_database_path = database_path
-    elif _process_database_path != database_path:
-        raise ValueError("readiness_process_database_path_changed")
+        _process_database_path = requested_path
+    elif _process_database_path != requested_path:
+        previous_id = hashlib.sha256(_process_database_path.encode()).hexdigest()[:12]
+        requested_id = hashlib.sha256(requested_path.encode()).hexdigest()[:12]
+        raise ValueError("readiness_process_database_path_changed: "
+            f"previous={previous_id} requested={requested_id}")
     return _process_runner, _process_engine
 
 

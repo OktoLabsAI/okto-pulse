@@ -36,6 +36,24 @@ from okto_pulse.core.services.persisted_delivery_readiness import (
 from test_readiness_schema_upgrade import _v401_predecessor
 
 
+def test_projection_child_reuses_canonical_database_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(worker_module, '_process_runner', None)
+    monkeypatch.setattr(worker_module, '_process_engine', None)
+    monkeypatch.setattr(worker_module, '_process_database_path', None)
+    database_path = tmp_path / 'pulse.sqlite3'
+    runner, engine = worker_module._projection_child_runtime(database_path)
+    try:
+        same_runner, same_engine = worker_module._projection_child_runtime(
+            str(database_path.resolve()))
+        assert same_runner is runner
+        assert same_engine is engine
+        with pytest.raises(ValueError, match='readiness_process_database_path_changed'):
+            worker_module._projection_child_runtime(tmp_path / 'another.sqlite3')
+    finally:
+        runner.run(engine.dispose())
+        runner.close()
+
+
 async def _seed_one_spec(engine):
     async with engine.begin() as connection:
         await connection.run_sync(create_current_schema_objects)
