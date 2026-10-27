@@ -490,11 +490,11 @@ class CommunityPersistedReadinessStore:
                     "CASE WHEN json_valid(payload) THEN json_extract(payload,'$.kind') END,"
                     "CASE WHEN json_valid(payload) THEN json_extract(payload,'$.ref') END,"
                     "CASE WHEN json_valid(payload) THEN json_extract(payload,'$.semantic_sha256') END "
-                    "FROM readiness_unit WHERE generation_id=? "
-                    "ORDER BY category,card_key,kind,ref,semantic_sha256",
+                    "FROM readiness_unit WHERE generation_id=?",
                     (generation_id, generation_id, generation_id))).all()
             finally:
                 await connection.rollback()
+        rows.sort(key=lambda row: row[:5])
         read_ms = (perf_counter() - read_started) * 1000
         validate_started = perf_counter()
         revision, snapshot_id, evaluator, summary_count, unit_count, manifest = header
@@ -567,11 +567,11 @@ class CommunityPersistedReadinessStore:
                     "CASE WHEN json_valid(payload) THEN json_extract(payload,'$.kind') END,"
                     "CASE WHEN json_valid(payload) THEN json_extract(payload,'$.ref') END,"
                     "CASE WHEN json_valid(payload) THEN json_extract(payload,'$.semantic_sha256') END "
-                    "FROM readiness_unit WHERE generation_id=? "
-                    "ORDER BY category,card_key,kind,ref,semantic_sha256",
+                    "FROM readiness_unit WHERE generation_id=?",
                     (generation_id, generation_id, generation_id))).all()
             finally:
                 await connection.rollback()
+        rows.sort(key=lambda row: row[:5])
         read_ms = (perf_counter() - started) * 1000
         try:
             (_, revision, spec_version, snapshot_id, evaluator, evaluated_at,

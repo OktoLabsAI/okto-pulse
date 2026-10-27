@@ -25,6 +25,7 @@ from okto_pulse.community.adapters.current_relational_schema import (
 from okto_pulse.community.adapters.readiness_schema_upgrade import upgrade_readiness_schema
 from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
 from okto_pulse.community.adapters import readiness_projection_worker as worker_module
+from okto_pulse.community.adapters import sqlalchemy_database as database_module
 from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import (
     CommunityPersistedReadinessStore, ReadinessLeaseLost,
 )
@@ -49,6 +50,34 @@ def test_projection_child_reuses_canonical_database_path(tmp_path, monkeypatch):
         assert same_engine is engine
         with pytest.raises(ValueError, match='readiness_process_database_path_changed'):
             worker_module._projection_child_runtime(tmp_path / 'another.sqlite3')
+    finally:
+        runner.run(engine.dispose())
+        runner.close()
+
+
+def test_projection_child_does_not_cache_failed_initialization(tmp_path, monkeypatch):
+    monkeypatch.setattr(worker_module, '_process_runner', None)
+    monkeypatch.setattr(worker_module, '_process_engine', None)
+    monkeypatch.setattr(worker_module, '_process_database_path', None)
+    attempts = 0
+
+    def install(_engine):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError('database_admission_failed')
+
+    monkeypatch.setattr(database_module, 'install_community_sqlite_pragmas', install)
+    database_path = tmp_path / 'pulse.sqlite3'
+    with pytest.raises(RuntimeError, match='database_admission_failed'):
+        worker_module._projection_child_runtime(database_path)
+    assert worker_module._process_runner is None
+    assert worker_module._process_engine is None
+    assert worker_module._process_database_path is None
+    runner, engine = worker_module._projection_child_runtime(database_path)
+    try:
+        assert attempts == 2
+        assert worker_module._process_database_path == str(database_path.resolve())
     finally:
         runner.run(engine.dispose())
         runner.close()

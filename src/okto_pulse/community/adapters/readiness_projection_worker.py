@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 from concurrent.futures.process import BrokenProcessPool
+from contextlib import suppress
 from datetime import datetime, timezone
 import gc
 import hashlib
@@ -53,11 +54,25 @@ def _projection_child_runtime(database_path):
     global _process_runner, _process_engine, _process_database_path
     requested_path = str(Path(database_path).resolve())
     if _process_runner is None:
-        _process_runner = asyncio.Runner()
-        _process_engine = create_async_engine(f"sqlite+aiosqlite:///{requested_path}",
-            pool_size=2, max_overflow=0)
-        install_community_sqlite_pragmas(_process_engine)
-        _process_database_path = requested_path
+        runner = asyncio.Runner()
+        engine = None
+        try:
+            engine = create_async_engine(f"sqlite+aiosqlite:///{requested_path}",
+                pool_size=2, max_overflow=0)
+            install_community_sqlite_pragmas(engine)
+        except BaseException:
+            # A failed first attempt must not poison all later claims in this
+            # process or mask the original database admission error.
+            if engine is not None:
+                with suppress(Exception):
+                    runner.run(engine.dispose())
+            with suppress(Exception):
+                runner.close()
+            raise
+        _process_runner, _process_engine, _process_database_path = (
+            runner, engine, requested_path)
+    elif _process_database_path is None:
+        raise RuntimeError("readiness_process_database_uninitialized")
     elif _process_database_path != requested_path:
         previous_id = hashlib.sha256(_process_database_path.encode()).hexdigest()[:12]
         requested_id = hashlib.sha256(requested_path.encode()).hexdigest()[:12]

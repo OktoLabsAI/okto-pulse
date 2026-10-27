@@ -512,11 +512,13 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
                     if args.output is not None:
                         diagnostic = args.output.with_name(args.output.stem + '.initial-failure.json')
                         diagnostic.parent.mkdir(parents=True, exist_ok=True)
+                        selected_failures = (warmup_failures if len(warmup_failures) <= 11
+                            else [*warmup_failures[:3], *warmup_failures[-8:]])
                         diagnostic.write_text(json.dumps({'terminal': [tuple(row) for row in terminal],
-                            'failures': warmup_failures[-8:]}, ensure_ascii=False, indent=2),
+                            'failures': selected_failures}, ensure_ascii=False, indent=2),
                             encoding='utf-8')
                     raise RuntimeError(f'readiness_fixture_initial_terminal:{terminal!r} '
-                        f'failures={warmup_errors[-8:]}')
+                        f'failures={(warmup_errors if len(warmup_errors) <= 11 else [*warmup_errors[:3], *warmup_errors[-8:]])}')
                 await asyncio.sleep(.06)
             initial_fixture_audit = audit_fixture(path, args)
         # Exclude connection/thread cold start from steady-state write latency.
