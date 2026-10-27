@@ -1,4 +1,4 @@
-"""Concurrent isolated readiness load, writes, and publication-lag probe.
+"""Isolated readiness correctness, resource and diagnostic probe.
 
 This uses the Spec's population fixture. The candidate read can exercise the
 real REST route in-process (including authorization and JSON serialization) or
@@ -7,7 +7,7 @@ Writer latency is split into lock wait and transaction time.
 Publication targets share one bounded polling query; the engine uses the
 Community SQLite PRAGMAs. Delivery evidence writes append directly to SQLite
 without the API command path. The in-process REST mode excludes network and
-browser costs, so this isolated harness alone cannot prove the UI SLO.
+browser costs. Latency samples are diagnostic, not an acceptance threshold.
 """
 
 from __future__ import annotations
@@ -61,6 +61,18 @@ from okto_pulse.core.ports.test_evidence import reset_test_evidence_write_verifi
 from okto_pulse.core.services.delivery_readiness import DeliveryReadinessService
 from okto_pulse.core.services.persisted_delivery_readiness import build_readiness_generation
 from okto_pulse.core.services import persisted_delivery_readiness as evaluator_module
+
+
+def _distribution(samples: list[float]) -> dict[str, float] | None:
+    """Preserve a reproducible summary alongside the raw diagnostic samples."""
+    if not samples:
+        return None
+    return {
+        'p50': round(median(samples), 3),
+        'p95': round(percentile(samples, .95), 3),
+        'p99': round(percentile(samples, .99), 3),
+        'max': round(max(samples), 3),
+    }
 
 ACTOR = ReadinessActor('benchmark-agent', 'agent', 'local', 'benchmark-board')
 _SAFE_CODE = re.compile(r'[A-Za-z0-9_.:-]{1,64}\Z')
@@ -844,16 +856,24 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             'read_p95_ms': round(percentile(read_ms, .95), 3) if read_ms else None,
             'read_p99_ms': round(percentile(read_ms, .99), 3) if read_ms else None,
             'read_max_ms': round(max(read_ms), 3) if read_ms else None,
+            'read_distribution_ms': _distribution(read_ms),
+            'read_phases_distribution_ms': {
+                name: _distribution(samples)
+                for name, samples in read_phases_ms.items()},
             'read_phases_p95_ms': {
                 name: round(percentile(samples, .95), 3) if samples else None
                 for name, samples in read_phases_ms.items()},
             'publish_phases_p95_ms': {
                 name: round(percentile(samples, .95), 3) if samples else None
                 for name, samples in publish_phases_ms.items()},
+            'publish_phases_distribution_ms': {
+                name: _distribution(samples)
+                for name, samples in publish_phases_ms.items()},
             'write_p50_ms': round(median(write_ms), 3) if write_ms else None,
             'write_p95_ms': round(percentile(write_ms, .95), 3) if write_ms else None,
             'write_p99_ms': round(percentile(write_ms, .99), 3) if write_ms else None,
             'write_max_ms': round(max(write_ms), 3) if write_ms else None,
+            'write_distribution_ms': _distribution(write_ms),
             'lock_wait_p95_ms': round(percentile(lock_wait_ms, .95), 3) if lock_wait_ms else None,
             'transaction_p95_ms': round(percentile(transaction_ms, .95), 3) if transaction_ms else None,
             'transaction_max_ms': round(max(transaction_ms), 3) if transaction_ms else None,
@@ -870,6 +890,8 @@ async def run(path: Path, args: argparse.Namespace) -> dict:
             'publish_p95_ms': round(percentile(lag_ms, .95), 3) if lag_ms else None,
             'publish_p99_ms': round(percentile(lag_ms, .99), 3) if lag_ms else None,
             'publish_max_ms': round(max(lag_ms), 3) if lag_ms else None,
+            'publish_p50_ms': round(median(lag_ms), 3) if lag_ms else None,
+            'publish_distribution_ms': _distribution(lag_ms),
             'publish_observations': len(lag_ms), 'freshness': freshness,
             'cpu_s': round(process_time() - cpu_start, 3),
             'resources': {'rss_max_bytes': max(rss_bytes, default=0),
