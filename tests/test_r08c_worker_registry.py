@@ -5,8 +5,10 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from okto_pulse.community.adapters import workers as worker_adapters
+from okto_pulse.community.adapters import sqlalchemy_database
 from okto_pulse.community.adapters.workers import (
     COMMUNITY_WORKER_BASELINE_FAMILIES,
     build_community_worker_registry,
@@ -15,11 +17,55 @@ from okto_pulse.core.application.boundary import RuntimeWorkerBoundaryGate
 from repo_layout import resolve_core_repo
 
 
-def test_r08c_community_worker_registry_declares_baseline_families() -> None:
+def test_r08c_community_worker_registry_declares_baseline_families(monkeypatch) -> None:
+    engine = create_async_engine('sqlite+aiosqlite:///:memory:')
+    monkeypatch.setattr(sqlalchemy_database, 'get_engine', lambda: engine)
     registry = build_community_worker_registry(object())
 
     assert registry.families == COMMUNITY_WORKER_BASELINE_FAMILIES
     assert registry.active_families == ()
+
+
+@pytest.mark.asyncio
+async def test_file_backed_readiness_starts_one_worker_and_drains_pool(
+    tmp_path, monkeypatch,
+) -> None:
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.db'}")
+    monkeypatch.setattr(sqlalchemy_database, 'get_engine', lambda: engine)
+    events = []
+
+    class FakePool:
+        def __init__(self, *, max_workers, mp_context):
+            assert max_workers == 1 and mp_context.get_start_method() == 'spawn'
+
+        def shutdown(self, *, wait, cancel_futures):
+            assert wait and cancel_futures
+            events.append('pool:closed')
+
+    async def start(runner):
+        events.append(f'start:{runner.name}')
+        return runner
+
+    async def stop(runner, timeout=10.0):
+        assert timeout == 45.0
+        events.append(f'stop:{runner.name}')
+
+    monkeypatch.setattr(worker_adapters, 'ProcessPoolExecutor', FakePool)
+    monkeypatch.setattr(worker_adapters, 'start_runner', start)
+    monkeypatch.setattr(worker_adapters.PollingRunner, 'stop', stop)
+    registry = build_community_worker_registry(object())
+    spec = registry._specs['readiness_projection_worker']
+    primary = await spec.start()
+    assert primary.processor.maintenance_enabled is True
+    assert primary.processor.full_projection_executor is not None
+    assert primary.processor.max_inflight == 2
+    await spec.stop(primary)
+    assert events == [
+        'start:community.readiness_projection',
+        'stop:community.readiness_projection',
+        'pool:closed',
+    ]
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -29,6 +75,8 @@ async def test_r08c_community_worker_registry_preserves_shutdown_order(
     events: list[str] = []
     consolidation_drained = False
     runners: dict[str, object] = {}
+    engine = create_async_engine('sqlite+aiosqlite:///:memory:')
+    monkeypatch.setattr(sqlalchemy_database, 'get_engine', lambda: engine)
 
     def _family(runner) -> str:
         if isinstance(runner, worker_adapters.ConsolidationRunner):
@@ -38,6 +86,7 @@ async def test_r08c_community_worker_registry_preserves_shutdown_order(
             "community.kg.board_erasure_runner": "board_erasure_worker",
             "community.kg.cleanup_runner": "cleanup_worker",
             "community.kg.outbox_runner": "outbox_worker",
+            "community.readiness_projection": "readiness_projection_worker",
         }[runner.name]
 
     async def _start(runner):
@@ -58,6 +107,10 @@ async def test_r08c_community_worker_registry_preserves_shutdown_order(
 
     monkeypatch.setattr(worker_adapters, "start_runner", _start)
     monkeypatch.setattr(worker_adapters, "stop_runner", _stop)
+    async def _readiness_stop(runner, timeout=10.0):
+        assert timeout == 45.0
+        await _stop(runner)
+    monkeypatch.setattr(worker_adapters.PollingRunner, 'stop', _readiness_stop)
 
     registry = worker_adapters.build_community_worker_registry(object())
 
@@ -74,7 +127,9 @@ async def test_r08c_community_worker_registry_preserves_shutdown_order(
     assert (
         outbox_runner._blocking_execution is outbox_runner.processor._blocking_execution
     )
+    assert runners['readiness_projection_worker']._blocking_execution is not outbox_runner._blocking_execution
     assert events == [
+        "start:readiness_projection_worker",
         "start:event_dispatcher",
         "start:board_erasure_worker",
         "start:cleanup_worker",
@@ -83,9 +138,11 @@ async def test_r08c_community_worker_registry_preserves_shutdown_order(
         "stop:event_dispatcher",
         "stop:board_erasure_worker",
         "stop:consolidation_worker",
+        "stop:readiness_projection_worker",
         "stop:outbox_worker",
         "stop:cleanup_worker",
     ]
+    await engine.dispose()
 
 
 def test_r08c_worker_boundary_real_core_and_community_trees_pass() -> None:

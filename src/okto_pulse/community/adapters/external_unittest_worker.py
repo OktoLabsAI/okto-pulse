@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 import unittest
@@ -9,6 +10,18 @@ import unittest
 
 def main():
     root, result_path, *selectors = sys.argv[1:]
+    if selectors[:1] == ["--paired-sources"]:
+        if len(selectors) < 3:
+            raise ValueError("paired source descriptor missing")
+        paired_roots = json.loads(selectors[1])
+        if not isinstance(paired_roots, dict) or set(paired_roots) != {"core", "community"}:
+            raise ValueError("paired source descriptor invalid")
+        for role, source_root in paired_roots.items():
+            if not isinstance(source_root, str) or not Path(source_root).is_absolute():
+                raise ValueError("paired source path invalid")
+            os.environ[f"OKTO_PULSE_{role.upper()}_REPO"] = source_root
+            sys.path.insert(0, str(Path(source_root) / "src"))
+        selectors = selectors[2:]
     sys.path.insert(0, root)
     suite = unittest.TestSuite()
     for index, selector in enumerate(selectors):

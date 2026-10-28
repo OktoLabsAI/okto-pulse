@@ -10,7 +10,7 @@ invoke only those governance operations.
 """
 
 from __future__ import annotations
-from okto_pulse.core.models.delivery_evidence import card_delivery_command, DeliveryBatchEntryError, DeliveryEvidenceInput, DeliveryEvidenceCommand, DeliveryEvidenceReadQuery, DeliveryEvidenceQuery
+from okto_pulse.core.models.delivery_evidence import card_delivery_command, DeliveryBatchEntryError, DeliveryEvidenceInput, DeliveryEvidenceCommand, DeliveryEvidenceReadQuery, DeliveryEvidenceQuery, PersistedReadinessQuery, ReadinessRequeueCommand
 from okto_pulse.core.models.delivery_report import CardDeliveryRecordInput, DeliveryReportRejected
 from okto_pulse.core.application.use_cases.delivery_evidence import GetDeliveryEvidenceUseCase, RecordCardDeliveryEvidenceUseCase, RecordDeliveryEvidenceUseCase
 from okto_pulse.core.application.use_cases.decision_review import GetDecisionReviewsUseCase, RecordDecisionReviewsUseCase
@@ -29,6 +29,7 @@ import json
 from typing import Literal, Mapping
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, create_model
 
 from okto_pulse.community.api.auth_deps import require_principal
@@ -462,8 +463,9 @@ def _http_error(exc: Exception) -> HTTPException:
         code = projected['code']
         status_code = {'readiness_query_invalid': 422, 'readiness_scope_mismatch': 404,
             'readiness_permission_denied': 403, 'readiness_cursor_stale': 409,
-            'readiness_snapshot_changed': 409}.get(code, 503)
-        return HTTPException(status_code=status_code, detail=projected)
+            'readiness_snapshot_changed': 409, 'readiness_requeue_conflict': 409}.get(code, 503)
+        return HTTPException(status_code=status_code, detail=projected,
+            headers={'Cache-Control': 'no-store'})
     if isinstance(exc, (DeliveryReportRejected, DeliveryGateBlocked)):
         return HTTPException(status_code=409, detail=exc.to_error_dict())
     if isinstance(exc, ValueError) and str(exc).startswith(("decision_review_", "decision_inspection_")):
@@ -543,6 +545,7 @@ async def _execute(
     principal: Principal,
     uow: PulseUnitOfWork,
     cursor_binding: str | None = None,
+    json_ready: bool = False,
 ) -> object:
     try:
         result = await getattr(use_case, "execute")(
@@ -560,7 +563,7 @@ async def _execute(
         ValueError,
     ) as exc:
         raise _http_error(exc) from exc
-    return _native(result, cursor_binding=cursor_binding)
+    return result if json_ready else _native(result, cursor_binding=cursor_binding)
 
 
 @router.post("/{board_id}/code-investigations", status_code=status.HTTP_201_CREATED)
@@ -1233,6 +1236,44 @@ async def get_code_traceability_projection(
         principal=principal,
         uow=uow,
     )
+
+
+@router.get("/{board_id}/specs/{spec_id}/delivery-readiness-projection")
+async def get_persisted_delivery_readiness(board_id: str, spec_id: str, response: Response,
+    card_id: str | None = Query(default=None, min_length=1, max_length=512),
+    unit_limit: int = Query(default=0, ge=0, le=250),
+    cursor: str | None = Query(default=None, min_length=1, max_length=8192),
+    principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)):
+    from okto_pulse.core.application.use_cases.delivery_evidence import GetPersistedDeliveryReadinessUseCase
+
+    response.headers['Cache-Control'] = 'no-store'
+    result = await _execute(GetPersistedDeliveryReadinessUseCase(),
+        PersistedReadinessQuery(board_id=board_id, spec_id=spec_id,
+            card_id=card_id, unit_limit=unit_limit, cursor=cursor),
+        board_id=board_id, principal=principal, uow=uow, json_ready=True)
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+
+class ReadinessRequeueInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    edition: int = Field(ge=1)
+    expected_target_revision: int = Field(ge=0)
+    idempotency_key: str = Field(min_length=1, max_length=128, pattern=r"\S")
+    reason: str = Field(min_length=1, max_length=500, pattern=r"\S")
+
+
+@router.post("/{board_id}/specs/{spec_id}/delivery-readiness-projection/requeue",
+    status_code=202, include_in_schema=False)
+@router.post("/{board_id}/specs/{spec_id}/readiness/requeue", status_code=202)
+async def requeue_persisted_delivery_readiness(board_id: str, spec_id: str,
+    body: ReadinessRequeueInput,
+    principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)):
+    from okto_pulse.core.application.use_cases.delivery_evidence import RequeuePersistedReadinessUseCase
+
+    return await _execute(RequeuePersistedReadinessUseCase(),
+        ReadinessRequeueCommand(board_id=board_id, spec_id=spec_id,
+            **body.model_dump()),
+        board_id=board_id, principal=principal, uow=uow)
 
 
 @router.get("/{board_id}/specs/{spec_id}/delivery-readiness-summary")

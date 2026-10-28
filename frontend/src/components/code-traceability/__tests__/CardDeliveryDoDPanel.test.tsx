@@ -179,7 +179,7 @@ it('shows the gate pill with the unproven count', async () => {
   render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
   const pill = await screen.findByTestId('dod-gate-pill');
   expect(pill.textContent).toContain('Blocking');
-  expect(pill.textContent).toContain('1 of 2 unproven');
+  expect(pill.textContent).toContain('1 of 2 implementation obligations unproven');
 });
 
 it('shows the blocked banner naming the unproven obligation', async () => {
@@ -252,7 +252,7 @@ it('shows a partial receipt after reload without marking implementation complete
   render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
   expect(await screen.findByText('◌ Partial contribution')).toBeTruthy();
   expect(screen.queryByText('✓ Implementation')).toBeNull();
-  expect(screen.getByTestId('dod-gate-pill').textContent).toContain('2 of 2 unproven');
+  expect(screen.getByTestId('dod-gate-pill').textContent).toContain('2 of 2 implementation obligations unproven');
 });
 
 it('names exact receipt sets per obligation without a Cartesian assignment', async () => {
@@ -379,7 +379,7 @@ it('does not apply the implementation DoD presentation to a Test Card with inher
   value.per_card![0].card_type = 'test';
   api.getDeliveryEvidence.mockResolvedValue(value);
   render(<CardDeliveryDoDPanel boardId="b" card={{ ...CARD, card_type: 'test' }} canTest />);
-  expect(await screen.findByText(/Test Cards are excluded from the implementation DoD gate/)).toBeInTheDocument();
+  expect(await screen.findByText(/Test Cards have a verification gate before Done/)).toBeInTheDocument();
   expect(screen.queryByTestId('dod-gate-pill')).not.toBeInTheDocument();
   expect(screen.queryByTestId('dod-obligations')).not.toBeInTheDocument();
   expect(screen.queryByTestId('dod-blocked-banner')).not.toBeInTheDocument();

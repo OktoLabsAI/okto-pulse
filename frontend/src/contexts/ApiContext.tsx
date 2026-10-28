@@ -23,7 +23,7 @@ interface ApiProviderProps {
 }
 
 export function ApiProvider({ children }: ApiProviderProps) {
-  const { getToken: adapterGetToken, isLoaded, isSignedIn } = authAdapter.useAuth();
+  const { getToken: adapterGetToken, isLoaded, isSignedIn, identityKey } = authAdapter.useAuth();
 
   const tokenGetter = useCallback(
     async (options?: { skipCache?: boolean }): Promise<string | null> => {
@@ -46,7 +46,7 @@ export function ApiProvider({ children }: ApiProviderProps) {
 
   const apiClient = useMemo(() => {
     return new AuthenticatedFetch(tokenGetter, API_BASE_URL);
-  }, [tokenGetter]);
+  }, [tokenGetter, identityKey]);
 
   useEffect(() => {
     initAuthFetch(tokenGetter, API_BASE_URL);

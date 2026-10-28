@@ -14,6 +14,8 @@ const CARD_ACTION_LABELS: Readonly<Record<string, string>> = {
   card_created: 'Created',
   card_updated: 'Updated',
   card_moved: 'Status changed',
+  card_status_normalized: 'Legacy status migrated',
+  card_restore_status_normalized: 'Restore status migrated',
   card_deleted: 'Deleted',
   validation_submitted: 'Validation submitted',
   task_validated: 'Validated',
@@ -23,6 +25,8 @@ const CARD_ACTION_COLORS: Readonly<Record<string, string>> = {
   card_created: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
   card_updated: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
   card_moved: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
+  card_status_normalized: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
+  card_restore_status_normalized: 'bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300',
   card_deleted: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
   validation_submitted: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
   task_validated: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
@@ -50,6 +54,9 @@ function activityChanges(details: Record<string, unknown> | null | undefined): A
 
   if (hasOwn(details, 'from_status') || hasOwn(details, 'to_status')) {
     return [{ field: 'status', old: details.from_status, new: details.to_status }];
+  }
+  if (hasOwn(details, 'pre_archive_status_before') || hasOwn(details, 'pre_archive_status_after')) {
+    return [{ field: 'restore status', old: details.pre_archive_status_before, new: details.pre_archive_status_after }];
   }
 
   if (hasOwn(details, 'before') && hasOwn(details, 'after')) {
@@ -83,7 +90,7 @@ function inlineValue(value: unknown): string {
 }
 
 function activitySummary(entry: ActivityLogEntry, changes: readonly ActivityHistoryChange[]): string {
-  if (entry.action === 'card_moved') {
+  if (entry.action === 'card_moved' || entry.action === 'card_status_normalized') {
     const statusChange = changes.find((change) => change.field === 'status');
     if (statusChange) {
       return `Status: ${inlineValue(statusChange.old)} → ${inlineValue(statusChange.new)}`;
@@ -92,6 +99,13 @@ function activitySummary(entry: ActivityLogEntry, changes: readonly ActivityHist
     const legacyTransition = entry.summary?.match(/^\s*(.+?)\s*->\s*(.+?)\s*$/);
     if (legacyTransition) {
       return `Status: ${legacyTransition[1]} → ${legacyTransition[2]}`;
+    }
+  }
+
+  if (entry.action === 'card_restore_status_normalized') {
+    const restoreChange = changes.find((change) => change.field === 'restore status');
+    if (restoreChange) {
+      return `Restore status: ${inlineValue(restoreChange.old)} → ${inlineValue(restoreChange.new)}`;
     }
   }
 

@@ -68,7 +68,7 @@ describe('dashboard paginated column store', () => {
     expect(token).toMatchObject({ generation: 1, offset: 0, column: 'done' });
     expect(token?.request_id).toMatch(/^column-1-/);
     expect(useDashboardStore.getState().beginColumnPage('done', 0)).toBeNull();
-    expect(useDashboardStore.getState().beginColumnPage('started', -1)).toBeNull();
+    expect(useDashboardStore.getState().beginColumnPage('in_progress', -1)).toBeNull();
   });
 
   it('replaces a batch only for the current generation and board', () => {
@@ -115,9 +115,9 @@ describe('dashboard paginated column store', () => {
 
   it('appends and de-duplicates only the token target column', () => {
     const existing = card('existing', 'done');
-    const untouched = card('untouched', 'started');
+    const untouched = card('untouched', 'in_progress');
     useDashboardStore.setState({
-      columns: { ...emptyColumns(), done: [existing], started: [untouched] },
+      columns: { ...emptyColumns(), done: [existing], in_progress: [untouched] },
     });
     const token = useDashboardStore.getState().beginColumnPage('done', 1)!;
 
@@ -134,7 +134,7 @@ describe('dashboard paginated column store', () => {
     const state = useDashboardStore.getState();
     expect(applied).toBe(true);
     expect(state.columns.done.map(({ id }) => id)).toEqual(['existing', 'next']);
-    expect(state.columns.started).toEqual([untouched]);
+    expect(state.columns.in_progress).toEqual([untouched]);
     expect(state.columnsMeta.done).toEqual(pageMeta);
     expect(state.columnPageState.done.requestId).toBeNull();
   });
@@ -152,7 +152,7 @@ describe('dashboard paginated column store', () => {
     };
 
     expect(useDashboardStore.getState().applyColumnPage(token, { ...base, board_id: 'board-b' })).toBe(false);
-    expect(useDashboardStore.getState().applyColumnPage(token, { ...base, column: 'started' })).toBe(false);
+    expect(useDashboardStore.getState().applyColumnPage(token, { ...base, column: 'in_progress' })).toBe(false);
     expect(useDashboardStore.getState().applyColumnPage(token, { ...base, offset: 25 })).toBe(false);
     expect(useDashboardStore.getState().columns.done).toEqual([]);
   });

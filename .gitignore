@@ -61,6 +61,8 @@ tsconfig.tsbuildinfo
 !frontend/tests/visual/**/*.png
 !src/okto_pulse/community/frontend_dist/assets/*.png
 .playwright-mcp/
+frontend/.playwright-cli/
+frontend/output/playwright/
 
 # Local editable-install virtualenv used for development server
 .venv/

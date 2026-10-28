@@ -625,6 +625,7 @@ def _mount_frontend(
     explicit_public_host: bool = False,
     public_api_port: int | None = None,
     public_mcp_port: int | None = None,
+    readiness_read_mode: str = "projection",
 ) -> None:
     """Mount the pre-built frontend SPA on the FastAPI app.
 
@@ -680,7 +681,8 @@ def _mount_frontend(
 // Runtime configuration injected by server
 window.OKTO_PULSE_CONFIG = {{
     API_URL: '{_api_url}',
-    MCP_URL: 'http://{_pub_host}:{_pub_mcp_port}'
+    MCP_URL: 'http://{_pub_host}:{_pub_mcp_port}',
+    READINESS_READ_MODE: '{readiness_read_mode}'
 }};
 """
 
@@ -1166,6 +1168,7 @@ def create_community_app():
     _community_uow_factory = build_community_unit_of_work_factory(_rc_session_factory)
     _community_worker_registry = build_community_worker_registry(
         _rc_session_factory,
+        evidence_root=Path(settings.data_dir) / "evidence",
         kg_cleanup_enabled=getattr(settings, "kg_cleanup_enabled", True),
         kg_cleanup_interval_seconds=getattr(
             settings,
@@ -1298,6 +1301,7 @@ def create_community_app():
             explicit_public_host=public_host_env is not None,
             public_api_port=public_api_port,
             public_mcp_port=public_mcp_port,
+            readiness_read_mode=settings.readiness_read_mode,
         )
     except BaseException:
         mcp_cold_start_transaction.rollback()

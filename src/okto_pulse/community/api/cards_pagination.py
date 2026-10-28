@@ -17,7 +17,9 @@ from okto_pulse.core.ports.application_persistence import (
 )
 
 
-CARD_STATUSES = frozenset(item.value for item in CardStatus)
+CARD_STATUSES = frozenset(
+    item.value for item in CardStatus if item is not CardStatus.STARTED
+)
 CARD_PRIORITIES = frozenset(item.value for item in CardPriority)
 CARD_TYPES = frozenset(item.value for item in CardType)
 

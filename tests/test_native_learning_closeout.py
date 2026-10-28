@@ -1,4 +1,4 @@
-"""Learning policy through native storage and real lifecycle/delivery gates."""
+"""Learning policy through native storage, with delivery admission isolated."""
 import pytest
 from sqlalchemy import select, text
 
@@ -8,7 +8,14 @@ from okto_pulse.core.application.use_cases.delivery_evidence import RecordCardDe
 from test_adopted_delivery_report import ledger as _ledger, setup, request, BOARD
 
 ledger = _ledger
-pytestmark = [pytest.mark.asyncio, pytest.mark.parametrize("ledger", ["native_bug"], indirect=True)]
+pytestmark = [pytest.mark.asyncio, pytest.mark.parametrize("ledger", ["native_bug_lifecycle"], indirect=True)]
+
+
+@pytest.fixture(autouse=True)
+def amendment_store():
+    from okto_pulse.community.adapters.sqlalchemy_amendment_revision import CommunitySqlAlchemyAmendmentRevisionStore
+    from okto_pulse.core.ports.amendment_revision import register_amendment_revision_store
+    register_amendment_revision_store(CommunitySqlAlchemyAmendmentRevisionStore())
 
 
 @pytest.mark.parametrize("skip_cognitive", [False, True])
@@ -23,7 +30,8 @@ async def test_native_bug_closeout_requires_learning_policy_and_real_delivery(
         assert await session.scalar(text("PRAGMA foreign_keys")) == 1
         board = await session.get(Board, BOARD)
         board.settings = {**board.settings, "bug_learning_closeout": policy,
-            "skip_cognitive_consolidation": skip_cognitive}
+            "skip_cognitive_consolidation": skip_cognitive,
+            "delivery_evidence_gate": "blocking" if contribution == "missing" else "advisory"}
         await session.commit()
         command = request(contribution)
         if policy == "blocking" or contribution == "missing":
@@ -53,7 +61,7 @@ async def test_native_bug_closeout_requires_learning_policy_and_real_delivery(
 
 
 @pytest.mark.parametrize("damage", [None, "delivery", "permission", "evidence"])
-async def test_blocking_capture_and_delivery_close_atomically_before_graph_materialization(
+async def test_blocking_capture_and_report_close_atomically_before_graph_materialization(
     ledger, tmp_path, monkeypatch, damage,
 ):
     from okto_pulse.community.adapters.bug_cognitive_context import CommunityBugCognitiveContextAssembler, CommunityCanonicalBugNodeReader
@@ -76,7 +84,8 @@ async def test_blocking_capture_and_delivery_close_atomically_before_graph_mater
         register_bug_cognitive_context_assembler(assembler)
         register_handler(LearningCaptureAdmitted.event_type)(LearningCaptureMaterializationEnqueuer)
         board = await session.get(Board, BOARD)
-        board.settings = {**board.settings, "bug_learning_closeout": "blocking", "skip_cognitive_consolidation": False}
+        board.settings = {**board.settings, "bug_learning_closeout": "blocking", "skip_cognitive_consolidation": False,
+            "delivery_evidence_gate": "blocking" if damage == "delivery" else "advisory"}
         await session.commit()
         source = await assembler.assemble_semantic(session, board_id=BOARD, bug_id="task")
         assert source.verified, source.load_errors

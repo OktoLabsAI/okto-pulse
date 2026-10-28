@@ -2,13 +2,19 @@ import { resolveDeliveryGateMode } from '@/components/board/deliveryGateSettings
 import { DeliveryReadinessPanel } from './DeliveryReadinessPanel';
 import { DeliveryExceptionDetails } from './DeliveryExceptionDetails';
 import type { ReadinessSpecLocation } from './readinessNavigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { useDashboardApi } from '@/services/api';
 import { ObligationRefText } from './obligationPresentation';
 import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
+import { isPersistedReadinessProjection, type PersistedReadinessProjection, type ReadinessMetric } from '@/types/delivery-readiness';
 import { decisionStatusLabel } from '@/components/specs/DecisionReviewSection';
+import { readinessReadMode } from '@/lib/readinessMode';
+import { AuthenticatedFetchError } from '@/lib/authFetch';
+import { isRetriableReadinessError, ReadinessContractError } from './readinessTransport';
+
+class ReadinessGenerationChangedError extends Error {}
 
 interface Props {
   boardId: string;
@@ -21,16 +27,34 @@ interface Props {
   focusExceptionId?: string | null;
 }
 
-function ObligationEvidenceDetails({ data, row }: {
+function metricLabel(metric?: ReadinessMetric) {
+  if (!metric || metric.status === 'unknown') return 'Unknown';
+  if (metric.status === 'not_applicable') return 'N/A';
+  return `${metric.percent}%`;
+}
+
+function unitLabel(state: string, phase: 'implementation' | 'verification') {
+  const labels: Record<string, string> = {
+    satisfied: phase === 'implementation' ? '✓ Current proof' : '✓ Verified',
+    missing: '◌ Pending', partial: '◐ Partial', failed: '✕ Failed',
+    stale: '↻ Stale', conflict: '⚠ Conflict', waived: 'Waived · no proof credit',
+    not_applicable: 'N/A', unknown: 'Unknown',
+  };
+  return labels[state] ?? 'Unknown';
+}
+
+function ObligationEvidenceDetails({ data, row, currentRow }: {
   data: DeliveryEvidenceProjection; row: DeliveryEvidenceProjection['rows'][number];
+  currentRow?: NonNullable<DeliveryEvidenceProjection['current_proof_rows']>[number];
 }) {
-  const ids = new Set([...row.implementation_ids, ...row.test_ids,
+  const implementationIds = currentRow?.implementation_ids ?? row.implementation_ids;
+  const ids = new Set([...implementationIds, ...row.test_ids,
     ...row.implementation_waiver_ids, ...row.test_waiver_ids]);
   return <div className="space-y-4 break-words">
     <section aria-label="Implementation evidence" className="space-y-2">
       <h4 className="font-semibold">Implementation evidence</h4>
-      {row.implementation_ids.length === 0 && <p>No admitted implementation evidence.</p>}
-      {row.implementation_ids.map(id => {
+      {implementationIds.length === 0 && <p>{currentRow ? 'No current implementation proof.' : 'Current implementation proof unavailable.'}</p>}
+      {implementationIds.map(id => {
         const proof = data.implementations.find(item => item.id === id);
         return <div key={id} className="space-y-1 rounded border border-gray-200 p-2 dark:border-gray-700">
           <p className="break-all">Record: {id}</p>
@@ -73,25 +97,144 @@ function ObligationEvidenceDetails({ data, row }: {
 // presents the aggregated verdict, never mutates it.
 export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryEvidence = false, onSkipDeliveryEvidenceChange, onOpenDecisions, onOpenReadinessSpec, focusExceptionId }: Props) {
   const api = useDashboardApi();
-  const [data, setData] = useState<DeliveryEvidenceProjection | null>(null);
+  const legacyMode = readinessReadMode() === 'legacy';
+  const [storedData, setData] = useState<DeliveryEvidenceProjection | null>(null);
+  const [dataOwner, setDataOwner] = useState<{ api: typeof api; key: string }>();
   const [gateMode, setGateMode] = useState<'advisory' | 'blocking' | null>(null);
   const [error, setError] = useState('');
   const [reload, setReload] = useState(0);
+  const [storedProjection, setProjection] = useState<PersistedReadinessProjection | null>(null);
+  const [projectionOwner, setProjectionOwner] = useState<{ api: typeof api; key: string }>();
+  const [projectionError, setProjectionError] = useState('');
+  const acceptedProjection = useRef<{ api: typeof api; key: string; value: PersistedReadinessProjection }>();
+  const [showDetails, setShowDetails] = useState(legacyMode);
+  const scopeKey = JSON.stringify([boardId, specId, revision, reload]);
+  const projectionScopeKey = JSON.stringify([boardId, specId, legacyMode]);
+  const data = dataOwner?.api === api && dataOwner.key === scopeKey ? storedData : null;
+  const projection = projectionOwner?.api === api && projectionOwner.key === projectionScopeKey ? storedProjection : null;
+
+  useEffect(() => {
+    if (legacyMode) return;
+    const refresh = () => setReload(value => value + 1);
+    const visible = () => { if (document.visibilityState === 'visible') refresh(); };
+    window.addEventListener('pulse:delivery-evidence-changed', refresh);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', visible);
+    return () => {
+      window.removeEventListener('pulse:delivery-evidence-changed', refresh);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', visible);
+    };
+  }, [legacyMode]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    if (acceptedProjection.current?.api !== api || acceptedProjection.current.key !== projectionScopeKey)
+      acceptedProjection.current = undefined;
+    setProjection(current => projectionOwner?.api === api && projectionOwner.key === projectionScopeKey
+      && current?.projection.generation_id
+      ? { ...current, projection: { ...current.projection, freshness: 'updating' } } : null);
+    setProjectionError('');
+    if (legacyMode) return () => controller.abort();
+    let retry = 1000;
+    void (async () => {
+      while (!controller.signal.aborted) {
+        if (document.visibilityState !== 'visible') {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          continue;
+        }
+        try {
+          let page = await api.getPersistedReadinessProjection(boardId, specId, { unitLimit: 250 }, controller.signal);
+          if (!isPersistedReadinessProjection(page) || page.scope.board_id !== boardId || page.scope.spec_id !== specId
+            || page.scope.card_id !== null)
+            throw new ReadinessContractError('Readiness projection scope mismatch.');
+          const rows = [...page.units];
+          const seen = new Set<string>();
+          while (page.page.has_more) {
+            const cursor = page.page.next_cursor;
+            if (!cursor || seen.has(cursor)) throw new ReadinessContractError('Readiness page cursor invalid.');
+            seen.add(cursor);
+            let next: PersistedReadinessProjection;
+            try {
+              next = await api.getPersistedReadinessProjection(boardId, specId,
+                { unitLimit: 250, cursor }, controller.signal);
+            } catch (failure) {
+              if (failure instanceof AuthenticatedFetchError && failure.status === 409)
+                throw new ReadinessGenerationChangedError('Readiness cursor expired. Restarting this view.');
+              throw failure;
+            }
+            if (!isPersistedReadinessProjection(next) || next.scope.board_id !== boardId || next.scope.spec_id !== specId
+              || next.scope.card_id !== null) throw new ReadinessContractError('Readiness page scope mismatch.');
+            if (next.projection.generation_id !== page.projection.generation_id
+              || next.scope.spec_edition !== page.scope.spec_edition
+              || next.projection.source_revision !== page.projection.source_revision)
+              throw new ReadinessGenerationChangedError('Readiness generation changed. Restarting this view.');
+            rows.push(...next.units);
+            page = next;
+          }
+          const previous = acceptedProjection.current?.value;
+          if (previous && page.scope.spec_edition !== null && previous.scope.spec_edition !== null
+            && (page.scope.spec_edition < previous.scope.spec_edition
+              || page.scope.spec_edition === previous.scope.spec_edition
+                && page.projection.source_revision !== null && previous.projection.source_revision !== null
+                && page.projection.source_revision < previous.projection.source_revision))
+            throw new ReadinessGenerationChangedError('Older readiness generation ignored. Retrying current view.');
+          if (previous && page.projection.generation_id && previous.projection.generation_id
+            && page.scope.spec_edition === previous.scope.spec_edition
+            && page.projection.source_revision === previous.projection.source_revision
+            && page.projection.evaluated_at && previous.projection.evaluated_at
+            && Date.parse(page.projection.evaluated_at) < Date.parse(previous.projection.evaluated_at))
+            throw new ReadinessGenerationChangedError('Older readiness generation ignored. Retrying current view.');
+          if (!controller.signal.aborted) {
+            acceptedProjection.current = { api, key: projectionScopeKey, value: { ...page, units: rows } };
+            setProjectionOwner({ api, key: projectionScopeKey });
+            setProjection({ ...page, units: rows });
+          }
+          setProjectionError(''); retry = 1000;
+          if (!['updating', 'pending_initial'].includes(page.projection.freshness)) return;
+          await new Promise(resolve => setTimeout(resolve, 500));
+        } catch (failure) {
+          if (controller.signal.aborted) return;
+          setProjectionError(failure instanceof Error ? failure.message : 'Readiness projection unavailable.');
+          if (failure instanceof ReadinessGenerationChangedError) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+            continue;
+          }
+          if (!isRetriableReadinessError(failure)) {
+            acceptedProjection.current = undefined;
+            setProjection(null);
+            return;
+          }
+          setProjection(current => current?.projection.generation_id
+            ? { ...current, projection: { ...current.projection, freshness: 'unavailable', error_code: 'transport_error' } }
+            : null);
+          await new Promise(resolve => setTimeout(resolve, retry));
+          retry = retry === 1000 ? 2000 : 5000;
+        }
+      }
+    })();
+    return () => controller.abort();
+  }, [api, boardId, specId, revision, reload, projectionScopeKey, legacyMode]);
 
   useEffect(() => {
     const controller = new AbortController();
     setData(null); setGateMode(null); setError('');
-    api.getDeliveryEvidence(boardId, specId, controller.signal).then(value => {
+    if (showDetails || focusExceptionId) api.getDeliveryEvidence(boardId, specId, controller.signal).then(value => {
       if (value.board_id !== boardId || value.spec_id !== specId) throw new Error('Delivery evidence scope changed. Refresh the Spec.');
-      if (!controller.signal.aborted) setData(value);
+      if (!controller.signal.aborted) {
+        setDataOwner({ api, key: scopeKey });
+        setData(value);
+      }
     }).catch(err => { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : 'Delivery proof could not be loaded.'); });
     api.getBoard(boardId).then(board => {
       if (!controller.signal.aborted) setGateMode(resolveDeliveryGateMode(board.settings?.delivery_evidence_gate));
     }).catch(() => { if (!controller.signal.aborted) setGateMode(null); });
     return () => controller.abort();
-  }, [api, boardId, specId, revision, reload, focusExceptionId]);
+  }, [api, boardId, specId, revision, reload, focusExceptionId, showDetails, scopeKey]);
 
   const missingImplementation = data?.rows.filter(row => !row.implementation_satisfied).length ?? 0;
+  const currentProofRows = new Map((data?.current_proof_rows ?? []).map(row =>
+    [`${row.obligation_ref}:${row.semantic_sha256}`, row]));
   const missingTest = data?.rows.filter(row => !row.test_satisfied && !row.decision_verification_status).length ?? 0;
   const pendingDecisions = data?.rows.filter(row => row.decision_verification_status && !row.test_satisfied).length ?? 0;
   const summary = !data ? '' : data.allowed
@@ -104,7 +247,14 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
   return <section className="space-y-5" aria-label="Implementation and verification">
     {focusExceptionId && data?.board_id === boardId && data.spec_id === specId
       && <DeliveryExceptionDetails data={data} recordId={focusExceptionId} />}
-    <DeliveryReadinessPanel boardId={boardId} specId={specId} revision={`${revision ?? ''}:${reload}`} onOpenReadinessSpec={onOpenReadinessSpec} />
+    {projection && <DeliveryReadinessPanel boardId={boardId} specId={specId} revision={`${revision ?? ''}:${reload}`}
+      persistedValue={projection} onGenerationMismatch={() => setReload(value => value + 1)}
+      onRefreshProjection={() => setReload(value => value + 1)}
+      onOpenReadinessSpec={onOpenReadinessSpec} />}
+    {legacyMode && <DeliveryReadinessPanel boardId={boardId} specId={specId}
+      revision={`${revision ?? ''}:${reload}`} onOpenReadinessSpec={onOpenReadinessSpec} />}
+    {!legacyMode && !projection && !projectionError && <PulseLoader label="Loading readiness projection…" size="sm" className="py-4" />}
+    {projectionError && <p role="alert" className="text-xs text-amber-700">{projectionError}</p>}
     <p className="text-sm text-gray-500 dark:text-gray-400">Track implementation and verification for each obligation. Expand an item to inspect its evidence.</p>
     <div className="flex flex-wrap items-center justify-between gap-4">
       <div className="flex min-w-0 items-center gap-2">
@@ -126,11 +276,11 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
       </div>
     </div>
 
-      {!data && !error && <PulseLoader label="Loading delivery rollup…" size="sm" className="py-6" />}
+      {showDetails && !data && !error && <PulseLoader label="Loading delivery details…" size="sm" className="py-6" />}
       <div className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50/50 px-3 py-2 dark:border-gray-700 dark:bg-gray-700/20">
         <div className="min-w-0">
           <span className="text-xs font-medium text-gray-700 dark:text-gray-300">Skip delivery evidence requirement</span>
-          <p className="text-[10px] text-gray-400">Allow moving spec to Done without complete delivery proof — the coverage verdict stays visible. Waivers (per obligation) remain human-only.</p>
+          <p className="text-[10px] text-gray-700 dark:text-gray-300">Allow moving spec to Done without complete delivery proof — the coverage verdict stays visible. Waivers (per obligation) remain human-only.</p>
         </div>
         {onSkipDeliveryEvidenceChange ? (
           <button
@@ -145,7 +295,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
             <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${skipDeliveryEvidence ? 'translate-x-5' : ''}`} />
           </button>
         ) : (
-          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide ${skipDeliveryEvidence ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'}`}>
+          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide ${skipDeliveryEvidence ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300'}`}>
             {skipDeliveryEvidence ? 'Skipped' : 'Active'}
           </span>
         )}
@@ -157,11 +307,37 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
       </p>
     )}
 
-    {data && <>
+    {!legacyMode && <div>
+      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-700 dark:text-gray-300">Coverage by obligation</h3>
+      {projection && <p className="mb-2 text-xs text-gray-500" role="status">
+        {projection.projection.freshness === 'current' ? 'Current' : projection.projection.freshness === 'updating'
+          ? 'Updating · previous coherent generation' : projection.projection.freshness === 'pending_initial'
+            ? 'Waiting for calculation' : 'Calculation unavailable'}
+        {projection.projection.generation_id ? ` · Generation ${projection.projection.generation_id}` : ''}
+        {' · '}Implementation {metricLabel(projection.summaries.find(row => row.card_id === null)?.implementation)}
+        {' · '}Verification {metricLabel(projection.summaries.find(row => row.card_id === null)?.verification)}
+      </p>}
+      {projection?.projection.generation_id && <div className="overflow-x-auto"><table className="w-full text-sm" data-testid="delivery-coverage-table">
+        <thead><tr className="border-b text-left text-xs text-gray-500"><th scope="col">Obligation</th>
+          <th scope="col">Implementation</th><th scope="col">Verification</th></tr></thead>
+        <tbody>{projection.units.filter(unit => unit.card_id === null && unit.kind === 'obligation').map(unit =>
+          <tr key={`${unit.ref}:${unit.semantic_sha256}`} className="border-b border-gray-100 dark:border-gray-800">
+            <td className="py-2 pr-4"><ObligationRefText value={unit.ref} /></td>
+            <td className="py-2" title={unit.implementation_reason_codes.join(', ')}>{unitLabel(unit.implementation_state, 'implementation')}</td>
+            <td className="py-2" title={unit.verification_reason_codes.join(', ')}>{unitLabel(unit.verification_state, 'verification')}</td>
+          </tr>)}</tbody>
+      </table></div>}
+    </div>}
+    <button type="button" className="btn btn-secondary text-xs" onClick={() => setShowDetails(value => !value)}>
+      {showDetails ? 'Hide detailed evidence' : 'Show detailed evidence'}
+    </button>
+
+    {showDetails && data && <>
       <div>
-        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Coverage by obligation</h3>
+        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-700 dark:text-gray-300">Detailed evidence by obligation</h3>
+        <p className="mb-2 text-xs text-gray-500 dark:text-gray-400">Implementation marks use the same current proof assessment as the percentage above. Delivery qualification also requires its contributing Cards to reach Done.</p>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm" data-testid="delivery-coverage-table">
+          <table className="w-full text-sm" data-testid="delivery-detailed-coverage-table">
             <thead>
               <tr className="border-b border-gray-100 text-left text-xs text-gray-400 dark:border-gray-800">
                 <th scope="col" className="py-1 pr-4">Obligation</th>
@@ -175,6 +351,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
                 const waivedImpl = row.implementation_waiver_ids.length > 0;
                 const waivedTest = row.test_waiver_ids.length > 0;
                 const decision = !!row.decision_verification_status;
+                const currentProof = currentProofRows.get(`${ref}:${row.obligation.binding.semantic_sha256}`);
                 return <tr key={ref}>
                   <td className="min-w-0 py-1.5 pr-4 text-gray-700 dark:text-gray-200">
                     <details className="group py-2">
@@ -189,12 +366,19 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
                     {decision ? <div className="space-y-2"><p>{decisionStatusLabel(row.decision_verification_status!)}</p>
                       <p>Adherence reuses selected obligation evidence and any required inspection. No separate implementation Card is required.</p>
                       {onOpenDecisions && <button type="button" className="btn btn-secondary text-xs" onClick={onOpenDecisions}>Review in Decisions</button>}
-                    </div> : <ObligationEvidenceDetails data={data} row={row} />}
+                    </div> : <ObligationEvidenceDetails data={data} row={row} currentRow={currentProof} />}
                     </div>
                     </details>
                   </td>
-                  <td className="px-2 text-green-600 dark:text-green-400" title={decision ? 'Decisions do not require their own implementation' : waivedImpl ? 'Explicitly waived — human authorization' : row.implementation_satisfied ? 'Accepted proof recorded' : 'No accepted proof'}>
-                    {decision ? <span className="text-xs text-gray-500">Not applicable</span> : waivedImpl ? <span className="text-xs text-amber-600 dark:text-amber-400">Waived</span> : row.implementation_satisfied ? '✓' : <span className="text-amber-500">◌</span>}
+                  <td className="px-2 text-xs" title={decision ? 'Decisions do not require their own implementation' : 'Current proof and delivery qualification are separate stages'}>
+                    {decision ? <span className="text-gray-500">Not applicable</span> : <div className="space-y-1">
+                      <div className={currentProof?.implementation_satisfied ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'}>
+                        {currentProof ? currentProof.implementation_satisfied ? '✓ Current proof' : '◌ Current proof missing' : 'Current proof unavailable'}
+                      </div>
+                      <div className={row.implementation_satisfied && !waivedImpl ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'}>
+                        {waivedImpl ? 'Waived' : row.implementation_satisfied ? <><span>✓</span> Delivery qualified</> : <><span>◌</span> Delivery pending</>}
+                      </div>
+                    </div>}
                   </td>
                   <td className="px-2 text-green-600 dark:text-green-400" title={waivedTest ? 'Explicitly waived — human authorization' : row.test_satisfied ? 'Current passing evidence for this obligation' : 'Missing / stale'}>
                     {decision ? <span className="text-xs">{decisionStatusLabel(row.decision_verification_status!)}</span> : waivedTest ? <span className="text-xs text-amber-600 dark:text-amber-400">Waived</span> : row.test_satisfied ? '✓' : <span className="text-amber-500">◌</span>}
@@ -208,7 +392,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
 
       {data.per_card && data.per_card.length > 0 && (
         <div>
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">Per card</h3>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-700 dark:text-gray-300">Per card</h3>
           <div className="space-y-2">
             {data.per_card.map(card => {
               const proven = card.obligations.filter(o => o.implementation_satisfied).length;
@@ -222,12 +406,12 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
                       : card.obligations.length === 0
                         ? 'No derived obligations'
                         : proven === card.obligations.length
-                          ? `${proven} obligation${proven === 1 ? '' : 's'} with accepted proof`
-                          : `${proven}/${card.obligations.length} obligations with proof · ${card.obligations.length - proven} unproven`}
+                          ? `${proven} obligation${proven === 1 ? '' : 's'} with delivery-qualified proof`
+                          : `${proven}/${card.obligations.length} obligations with delivery-qualified proof · ${card.obligations.length - proven} pending qualification`}
                   </div>
                 </div>
                 <span className={`shrink-0 text-xs font-medium ${isTest ? 'text-gray-400 dark:text-gray-500' : card.satisfied ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'}`}>
-                  {isTest ? 'Excluded from DoD gate' : card.satisfied ? 'Satisfied' : 'In progress'}
+                  {isTest ? 'Verification gate' : card.satisfied ? 'Implementation proven' : 'Implementation pending'}
                 </span>
               </div>;
             })}

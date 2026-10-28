@@ -34,13 +34,13 @@ ledger = contract.ledger
 BOARD, SPEC = contract.signed.BOARD_ID, contract.signed.SPEC_ID
 
 
-async def setup(ledger, tmp_path, monkeypatch, *, adopted=True):
+async def setup(ledger, tmp_path, monkeypatch, *, adopted=True, gate_mode="blocking"):
     seed, _, _ = ledger
     if adopted:
         await contract.adopt_fixture(seed, tmp_path, monkeypatch)
     await seed.execute(update(Card).where(Card.id == "task").values(status="in_progress"))
     await seed.execute(update(Board).where(Board.id == BOARD).values(settings={
-        "delivery_evidence_gate": "blocking", "impact_evidence_mode": "off",
+        "delivery_evidence_gate": gate_mode, "impact_evidence_mode": "off",
         "require_task_validation": False, "skip_cognitive_consolidation": True,
     }))
     await seed.flush()
@@ -117,7 +117,7 @@ async def test_atomic_done_cannot_commit_without_complete_selected_contribution(
 
 @pytest.mark.asyncio
 async def test_atomic_done_uses_its_last_complete_binding_without_granting_spec_test_credit(ledger, tmp_path, monkeypatch):
-    session, uow, actor = await setup(ledger, tmp_path, monkeypatch)
+    session, uow, actor = await setup(ledger, tmp_path, monkeypatch, gate_mode="advisory")
     try:
         command = request("complete")
         result = await RecordCardDeliveryEvidenceUseCase().execute(command, actor=actor, uow=uow)
@@ -136,7 +136,8 @@ async def test_atomic_done_uses_its_last_complete_binding_without_granting_spec_
 @pytest.mark.asyncio
 @pytest.mark.parametrize("select_existing", [False, True])
 async def test_report_cannot_borrow_complete_proof_outside_its_selection(ledger, tmp_path, monkeypatch, select_existing):
-    session, uow, actor = await setup(ledger, tmp_path, monkeypatch)
+    session, uow, actor = await setup(ledger, tmp_path, monkeypatch,
+        gate_mode="advisory" if select_existing else "blocking")
     try:
         proof = await contract.delivery.record(uow.services.delivery_evidence, contract.implementation())
         await session.commit()
@@ -191,7 +192,7 @@ async def test_direct_done_obeys_delivery_policy_without_human_validation(ledger
 
 @pytest.mark.asyncio
 async def test_concurrent_adopted_done_submissions_share_one_report(ledger, tmp_path, monkeypatch):
-    first, left, actor = await setup(ledger, tmp_path, monkeypatch)
+    first, left, actor = await setup(ledger, tmp_path, monkeypatch, gate_mode="advisory")
     second = async_sessionmaker(first.bind, sync_session_class=CommunitySemanticSession,
         expire_on_commit=False, info={"realm_scope": RealmScope.local()})()
     try:

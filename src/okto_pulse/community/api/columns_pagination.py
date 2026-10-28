@@ -18,7 +18,9 @@ from okto_pulse.core.ports.application_persistence import (
 )
 
 
-KANBAN_STATUSES: tuple[str, ...] = tuple(item.value for item in CardStatus)
+KANBAN_STATUSES: tuple[str, ...] = tuple(
+    item.value for item in CardStatus if item is not CardStatus.STARTED
+)
 KANBAN_CARD_TYPES: frozenset[str] = frozenset(item.value for item in CardType)
 # Each column page consumes at most three statements (items/count/derived
 # summary), followed by the two board-wide facet aggregations. Keep the budget

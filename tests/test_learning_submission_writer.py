@@ -42,6 +42,10 @@ def independent_gates(monkeypatch):
     from okto_pulse.core.services import main
     from okto_pulse.core.services import delivery_evidence
     from okto_pulse.core.application.use_cases import card_crud
+    from okto_pulse.core.ports.amendment_revision import register_amendment_revision_store
+    from okto_pulse.community.adapters.sqlalchemy_amendment_revision import CommunitySqlAlchemyAmendmentRevisionStore
+
+    register_amendment_revision_store(CommunitySqlAlchemyAmendmentRevisionStore())
 
     monkeypatch.setattr(main, 'evaluate_code_traceability_transition', AsyncMock())
     monkeypatch.setattr(main.CardService, '_validate_cognitive_done', AsyncMock())
@@ -224,12 +228,16 @@ async def test_delivery_report_cannot_inherit_capture_without_its_authority(runt
     from okto_pulse.core.application.use_cases.delivery_evidence import RecordCardDeliveryEvidenceUseCase
     factory, _, store, _ = runtime
     _, data = await prepare(runtime, 'validation')
-    command = SimpleNamespace(board_id=BOARD, report=data, batch_command=Mock())
+    command = SimpleNamespace(board_id=BOARD, report=data, expected_card_status='in_progress',
+        batch_command=Mock(return_value=SimpleNamespace(kind='progress', board_id=BOARD,
+            execution_submission=None)))
     async with factory() as session:
         uow = unit(session)
+        uow.services.delivery_evidence = SimpleNamespace(record_card=AsyncMock())
         with pytest.raises(PermissionDeniedError):
             await RecordCardDeliveryEvidenceUseCase().submit_report(command, actor=author(denied), uow=uow)
-        command.batch_command.assert_not_called()
+        command.batch_command.assert_called_once_with()
+        uow.services.delivery_evidence.record_card.assert_not_awaited()
         uow.commit.assert_not_awaited()
     assert await store.enumerate(BOARD) == ()
 

@@ -35,7 +35,7 @@ function columns(
 
 describe('paginated Kanban DnD invariant', () => {
   it('uses placement=end with index zero for an empty destination column', () => {
-    const state = columns({ started: [card('active', 'started')] });
+    const state = columns({ in_progress: [card('active', 'in_progress')] });
 
     const destination = resolveKanbanDropDestination(state, 'active', 'done');
 
@@ -49,7 +49,7 @@ describe('paginated Kanban DnD invariant', () => {
 
   it('uses placement=end for a partial visible page even when the server has more', () => {
     const state = columns({
-      started: [card('active', 'started')],
+      in_progress: [card('active', 'in_progress')],
       done: [card('loaded-1', 'done'), card('loaded-2', 'done', 1)],
     });
     const serverMeta = { has_more: true };
@@ -67,7 +67,7 @@ describe('paginated Kanban DnD invariant', () => {
 
   it('uses before_id for a card anchor and computes a non-negative local index', () => {
     const state = columns({
-      started: [card('active', 'started')],
+      in_progress: [card('active', 'in_progress')],
       validation: [card('anchor', 'validation'), card('later', 'validation', 1)],
     });
 
@@ -80,7 +80,7 @@ describe('paginated Kanban DnD invariant', () => {
 
   it('uses only the filtered visible anchors and never invents an index', () => {
     const filteredVisibleState = columns({
-      started: [card('active', 'started')],
+      in_progress: [card('active', 'in_progress')],
       validation: [card('only-filter-match', 'validation')],
     });
 
@@ -115,7 +115,7 @@ describe('paginated Kanban DnD invariant', () => {
   });
 
   it('fails closed for a missing source, self-drop, or unknown target', () => {
-    const state = columns({ started: [card('active', 'started')] });
+    const state = columns({ in_progress: [card('active', 'in_progress')] });
 
     expect(resolveKanbanDropDestination(state, 'missing', 'done')).toBeNull();
     expect(resolveKanbanDropDestination(state, 'active', 'active')).toBeNull();
@@ -125,9 +125,9 @@ describe('paginated Kanban DnD invariant', () => {
   it('never emits position across every column destination', () => {
     for (const status of CARD_STATUSES.filter((candidate) => candidate !== 'rejected')) {
       const state = columns({
-        started: [card('active', 'started')],
-        [status]: status === 'started'
-          ? [card('active', 'started')]
+        in_progress: [card('active', 'in_progress')],
+        [status]: status === 'in_progress'
+          ? [card('active', 'in_progress')]
           : [card(`visible-${status}`, status)],
       });
       const destination = resolveKanbanDropDestination(state, 'active', status);
@@ -166,7 +166,7 @@ describe('paginated Kanban DnD invariant', () => {
         targetStatus: 'in_progress',
         request: { status: 'in_progress', placement: 'end' },
       });
-    for (const target of ['not_started', 'started', 'validation', 'on_hold', 'done', 'cancelled'] as CardStatus[]) {
+    for (const target of ['not_started', 'validation', 'on_hold', 'done', 'cancelled'] as CardStatus[]) {
       expect(resolveKanbanDropDestination(state, 'active', target)).toBeNull();
     }
   });

@@ -10495,6 +10495,157 @@ class ImplementationTargetResolutionRow(Base):
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
 
 
+class ReadinessScopeRow(Base):
+    """Per-edition durable source fence; derived metrics never replace proof."""
+
+    __tablename__ = "readiness_scope"
+    __table_args__ = (
+        UniqueConstraint("realm_id", "board_id", "spec_id", "edition", name="uq_readiness_scope"),
+        CheckConstraint("edition >= 1", name="ck_readiness_scope_edition"),
+        CheckConstraint("source_revision >= 0", name="ck_readiness_source_revision"),
+        Index("ix_readiness_scope_reconcile", "board_id", "spec_id", "edition"),
+    )
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    realm_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    board_id: Mapped[str] = mapped_column(String(36), ForeignKey("boards.id", ondelete="CASCADE"), nullable=False)
+    spec_id: Mapped[str] = mapped_column(String(36), ForeignKey("specs.id", ondelete="CASCADE"), nullable=False)
+    edition: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    active_generation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tombstone: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ReadinessSourceDeltaRow(Base):
+    """Last source mutation in a scope, committed with its revision fence."""
+
+    __tablename__ = "readiness_source_delta"
+    __table_args__ = (
+        CheckConstraint("source_revision >= 0", name="ck_readiness_delta_revision"),
+        CheckConstraint(
+            "(kind = 'full' AND card_id IS NULL) OR "
+            "(kind = 'card_progress_insert' AND card_id IS NOT NULL)",
+            name="ck_readiness_delta_kind_card",
+        ),
+    )
+    scope_id: Mapped[str] = mapped_column(String(64), ForeignKey("readiness_scope.id", ondelete="CASCADE"),
+        primary_key=True)
+    source_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    card_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+
+class ReadinessSourceDeltaEventRow(Base):
+    """Durable revision chain written by the same trigger as source invalidation."""
+
+    __tablename__ = "readiness_source_delta_event"
+    __table_args__ = (
+        CheckConstraint("source_revision >= 0", name="ck_readiness_delta_event_revision"),
+        CheckConstraint(
+            "(kind = 'full' AND card_id IS NULL) OR "
+            "(kind = 'card_progress_insert' AND card_id IS NOT NULL)",
+            name="ck_readiness_delta_event_kind_card",
+        ),
+    )
+    scope_id: Mapped[str] = mapped_column(String(64),
+        ForeignKey("readiness_scope.id", ondelete="CASCADE"), primary_key=True)
+    source_revision: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    card_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+
+class ReadinessJobRow(Base):
+    """One coalesced readiness request per scope, committed with its source."""
+
+    __tablename__ = "readiness_job"
+    __table_args__ = (
+        CheckConstraint("requested_revision >= 0", name="ck_readiness_requested_revision"),
+        CheckConstraint("lease_epoch >= 0", name="ck_readiness_lease_epoch"),
+        CheckConstraint("attempt >= 0", name="ck_readiness_attempt"),
+        Index("ix_readiness_job_due", "state", "due_at", "scope_id"),
+    )
+    scope_id: Mapped[str] = mapped_column(String(64), ForeignKey("readiness_scope.id", ondelete="CASCADE"), primary_key=True)
+    requested_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_epoch: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    lease_until: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    due_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class ReadinessGenerationRow(Base):
+    """A generation is invisible until its complete manifest is CAS-published."""
+
+    __tablename__ = "readiness_generation"
+    __table_args__ = (
+        CheckConstraint("captured_revision >= 0", name="ck_readiness_generation_revision"),
+        CheckConstraint("summary_count >= 0 AND unit_count >= 0", name="ck_readiness_generation_counts"),
+        Index("ix_readiness_generation_scope", "scope_id", "captured_revision"),
+    )
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_id: Mapped[str] = mapped_column(String(64), ForeignKey("readiness_scope.id", ondelete="CASCADE"), nullable=False)
+    captured_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    spec_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    evaluator_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_snapshot_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="staging")
+    summary_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    manifest_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    evaluated_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
+
+class ReadinessSummaryRow(Base):
+    __tablename__ = "readiness_summary"
+    __table_args__ = (Index("ix_readiness_summary_generation", "generation_id", "card_key"),)
+    generation_id: Mapped[str] = mapped_column(String(64), ForeignKey("readiness_generation.id", ondelete="CASCADE"), primary_key=True)
+    card_key: Mapped[str] = mapped_column(String(64), primary_key=True)  # empty string is Spec summary
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class ReadinessDiagnosticRow(Base):
+    __tablename__ = "readiness_diagnostic"
+    generation_id: Mapped[str] = mapped_column(String(64), ForeignKey("readiness_generation.id", ondelete="CASCADE"), primary_key=True)
+    card_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class ReadinessUnitRow(Base):
+    __tablename__ = "readiness_unit"
+    __table_args__ = (Index("ix_readiness_unit_page", "generation_id", "card_key", "kind", "ref"),)
+    generation_id: Mapped[str] = mapped_column(String(64), ForeignKey("readiness_generation.id", ondelete="CASCADE"), primary_key=True)
+    card_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), primary_key=True)
+    ref: Mapped[str] = mapped_column(String(512), primary_key=True)
+    semantic_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+class ReadinessOperationAuditRow(Base):
+    """Durable, payload-free operator actions on the derived projection."""
+
+    __tablename__ = "readiness_operation_audit"
+    __table_args__ = (
+        Index("ix_readiness_operation_audit_scope", "scope_id", "created_at"),
+        UniqueConstraint("scope_id", "request_key", name="uq_readiness_requeue_request"),
+    )
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    board_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    operation: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    actor_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    previous_error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    target_revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    request_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
 class DeliveryEvidenceRecordRow(Base):
     """Append-only human-authorized Spec waivers and their revocations."""
 

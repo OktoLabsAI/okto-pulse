@@ -1,4 +1,4 @@
-import type { ReadinessResponse, ReadinessCounts, ReadinessMetric } from '@/types/delivery-readiness';
+import type { PersistedReadinessProjection, ReadinessResponse, ReadinessCounts, ReadinessMetric } from '@/types/delivery-readiness';
 import type { CardSummary } from '@/types';
 
 export const emptyCounts: ReadinessCounts = { satisfied: 0, missing: 0, partial: 0, failed: 0,
@@ -32,3 +32,16 @@ export const task: CardSummary = { id: 'c', board_id: 'b', spec_id: 's', card_ty
 export const cards: CardSummary[] = [task, { ...task, id: 'other' }];
 export const boardSummary = () => ({ contract_version: 'delivery-readiness/v1', metrics_version: 2,
   delivery_readiness: readiness(null), cards: cards.map(card => ({ card_id: card.id, delivery_readiness: readiness(card.id) })) });
+export const persistedProjection = (): PersistedReadinessProjection => ({
+  contract_version: 'delivery-readiness-projection/v1',
+  scope: { board_id: 'b', spec_id: 's', spec_edition: 1, spec_version: 1, card_id: null },
+  projection: { projection_version: 1, generation_id: 'generation-1', source_revision: 1,
+    target_revision: 1, evaluated_at: '2026-10-14T00:00:00Z',
+    evaluator_version: 'delivery-readiness-evaluator/v1', freshness: 'current', error_code: null },
+  summaries: [null, ...cards.map(card => card.id)].map(cardId => ({
+    card_id: cardId, card_type: cardId ? 'normal' : null, card_version: cardId ? 1 : null,
+    implementation: metric(100, 8), verification: metric(75, 6),
+    population_known: true, evaluation_complete: true,
+  })),
+  units: [], page: { offset: 0, limit: 0, total: 0, has_more: false, next_cursor: null }, mutation_reauthorization_required: true,
+});

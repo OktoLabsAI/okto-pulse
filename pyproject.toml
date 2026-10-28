@@ -1,6 +1,6 @@
 [project]
 name = "okto-pulse"
-version = "0.4.1"
+version = "0.4.2"
 description = "Okto Pulse — spec-driven project management with AI agents via MCP. Local-first, single command setup."
 requires-python = ">=3.11"
 license = {text = "Elastic-2.0"}
@@ -26,7 +26,8 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "okto-pulse-core==0.4.1",
+    "okto-pulse-core==0.4.2",
+    "orjson>=3.11.0,<4.0.0",
     # 0.137.0 regressed include_router for empty collection paths; 0.137.1 fixed it.
     "fastapi>=0.109.0,!=0.137.0,<1.0.0",
     "starlette>=0.35.0,<2.0.0",
@@ -47,7 +48,7 @@ dependencies = [
     "uvicorn[standard]>=0.27.0,<1.0.0",
     "wsproto>=1.2.0,<2.0.0",
     "apscheduler>=3.10.0,<4.0.0",
-    "okto-grafx[accel]==0.0.7",
+    "okto-grafx[accel]==0.0.8",
     "requests>=2.32.0,<3.0.0",
     "filelock>=3.16.0,<4.0.0",
     "chardet>=3.0.2,<6.0.0",
@@ -57,6 +58,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "build>=1.2.0,<2.0.0",
+    "psutil>=6.0.0,<9.0.0",
     "pytest>=8.0.0,<10.0.0",
     "pytest-asyncio>=0.24.0,<2.0.0",
     "tiktoken>=0.8.0,<1.0.0",
@@ -79,9 +81,9 @@ okto-pulse = "okto_pulse.community.cli:main"
 okto-pulse-saas-closure = "okto_pulse.community.saas_closure:main"
 
 [tool.uv.sources]
-# Resolve the sibling source tree while 0.4.1 is unpublished. pip/release wheels
-# retain the exact okto-pulse-core==0.4.1 dependency declared above.
-okto-pulse-core = { path = "../okto_labs_pulse_core", editable = true }
+# Resolve the sibling source tree during paired local development. Release wheels
+# retain the exact okto-pulse-core==0.4.2 dependency declared above.
+okto-pulse-core = { path = "../okto-pulse-core", editable = true }
 
 [build-system]
 requires = ["hatchling"]

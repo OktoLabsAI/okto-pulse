@@ -42,6 +42,7 @@ from okto_pulse.core.domain.delivery_evidence import (
     implementation_binding_proof_issue,
     implementation_binding_ready,
 )
+from okto_pulse.core.domain.delivery_assessment import MetricStatus, UnitState, aggregate_delivery_metrics
 from okto_pulse.core.domain.enums import CardType, CardStatus, TestScenarioStatus
 from okto_pulse.core.domain.execution_contract import execution_contract
 from okto_pulse.core.domain.verification_plan import required_verification_scenarios
@@ -50,10 +51,11 @@ from okto_pulse.core.domain.verification_report import (
 )
 from okto_pulse.core.domain.delivery_verification import verification_sources_issue
 from okto_pulse.core.domain.effective_delivery_coverage import (
-    EffectiveDeliveryContext, ScopedTestFact, read_scoped_implementation, implementation_scope_current,
+    EffectiveDeliveryContext, EvaluatedDeliverySnapshot, ScopedTestFact, read_scoped_implementation,
+    implementation_scope_current,
 )
 from okto_pulse.core.domain.delivery_progress import DeliveryProgress, progress_blocks_execution, require_delivery_progress_mutable
-from okto_pulse.core.domain.delivery_selection import current_delivery_selection, seal_delivery_selection, current_delivery_report, report_reuses_impact, submitted_report_receipt
+from okto_pulse.core.domain.delivery_selection import current_delivery_selection, superseded_delivery_selection, seal_delivery_selection, current_delivery_report, report_reuses_impact, submitted_report_receipt
 from okto_pulse.core.domain.delivery_impact import DeliveryImpactClaim, compose_delivery_impact, DeliveryImpactObservation, progress_affects_impact_source, require_impact_observation, reusable_impact_block
 from okto_pulse.core.models.delivery_selection import DeliveryImpactBasis, DeliverySelectionManifest, DeliverySelectionInput
 from okto_pulse.core.models.delivery_evidence import (
@@ -439,12 +441,16 @@ class CommunityDeliveryEvidenceStore:
             rejection_reasons=tuple(reasons),
         )
 
-    async def load_snapshot(self, scope):
+    async def load_snapshot(self, scope, *, prospective_card_id=None, prospective_report=None):
+        if (prospective_card_id is None) != (prospective_report is None):
+            raise ValueError("delivery_prospective_report_scope_invalid")
         spec = await self._spec(scope.board_id, scope.spec_id)
         execution_contract(spec)
         if int(spec.edition) != scope.edition:
             raise ValueError("delivery_edition_conflict")
-        return (await self.load_rollup_snapshot(scope.board_id, scope.spec_id))[0]
+        return (await self.load_rollup_snapshot(
+            scope.board_id, scope.spec_id, include_card_summaries=False,
+            prospective_card_id=prospective_card_id, prospective_report=prospective_report))[0]
 
     async def projection(self, board_id, spec_id):
         spec = await self._spec(board_id, spec_id)
@@ -452,6 +458,10 @@ class CommunityDeliveryEvidenceStore:
         # Spec-scoped READ derives the rollup from the native Card ledgers.
         snapshot, per_card = await self.load_rollup_snapshot(board_id, spec_id)
         evaluation = evaluate_delivery_coverage(snapshot)
+        # Use the exact readiness assessment for the table's current-proof marks.
+        # The delivery verdict below still requires Done Cards.
+        current_assessment = EvaluatedDeliverySnapshot(snapshot).obligations()
+        current_metric = aggregate_delivery_metrics(current_assessment).implementation
         records = await self._records(scope)
         revoked = {r.payload.get("record_id") for r in records if r.kind == "revoke"}
         candidates = []
@@ -550,6 +560,13 @@ class CommunityDeliveryEvidenceStore:
                 }
                 for row in evaluation.rows
             ],
+            "current_proof_rows": [{
+                "obligation_ref": row.binding.obligation_ref,
+                "semantic_sha256": row.binding.semantic_sha256,
+                "implementation_ids": list(row.implementation.evidence_ids),
+                "implementation_satisfied": row.implementation.state == UnitState.SATISFIED,
+            } for row in current_assessment.obligations]
+            if current_metric.status != MetricStatus.UNKNOWN else None,
             "implementations": [{
                 **asdict(fact),
                 "executions": [{**asdict(proof),
@@ -715,7 +732,11 @@ class CommunityDeliveryEvidenceStore:
                 record_hashes={record.id: self._selection_record_hash(record) for record in records},
                 prospective_report=prospective_report)
         except ValueError:
-            selected, selection_valid = set(), False
+            # A prior edition's intact frozen selection cannot select any
+            # current records. Its absence of credit is a complete projection,
+            # while a malformed or current-edition report remains incomplete.
+            selected = set()
+            selection_valid = prospective_report is None and superseded_delivery_selection(card, scope)
         implementations, tests, rejected_records = [], [], []
         expected_bindings = {item.binding for item in obligations}
 
@@ -996,6 +1017,18 @@ class CommunityDeliveryEvidenceStore:
         scope = CardDeliveryScope(command.board_id, command.card_id, command.spec_id, batch.expected_spec_edition)
         await self.lock_scope(DeliveryScope(scope.board_id, scope.spec_id, scope.spec_edition))
         async with self.session.begin_nested():
+            if command.expected_card_status == "started":
+                # The parser retains this value only for exact historical
+                # replay. A missing head must fail before any batch/report
+                # writer can run, even if a legacy card has not migrated yet.
+                head_id = await self.session.scalar(select(CardRecord.id).where(
+                    CardRecord.board_id == scope.board_id,
+                    CardRecord.card_id == scope.card_id,
+                    CardRecord.actor_id == actor_id,
+                    CardRecord.idempotency_key == batch.idempotency_key,
+                ).limit(1))
+                if head_id is None:
+                    raise ValueError("delivery_legacy_started_replay_only")
             result = await self._record_card_batch(batch, actor_id=actor_id, actor_kind=actor_kind,
                 execution_submitter=execution_submitter, submission_digest=self.inventory.payload_digest(command.model_dump()),
                 expected_status=command.expected_card_status)
@@ -1465,7 +1498,9 @@ class CommunityDeliveryEvidenceStore:
                 )
         return waivers
 
-    async def load_rollup_snapshot(self, board_id, spec_id, *, include_reviews=True):
+    async def load_rollup_snapshot(self, board_id, spec_id, *, include_reviews=True,
+                                   include_card_summaries=True,
+                                   prospective_card_id=None, prospective_report=None):
         """Aggregate the card-ledger snapshots of a spec into one snapshot.
 
         Returns ``(DeliveryEvidenceSnapshot, per_card)`` where per_card carries
@@ -1480,47 +1515,55 @@ class CommunityDeliveryEvidenceStore:
         implementations, tests, per_card, rejected_records = [], [], [], []
         complete = True
         facts_complete = True
+        prospective_seen = prospective_card_id is None
         for card in await self._linked_cards(board_id, spec_id):
             card_scope = CardDeliveryScope(
                 board_id, card.id, spec_id, int(spec.edition)
             )
-            snapshot = await self.load_card_snapshot(card_scope, plan=plan, native_verification=native_verification)
+            is_prospective = card.id == prospective_card_id
+            prospective_seen = prospective_seen or is_prospective
+            snapshot = await self.load_card_snapshot(card_scope, plan=plan,
+                native_verification=native_verification,
+                prospective_report=prospective_report if is_prospective else None)
             complete = complete and snapshot.complete is True
             facts_complete = facts_complete and snapshot.facts_complete is True
             implementations.extend(snapshot.implementations)
             tests.extend(snapshot.tests)
             rejected_records.extend(snapshot.rejected_records)
-            evaluation = evaluate_delivery_coverage(snapshot)
-            per_card.append(
-                {
-                    "card_id": card.id,
-                    "complete": snapshot.complete,
-                    "delivery_completeness": None,
-                    "title": card.title,
-                    "card_version": card.policy_version,
-                    "delivery_revision": await self._delivery_revision(card_scope),
-                    "selection": await self._selection_summary(card_scope),
-                    "accumulated_impact": await self._accumulated_impact(card_scope),
-                    "report_impact": await self.report_impact_status(card_scope),
-                    "progress": await self._progress_summary(card_scope),
-                    "card_type": str(
-                        getattr(card.card_type, "value", card.card_type)
-                    ),
-                    "status": str(getattr(card.status, "value", card.status)),
-                    "obligations": [
-                        {
-                            "ref": row.obligation.binding.obligation_ref,
-                            "title": row.obligation.title,
-                            "implementation_satisfied": (
-                                row.implementation_satisfied
-                            ),
-                        }
-                        for row in evaluation.rows
-                    ],
-                    "satisfied": snapshot.complete is True and bool(evaluation.rows)
-                    and all(row.implementation_satisfied for row in evaluation.rows),
-                }
-            )
+            if include_card_summaries:
+                evaluation = evaluate_delivery_coverage(snapshot)
+                per_card.append(
+                    {
+                        "card_id": card.id,
+                        "complete": snapshot.complete,
+                        "delivery_completeness": None,
+                        "title": card.title,
+                        "card_version": card.policy_version,
+                        "delivery_revision": await self._delivery_revision(card_scope),
+                        "selection": await self._selection_summary(card_scope),
+                        "accumulated_impact": await self._accumulated_impact(card_scope),
+                        "report_impact": await self.report_impact_status(card_scope),
+                        "progress": await self._progress_summary(card_scope),
+                        "card_type": str(
+                            getattr(card.card_type, "value", card.card_type)
+                        ),
+                        "status": str(getattr(card.status, "value", card.status)),
+                        "obligations": [
+                            {
+                                "ref": row.obligation.binding.obligation_ref,
+                                "title": row.obligation.title,
+                                "implementation_satisfied": (
+                                    row.implementation_satisfied
+                                ),
+                            }
+                            for row in evaluation.rows
+                        ],
+                        "satisfied": snapshot.complete is True and bool(evaluation.rows)
+                        and all(row.implementation_satisfied for row in evaluation.rows),
+                    }
+                )
+        if not prospective_seen:
+            raise ValueError("delivery_prospective_report_scope_invalid")
         waivers = await self._rollup_waivers(scope)
         snapshot = DeliveryEvidenceSnapshot(
             scope,
@@ -1546,7 +1589,8 @@ class CommunityDeliveryEvidenceStore:
             snapshot = await CommunityDecisionReviews(self).attach(spec, snapshot)
         # Test evidence belongs to other Cards; calculate only after assembling
         # the complete selected and authenticated Spec population.
-        for row in per_card:
-            if row["card_type"] == CardType.NORMAL.value:
-                row["delivery_completeness"] = asdict(calculate_delivery_completeness(snapshot, row["card_id"]))
+        if include_card_summaries:
+            for row in per_card:
+                if row["card_type"] == CardType.NORMAL.value:
+                    row["delivery_completeness"] = asdict(calculate_delivery_completeness(snapshot, row["card_id"]))
         return snapshot, per_card

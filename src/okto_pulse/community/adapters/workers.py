@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ProcessPoolExecutor
+from multiprocessing import get_context
+from pathlib import Path
 from typing import Any
 
 from okto_pulse.core.application.processors import (
@@ -28,8 +32,10 @@ from okto_pulse.community.adapters.worker_runners import (
 from okto_pulse.community.adapters.sqlalchemy_domain_event_delivery import (
     CommunitySqlAlchemyDomainEventDeliveryStore,
 )
+from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
 
 COMMUNITY_WORKER_BASELINE_FAMILIES: tuple[str, ...] = (
+    "readiness_projection_worker",
     "event_dispatcher",
     "board_erasure_worker",
     "cleanup_worker",
@@ -66,6 +72,7 @@ def build_community_worker_registry(
     kg_queue_heartbeat_seconds: int = 30,
     kg_queue_recovery_scan_interval_seconds: int = 60,
     kg_queue_max_concurrent_workers: int = 1,
+    evidence_root: Path | None = None,
 ) -> RuntimeWorkerRegistry:
     """Build all runners before app construction and register their lifecycle."""
 
@@ -76,6 +83,55 @@ def build_community_worker_registry(
     # shared task set could otherwise miss late submissions from either family.
     consolidation_blocking_execution = TrackedBlockingExecution()
     outbox_blocking_execution = TrackedBlockingExecution()
+    readiness_blocking_execution = TrackedBlockingExecution()
+    from okto_pulse.community.adapters.sqlalchemy_database import get_engine
+    readiness_engine = get_engine()
+    database = readiness_engine.url.database
+    file_backed = bool(database and database != ':memory:'
+        and readiness_engine.url.query.get('uri') != 'true')
+    # TR03/AC12/AC23 require at most one concurrent calculation.
+    readiness_pool = (ProcessPoolExecutor(max_workers=1, mp_context=get_context('spawn'))
+        if file_backed else None)
+    database_path = str(Path(database).resolve()) if file_backed else None
+    readiness_runner = PollingRunner(
+        ReadinessProjectionProcessor(readiness_engine, readiness_blocking_execution,
+            full_projection_executor=readiness_pool, database_path=database_path,
+            evidence_root=evidence_root,
+            max_inflight=2 if file_backed else 1),
+        name="community.readiness_projection",
+        interval_seconds=0.1,
+        active_interval_seconds=0.0,
+        operation_name="process_once",
+        blocking_execution=readiness_blocking_execution,
+    )
+    readiness_runners = [readiness_runner]
+
+    async def start_readiness():
+        started = []
+        try:
+            for runner in readiness_runners:
+                await start_runner(runner)
+                started.append(runner)
+        except BaseException:
+            for runner in reversed(started):
+                await runner.stop(timeout=45.0)
+            if readiness_pool is not None:
+                await asyncio.to_thread(readiness_pool.shutdown, wait=True,
+                    cancel_futures=True)
+            raise
+        return readiness_runner
+
+    async def stop_readiness(_runner):
+        outcomes = await asyncio.gather(
+            *(runner.stop(timeout=45.0) for runner in readiness_runners),
+            return_exceptions=True)
+        failures = [outcome for outcome in outcomes if isinstance(outcome, BaseException)]
+        if failures:
+            raise failures[0]
+        if readiness_pool is not None:
+            await asyncio.to_thread(readiness_pool.shutdown, wait=True,
+                cancel_futures=True)
+
     event_processor = DomainEventDeliveryProcessor(
         CommunitySqlAlchemyDomainEventDeliveryStore(
             session_factory,
@@ -139,6 +195,14 @@ def build_community_worker_registry(
         final_iteration_guard=lambda: consolidation_runner.shutdown_drained,
     )
     registry = RuntimeWorkerRegistry()
+    registry.register(
+        RuntimeWorkerSpec(
+            family="readiness_projection_worker",
+            start=start_readiness,
+            stop=stop_readiness,
+            stop_priority=225,
+        )
+    )
     registry.register(
         RuntimeWorkerSpec(
             family="event_dispatcher",

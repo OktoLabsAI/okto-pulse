@@ -6,8 +6,9 @@ from sqlalchemy import update
 from test_delivery_inline_execution import composed as _composed, db as _db, counts
 from test_delivery_execution_sets import native_verifier as _native_verifier, composite_batch, seed_scope
 from test_delivery_progress_currentness import checkpoint
-from okto_pulse.community.adapters.sqlalchemy_models import Card
+from okto_pulse.community.adapters.sqlalchemy_models import Card, Spec
 from okto_pulse.core.domain.delivery_evidence import CardDeliveryScope, implementation_binding_ready
+from okto_pulse.core.domain.delivery_selection import superseded_delivery_selection
 from okto_pulse.core.models.delivery_selection import DeliverySelectionInput
 
 db = _db
@@ -85,6 +86,47 @@ async def test_invalid_manifest_propagates_incomplete_to_entire_spec_rollup(comp
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("composed", [("target", "target-two")], indirect=True)
+@pytest.mark.parametrize("corrupt", [False, True])
+async def test_reopened_spec_projects_old_done_card_as_zero_current_proof(composed, corrupt):
+    session, uow, use_case, actor = composed
+    store = uow.services.delivery_evidence
+    await seed_scope(session)
+    saved = await use_case.execute(composite_batch(), actor=actor, uow=uow)
+    manifest = await store.seal_selection(
+        SCOPE, selection([saved["entries"][2]["id"]]), expected_status="in_progress", impact=None)
+    if corrupt:
+        manifest["sha256"] = "0" * 64
+    await frozen(session, manifest, status="done")
+    await session.execute(update(Spec).where(Spec.id == "s").values(edition=2))
+    await session.commit()
+
+    card_scope = CardDeliveryScope("b", "c", "s", 2)
+    assert superseded_delivery_selection(await session.get(Card, "c"), card_scope) is (not corrupt)
+    card_snapshot = await store.load_card_snapshot(card_scope)
+    spec_snapshot, _ = await store.load_rollup_snapshot("b", "s")
+    assert card_snapshot.implementations == ()
+    assert card_snapshot.tests == ()
+    assert spec_snapshot.implementations == ()
+    assert spec_snapshot.scope.edition == 2
+    assert spec_snapshot.obligations
+    assert card_snapshot.complete is (not corrupt)
+    assert spec_snapshot.complete is (not corrupt)
+    if not corrupt:
+        # A proposed report for a new transition never inherits this historical
+        # exception; the new edition needs a freshly sealed selection.
+        proposed = await store.load_card_snapshot(card_scope, prospective_report=dict(
+            source="move_to_validation", delivery_manifest=manifest))
+        assert not proposed.complete
+    projection = await store.projection("b", "s")
+    assert not projection["allowed"]
+    if corrupt:
+        assert "delivery_projection_incomplete" in projection["blockers"]
+    else:
+        assert "delivery_projection_incomplete" not in projection["blockers"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("composed", [("target", "target-two")], indirect=True)
 @pytest.mark.parametrize("change,code", [
     ({"expected_delivery_revision": 2}, "revision_conflict"),
     ({"expected_card_version": 2}, "version_conflict"),
@@ -103,7 +145,7 @@ async def test_seal_rejects_stale_or_foreign_selection_without_writes(composed, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("composed", [("target", "target-two")], indirect=True)
-async def test_real_card_report_and_delivery_store_share_manifest_and_gate(composed):
+async def test_real_card_report_and_delivery_store_share_manifest_and_gate(composed, monkeypatch):
     from okto_pulse.community.adapters.sqlalchemy_application_persistence import CommunitySqlAlchemyApplicationPersistence
     from okto_pulse.core.ports.application_persistence import register_application_persistence_port
     from okto_pulse.core.domain.realm import RealmScope
@@ -149,5 +191,8 @@ async def test_real_card_report_and_delivery_store_share_manifest_and_gate(compo
         assert [row["id"] for row in manifest["records"]] == [identity]
         store = CommunityDeliveryEvidenceStore(reader)
         card, spec, _ = await store._card_scope_guard(SCOPE)
-        await require_card_delivery(reader, card, spec)
+        from okto_pulse.core.services import delivery_evidence as delivery_gate
+        monkeypatch.setattr(delivery_gate, "delivery_store", lambda _: store)
+        with pytest.raises(ValueError, match="verification_not_run"):
+            await require_card_delivery(reader, card, spec)
         assert (await counts(reader))[:2] == [2, 3]

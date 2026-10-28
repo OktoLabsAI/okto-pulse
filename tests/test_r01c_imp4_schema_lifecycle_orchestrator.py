@@ -185,16 +185,20 @@ def test_orchestrator_propagates_failure_without_running_later_steps(tmp_path, m
     async def drive():
         runtime = configure_community_database(f"sqlite+aiosqlite:///{tmp_path / 'failure.db'}")
         schema = AsyncMock(side_effect=RuntimeError("schema_failed") if failure == "schema" else None)
+        normalize = AsyncMock(return_value=0)
         seed = AsyncMock(side_effect=RuntimeError("seed_failed") if failure == "seed" else None)
         monkeypatch.setattr(lifecycle, "initialize_current_schema", schema)
+        monkeypatch.setattr(lifecycle, "normalize_legacy_card_status", normalize)
         orchestrator = CommunityRelationalSchemaLifecycleOrchestrator(runtime_provider=lambda: runtime, seed=seed)
         try:
             with pytest.raises(RuntimeError, match=f"{failure}_failed"):
                 await orchestrator.initialize_schema()
             schema.assert_awaited_once()
             if failure == "schema":
+                normalize.assert_not_awaited()
                 seed.assert_not_awaited()
             else:
+                normalize.assert_awaited_once()
                 seed.assert_awaited_once()
         finally:
             await runtime.engine.dispose()
