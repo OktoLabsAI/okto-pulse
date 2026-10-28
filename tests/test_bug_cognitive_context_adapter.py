@@ -286,6 +286,7 @@ async def _runtime(path: Path):  # noqa: ANN202
 
 
 async def _seed_full_context(session_factory) -> None:  # noqa: ANN001
+    from datetime import datetime, timezone
     from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
     from okto_pulse.core.domain.execution_contract import new_execution_contract
     from okto_pulse.core.services.test_scenario_lifecycle import (
@@ -376,6 +377,7 @@ async def _seed_full_context(session_factory) -> None:  # noqa: ANN001
                     card_type="normal",
                     test_scenario_ids=["scenario-regression"],
                     created_by="agent",
+                    created_at=datetime(2026, 7, 12, tzinfo=timezone.utc),
                 ),
                 Card(
                     id="regression-test",
@@ -388,6 +390,7 @@ async def _seed_full_context(session_factory) -> None:  # noqa: ANN001
                     conclusions=[{"text": "Runtime rendered v0.3.0."}],
                     validations=[{"outcome": "success"}],
                     created_by="agent",
+                    created_at=datetime(2026, 7, 14, 11, tzinfo=timezone.utc),
                 ),
                 Card(
                     id="bug-context",
@@ -408,6 +411,7 @@ async def _seed_full_context(session_factory) -> None:  # noqa: ANN001
                     conclusions=[{"text": "Rebuilt and inspected the runtime bundle."}],
                     validations=[{"outcome": "success"}],
                     created_by="agent",
+                    created_at=datetime(2026, 7, 13, tzinfo=timezone.utc),
                 ),
             ]
         )
