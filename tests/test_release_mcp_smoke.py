@@ -6,7 +6,31 @@ import runpy
 import httpx
 import pytest
 
-McpClient = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/release_mcp_smoke.py"))["McpClient"]
+smoke_module = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/release_mcp_smoke.py"))
+McpClient = smoke_module["McpClient"]
+validate_tool_inventory = smoke_module["validate_tool_inventory"]
+REQUIRED_TOOLS = smoke_module["REQUIRED_TOOLS"]
+
+
+def test_release_inventory_accepts_evolving_tool_count():
+    names = sorted(REQUIRED_TOOLS | {"okto_pulse_new_capability"})
+    tools = [{"name": name} for name in names]
+    manifest = {"tool_inventory": {"count": len(names), "aliases": {}}}
+    assert validate_tool_inventory(tools, manifest) == set(names)
+
+
+@pytest.mark.parametrize("invalid", ["missing", "duplicate", "retired", "count"])
+def test_release_inventory_rejects_broken_contract(invalid):
+    names = sorted(REQUIRED_TOOLS)
+    if invalid == "missing":
+        names.pop()
+    elif invalid == "duplicate":
+        names.append(names[0])
+    elif invalid == "retired":
+        names.append("okto_pulse_create_sprint")
+    manifest = {"tool_inventory": {"count": len(names) + (invalid == "count"), "aliases": {}}}
+    with pytest.raises(AssertionError):
+        validate_tool_inventory([{"name": name} for name in names], manifest)
 
 
 def client_for(result, *, status=200, sse=False, response_id=1):
