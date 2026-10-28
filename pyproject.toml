@@ -40,17 +40,17 @@ dependencies = [
     "anyio>=4.0.0,<5.0.0",
     "httpx>=0.27.0,<1.0.0",
     "fastmcp>=2.0.0,<3.0.0",
-    # FastMCP 2.14.x still imports authlib.jose. Authlib 1.7 emits a runtime
-    # deprecation warning for that namespace; keep the supported 1.6 line
-    # until the Community MCP host is migrated to FastMCP 3 / joserfc.
-    "authlib>=1.6.5,<1.7.0",
+    # FastMCP 2.14.x still imports authlib.jose, but Authlib 1.6.x has
+    # signature/authentication bypasses fixed by 1.9.1. Keep the secure line
+    # until the Community MCP host migrates to FastMCP 3 / joserfc.
+    "authlib>=1.9.1,<2.0.0",
     "mcp>=1.20.0,<2.0.0",
     "uvicorn[standard]>=0.27.0,<1.0.0",
     "wsproto>=1.2.0,<2.0.0",
     "apscheduler>=3.10.0,<4.0.0",
     "okto-grafx[accel]==0.0.8",
     "requests>=2.32.0,<3.0.0",
-    "filelock>=3.16.0,<4.0.0",
+    "filelock>=4.2.1,<5.0.0",
     "chardet>=3.0.2,<6.0.0",
     "sentence-transformers>=2.5.0,<6.0.0",
 ]
