@@ -2,11 +2,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { SpecCoveragePanel } from '../SpecCoveragePanel';
 import type { SpecCoverageResponse } from '../specCoverageTypes';
-import { persistedProjection } from '@/components/code-traceability/__tests__/readinessFixture';
+import { persistedProjection, readiness } from '@/components/code-traceability/__tests__/readinessFixture';
 
 const api = vi.hoisted(() => ({
   getSpecCoverage: vi.fn(),
   getPersistedReadinessProjection: vi.fn(),
+  getDeliveryReadiness: vi.fn(),
 }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 vi.mock('@/components/code-traceability/DeliveryEvidencePanel', () => ({
@@ -36,6 +37,7 @@ function sourceCoverage(): SpecCoverageResponse {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  delete (window as typeof window & { OKTO_PULSE_CONFIG?: unknown }).OKTO_PULSE_CONFIG;
   api.getSpecCoverage.mockResolvedValue(sourceCoverage());
   const value = persistedProjection();
   value.summaries[0].implementation.percent = 88;
@@ -45,6 +47,22 @@ beforeEach(() => {
   api.getPersistedReadinessProjection.mockResolvedValue(value);
 });
 afterEach(cleanup);
+
+it('uses the diagnostic response when the operator selects legacy reads', async () => {
+  (window as typeof window & { OKTO_PULSE_CONFIG?: { READINESS_READ_MODE: string } })
+    .OKTO_PULSE_CONFIG = { READINESS_READ_MODE: 'legacy' };
+  const legacy = readiness(null);
+  legacy.implementation.percent = 63;
+  legacy.verification.percent = 25;
+  api.getDeliveryReadiness.mockResolvedValue(legacy);
+  render(<SpecCoveragePanel boardId="b" specId="s" revision="1" onOpenSection={() => {}} />);
+  const implementation = await screen.findByText('Implementation proof');
+  await waitFor(() => expect(within(implementation.closest('div')!).getByText('63%')).toBeVisible());
+  const verification = screen.getByText('Verification proof');
+  expect(within(verification.closest('div')!).getByText('25%')).toBeVisible();
+  expect(api.getDeliveryReadiness).toHaveBeenCalledOnce();
+  expect(api.getPersistedReadinessProjection).not.toHaveBeenCalled();
+});
 
 it('uses the persisted Spec generation for Overview proof percentages', async () => {
   render(<SpecCoveragePanel boardId="b" specId="s" revision="1" onOpenSection={() => {}} />);

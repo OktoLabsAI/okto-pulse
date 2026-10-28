@@ -55,6 +55,20 @@ def test_projection_child_reuses_canonical_database_path(tmp_path, monkeypatch):
         runner.close()
 
 
+def _verify_scenario_in_spawned_child(evidence_root, criteria, scenario):
+    from types import SimpleNamespace
+    from okto_pulse.core.ports.test_evidence import resolve_test_evidence_write_verifier
+    from okto_pulse.community.adapters.delivery_verification import native_scenario_run
+    from okto_pulse.community.adapters.readiness_projection_worker import _register_projection_evidence_verifier
+
+    before = resolve_test_evidence_write_verifier()
+    _register_projection_evidence_verifier(evidence_root)
+    spec = SimpleNamespace(board_id='board', id='spec', edition=1,
+        acceptance_criteria=criteria)
+    run = native_scenario_run(spec, scenario)
+    return before is None, run.authenticated, run.native_reason_codes
+
+
 def test_projection_child_does_not_cache_failed_initialization(tmp_path, monkeypatch):
     monkeypatch.setattr(worker_module, '_process_runner', None)
     monkeypatch.setattr(worker_module, '_process_engine', None)
@@ -893,6 +907,35 @@ async def test_process_projects_and_stages_before_parent_publish(tmp_path, caplo
             assert any(record.msg == 'readiness.stage_phases' for record in caplog.records)
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_spawned_projection_authenticates_native_scenario_evidence(tmp_path):
+    from okto_pulse.community.adapters.test_evidence import (
+        CommunityEvidenceLedger, CommunityTestVerificationReportIssuer,
+    )
+    from okto_pulse.core.ports.test_evidence import TestVerificationReportRequest
+    from okto_pulse.core.services.test_scenario_lifecycle import compute_test_scenario_semantic_sha256
+    from verification_report_fixtures import report
+
+    evidence_root = tmp_path / 'evidence'
+    criteria = [{'id': 'ac-1', 'text': 'Public ports'}]
+    scenario = {'id': 'scenario', 'title': 'Inspect public ports',
+        'scenario_type': 'manual', 'given': 'The component is built',
+        'when': 'The imports are inspected', 'then': 'Imports use public ports',
+        'verification_method': 'inspection', 'linked_criteria': ['ac-1']}
+    digest = compute_test_scenario_semantic_sha256(board_id='board', spec_id='spec',
+        scenario=scenario, acceptance_criteria=criteria)
+    issuer = CommunityTestVerificationReportIssuer(
+        ledger=CommunityEvidenceLedger(evidence_root=evidence_root))
+    issued = await issuer.admit(TestVerificationReportRequest(board_id='board',
+        spec_id='spec', scenario_id='scenario', scenario_sha256=digest,
+        actor_id='reviewer', report=report()))
+    scenario.update(status='passed', evidence=dict(issued.evidence))
+    with ProcessPoolExecutor(max_workers=1, mp_context=get_context('spawn')) as executor:
+        fresh_child, authenticated, reasons = await asyncio.get_running_loop().run_in_executor(
+            executor, _verify_scenario_in_spawned_child, evidence_root, criteria, scenario)
+    assert fresh_child and authenticated and reasons == ()
 
 
 @pytest.mark.asyncio

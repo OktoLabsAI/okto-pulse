@@ -5,6 +5,7 @@ import { AccessibleTabList, AccessibleTabPanel } from '@/components/shared/Acces
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { DeliveryEvidencePanel } from '@/components/code-traceability/DeliveryEvidencePanel';
 import { useDeliveryReadiness } from '@/components/code-traceability/useDeliveryReadiness';
+import { readinessReadMode } from '@/lib/readinessMode';
 import type { ReadinessSpecLocation } from '@/components/code-traceability/readinessNavigation';
 import type { ReadinessMetric } from '@/types/delivery-readiness';
 import type { CoverageSection, SpecCoverageResponse } from './specCoverageTypes';
@@ -77,8 +78,9 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
   const [readinessReload, setReadinessReload] = useState(0);
   const availableViews = views.filter(([id]) => id === 'implementation' ? canReadImplementation : canReadSummary);
   const activeView = availableViews.some(([id]) => id === view) ? view : availableViews[0]?.[0] ?? 'overview';
+  const legacyMode = readinessReadMode() === 'legacy';
   const readiness = useDeliveryReadiness(boardId, specId, undefined, JSON.stringify([revision, readinessReload]),
-    canReadImplementation && activeView !== 'implementation', 'projection');
+    canReadImplementation && activeView !== 'implementation', legacyMode ? 'diagnostic' : 'projection');
   useEffect(() => { if (focusExceptionId && canReadImplementation) setView('implementation'); }, [focusExceptionId, canReadImplementation]);
   const [data, setData] = useState<SpecCoverageResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -123,10 +125,10 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
   const planningValue = data?.structure.complete_for_scope && planning.every(row => row.value)
     ? ratio(applicable.filter(row => row.value!.covered === row.value!.total).length, applicable.length) : null;
   const proofAvailable = data?.delivery.state === 'available' && data.delivery.complete_for_scope;
-  const implementationValue = persistedRatio(readiness.persisted?.summary?.implementation);
-  const verificationValue = persistedRatio(readiness.persisted?.summary?.verification);
-  const proofEmptyLabel = readiness.loading || readiness.persisted?.freshness === 'pending_initial'
-    ? 'Waiting for calculation' : readiness.persisted?.summary ? 'Unable to evaluate' : 'Unavailable';
+  const implementationValue = persistedRatio(legacyMode ? readiness.value?.implementation : readiness.persisted?.summary?.implementation);
+  const verificationValue = persistedRatio(legacyMode ? readiness.value?.verification : readiness.persisted?.summary?.verification);
+  const proofEmptyLabel = readiness.loading || (!legacyMode && readiness.persisted?.freshness === 'pending_initial')
+    ? 'Waiting for calculation' : readiness.value || readiness.persisted?.summary ? 'Unable to evaluate' : 'Unavailable';
   const gaps = planning.filter(row => row.value && row.value.covered < row.value.total);
   return <section className="space-y-5 text-sm text-gray-700 dark:text-gray-300" aria-label="Spec coverage">
     <div className="flex flex-wrap items-start justify-between gap-3">
@@ -161,7 +163,7 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
           <Meter label="Verification proof" value={verificationValue} emptyLabel={proofEmptyLabel}
             zeroLabel="Not applicable" description="Persisted proof for applicable obligations." />
         </div>
-        {readiness.persisted && <p role="status" className="text-xs text-gray-500">
+        {!legacyMode && readiness.persisted && <p role="status" className="text-xs text-gray-500">
           {readiness.persisted.freshness === 'current' ? 'Current' : readiness.persisted.freshness === 'updating'
             ? 'Updating · previous coherent generation' : readiness.persisted.freshness === 'pending_initial'
               ? 'Waiting for calculation' : 'Calculation unavailable'}

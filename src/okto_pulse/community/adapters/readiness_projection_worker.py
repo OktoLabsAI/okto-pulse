@@ -151,9 +151,19 @@ def _build_with_predecessor(snapshot, revision, deadline, candidate, *, phase_me
     return generation, "full"
 
 
-def _project_and_stage_from_database(database_path, claim, deadline):
+def _register_projection_evidence_verifier(evidence_root):
+    """Use the installation's durable evidence ledger in a spawned child."""
+    if evidence_root is not None:
+        from okto_pulse.core.ports.test_evidence import register_test_evidence_write_verifier
+        from .test_evidence import CommunityEvidenceLedger, CommunityTestEvidenceWriteVerifier
+        register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(
+            ledger=CommunityEvidenceLedger(evidence_root=Path(evidence_root))))
+
+
+def _project_and_stage_from_database(database_path, claim, deadline, evidence_root=None):
     """Keep the large generation in one child until its rows are durable."""
     from .worker_runners import TrackedBlockingExecution
+    _register_projection_evidence_verifier(evidence_root)
 
     runner, engine = _projection_child_runtime(database_path)
     global _process_reader, _process_store
@@ -256,12 +266,13 @@ def _stage_from_database(database_path, claim, generation):
 
 class ReadinessProjectionProcessor:
     def __init__(self, engine, blocking_execution, *, full_projection_executor=None,
-                 database_path=None, maintenance_enabled=True, max_inflight=1):
+                 database_path=None, evidence_root=None, maintenance_enabled=True, max_inflight=1):
         self.store = CommunityPersistedReadinessStore(engine)
         self.reader = CommunityDeliveryReadinessReader(engine, clock=CommunityReadinessClock())
         self.blocking_execution = blocking_execution
         self.full_projection_executor = full_projection_executor
         self.database_path = database_path
+        self.evidence_root = str(Path(evidence_root).resolve()) if evidence_root is not None else None
         self.maintenance_enabled = maintenance_enabled
         if max_inflight not in (1, 2):
             raise ValueError("readiness_max_inflight_invalid")
@@ -396,7 +407,7 @@ class ReadinessProjectionProcessor:
                     future = asyncio.get_running_loop().run_in_executor(
                         self.full_projection_executor, _project_and_stage_from_database,
                         str(self.database_path), claim,
-                        snapshot_started + 30)
+                        snapshot_started + 30, self.evidence_root)
                     (generation_id, captured_revision, unit_count, snapshot_ms,
                         predecessor_ms, compute_ms, child_stage_ms, projection_mode,
                         snapshot_phases, phases) = await asyncio.shield(future)
