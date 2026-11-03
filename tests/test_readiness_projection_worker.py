@@ -23,6 +23,7 @@ from okto_pulse.community.adapters.current_relational_schema import (
     APPLICATION_ID, SCHEMA_VERSION, create_current_schema_objects, seed_current_schema_fences,
 )
 from okto_pulse.community.adapters.readiness_schema_upgrade import upgrade_readiness_schema
+from okto_pulse.community.adapters.storage_upgrade_v043 import upgrade_copy_v043
 from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
 from okto_pulse.community.adapters import readiness_projection_worker as worker_module
 from okto_pulse.community.adapters import sqlalchemy_database as database_module
@@ -514,14 +515,15 @@ async def test_pipeline_cancellation_waits_for_both_inflight_calculations(tmp_pa
 
 
 def _seed_migrated_v401_many_specs(database):
-    _v401_predecessor(database)
+    predecessor_path = database.with_name(database.stem + '-legacy405.sqlite3')
+    _v401_predecessor(predecessor_path)
     spec_ids = ['spec', *[f'spec-{number:03d}' for number in range(100)]]
     contracts = [(spec_id, json.dumps({
         'contract_version': 'spec-execution-contract/v1',
         'board_id': 'board', 'spec_id': spec_id,
         'adopted_in_edition': 1, 'actor_id': 'owner', 'origin': 'new_spec',
     })) for spec_id in spec_ids]
-    with closing(sqlite3.connect(database)) as predecessor:
+    with closing(sqlite3.connect(predecessor_path)) as predecessor:
         predecessor.execute("INSERT INTO boards (id,name,owner_id,realm_id) "
                             "VALUES ('board','Test','owner','local')")
         predecessor.executemany(
@@ -529,8 +531,12 @@ def _seed_migrated_v401_many_specs(database):
             "architecture_adoption,execution_contract) "
             "VALUES (?,'board','Spec','in_progress',1,'owner','{}',?)", contracts)
         predecessor.commit()
-    backup = upgrade_readiness_schema(database)
+    backup = upgrade_readiness_schema(predecessor_path)
     assert backup.is_file()
+    # Exercise the supported two-step chain, retaining the old source and
+    # backup. Runtime v406 never admits an intermediate v405 file implicitly.
+    conversion = upgrade_copy_v043(predecessor_path, database)
+    assert conversion['source_database_unchanged'] and conversion['target_schema_version'] == SCHEMA_VERSION
     return backup
 
 

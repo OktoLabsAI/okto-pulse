@@ -19,15 +19,14 @@ WORKSPACE = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(WORKSPACE / 'okto-pulse' / 'src'),
                 str(WORKSPACE / 'okto-pulse-core' / 'src')]
 
-from okto_pulse.community.adapters.current_relational_schema import (  # noqa: E402
-    current_schema_contract, inspect_current_schema,
-)
 from okto_pulse.community.adapters.readiness_schema_upgrade import (  # noqa: E402
     PREDECESSOR_SHA256, PREDECESSOR_VERSION, READINESS_V401_SHA256,
     READINESS_V401_VERSION, READINESS_V402_SHA256, READINESS_V402_VERSION,
     READINESS_V403_SHA256, READINESS_V403_VERSION,
     READINESS_V404_SHA256, READINESS_V404_VERSION,
     _fingerprint, upgrade_readiness_schema,
+    readiness_schema_contract as current_schema_contract,
+    inspect_readiness_schema as inspect_current_schema,
 )
 from okto_pulse.community.adapters.readiness_rollback_assessment import (  # noqa: E402
     source_inventory,

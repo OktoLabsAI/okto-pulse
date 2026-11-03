@@ -13,9 +13,9 @@ import pickle
 import sqlite3
 
 from .current_relational_schema import (
-    _read_without_side_effects, current_schema_contract, inspect_current_schema,
+    _read_without_side_effects,
 )
-from .readiness_schema_upgrade import _check_integrity, _require_predecessor
+from .readiness_schema_upgrade import _check_integrity, _require_predecessor, inspect_readiness_schema
 
 
 def source_inventory(database: sqlite3.Connection) -> dict[str, tuple[int, str]]:
@@ -75,7 +75,7 @@ def assess_readiness_rollback(upgraded: Path, backup: Path) -> dict[str, object]
     with _read_without_side_effects(upgraded) as current, \
             _read_without_side_effects(backup) as previous:
         predecessor_version = _require_predecessor(previous)
-        if inspect_current_schema(current.cursor(), current_schema_contract()) is not False:
+        if inspect_readiness_schema(current.cursor()) is not False:
             raise ValueError("upgraded_database_required")
         _check_integrity(current)
         before = source_inventory(previous)
