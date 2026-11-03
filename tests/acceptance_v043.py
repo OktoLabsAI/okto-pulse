@@ -171,3 +171,74 @@ class DeliveryAcceptance(PairedAcceptance):
         self._pytest('community',
             'tests/test_readiness_projection_worker.py::test_backfill_after_v401_upgrade_completes_all_scopes_and_three_restarts',
             'tests/test_readiness_projection_worker.py::test_real_community_lifespan_serves_pending_then_current_on_upgraded_copy')
+
+
+class ProtocolAcceptance(PairedAcceptance):
+    def test_invalid_entry_rolls_back_the_whole_handoff(self):
+        self._pytest('community', 'tests/test_delivery_batch.py',
+            'tests/test_delivery_inline_execution.py::test_later_failure_rolls_back_receipt_binding_event_and_handler',
+            'tests/test_delivery_report.py::test_report_rejection_cannot_leave_batch_or_outbox_after_outer_commit')
+
+    def test_exact_replay_keeps_original_acceptance_and_changed_payload_conflicts(self):
+        self._pytest('community',
+            'tests/test_delivery_report.py::test_atomic_report_manifest_replay_and_later_rework_do_not_resubmit',
+            'tests/test_delivery_batch.py::test_atomic_batch_replay_manifest_and_revision',
+            'tests/test_delivery_inline_execution.py::test_inline_real_origin_commits_once_and_replay_has_same_ids')
+
+    def test_material_progress_only_invalidates_affected_proof(self):
+        self._pytest('community', 'tests/test_delivery_progress_currentness.py')
+
+    def test_fixed_trajectory_preserves_audit_and_meets_call_and_payload_budget(self):
+        self._pytest('core', 'tests/test_delivery_protocol_guidance.py',
+            'tests/test_mcp_resources.py::test_cards_workflow_defers_to_typed_transition_read_model')
+        self._pytest('community', 'tests/test_delivery_protocol_budget.py')
+
+    def test_progress_help_is_central_contextual_and_keyboard_accessible(self):
+        self._react('src/components/help/__tests__/HelpPanel.taskProgress.test.tsx',
+            'src/components/help/__tests__/ContextualHelpLink.test.tsx',
+            'src/components/code-traceability/__tests__/CardProgressPanel.test.tsx',
+            'src/components/code-traceability/__tests__/CardProgressHistory.test.tsx')
+
+    def test_protocol_keeps_native_authorization_limits_and_transaction_boundaries(self):
+        self._pytest('core', 'tests/test_delivery_protocol_guidance.py',
+            'tests/test_delivery_selection.py::test_manifest_pins_exact_records_and_rework_preserves_historical_report',
+            'tests/test_delivery_selection.py::test_prospective_report_checks_selection_without_changing_history',
+            'tests/test_delivery_selection.py::test_manifest_corruption_cannot_fall_back_to_all_records',
+            'tests/test_delivery_selection.py::test_selection_is_closed_and_bounded')
+        self._pytest('community', 'tests/test_delivery_report.py', 'tests/test_delivery_inline_execution.py',
+            'tests/test_delivery_progress_read.py')
+
+
+class ValidationAcceptance(PairedAcceptance):
+    def test_quality_success_cannot_hide_failed_decomposition(self):
+        self._pytest('core',
+            'tests/test_spec_planning_readiness.py::test_quality_success_never_hides_failed_decomposition',
+            'tests/test_spec_planning_readiness.py::test_native_failure_cannot_be_compensated_by_another_review')
+        self._react('src/components/specs/__tests__/SpecValidationSummary.test.tsx')
+
+    def test_unavailable_component_preserves_denied_information(self):
+        self._pytest('core',
+            'tests/test_spec_planning_readiness.py::test_unreadable_component_does_not_invent_failure_counts_or_disclose_ids',
+            'tests/test_spec_planning_readiness.py::test_technical_failure_is_unavailable_without_protected_exception_text')
+        self._react('src/components/specs/__tests__/SpecValidationSummary.test.tsx')
+
+    def test_previous_edition_is_history_without_current_validation(self):
+        self._pytest('core',
+            'tests/test_spec_planning_readiness.py::test_previous_missing_or_failed_result_cannot_validate')
+        self._react('src/components/specs/__tests__/SpecValidationSummary.test.tsx',
+            'src/components/specs/__tests__/SpecModal.validationTabs.test.tsx')
+
+    def test_details_are_lazy_and_preserve_drafts_and_history(self):
+        self._react('src/components/specs/__tests__/SpecModal.validationTabs.test.tsx')
+
+    def test_validation_help_is_central_contextual_and_accessible(self):
+        self._react('src/components/help/__tests__/HelpPanel.specValidation.test.tsx',
+            'src/components/help/__tests__/ContextualHelpLink.test.tsx',
+            'src/components/specs/__tests__/SpecModal.validationTabs.test.tsx')
+
+    def test_canonical_census_matches_native_gates_and_authority(self):
+        self._pytest('core', 'tests/test_spec_planning_readiness.py')
+        self._pytest('community', 'tests/test_spec_planning_code_evidence_parity.py',
+            'tests/test_spec_planning_critical_context_parity.py', 'tests/test_spec_planning_dependency_parity.py',
+            'tests/test_spec_planning_lint_parity.py', 'tests/test_spec_planning_resource_parity.py',
+            'tests/test_spec_planning_policy_parity.py', 'tests/test_spec_planning_manifest.py')

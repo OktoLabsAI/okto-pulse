@@ -6,6 +6,7 @@ from sqlalchemy import insert, select
 from test_delivery_inline_execution import composed as _composed, db as _db, counts
 from test_delivery_execution_sets import native_verifier as _native_verifier, composite_batch, seed_scope, clone_request
 from test_delivery_progress import command as progress_command
+from test_delivery_reused_impact import register_report_adapters
 from okto_pulse.community.adapters.sqlalchemy_models import (
     CardDeliveryEvidenceRecordRow as Record, ImplementationTargetRow as Target,
     ImplementationTargetExecutionRecordRow as Execution, CodeInvestigationReceiptRow as Receipt,
@@ -13,6 +14,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 from okto_pulse.core.models.delivery_evidence import CardDeliveryEvidenceCommand, CardDeliveryEvidenceBatchCommand, DeliveryBatchEntryError
 from okto_pulse.core.domain.delivery_evidence import CardDeliveryScope, implementation_binding_ready
 from okto_pulse.core.services.delivery_evidence import require_card_delivery
+from okto_pulse.core.application.delivery_errors import DeliveryGateBlocked
 
 db = _db
 composed = _composed
@@ -29,7 +31,7 @@ def checkpoint(**changes):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("composed", [("target", "target-two")], indirect=True)
 @pytest.mark.parametrize("mode", ["targets", "none", "unknown"])
-async def test_progress_recomputes_exact_sets_candidates_and_pre_done_gate(composed, mode, monkeypatch):
+async def test_progress_recomputes_exact_sets_candidates_and_pre_done_gate(composed, mode):
     session, uow, use_case, actor = composed
     store = uow.services.delivery_evidence
     await seed_scope(session)
@@ -51,14 +53,15 @@ async def test_progress_recomputes_exact_sets_candidates_and_pre_done_gate(compo
     candidate_ids = {item["id"] for item in projection["candidates"] if item["kind"] == "implementation"}
     ids = [entry["execution_id"] for entry in saved["entries"][:2]]
     assert candidate_ids == (set(ids) if mode == "none" else {ids[0]} if mode != "unknown" else set())
-    from okto_pulse.core.services import delivery_evidence as service
-    monkeypatch.setattr(service, "card_delivery_store", lambda _: store)
+    register_report_adapters()
     card, spec, _ = await store._card_scope_guard(CardDeliveryScope("b", "c", "s", 1))
-    if mode == "none":
+    # This fixture has no executed Test Card. Current implementation alone is
+    # insufficient for Done; preserve the separate native verification gate.
+    with pytest.raises(DeliveryGateBlocked) as blocked:
         await require_card_delivery(session, card, spec)
-    else:
-        with pytest.raises(ValueError, match="delivery_evidence_incomplete"):
-            await require_card_delivery(session, card, spec)
+    metrics = blocked.value.to_error_dict()["details"]["readiness_summary"]
+    assert metrics["implementation"]["percent"] == {"none": 100, "targets": 50, "unknown": 0}[mode]
+    assert metrics["verification"]["percent"] == 0
     # No lifecycle/version/history mutation is hidden inside the projection.
     assert card.status == "in_progress" and card.policy_version == 1
     assert spec.version == 1
