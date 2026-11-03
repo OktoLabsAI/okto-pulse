@@ -7,6 +7,22 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 )
 
 
+def decode_task_requirement_history(rows, *, board_id, spec_id, edition, card_ids=None):
+    """The same typed scope checks for transactional and detached batch reads."""
+    if len(rows) > 50000:
+        raise ValueError('task_requirement_history_unavailable')
+    result = {card_id: [] for card_id in card_ids or ()}
+    for row in rows:
+        fact = TaskRequirementDecisionRecord.from_dict(row.payload)
+        if (fact.id, fact.operation_id, fact.scope.board_id, fact.scope.spec_id,
+            fact.scope.edition, fact.scope.card_id, fact.revision, fact.decision, fact.scope.digest) != (
+            row.id, row.operation_id, board_id, spec_id, edition, row.card_id,
+            row.revision, row.decision, row.scope_sha256):
+            raise ValueError('task_requirement_history_invalid')
+        result.setdefault(row.card_id, []).append(fact)
+    return {key: tuple(value) for key, value in result.items()}
+
+
 class CommunityTaskRequirementDecisionStore:
     def __init__(self, session):
         self.session = session
@@ -25,18 +41,8 @@ class CommunityTaskRequirementDecisionStore:
             Decision.spec_edition == edition,
             *([Decision.card_id.in_(card_ids)] if card_ids is not None else []),
         ).order_by(Decision.card_id, Decision.revision).limit(50001))).all())
-        if len(rows) > 50000:
-            raise ValueError('task_requirement_history_unavailable')
-        result = {card_id: [] for card_id in card_ids or ()}
-        for row in rows:
-            fact = TaskRequirementDecisionRecord.from_dict(row.payload)
-            if (fact.id, fact.operation_id, fact.scope.board_id, fact.scope.spec_id,
-                fact.scope.edition, fact.scope.card_id, fact.revision, fact.decision, fact.scope.digest) != (
-                row.id, row.operation_id, board_id, spec_id, edition, row.card_id,
-                row.revision, row.decision, row.scope_sha256):
-                raise ValueError('task_requirement_history_invalid')
-            result.setdefault(row.card_id, []).append(fact)
-        return {key: tuple(value) for key, value in result.items()}
+        return decode_task_requirement_history(rows, board_id=board_id, spec_id=spec_id,
+            edition=edition, card_ids=card_ids)
 
     async def append(self, *, operation_id, board_id, spec_id, edition, actor_id,
                      idempotency_key, request_sha256, response, records):

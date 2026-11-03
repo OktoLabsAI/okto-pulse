@@ -17,18 +17,20 @@ import logging
 from time import perf_counter, process_time
 
 from pydantic import BaseModel
-from sqlalchemy import and_, event, or_, select
+from sqlalchemy import and_, case, event, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from okto_pulse.community.adapters.delivery_verification import native_verification_population
 from okto_pulse.community.adapters.sqlalchemy_decision_reviews import CommunityDecisionReviews
 from okto_pulse.community.adapters.sqlalchemy_delivery_evidence import CommunityDeliveryEvidenceStore
 from okto_pulse.core.application.service_catalog import build_application_service_catalog
 from okto_pulse.community.adapters.sqlalchemy_models import (
-    Agent, AgentBoard, Board, BoardShare, PermissionPreset, Card, Spec, SpecHistory, DeliveryEvidenceRecordRow as Record,
+    Agent, AgentBoard, Board, BoardShare, PermissionPreset, Card, CardDependency, Spec, SpecHistory, DeliveryEvidenceRecordRow as Record,
     CardDeliveryEvidenceRecordRow as CardRecord, ImplementationTargetExecutionRecordRow as Execution,
     ImplementationTargetRow as Target, CodeInvestigationReceiptRow as Receipt,
     CodeInvestigationReceiptRevocationRow as Revocation,
+    TaskRequirementDecisionRow as TaskRequirementDecision,
 )
 from okto_pulse.core.domain.delivery_evidence import (
     CardDeliveryScope, DeliveryEvidenceSnapshot, DeliveryObligation, DeliveryScope,
@@ -55,7 +57,7 @@ MAX_FACTS = 20000
 MAX_PROJECTION_RECORD_CACHE_ROWS = 25000
 MAX_PROJECTION_RECORD_CACHE_SCOPE_ROWS = 5000
 MAX_PROJECTION_CARD_PARTS_PER_SCOPE = 200
-FINGERPRINT_VERSION = 'delivery-readiness-snapshot/v2'
+FINGERPRINT_VERSION = 'delivery-readiness-snapshot/v3'
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,9 +255,19 @@ class _BatchFacts(CommunityDeliveryEvidenceStore):
             return self.plan
         fields = ('id', 'board_id', 'spec_id', 'card_type', 'status', 'archived',
                   'test_scenario_ids', 'title', 'description', 'details')
+        cards = [{field: getattr(c, field, None) for field in fields} for c in self.rows[Card]]
         plan = self.inventory.execution_plan(spec=spec,
-            cards=[{field: getattr(c, field, None) for field in fields} for c in self.rows[Card]],
+            cards=cards,
             admitted_methods=supported_test_verification_methods())
+        from .sqlalchemy_task_requirement_decisions import decode_task_requirement_history
+        from .task_requirement_allocation import apply_task_requirement_histories
+        try:
+            histories = decode_task_requirement_history(self.rows.get(TaskRequirementDecision, ()),
+                board_id=spec.board_id, spec_id=spec.id, edition=int(spec.edition))
+            plan = apply_task_requirement_histories(spec=spec, cards=cards, plan=plan, histories=histories)
+        except ValueError:
+            raise ReadinessReadError('readiness_assessment_unavailable',
+                native_code='task_requirement_history_invalid') from None
         self.plan = plan
         if not plan.inventory.population_complete:
             self.obligations, self.by_card = (), {}
@@ -604,6 +616,10 @@ class CommunityDeliveryReadinessReader:
         rows[Card] = await self._rows(session, select(Card).where(Card.id.in_(cards)).order_by(Card.id), MAX_CARDS, counts)
         if card_id is not None and not any(c.id == card_id and not c.archived for c in rows[Card]):
             raise ReadinessReadError('readiness_scope_mismatch')
+        rows[TaskRequirementDecision] = await self._rows(session, select(TaskRequirementDecision).where(
+            TaskRequirementDecision.board_id == board_id, TaskRequirementDecision.spec_id == spec_id,
+            TaskRequirementDecision.spec_edition == spec.edition
+        ).order_by(TaskRequirementDecision.card_id, TaskRequirementDecision.revision), MAX_FACTS, counts)
         record_filter = (CardRecord.board_id == board_id,
             CardRecord.spec_id == spec_id, CardRecord.spec_edition == spec.edition,
             CardRecord.card_id.in_(cards))
@@ -888,7 +904,8 @@ class CommunityDeliveryReadinessReader:
         return snapshot, captured_revision
 
     async def load_persisted(self, *, board_id, spec_id, actor, card_id=None,
-                             unit_limit=0, cursor=None, include_diagnostics=False):
+                             unit_limit=0, cursor=None, include_diagnostics=False,
+                             include_summary_cards=False):
         """Authorize current actor around a bounded projection read.
 
         No proof facts, historical versions or diagnostics are loaded. A commit
@@ -898,6 +915,8 @@ class CommunityDeliveryReadinessReader:
         from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import (
             CommunityPersistedReadinessStore,
         )
+        if include_summary_cards and (card_id is not None or unit_limit or cursor is not None or include_diagnostics):
+            raise ReadinessReadError('readiness_query_invalid')
 
         async def authorize(connection, *, check_source_revision=False):
             await connection.exec_driver_sql('BEGIN')
@@ -927,7 +946,33 @@ class CommunityDeliveryReadinessReader:
                             'SELECT source_revision FROM readiness_scope WHERE board_id=? '
                             'AND spec_id=? AND edition=? AND tombstone=0 LIMIT 1',
                             (board_id, spec_id, spec.edition))).scalar_one_or_none()
-                    return access, spec.edition, spec.version, card_policy_version, source_revision
+                    summary_cards = None
+                    if include_summary_cards:
+                        from okto_pulse.core.models.delivery_summary import DeliverySummaryCard
+                        dependency = aliased(Card)
+                        # Match the native prerequisite (Done or Cancelled).
+                        # Never disclose a foreign Board dependency's status.
+                        foreign_dependency = select(CardDependency.id).join(dependency,
+                            dependency.id == CardDependency.depends_on_id).where(
+                                CardDependency.card_id == Card.id,
+                                dependency.board_id != board_id).exists()
+                        unmet_dependency = select(CardDependency.id).join(dependency,
+                            dependency.id == CardDependency.depends_on_id).where(
+                                CardDependency.card_id == Card.id, dependency.board_id == board_id,
+                                dependency.status.not_in(('done', 'cancelled'))).exists()
+                        rows = (await session.execute(select(Card.id, Card.title, Card.card_type,
+                            Card.status, Card.policy_version, Card.assignee_id, Card.updated_at,
+                            case((foreign_dependency, None), else_=unmet_dependency).label('dependency_blocked')
+                        ).where(Card.board_id == board_id, Card.spec_id == spec_id,
+                            Card.archived.is_(False)).order_by(Card.id).limit(MAX_CARDS + 1))).all()
+                        summary_cards = (tuple(DeliverySummaryCard(board_id=board_id, spec_id=spec_id,
+                            card_id=row.id, title=row.title, card_type=row.card_type, status=row.status,
+                            card_version=row.policy_version, assignee_id=row.assignee_id,
+                            updated_at=(row.updated_at.replace(tzinfo=timezone.utc)
+                                if row.updated_at and row.updated_at.tzinfo is None else row.updated_at),
+                            dependency_blocked=row.dependency_blocked)
+                            for row in rows[:MAX_CARDS]), len(rows) <= MAX_CARDS)
+                    return access, spec.edition, spec.version, card_policy_version, source_revision, summary_cards
             finally:
                 await connection.rollback()
 
@@ -973,7 +1018,7 @@ class CommunityDeliveryReadinessReader:
                 else:
                     after = await authorize(authority_connection, check_source_revision=True)
                 reauthorized_at = perf_counter()
-            if before[:4] == after[:4]:
+            if before[:4] == after[:4] and before[5] == after[5]:
                 if current_version != observed_version:
                     latest_revision = after[4]
                     # The authorization and target revision are one SQLite
@@ -1007,8 +1052,38 @@ class CommunityDeliveryReadinessReader:
                 result = (projection, before[1], before[2], {'offset': unit_offset,
                     'limit': unit_limit, 'total': projection.unit_total if projection else 0,
                     'has_more': has_more, 'next_cursor': next_cursor})
+                if include_summary_cards:
+                    return (*result, *after[5])
                 return (*result, after[0]) if include_diagnostics else result
         raise ReadinessReadError('readiness_snapshot_changed')
+
+    async def load_delivery_summary(self, *, board_id, spec_id, actor):
+        """One authorized generation and bounded current metadata, with no proof scan."""
+        from okto_pulse.core.models.delivery_readiness import DeliveryReadinessContext
+        from okto_pulse.core.models.delivery_summary import (
+            DeliverySummaryCardFacts, DeliverySummaryProjection, DeliverySummaryScope,
+        )
+        from okto_pulse.core.services.delivery_summary import build_delivery_summary_population
+
+        value, edition, version, _page, cards, complete = await self.load_persisted(
+            board_id=board_id, spec_id=spec_id, actor=actor, include_summary_cards=True)
+        try:
+            summaries = value.summaries if value else ()
+            globals_ = [row for row in summaries if row['card_id'] is None]
+            if len(globals_) > 1:
+                raise ValueError('duplicate_global_summary')
+            return build_delivery_summary_population(
+                scope=DeliverySummaryScope(board_id=board_id, spec_id=spec_id,
+                    spec_edition=edition, spec_version=version),
+                projection=DeliverySummaryProjection(generation_id=value.generation_id if value else None,
+                    snapshot_id=value.source_snapshot_id if value else None,
+                    freshness=value.freshness if value else 'pending_initial'),
+                cards=cards, population_complete=complete,
+                spec_context=DeliveryReadinessContext.model_validate(globals_[0]['context']) if globals_ else None,
+                facts=tuple(DeliverySummaryCardFacts(context=row['context'], requirement=row.get('requirement'))
+                    for row in summaries if row['card_id'] is not None))
+        except (ValueError, KeyError, TypeError):
+            raise ReadinessReadError('readiness_projection_incomplete') from None
 
     async def requeue_terminal(self, *, board_id, spec_id, actor,
                                edition, expected_revision, idempotency_key, reason):

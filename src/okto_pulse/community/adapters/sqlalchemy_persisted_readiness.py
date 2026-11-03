@@ -26,6 +26,7 @@ from okto_pulse.core.services.persisted_delivery_readiness import (
     readiness_manifest_digest_stored,
 )
 from okto_pulse.core.models.delivery_readiness import DeliveryMetric
+from okto_pulse.core.models.delivery_summary import TaskRequirementSummary
 from okto_pulse.core.ports.delivery_readiness import ReadinessAccessDenied, ReadinessReadError
 from .sqlalchemy_models import (
     Agent, AgentBoard, AppSetting, Board, BoardShare, Spec,
@@ -40,6 +41,11 @@ STAGE_BATCH_SIZE = 250
 MAX_PROGRESS_CHAIN = 10000
 logger = logging.getLogger("okto_pulse.readiness_projection")
 _SAFE_LOG_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
+
+
+def _restored_requirement(row):
+    value = row.get('requirement')
+    return TaskRequirementSummary.model_validate(value) if value is not None else None
 
 
 def _audit_log_id(value: str | None) -> str:
@@ -680,7 +686,8 @@ class CommunityPersistedReadinessStore:
                 tuple(ProjectedSummary(row['card_id'], row['card_type'], row['card_version'],
                     DeliveryMetric.model_validate(row['implementation']),
                     DeliveryMetric.model_validate(row['verification']),
-                    row['population_known'], row['evaluation_complete'], row['context'])
+                    row['population_known'], row['evaluation_complete'], row['context'],
+                    _restored_requirement(row))
                     for row in summaries),
                 tuple(ProjectedUnit(row['card_id'], row['kind'], row['ref'], row['semantic_sha256'],
                     row['spec_edition'], tuple(row['contribution_card_ids']),

@@ -8,6 +8,11 @@ from okto_pulse.core.services.task_requirement_decision import task_requirement_
 async def apply_task_requirement_allocation(session, *, spec, cards, plan):
     histories = await CommunityTaskRequirementDecisionStore(session).history(
         board_id=spec.board_id, spec_id=spec.id, edition=int(spec.edition))
+    return apply_task_requirement_histories(spec=spec, cards=cards, plan=plan, histories=histories)
+
+
+def apply_task_requirement_histories(*, spec, cards, plan, histories):
+    """Use already loaded immutable histories without opening another session."""
     if not histories:
         return plan
     by_id = {card['id']: card for card in cards}
