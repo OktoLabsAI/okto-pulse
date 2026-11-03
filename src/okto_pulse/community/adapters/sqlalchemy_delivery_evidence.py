@@ -82,6 +82,27 @@ class CommunityDeliveryEvidenceStore:
         self.inventory = inventory if inventory is not None else default_delivery_inventory_policy()
         self._locked = False
 
+    async def task_requirement_options(self, command, *, actor_id, allowed_decisions):
+        from okto_pulse.community.adapters.task_requirement_commands import CommunityTaskRequirementCommands
+        return await CommunityTaskRequirementCommands(self).preview(command,
+            actor_id=actor_id, allowed_decisions=allowed_decisions)
+
+    async def task_requirement_history(self, query, *, actor_id):
+        from okto_pulse.community.adapters.task_requirement_commands import CommunityTaskRequirementCommands
+        return await CommunityTaskRequirementCommands(self).history(query)
+
+    async def record_task_requirement_decision(self, command, *, actor_id, actor_kind):
+        from okto_pulse.community.adapters.task_requirement_commands import CommunityTaskRequirementCommands
+        return await CommunityTaskRequirementCommands(self).record(command, actor_id=actor_id, actor_kind=actor_kind)
+
+    async def task_requirement_states(self, board_id, spec_id):
+        spec = await self._spec(board_id, spec_id)
+        plan = await self._execution_plan(spec)
+        return {scope.card_id: dict(decision=resolved.decision,
+            decision_id=resolved.record.id if resolved.record else None,
+            edition=scope.edition, current=resolved.record is not None)
+            for scope, resolved in plan.task_requirements}
+
     async def decision_reviews(self, query, *, actor_id):
         from okto_pulse.community.adapters.sqlalchemy_decision_reviews import CommunityDecisionReviews
         return await CommunityDecisionReviews(self).read(query, actor_id=actor_id)
@@ -94,12 +115,14 @@ class CommunityDeliveryEvidenceStore:
         execution_contract(spec)
         cards = list((await self.session.scalars(select(Card).where(
             Card.board_id == spec.board_id, Card.spec_id == spec.id,
-        ).limit(5001))).all())
+        ).limit(5001).execution_options(populate_existing=True))).all())
         fields = ('id', 'board_id', 'spec_id', 'card_type', 'status', 'archived',
                   'test_scenario_ids', 'title', 'description', 'details')
-        return self.inventory.execution_plan(spec=spec,
-            cards=[{field: getattr(card, field, None) for field in fields} for card in cards],
+        card_facts = [{field: getattr(card, field, None) for field in fields} for card in cards]
+        plan = self.inventory.execution_plan(spec=spec, cards=card_facts,
             admitted_methods=supported_test_verification_methods())
+        from okto_pulse.community.adapters.task_requirement_allocation import apply_task_requirement_allocation
+        return await apply_task_requirement_allocation(self.session, spec=spec, cards=card_facts, plan=plan)
 
     def _planned_obligations(self, spec, plan, card=None):
         rows = plan.inventory.rows if card is None or card.card_type == CardType.TEST else plan.inventory.card_obligations(card.id)
@@ -141,6 +164,7 @@ class CommunityDeliveryEvidenceStore:
         return replace(snapshot, complete=snapshot.complete and plan.complete,
             effective_context=EffectiveDeliveryContext(inventory, scoped, tuple(tests), supported_test_verification_methods(),
                 required_scenarios=required_verification_scenarios(plan.qualification),
+                task_requirements=plan.task_requirements,
                 native_verification=native_verification if native_verification is not None else native_verification_population(spec)))
 
     async def _get(self, model, identity):
@@ -1516,6 +1540,9 @@ class CommunityDeliveryEvidenceStore:
         complete = True
         facts_complete = True
         prospective_seen = prospective_card_id is None
+        requirements = {scope.card_id: dict(decision=resolved.decision,
+            decision_id=resolved.record.id if resolved.record else None, edition=scope.edition,
+            current=resolved.record is not None) for scope, resolved in plan.task_requirements}
         for card in await self._linked_cards(board_id, spec_id):
             card_scope = CardDeliveryScope(
                 board_id, card.id, spec_id, int(spec.edition)
@@ -1535,6 +1562,8 @@ class CommunityDeliveryEvidenceStore:
                 per_card.append(
                     {
                         "card_id": card.id,
+                        "requirement": requirements.get(card.id, dict(decision='required',
+                            decision_id=None, edition=int(spec.edition), current=False)),
                         "complete": snapshot.complete,
                         "delivery_completeness": None,
                         "title": card.title,

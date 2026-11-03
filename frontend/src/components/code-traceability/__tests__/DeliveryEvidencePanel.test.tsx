@@ -12,6 +12,8 @@ const api = vi.hoisted(() => ({
   recordDeliveryEvidence: vi.fn(),
   recordCardDeliveryEvidence: vi.fn(),
   getBoard: vi.fn(),
+  getTaskRequirementOptions: vi.fn(),
+  applyTaskRequirementDecision: vi.fn(),
 }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 
@@ -38,6 +40,14 @@ beforeEach(() => {
   api.getPersistedReadinessProjection.mockResolvedValue(persistedProjection());
   api.getDeliveryReadiness.mockResolvedValue(readiness(null));
   api.getBoard.mockResolvedValue({ id: 'b', settings: { delivery_evidence_gate: 'blocking' } });
+  api.getTaskRequirementOptions.mockImplementation((_b, _s, ids) => Promise.resolve({
+    contract_version: 'task-requirement-options/v1', board_id: 'b', spec_id: 's',
+    basis: 'a'.repeat(64), can_apply: true, allowed_decisions: ['required', 'optional', 'waived'],
+    cards: ids.map((id: string) => ({ card_id: id, title: id, decision: 'required', mutable: true })),
+    effects: { dependent_tasks: [], test_scenarios_remain_governed: false } }));
+  api.applyTaskRequirementDecision.mockImplementation((_b, _s, body) => Promise.resolve({
+    contract_version: 'task-requirement-operation/v1', status: 'applied', decision: body.decision,
+    affected_cards: body.card_ids, replayed: false }));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
@@ -46,6 +56,24 @@ function renderDetailed(view: React.ReactElement) {
   fireEvent.click(screen.getByRole('button', { name: 'Show detailed evidence' }));
   return result;
 }
+
+it('selects several tasks directly from the Spec entry without opening evidence Details', async () => {
+  render(<DeliveryEvidencePanel boardId="b" specId="s" canManageTaskRequirements />);
+  expect(api.getDeliveryEvidence).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Change task requirements' }));
+  fireEvent.click(await screen.findByRole('checkbox', { name: 'TASK-142 — Re-anchor delivery bindings' }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'TASK-143 — Rollup aggregation query' }));
+  await waitFor(() => expect(screen.getByLabelText('Requirement')).toBeEnabled());
+  fireEvent.change(screen.getByLabelText('Requirement'), { target: { value: 'waived' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save task requirement' }));
+  await screen.findByText('Task requirement saved. Work status and proof are unchanged.');
+  expect(api.applyTaskRequirementDecision).toHaveBeenCalledOnce();
+  expect(api.applyTaskRequirementDecision.mock.calls[0][2]).toMatchObject({ card_ids: ['task-1', 'task-2'], decision: 'waived', note: null });
+  // Refreshing the delivery projection keeps the accepted form mounted. It
+  // does not perform another requirement lookup just to confirm the write.
+  expect(api.getTaskRequirementOptions).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole('button', { name: 'Show detailed evidence' })).toBeInTheDocument();
+});
 
 it('supports the operator legacy read mode in the same binary', async () => {
   vi.stubGlobal('OKTO_PULSE_CONFIG', { READINESS_READ_MODE: 'legacy' });

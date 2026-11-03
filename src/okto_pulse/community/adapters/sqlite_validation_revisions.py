@@ -64,6 +64,9 @@ def validation_revision_sources() -> tuple[RevisionSource, ...]:
     sources.append(RevisionSource("card_delivery_evidence_records", (
         _direct("spec", "spec_id"), *_card("card_id"),
     )))
+    sources.append(RevisionSource("task_requirement_decisions", (
+        _direct("spec", "spec_id"), *_card("card_id"),
+    )))
     for table in (
         "qa_items", "attachments", "implementation_targets",
         "implementation_target_execution_records",

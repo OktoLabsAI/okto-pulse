@@ -7,6 +7,7 @@ aborts the source mutation too; no outbox worker or KG write is involved.
 from __future__ import annotations
 
 _DIRECT = {
+    "task_requirement_decisions": "s.id = {row}.spec_id AND s.board_id = {row}.board_id AND s.edition = {row}.spec_edition",
     "boards": "s.board_id = {row}.id",
     "specs": "s.id = {row}.id",
     "spec_history": "s.id = {row}.spec_id",

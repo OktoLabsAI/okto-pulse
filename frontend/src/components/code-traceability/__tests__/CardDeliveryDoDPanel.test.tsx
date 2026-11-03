@@ -11,6 +11,8 @@ const api = vi.hoisted(() => ({
   getBoard: vi.fn(),
   getDeliveryReadiness: vi.fn(),
   getPersistedReadinessProjection: vi.fn(),
+  getTaskRequirementOptions: vi.fn(),
+  applyTaskRequirementDecision: vi.fn(),
 }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 
@@ -55,6 +57,13 @@ beforeEach(() => {
   });
   api.recordCardDeliveryEvidence.mockResolvedValue({ id: 'new', replayed: false });
   api.recordDeliveryEvidence.mockResolvedValue({ id: 'waiver', replayed: false });
+  api.getTaskRequirementOptions.mockResolvedValue({ contract_version: 'task-requirement-options/v1',
+    board_id: 'b', spec_id: 's', edition: 2, spec_version: 7, basis: 'a'.repeat(64),
+    cards: [{ card_id: 'task-1', title: 'Task', decision: 'required', mutable: true }],
+    allowed_decisions: ['required', 'optional', 'waived'], can_apply: true,
+    effects: { dependent_tasks: [], test_scenarios_remain_governed: false } });
+  api.applyTaskRequirementDecision.mockResolvedValue({ contract_version: 'task-requirement-operation/v1',
+    status: 'applied', affected_cards: ['task-1'], decision: 'waived', replayed: false });
 });
 afterEach(cleanup);
 
@@ -316,17 +325,19 @@ it('offers only this card receipts as accepted proof', async () => {
   expect(options.some(o => o.value.includes('execution-2'))).toBeFalsy();
 });
 
-it('routes a human waiver to the native Spec exception surface, never the card ledger', async () => {
-  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canWaiver />);
-  fireEvent.click(await screen.findByText('Request Waiver (human)'));
-  fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
-  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Not testable in this lane.' } });
-  fireEvent.click(screen.getByRole('button', { name: /Record waiver/ }));
-  await waitFor(() => expect(api.recordDeliveryEvidence).toHaveBeenCalledTimes(1));
-  expect(api.recordDeliveryEvidence.mock.calls[0]).toEqual([
-    'b', 's', expect.objectContaining({ kind: 'waiver', phase: 'implementation', obligation_refs: ['ac:ac_77ce'] }),
-  ]);
+it('opens a separate task requirement form for a human, without sharing the proof form', async () => {
+  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord canWaiver />);
+  fireEvent.click(await screen.findByText('Change task requirement'));
+  await waitFor(() => expect(screen.getByLabelText('Requirement')).toBeEnabled());
+  fireEvent.change(screen.getByLabelText('Requirement'), { target: { value: 'waived' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save task requirement' }));
+  await waitFor(() => expect(api.applyTaskRequirementDecision).toHaveBeenCalledTimes(1));
+  expect(api.applyTaskRequirementDecision.mock.calls[0]).toEqual(['b', 's', expect.objectContaining({
+    card_ids: ['task-1'], decision: 'waived', note: null,
+  })]);
+  expect(api.recordDeliveryEvidence).not.toHaveBeenCalled();
   expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+  expect(screen.queryByTestId('dod-record-form')).not.toBeInTheDocument();
 });
 
 it('hides recording controls when the actor lacks the permissions', async () => {

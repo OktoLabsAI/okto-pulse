@@ -2511,6 +2511,8 @@ export function SpecModal({
             <SpecCoveragePanel boardId={spec.board_id} specId={spec.id} revision={`${spec.edition}:${spec.version}:${spec.updated_at}:${validationHistoryRefreshKey}`}
               focusExceptionId={readinessReference?.startsWith('exception:') ? readinessReference.slice('exception:'.length) : null}
               canReadSummary={canReadCoverage} canReadImplementation={canReadCodeTraceability}
+              canManageTaskRequirements={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'
+                && (perms.has('code_traceability.waiver.create') || perms.has('code_traceability.waiver.clear'))}
               skipDeliveryEvidence={spec.skip_delivery_evidence}
               onSkipDeliveryEvidenceChange={canEditCodeEvidenceCoverage && !permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current' ? async (value) => {
                 try {

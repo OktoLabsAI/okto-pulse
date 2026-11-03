@@ -17,16 +17,17 @@ class CommunityTaskRequirementDecisionStore:
             Operation.actor_id == actor_id, Operation.idempotency_key == idempotency_key,
         ))).one_or_none()
 
-    async def history(self, *, board_id, spec_id, edition, card_ids):
-        if not 1 <= len(card_ids) <= 50 or len(set(card_ids)) != len(card_ids):
+    async def history(self, *, board_id, spec_id, edition, card_ids=None):
+        if card_ids is not None and (not 1 <= len(card_ids) <= 50 or len(set(card_ids)) != len(card_ids)):
             raise ValueError('task_requirement_selection_invalid')
         rows = list((await self.session.scalars(select(Decision).where(
             Decision.board_id == board_id, Decision.spec_id == spec_id,
-            Decision.spec_edition == edition, Decision.card_id.in_(card_ids),
+            Decision.spec_edition == edition,
+            *([Decision.card_id.in_(card_ids)] if card_ids is not None else []),
         ).order_by(Decision.card_id, Decision.revision).limit(50001))).all())
         if len(rows) > 50000:
             raise ValueError('task_requirement_history_unavailable')
-        result = {card_id: [] for card_id in card_ids}
+        result = {card_id: [] for card_id in card_ids or ()}
         for row in rows:
             fact = TaskRequirementDecisionRecord.from_dict(row.payload)
             if (fact.id, fact.operation_id, fact.scope.board_id, fact.scope.spec_id,
@@ -34,7 +35,7 @@ class CommunityTaskRequirementDecisionStore:
                 row.id, row.operation_id, board_id, spec_id, edition, row.card_id,
                 row.revision, row.decision, row.scope_sha256):
                 raise ValueError('task_requirement_history_invalid')
-            result[row.card_id].append(fact)
+            result.setdefault(row.card_id, []).append(fact)
         return {key: tuple(value) for key, value in result.items()}
 
     async def append(self, *, operation_id, board_id, spec_id, edition, actor_id,

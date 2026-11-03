@@ -5,6 +5,7 @@ import { ObligationRefText } from './obligationPresentation';
 import { CardProgressPanel } from './CardProgressPanel';
 import { DeliveryNetImpactPanel } from './DeliveryNetImpactPanel';
 import { TestDeliveryOverview } from './TestDeliveryOverview';
+import { TaskRequirementControl, requirementLabels } from './TaskRequirementControl';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { DeliveryDisclosure } from './deliveryPresentation';
 import { DeliveryReadinessPanel } from './DeliveryReadinessPanel';
@@ -14,7 +15,6 @@ import type { ReadinessCardLocation } from './readinessNavigation';
 import type {
   CardDeliveryEvidenceInput,
   CardDeliveryBatchDraft,
-  DeliveryEvidenceInput,
   DeliveryEvidenceProjection,
 } from '@/types/delivery-evidence';
 
@@ -49,8 +49,7 @@ function recordingBasis(data: DeliveryEvidenceProjection, cardId: string) {
 // Obligations derive from this card's links; implementation proof is recorded
 // HERE against this card's accepted execution receipts. Test cards record
 // authenticated passing runs verifying implementations on other cards.
-// Waivers stay spec-level and human-only (BR-3): the button routes an
-// authorized human to the Spec rollup surface.
+// Task requirement changes use a separate human command, with no proof form.
 export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 0, canRecord = false, canTest = false, canWaiver = false, canProgress = false, onChanged, onStage, onOpenTests, focusDiagnosis, focusRecordId, onOpenReadinessCard }: Props) {
   const api = useDashboardApi();
   const [data, setData] = useState<DeliveryEvidenceProjection | null>(null);
@@ -69,7 +68,6 @@ export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 
   const [executionSets, setExecutionSets] = useState<Record<string, string[]>>({});
   const [choice, setChoice] = useState('');
   const [testedIds, setTestedIds] = useState<string[]>([]);
-  const [phase, setPhase] = useState<'implementation' | 'test'>('implementation');
   const [reason, setReason] = useState('');
   const replayRef = useRef<{ payload: string; key: string } | null>(null);
 
@@ -120,7 +118,8 @@ export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 
   const proofFor = (ref: string) => acceptedProofs.find(p => p.ready_obligation_refs.includes(ref));
   const partialFor = (ref: string) => acceptedProofs.some(p => p.admitted_obligation_refs.includes(ref)
     && p.contributions.some(c => c.binding.obligation_ref === ref && c.contribution === 'partial'));
-  const unproven = obligations.filter(o => !o.implementation_satisfied && !proofFor(o.ref));
+  const taskExcused = Boolean(mine?.requirement?.current && mine.requirement.decision !== 'required');
+  const unproven = taskExcused ? [] : obligations.filter(o => !o.implementation_satisfied && !proofFor(o.ref));
   const canRecordKind = isTest ? canTest : canRecord;
   const candidates = (recordingData?.candidates ?? []).filter(c => c.card_id === card.id && c.kind === (isTest ? 'test' : 'implementation'));
   const selectableRefs = isTest
@@ -179,24 +178,11 @@ export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 
     } finally { setBusy(false); }
   }
 
-  async function submitWaiver() {
-    const justification = reason.trim();
-    if (!active || !recordingData || busy || loading || readFailed || basisChanged || unavailableSelections || !justification || !refs.length) return;
-    const input: DeliveryEvidenceInput = {
-      expected_edition: recordingData.edition, expected_version: recordingData.version,
-      idempotency_key: crypto.randomUUID(), kind: 'waiver',
-      obligation_refs: refs, justification, phase,
-    };
-    setBusy(true); setError('');
-    try {
-      await api.recordDeliveryEvidence(boardId, card.spec_id, input);
-      setReason(''); setRefs([]); setFormOpen(false); setReload(v => v + 1); onChanged?.();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'The waiver was not recorded.');
-    } finally { setBusy(false); }
-  }
-
   return <section className="space-y-4" aria-label={isTest ? "Test verification evidence" : "Delivery evidence (Definition of Done)"}>
+    {mine?.requirement && <p className="text-sm" role="status">Task requirement: {requirementLabels[mine.requirement.decision]}{taskExcused ? ' · No proof credit. Work status is unchanged.' : ''}</p>}
+    {!onStage && <TaskRequirementControl key={`${boardId}:${card.spec_id}:${card.id}`}
+      boardId={boardId} specId={card.spec_id} cards={[{ id: card.id, title: mine?.title ?? 'This task' }]}
+      active={active} canEdit={canWaiver} revision={revision} onChanged={() => { setReload(value => value + 1); onChanged?.(); }} />}
     {!onStage && <DeliveryReadinessPanel boardId={boardId} specId={card.spec_id} cardId={card.id} active={active} revision={`${reload}:${revision}`} focusDiagnosis={focusDiagnosis} onOpenReadinessCard={onOpenReadinessCard} />}
     {isTest && !onStage && <div className="flex justify-end"><button type="button" disabled={!data && !error} onClick={() => setReload(value => value + 1)} className="rounded-md border border-gray-300 px-3 py-2 text-xs font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800">Refresh evidence</button></div>}
     {error && <p role="alert" className="rounded-md border border-red-300 bg-red-50 p-3 text-xs text-red-700 dark:border-red-900/70 dark:bg-red-950/25 dark:text-red-300">{error}</p>}
@@ -219,7 +205,7 @@ export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 
         <div className="mb-3 flex items-center justify-between gap-3">
           <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-200">Delivery Evidence (Definition of Done)</h3>
           <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide ${unproven.length ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'}`} data-testid="dod-gate-pill">
-            {gateMode === null ? 'Unknown' : gateMode === 'advisory' ? 'Advisory' : 'Blocking'} · {unproven.length} of {obligations.length || selectableRefs.length} implementation obligations unproven
+            {taskExcused ? 'Not required · no proof credit' : `${gateMode === null ? 'Unknown' : gateMode === 'advisory' ? 'Advisory' : 'Blocking'} · ${unproven.length} of ${obligations.length || selectableRefs.length} implementation obligations unproven`}
           </span>
         </div>
         {obligations.length === 0 && !isTest && (
@@ -235,7 +221,7 @@ export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 
                 <ObligationRefText value={ob.ref} />
               </span>
               <span className={`shrink-0 text-xs font-medium ${ok ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'}`}>
-                {ok ? '✓ Implementation' : partialFor(ob.ref) ? '◌ Partial contribution' : '◌ No accepted proof'}
+                {taskExcused ? 'Not required · no proof credit' : ok ? '✓ Implementation' : partialFor(ob.ref) ? '◌ Partial contribution' : '◌ No accepted proof'}
               </span>
             </li>;
           })}
@@ -262,13 +248,10 @@ export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 
         {canRecordKind && <button type="button" onClick={() => { if (formOpen) setFormOpen(false); else openRecordingForm(); }} className="rounded-md bg-gray-800 px-4 py-2 text-sm text-white dark:bg-gray-100 dark:text-gray-900" data-testid="dod-record-button">
           {formOpen ? 'Close recording form' : onStage ? 'Prepare delivery evidence for report' : isTest ? 'Record test evidence' : 'Record Delivery Evidence'}
         </button>}
-        {canWaiver && !onStage && <button type="button" onClick={openRecordingForm} className="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-600 dark:border-gray-700 dark:text-gray-300">
-          Request Waiver (human)
-        </button>}
       </div>
 
-      {formOpen && (canRecordKind || canWaiver) && (
-        <form className="space-y-3 rounded-md border p-3" onSubmit={e => { e.preventDefault(); void (canWaiver && !canRecordKind ? submitWaiver() : submit()); }} data-testid="dod-record-form">
+      {formOpen && canRecordKind && (
+        <form className="space-y-3 rounded-md border p-3" onSubmit={e => { e.preventDefault(); void submit(); }} data-testid="dod-record-form">
           {basisChanged && <div role="alert" className="rounded border border-amber-300 p-3 text-sm">
             <p>Delivery evidence changed. Your selections and explanation still use the original basis.</p>
             <button type="button" disabled={loading || readFailed || loadedRevision !== revision || !data} className="btn btn-secondary mt-2"
@@ -342,19 +325,12 @@ export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 
                 ))}
               </div>
             </fieldset>}
-          </> : canWaiver && (
-            <label className="block text-sm">Exempt only this phase
-              <select className={`${field} mt-1`} value={phase} onChange={e => setPhase(e.target.value as 'implementation' | 'test')}>
-                <option value="implementation">Implementation</option>
-                <option value="test">Verification</option>
-              </select>
-            </label>
-          )}
+          </> : null}
           <label className="block text-sm">Explanation / audit reason
             <textarea required maxLength={20000} className={`${field} mt-1`} value={reason} onChange={e => setReason(e.target.value)} placeholder={isTest ? 'Explain what this run observed for the selected obligations, including failures.' : 'Explain how this execution receipt covers the selected obligations.'} />
           </label>
           <button type="submit" disabled={busy || loading || readFailed || basisChanged || unavailableSelections || !refs.length || !reason.trim() || (canRecordKind && (compose ? !setsReady : !choice || (isTest && !testedIds.length)))} className="rounded bg-cyan-700 px-3 py-2 text-sm text-white disabled:opacity-50">
-            {busy ? 'Saving…' : onStage ? 'Add evidence to report draft' : canWaiver && !canRecordKind ? 'Record waiver (spec rollup)' : 'Record delivery evidence'}
+            {busy ? 'Saving…' : onStage ? 'Add evidence to report draft' : 'Record delivery evidence'}
           </button>
         </form>
       )}

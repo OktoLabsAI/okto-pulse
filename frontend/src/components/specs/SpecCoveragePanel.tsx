@@ -64,13 +64,14 @@ function Meter({ label, value, description, emptyLabel = 'Unavailable', zeroLabe
 }
 
 /** Lazy contextual read. Navigation never repairs the graph or changes a gate. */
-export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], onOpenSection, canReadSummary = true, canReadImplementation = true, skipDeliveryEvidence, onSkipDeliveryEvidenceChange, onOpenReadinessSpec, focusExceptionId }: {
+export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], onOpenSection, canReadSummary = true, canReadImplementation = true, skipDeliveryEvidence, onSkipDeliveryEvidenceChange, onOpenReadinessSpec, focusExceptionId, canManageTaskRequirements = false }: {
   boardId: string; specId: string; revision: string; canCorrect?: CoverageSection[];
   onOpenSection: (section: CoverageSection) => void;
   canReadSummary?: boolean; canReadImplementation?: boolean; skipDeliveryEvidence?: boolean;
   onSkipDeliveryEvidenceChange?: (value: boolean) => void;
   onOpenReadinessSpec?: (location: ReadinessSpecLocation) => void;
   focusExceptionId?: string | null;
+  canManageTaskRequirements?: boolean;
 }) {
   const api = useDashboardApi();
   const [view, setView] = useState<CoverageView>(canReadSummary ? 'overview' : 'implementation');
@@ -138,6 +139,7 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
       items={availableViews.map(([id, label]) => ({ id, label }))} value={activeView} onValueChange={setView} />
     {canReadImplementation && <AccessibleTabPanel idBase={tabId} tabId="implementation" value={activeView}>
       <DeliveryEvidencePanel boardId={boardId} specId={specId} revision={revision}
+        canManageTaskRequirements={canManageTaskRequirements}
         focusExceptionId={focusExceptionId}
         onOpenReadinessSpec={onOpenReadinessSpec}
         onOpenDecisions={() => onOpenSection('decisions')}

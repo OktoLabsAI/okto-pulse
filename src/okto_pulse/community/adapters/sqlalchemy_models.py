@@ -92,10 +92,12 @@ GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES: tuple[str, ...] = (
     "specs",
     "spec_qa_items",
     "stories",
+    "task_requirement_decision_operations",
+    "task_requirement_decisions",
 )
 GLOBAL_DISCOVERY_SOURCE_REVISION_SCOPE_ID = "_global"
 GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION = "gdsr-fence-v2"
-GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v9"
+GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v10"
 GLOBAL_DISCOVERY_SOURCE_REVISION_TRIGGER_PREFIX = "trg_global_discovery_source_revision"
 
 

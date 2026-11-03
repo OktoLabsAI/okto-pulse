@@ -13,6 +13,7 @@ import { decisionStatusLabel } from '@/components/specs/DecisionReviewSection';
 import { readinessReadMode } from '@/lib/readinessMode';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { isRetriableReadinessError, ReadinessContractError } from './readinessTransport';
+import { TaskRequirementControl } from './TaskRequirementControl';
 
 class ReadinessGenerationChangedError extends Error {}
 
@@ -25,6 +26,7 @@ interface Props {
   onOpenDecisions?: () => void;
   onOpenReadinessSpec?: (location: ReadinessSpecLocation) => void;
   focusExceptionId?: string | null;
+  canManageTaskRequirements?: boolean;
 }
 
 function metricLabel(metric?: ReadinessMetric) {
@@ -95,7 +97,7 @@ function ObligationEvidenceDetails({ data, row, currentRow }: {
 // (mockup sm_5ebd7063). Read-only by design: recording is card-scoped
 // (task DoD) and waivers are rollup-level, human-only — this surface only
 // presents the aggregated verdict, never mutates it.
-export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryEvidence = false, onSkipDeliveryEvidenceChange, onOpenDecisions, onOpenReadinessSpec, focusExceptionId }: Props) {
+export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryEvidence = false, onSkipDeliveryEvidenceChange, onOpenDecisions, onOpenReadinessSpec, focusExceptionId, canManageTaskRequirements = false }: Props) {
   const api = useDashboardApi();
   const legacyMode = readinessReadMode() === 'legacy';
   const [storedData, setData] = useState<DeliveryEvidenceProjection | null>(null);
@@ -108,6 +110,9 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
   const [projectionError, setProjectionError] = useState('');
   const acceptedProjection = useRef<{ api: typeof api; key: string; value: PersistedReadinessProjection }>();
   const [showDetails, setShowDetails] = useState(legacyMode);
+  const [showTaskRequirements, setShowTaskRequirements] = useState(false);
+  const [taskCards, setTaskCards] = useState<{ api: typeof api; owner: string; cards: Array<{ id: string; title: string }> }>();
+  const taskOwner = JSON.stringify([boardId, specId]);
   const scopeKey = JSON.stringify([boardId, specId, revision, reload]);
   const projectionScopeKey = JSON.stringify([boardId, specId, legacyMode]);
   const data = dataOwner?.api === api && dataOwner.key === scopeKey ? storedData : null;
@@ -219,32 +224,48 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
   useEffect(() => {
     const controller = new AbortController();
     setData(null); setGateMode(null); setError('');
-    if (showDetails || focusExceptionId) api.getDeliveryEvidence(boardId, specId, controller.signal).then(value => {
+    if (showDetails || focusExceptionId || showTaskRequirements) api.getDeliveryEvidence(boardId, specId, controller.signal).then(value => {
       if (value.board_id !== boardId || value.spec_id !== specId) throw new Error('Delivery evidence scope changed. Refresh the Spec.');
       if (!controller.signal.aborted) {
         setDataOwner({ api, key: scopeKey });
+        setTaskCards({ api, owner: taskOwner, cards: (value.per_card ?? []).map(card => ({ id: card.card_id, title: card.title })) });
         setData(value);
       }
-    }).catch(err => { if (!controller.signal.aborted) setError(err instanceof Error ? err.message : 'Delivery proof could not be loaded.'); });
+    }).catch(err => {
+      if (!controller.signal.aborted) {
+        setError(err instanceof Error ? err.message : 'Delivery proof could not be loaded.');
+        if (err instanceof AuthenticatedFetchError && [401, 403, 404].includes(err.status)) setTaskCards(undefined);
+      }
+    });
     api.getBoard(boardId).then(board => {
       if (!controller.signal.aborted) setGateMode(resolveDeliveryGateMode(board.settings?.delivery_evidence_gate));
     }).catch(() => { if (!controller.signal.aborted) setGateMode(null); });
     return () => controller.abort();
-  }, [api, boardId, specId, revision, reload, focusExceptionId, showDetails, scopeKey]);
+  }, [api, boardId, specId, revision, reload, focusExceptionId, showDetails, showTaskRequirements, scopeKey, taskOwner]);
 
-  const missingImplementation = data?.rows.filter(row => !row.implementation_satisfied).length ?? 0;
+  const missingImplementation = data?.rows.filter(row => !row.not_required && !row.implementation_satisfied).length ?? 0;
   const currentProofRows = new Map((data?.current_proof_rows ?? []).map(row =>
     [`${row.obligation_ref}:${row.semantic_sha256}`, row]));
-  const missingTest = data?.rows.filter(row => !row.test_satisfied && !row.decision_verification_status).length ?? 0;
-  const pendingDecisions = data?.rows.filter(row => row.decision_verification_status && !row.test_satisfied).length ?? 0;
+  const missingTest = data?.rows.filter(row => !row.not_required && !row.test_satisfied && !row.decision_verification_status).length ?? 0;
+  const pendingDecisions = data?.rows.filter(row => !row.not_required && row.decision_verification_status && !row.test_satisfied).length ?? 0;
+  const notRequired = data?.rows.filter(row => row.not_required).length ?? 0;
   const summary = !data ? '' : data.allowed
-    ? `All ${data.rows.length} obligations satisfied (proof or authorized waiver)`
+    ? notRequired ? `Required delivery checks satisfied · ${notRequired} not required (no proof credit)` : `All ${data.rows.length} obligations satisfied (proof or authorized waiver)`
     : [missingImplementation ? `implementation missing on ${missingImplementation}` : '',
        missingTest ? `test coverage missing on ${missingTest}` : '',
        pendingDecisions ? `${pendingDecisions} decision verification(s) pending` : '']
       .filter(Boolean).join(' · ') + ' obligation' + ((missingImplementation + missingTest) === 1 ? '' : 's');
 
   return <section className="space-y-5" aria-label="Implementation and verification">
+    {!showTaskRequirements && <button type="button" className="btn btn-secondary" onClick={() => setShowTaskRequirements(true)}>
+      {canManageTaskRequirements ? 'Change task requirements' : 'View task requirements'}
+    </button>}
+    {showTaskRequirements && (taskCards?.api !== api || taskCards.owner !== taskOwner) && !error && <PulseLoader label="Loading tasks…" size="sm" />}
+    {showTaskRequirements && taskCards?.api === api && taskCards.owner === taskOwner && (taskCards.cards.length ? <TaskRequirementControl
+      key={`${boardId}:${specId}`} boardId={boardId} specId={specId}
+      cards={taskCards.cards}
+      initiallyOpen canEdit={canManageTaskRequirements} revision={revision}
+      onChanged={() => setReload(value => value + 1)} /> : <p>No tasks in this Spec.</p>)}
     {focusExceptionId && data?.board_id === boardId && data.spec_id === specId
       && <DeliveryExceptionDetails data={data} recordId={focusExceptionId} />}
     {projection && <DeliveryReadinessPanel boardId={boardId} specId={specId} revision={`${revision ?? ''}:${reload}`}

@@ -36,6 +36,7 @@ import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import type { HelpSectionId } from './contextualHelp';
 import { specValidationHelp } from '@/components/specs/validationHelp';
 import { deliveryProgressHelp } from '@/components/code-traceability/deliveryProgressHelp';
+import { taskRequirementHelp } from '@/components/code-traceability/taskRequirementHelp';
 
 interface HelpPanelProps {
   onClose: () => void;
@@ -849,6 +850,12 @@ Specs can be exported as **Markdown** for external documentation or sharing.
       title: 'Task progress',
       icon: <LayoutList size={16} />,
       content: deliveryProgressHelp,
+    },
+    {
+      id: 'task-requirements',
+      title: 'Task requirements',
+      icon: <ListChecks size={16} />,
+      content: taskRequirementHelp,
     },
     {
       id: 'tasks',

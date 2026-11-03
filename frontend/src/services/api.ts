@@ -551,6 +551,24 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-evidence`, { signal });
     },
 
+    async getTaskRequirementOptions(boardId: string, specId: string, cardIds: string[], signal?: AbortSignal): Promise<import('@/types/task-requirement').TaskRequirementOptions> {
+      const query = new URLSearchParams();
+      cardIds.forEach(id => query.append('card_ids', id));
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/task-requirement-decisions/options?${query}`, { signal });
+    },
+
+    async applyTaskRequirementDecision(boardId: string, specId: string, body: import('@/types/task-requirement').TaskRequirementInput): Promise<import('@/types/task-requirement').TaskRequirementOperation> {
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/task-requirement-decisions`, { method: 'POST', body: JSON.stringify(body) });
+    },
+
+    async getTaskRequirementHistory(boardId: string, specId: string, cardId: string, options: { edition?: number; beforeRevision?: number; recordId?: string } = {}, signal?: AbortSignal): Promise<import('@/types/task-requirement').TaskRequirementHistory> {
+      const query = new URLSearchParams({ card_id: cardId });
+      if (options.edition !== undefined) query.set('edition', String(options.edition));
+      if (options.beforeRevision !== undefined) query.set('before_revision', String(options.beforeRevision));
+      if (options.recordId) query.set('record_id', options.recordId);
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/task-requirement-decisions/history?${query}`, { signal });
+    },
+
     async getDeliveryReadiness(boardId: string, specId: string, cardId?: string, signal?: AbortSignal): Promise<DeliveryReadiness> {
       const query = new URLSearchParams({ view: 'readiness' });
       if (cardId) query.set('card_id', cardId);

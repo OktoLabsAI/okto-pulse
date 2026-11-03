@@ -1928,7 +1928,7 @@ export function CardModal({
                     canRecord={perms.has('code_traceability.target.execution_submit')}
                     canProgress={perms.has('card.conclusion.write')}
                     canTest={perms.has('spec.tests.execute')}
-                    canWaiver={perms.has('code_traceability.waiver.create')}
+                    canWaiver={perms.has('code_traceability.waiver.create') || perms.has('code_traceability.waiver.clear')}
                     onOpenTests={canReadTests && card.card_type === 'test' ? () => setActiveTab('tests') : undefined}
                     focusDiagnosis={cardModalTarget?.focusDiagnosis}
                     focusRecordId={cardModalTarget?.recordId}
