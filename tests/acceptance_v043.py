@@ -20,7 +20,7 @@ import unittest
 import xml.etree.ElementTree as ET
 
 
-class TaskRequirementAcceptance(unittest.TestCase):
+class PairedAcceptance(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
@@ -90,6 +90,8 @@ class TaskRequirementAcceptance(unittest.TestCase):
         self.assertEqual(results.get('numTodoTests', 0), 0)
         self.assertEqual(results['numFailedTests'], 0)
 
+
+class TaskRequirementAcceptance(PairedAcceptance):
     def test_shared_requirement_keeps_other_owner_required(self):
         self._pytest('core', 'tests/test_task_requirement_decision.py')
         self._pytest('community', 'tests/test_task_requirement_effects.py')
@@ -122,3 +124,50 @@ class TaskRequirementAcceptance(unittest.TestCase):
         self._pytest('community', 'tests/test_task_requirement_commands.py',
                      'tests/test_task_requirement_routes.py', 'tests/test_task_requirement_decision_store.py',
                      'tests/test_task_requirement_erasure.py', 'tests/test_storage_upgrade_v043.py')
+
+
+class DeliveryAcceptance(PairedAcceptance):
+    def test_shared_obligation_has_one_global_denominator(self):
+        self._pytest('core',
+            'tests/test_delivery_summary.py::test_shared_obligation_denominator_is_never_a_sum_of_card_metrics',
+            'tests/test_delivery_summary.py::test_pages_keep_full_counts_and_load_only_the_requested_visible_items')
+        self._pytest('community',
+            'tests/test_readiness_projection_access.py::test_delivery_summary_reads_one_generation_and_live_metadata_without_proof_scans')
+
+    def test_validation_stays_pending_and_default_view_is_simple(self):
+        self._pytest('core',
+            'tests/test_delivery_summary.py::test_lifecycle_does_not_turn_one_hundred_percent_into_delivered')
+        self._react('src/components/code-traceability/__tests__/DeliverySummaryPanel.test.tsx')
+
+    def test_historical_done_preserves_history_without_current_delivery_credit(self):
+        self._pytest('core',
+            'tests/test_delivery_summary.py::test_historical_done_with_insufficient_or_unknown_proof_stays_pending',
+            'tests/test_delivery_summary.py::test_legacy_completion_with_exception_remains_pending_confirmation_without_proof_credit',
+            'tests/test_delivery_summary.py::test_noncurrent_generation_never_confirms_done_or_current_exceptions',
+            'tests/test_delivery_summary.py::test_card_version_or_status_drift_cannot_reuse_a_done_assessment')
+        self._pytest('community', 'tests/test_delivery_readiness_historical.py')
+
+    def test_optional_waived_and_denied_reads_never_become_delivered_or_empty_success(self):
+        self._pytest('core',
+            'tests/test_delivery_summary.py::test_current_task_exception_has_its_own_collapsed_group_and_no_delivery_count',
+            'tests/test_delivery_summary.py::test_stale_task_exception_does_not_excuse_a_changed_scope',
+            'tests/test_delivery_summary.py::test_missing_or_partial_population_is_unknown_rather_than_successful_empty')
+        self._pytest('community',
+            'tests/test_readiness_projection_access.py::test_delivery_summary_rechecks_revoked_authority_instead_of_returning_an_empty_list',
+            'tests/test_readiness_projection_access.py::test_summary_captures_human_requirement_and_restores_it_with_the_exact_generation_manifest',
+            'tests/test_readiness_projection_access.py::test_delivery_summary_metadata_capacity_is_unknown_and_never_changes_the_denominator')
+
+    def test_delivery_help_is_central_contextual_and_keeps_focus(self):
+        self._react('src/components/help/__tests__/HelpPanel.deliveryStatus.test.tsx',
+            'src/components/help/__tests__/ContextualHelpLink.test.tsx',
+            'src/components/code-traceability/__tests__/DeliverySummaryPanel.test.tsx')
+
+    def test_delivery_contract_authority_cursor_and_legacy_copy_upgrade(self):
+        self._pytest('core', 'tests/test_delivery_summary_read.py', 'tests/test_delivery_readiness_contracts.py')
+        self._pytest('community', 'tests/test_delivery_summary_cursor.py',
+            'tests/test_delivery_summary_route.py',
+            'tests/test_readiness_projection_access.py::test_summary_signed_pages_reauthorize_and_refuse_live_metadata_changes_within_one_generation')
+        self._pytest('community', 'tests/test_readiness_schema_upgrade.py', 'tests/test_storage_upgrade_v043.py')
+        self._pytest('community',
+            'tests/test_readiness_projection_worker.py::test_backfill_after_v401_upgrade_completes_all_scopes_and_three_restarts',
+            'tests/test_readiness_projection_worker.py::test_real_community_lifespan_serves_pending_then_current_on_upgraded_copy')

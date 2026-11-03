@@ -1,7 +1,8 @@
 # Acceptance execution for v0.4.3
 
 The native Pulse Test Cards use the scoped methods in
-`tests/acceptance_v043.py::TaskRequirementAcceptance`. The registered primary
+`tests/acceptance_v043.py::TaskRequirementAcceptance` and
+`tests/acceptance_v043.py::DeliveryAcceptance`. The registered primary
 source is Community; Core is a distinct companion source pinned to its complete
 Git revision. The installation observes both immutable trees and signs its own
 execution receipt. A developer's local pytest or browser report does not replace
@@ -31,6 +32,24 @@ recorded in the initiative's Pulse history.
 | Restore | `test_restore_never_recovers_revoked_proof` | Real accepted implementation, human revocation, waive/restore, continued absence of proof credit |
 | Help | `test_central_and_contextual_help` | Central topic, contextual destination, accessible controls and lazy decision history |
 | Technical safeguards | `test_authorization_storage_upgrade_and_rollback` | Human permissions, closed inputs, storage invariants, governed erasure, verified copy upgrade and rollback |
+
+Delivery selectors are separate methods on `DeliveryAcceptance`; both classes
+share only the isolated toolchain and report checks in `PairedAcceptance`.
+
+| Delivery scenario | Explicit unittest method | Exercised behavior |
+| --- | --- | --- |
+| Shared denominator | `test_shared_obligation_has_one_global_denominator` | One global obligation count, stable task pages and real persisted SQL read without proof scans |
+| Validation pending | `test_validation_stays_pending_and_default_view_is_simple` | Lifecycle matrix, three groups, lazy exceptions/Details, pagination, retained form and access failures |
+| Historical Done | `test_historical_done_preserves_history_without_current_delivery_credit` | Canonical current-proof requirements, real native proof loss, preserved historical status and denied access |
+| Optional/Waived and ACL | `test_optional_waived_and_denied_reads_never_become_delivered_or_empty_success` | Exact requirement history/generation restore, no delivery credit, revocation and unknown capacity |
+| Help | `test_delivery_help_is_central_contextual_and_keeps_focus` | Central Delivery status topic, contextual destination, retained drafts and opening/accepted-save focus |
+| Technical safeguards | `test_delivery_contract_authority_cursor_and_legacy_copy_upgrade` | Closed query, HMAC actor/scope/population binding, actual same-generation title changes and reauthorization, strict historical405 plus explicit copy406 and worker restart/backfill |
+
+Native profiles select one explicit method for one registered scenario. The
+selectors do not make every other scenario pass automatically and must be
+executed before their results are associated with the current implementation.
+The browser screenshots use illustrative fixtures and remain engineering QA;
+they do not establish permission, performance or human comprehension outcomes.
 
 Every affected feature has a separate Help task. Acceptance requires the rules
 in the central application Help **and at the point of access**, with the same
