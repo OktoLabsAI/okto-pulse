@@ -79,3 +79,44 @@ async def test_waiving_one_test_card_does_not_remove_required_spec_verification(
     assert not assess_delivery_gate(global_scope).allowed
     assert any(row.verification.state != UnitState.NOT_APPLICABLE for row in global_scope.obligations)
     assert not snapshot.tests and (await session.get(Card, 'test')).status == 'in_progress'
+
+
+async def test_restoring_required_never_reactivates_revoked_implementation(ledger, tmp_path, monkeypatch):
+    """A requirement decision changes applicability, never evidence history."""
+    session, store, _ = ledger
+    await contract.adopt_fixture(session, tmp_path, monkeypatch)
+    await session.execute(update(Card).where(Card.id == 'task').values(status='in_progress'))
+    await session.commit()
+    implementation = await contract.delivery.record(store, contract.implementation())
+    await session.commit()
+    scope = DeliveryScope(contract.signed.BOARD_ID, contract.signed.SPEC_ID, 1)
+    before = assess_obligation_delivery(await store.load_snapshot(scope))
+    assert all(row.implementation.proof_satisfied is True for row in before.obligations)
+    revocation = await contract.delivery.record(store, contract.delivery.command(
+        'revoke', card_id='task', record_id=implementation['id']), human=True)
+    await session.commit()
+    actor = ActorContext(actor_id='owner', actor_kind='user', source='system', board_id=scope.board_id,
+        permissions=['spec.entity.read', 'card.entity.read', 'code_traceability.evidence.read',
+                     'code_traceability.waiver.create', 'code_traceability.waiver.clear'])
+    unit = SimpleNamespace(services=SimpleNamespace(delivery_evidence=store),
+                           commit=AsyncMock(side_effect=session.commit))
+    query = TaskRequirementOptionsQuery(board_id=scope.board_id, spec_id=scope.spec_id, card_ids=['task'])
+    for decision in ('waived', 'required'):
+        preview = await GetTaskRequirementOptionsUseCase().execute(query, actor=actor, uow=unit)
+        await RecordTaskRequirementDecisionUseCase().execute(TaskRequirementDecisionCommand(
+            board_id=scope.board_id, spec_id=scope.spec_id, contract_version='task-requirement-decision/v1',
+            card_ids=['task'], decision=decision, basis=preview['basis'],
+            idempotency_key=decision + '-after-revocation'), actor=actor, uow=unit)
+        assessment = assess_obligation_delivery(await store.load_snapshot(scope))
+        if decision == 'waived':
+            assert all(row.implementation.state == UnitState.NOT_APPLICABLE for row in assessment.obligations)
+        else:
+            assert all(row.implementation.proof_satisfied is not True for row in assessment.obligations)
+            assert not assess_delivery_gate(assessment).allowed
+    from okto_pulse.community.adapters.sqlalchemy_models import CardDeliveryEvidenceRecordRow
+    original = await session.get(CardDeliveryEvidenceRecordRow, implementation['id'])
+    revoked = await session.get(CardDeliveryEvidenceRecordRow, revocation['id'])
+    assert original.kind == 'implementation' and revoked.kind == 'revoke'
+    assert revoked.payload['record_id'] == implementation['id']
+    assert await session.scalar(select(func.count()).select_from(CardDeliveryEvidenceRecordRow)) == 2
+    assert (await session.get(Card, 'task')).status == 'in_progress'
