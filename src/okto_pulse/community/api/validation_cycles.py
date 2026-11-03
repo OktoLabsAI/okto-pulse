@@ -85,6 +85,17 @@ class SpecPlanningReadinessResponse(_ClosedResponseModel):
     components: list[SpecPlanningComponentResponse]
 
 
+class SpecValidationSummaryResponse(_ClosedResponseModel):
+    contract_version: Literal["validation-summary/v1"]
+    edition: int = Field(ge=1)
+    verdict: Literal["validated", "validated_with_exception", "ready_to_conclude", "not_validated", "unavailable", "not_required"]
+    planning_state: Literal["ready", "blocked", "unavailable"]
+    reason_code: str
+    blockers_count: int | None = Field(ge=0)
+    exception_count: int | None = Field(ge=0)
+    next_action: str | None
+
+
 class SpecValidationCycleResponse(_ClosedResponseModel):
     subject_type: Literal["spec"]
     subject_id: str
@@ -98,6 +109,7 @@ class SpecValidationCycleResponse(_ClosedResponseModel):
     submission_fence: ValidationSubmissionFenceResponse | None = None
     planning_manifest: SpecPlanningManifest | None = None
     planning_readiness: SpecPlanningReadinessResponse | None = None
+    validation_summary: SpecValidationSummaryResponse | None = None
     checks: list[ValidationCycleCheckResponse]
     remaining_actions: list[str]
 
