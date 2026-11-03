@@ -1,5 +1,5 @@
 import { PulseLoader } from '@/components/shared/PulseLoader';
-import type { SpecPlanningReadiness } from '@/types';
+import type { SpecPlanningReadiness, SpecValidationSummary } from '@/types';
 
 const labels: Record<string, string> = {
   spec_validation: 'Spec quality', decomposition: 'Task decomposition',
@@ -11,6 +11,46 @@ const labels: Record<string, string> = {
   code_evidence: 'Code evidence', architecture: 'Architecture', resource_coverage: 'Resource allocation',
 };
 const humanize = (value: string) => value.replace(/_/g, ' ');
+
+const verdicts = {
+  validated: ['Spec validated', 'All required planning checks passed for this edition.'],
+  validated_with_exception: ['Spec validated with exceptions', 'Validation is complete with recorded human exceptions.'],
+  ready_to_conclude: ['Ready to conclude validation', 'The required checks are satisfied. Validation still needs to be concluded.'],
+  not_validated: ['Spec not yet validated', 'Required planning checks or the validation conclusion are still pending.'],
+  unavailable: ['Validation could not be confirmed', 'Refresh or check your access to confirm this edition’s validation.'],
+  not_required: ['Validation not required', 'Validation is disabled and the other required planning checks are satisfied.'],
+} as const;
+
+export function SpecValidationSummaryCard({ summary, edition, loading, onAction, actionLabel }: {
+  summary?: SpecValidationSummary;
+  edition: number;
+  loading: boolean;
+  onAction?: () => void;
+  actionLabel?: string;
+}) {
+  if (loading) return <PulseLoader size="sm" label="Checking validation…" className="py-4" />;
+  const current = summary?.contract_version === 'validation-summary/v1' && summary.edition === edition
+    && Object.prototype.hasOwnProperty.call(verdicts, summary.verdict) ? summary : undefined;
+  const verdict = current?.verdict ?? 'unavailable';
+  const [title, description] = verdicts[verdict];
+  const validated = verdict === 'validated' || verdict === 'validated_with_exception';
+  return <section aria-label="Validation result" data-testid="spec-validation-summary"
+    className={`rounded-xl border p-4 ${validated
+      ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-950/20'
+      : 'border-surface-200 bg-surface-50 dark:border-surface-700 dark:bg-surface-900/40'}`}>
+    <h3 className="text-base font-semibold text-surface-900 dark:text-white">{title}</h3>
+    <p className="mt-2 text-sm text-surface-600 dark:text-surface-300">{description}</p>
+    {current?.blockers_count != null && current.blockers_count > 0 && <p className="mt-2 text-xs text-surface-600 dark:text-surface-300">
+      {current.blockers_count} required {current.blockers_count === 1 ? 'check needs' : 'checks need'} attention.
+    </p>}
+    {current?.exception_count != null && current.exception_count > 0 && <p className="mt-2 text-xs text-surface-600 dark:text-surface-300">
+      {current.exception_count} recorded {current.exception_count === 1 ? 'exception' : 'exceptions'}. See Details for their scope.
+    </p>}
+    {current?.next_action && onAction && <button type="button" onClick={onAction} className="btn btn-primary mt-3 text-sm">
+      {actionLabel ?? 'Review pending check'}
+    </button>}
+  </section>;
+}
 
 export function SpecPlanningSummary({ readiness, loading, onReview }: {
   readiness?: SpecPlanningReadiness;

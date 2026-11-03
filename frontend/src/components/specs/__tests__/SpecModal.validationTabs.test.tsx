@@ -835,6 +835,7 @@ describe('SpecModal validation navigation', () => {
     await screen.findByText(baseSpec.title);
     expect(workspaceWatch.options?.boardId).toBeUndefined();
     fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
     await screen.findByTestId('spec-validation-current');
     expect(workspaceWatch.options?.boardId).toBe(baseSpec.board_id);
     const before = apiMock.getValidationCycle.mock.calls.length;
@@ -852,6 +853,7 @@ describe('SpecModal validation navigation', () => {
     render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={onClose} onChanged={vi.fn()} />);
     await screen.findByText(baseSpec.title);
     fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
     act(() => workspaceWatch.options!.onAccessLost());
     expect(onClose).toHaveBeenCalledOnce();
     expect(screen.queryByText(baseSpec.title)).not.toBeInTheDocument();
@@ -867,6 +869,7 @@ describe('SpecModal validation navigation', () => {
     renderSpec('approved');
     await screen.findByText(baseSpec.title);
     fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Conclude planning validation' }));
     const input = await screen.findByLabelText('Confidence justification');
     fireEvent.change(input, { target: { value: 'An authored review that must survive reauthorization.' } });
@@ -889,6 +892,7 @@ describe('SpecModal validation navigation', () => {
     render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={onClose} onChanged={vi.fn()} />);
     await screen.findByText(baseSpec.title);
     fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
     await act(async () => { await workspaceWatch.options!.onChange({ subjects: [], authorityChanged: true, initial: false }); });
     expect(onClose).toHaveBeenCalledOnce();
     expect(screen.queryByText(baseSpec.title)).not.toBeInTheDocument();
@@ -915,6 +919,7 @@ describe('SpecModal validation navigation', () => {
     await screen.findByText(baseSpec.title);
     expect(apiMock.listSpecEvaluations).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
     await screen.findByRole('tab', { name: 'Task decomposition' });
     expect(screen.queryByRole('tab', { name: 'Spec Validation' })).not.toBeInTheDocument();
     expect(apiMock.getCurrentSpecValidation).not.toHaveBeenCalled();
@@ -924,6 +929,7 @@ describe('SpecModal validation navigation', () => {
     renderSpec('draft');
     await screen.findByText(baseSpec.title);
     fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
     await screen.findByTestId('spec-validation-current');
     expect(screen.queryByRole('region', { name: 'Decomposition evaluations' })).not.toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Task decomposition' })).toBeInTheDocument();
@@ -1008,6 +1014,7 @@ describe('SpecModal validation navigation', () => {
     fireEvent.click(
       screen.getByRole('tab', { name: 'Validation' }),
     );
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
 
     expect(screen.getByTestId('spec-validation-workspace')).toBeInTheDocument();
     expect(screen.getByTestId('spec-validation-current')).toBeInTheDocument();
@@ -1066,6 +1073,7 @@ describe('SpecModal validation navigation', () => {
     fireEvent.click(
       screen.getByRole('tab', { name: 'Validation' }),
     );
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
 
     expect(screen.getByRole('tab', { name: 'Policy Compliance' })).toHaveAttribute(
       'aria-selected',
@@ -1101,6 +1109,7 @@ describe('SpecModal validation navigation', () => {
 
     await screen.findByText(baseSpec.title);
     fireEvent.click(screen.getByRole('tab', { name: 'Validation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
     fireEvent.click(screen.getByRole('tab', { name: 'Policy Compliance' }));
     expect(screen.getByTestId('policy-compliance-panel'))
       .toBeInTheDocument();
@@ -1284,6 +1293,7 @@ describe('SpecModal validation navigation', () => {
     fireEvent.click(
       screen.getByRole('tab', { name: 'Validation' }),
     );
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
 
     expect(screen.queryByRole('tab', { name: 'Checklist' })).not.toBeInTheDocument();
     expect(screen.queryByRole('tab', { name: 'Requirement lint' })).not.toBeInTheDocument();
@@ -1307,6 +1317,7 @@ describe('SpecModal validation navigation', () => {
     fireEvent.click(
       screen.getByRole('tab', { name: 'Validation' }),
     );
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
 
     expect(screen.getByRole('tab', { name: 'Checklist' })).toHaveAttribute(
       'aria-selected',
@@ -1328,6 +1339,7 @@ describe('SpecModal validation navigation', () => {
     fireEvent.click(
       screen.getByRole('tab', { name: 'Validation' }),
     );
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
 
     expect(screen.getByRole('tab', { name: 'Requirement lint' })).toHaveAttribute(
       'aria-selected',
@@ -1344,6 +1356,7 @@ describe('SpecModal validation navigation', () => {
     fireEvent.click(
       screen.getByRole('tab', { name: 'Validation' }),
     );
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
 
     fireEvent.click(screen.getByRole('tab', { name: 'Checklist' }));
 

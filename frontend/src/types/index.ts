@@ -914,6 +914,17 @@ export interface SpecPlanningReadiness {
   }>;
 }
 
+export interface SpecValidationSummary {
+  contract_version: 'validation-summary/v1';
+  edition: number;
+  verdict: 'validated' | 'validated_with_exception' | 'ready_to_conclude' | 'not_validated' | 'unavailable' | 'not_required';
+  planning_state: SpecPlanningReadiness['state'];
+  reason_code: string;
+  blockers_count: number | null;
+  exception_count: number | null;
+  next_action: string | null;
+}
+
 export interface SpecValidationCycleSummary
   extends ValidationCycleSummaryIdentity {
   subject_type: 'spec';
@@ -930,6 +941,7 @@ export interface SpecValidationCycleSummary
   /** Technical submission basis; present only with Spec Validation read access. */
   planning_manifest?: SpecPlanningManifest;
   planning_readiness?: SpecPlanningReadiness;
+  validation_summary?: SpecValidationSummary;
   checks: ValidationCycleCheckSummary[];
   remaining_actions: string[];
 }
