@@ -391,3 +391,48 @@ async def test_summary_captures_human_requirement_and_restores_it_with_the_exact
     task = next(row for row in restored.items if row.card_id == 'task')
     assert task.requirement == 'required' and task.group == 'in_progress'
     assert task.group != 'delivered'
+
+
+async def test_summary_signed_pages_reauthorize_and_refuse_live_metadata_changes_within_one_generation(ledger, monkeypatch):
+    from okto_pulse.community.adapters.delivery_readiness_cursor import CommunityReadinessCursorCodec
+    from okto_pulse.core.models.delivery_summary import DeliverySummaryQuery
+    from okto_pulse.core.services.delivery_readiness import DeliveryReadinessService
+    session, _, _ = ledger
+    await setup(session)
+    await session.execute(update(Card).where(Card.id.in_(['task','test'])).values(status='in_progress'))
+    await session.commit()
+    worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
+    assert await worker.process_once() == 1
+    reader = CommunityDeliveryReadinessReader(session.bind, clock=CommunityReadinessClock())
+    async def forbidden(*args, **kwargs):
+        pytest.fail('Summary pagination must not evaluate proof')
+    monkeypatch.setattr(reader, 'load', forbidden)
+    service = DeliveryReadinessService(reader, CommunityReadinessCursorCodec(b'summary-test-installation-key-0000000'))
+    query = DeliverySummaryQuery(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID, group='in_progress', limit=1)
+    first = await service.delivery_summary(query, actor=ACTOR)
+    token = first['groups'][1]['next_cursor']
+    assert token and len(first['groups'][1]['items']) == 1
+    second = await service.delivery_summary(query.model_copy(update={'cursor':token}), actor=ACTOR)
+    assert first['population_id'] == second['population_id']
+    assert first['groups'][1]['items'][0]['card_id'] != second['groups'][1]['items'][0]['card_id']
+
+    # Two successive live edits use the same retained generation. The second
+    # must invalidate a cursor already bound to an updating first edit, too.
+    for title in ('First changed title','Second changed title'):
+        await session.execute(update(Card).where(Card.id=='task').values(title=title))
+        await session.commit()
+        with pytest.raises(ReadinessReadError, match='readiness_cursor_stale'):
+            await service.delivery_summary(query.model_copy(update={'cursor':token}), actor=ACTOR)
+        fresh = await service.delivery_summary(query, actor=ACTOR)
+        assert fresh['projection']['generation_id'] == first['projection']['generation_id']
+        assert fresh['projection']['freshness'] == 'updating'
+        assert fresh['task_count'] is None
+        token = fresh['groups'][1]['next_cursor']
+        assert token
+
+    flags = registered_permission_flags()
+    flags['card']['entity']['read'] = False
+    await session.execute(update(AgentBoard).where(AgentBoard.agent_id==ACTOR.actor_id).values(permission_overrides=flags))
+    await session.commit()
+    with pytest.raises(ReadinessAccessDenied):
+        await service.delivery_summary(query.model_copy(update={'cursor':token}), actor=ACTOR)

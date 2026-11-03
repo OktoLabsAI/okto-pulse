@@ -1276,6 +1276,29 @@ async def requeue_persisted_delivery_readiness(board_id: str, spec_id: str,
         board_id=board_id, principal=principal, uow=uow)
 
 
+@router.get("/{board_id}/specs/{spec_id}/delivery-summary")
+async def get_delivery_summary(board_id: str, spec_id: str, response: Response, request: Request,
+    group: Literal['delivered', 'in_progress', 'pending', 'optional_or_waived'] | None = Query(default=None),
+    limit: int = Query(default=10, ge=1, le=20),
+    cursor: str | None = Query(default=None, min_length=1, max_length=8192),
+    principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)):
+    from okto_pulse.core.application.use_cases.delivery_evidence import GetDeliverySummaryUseCase
+    from okto_pulse.core.models.delivery_summary import DeliverySummaryQuery
+
+    response.headers['Cache-Control'] = 'no-store'
+    if (set(request.query_params) - {'group', 'limit', 'cursor'}
+            or any(len(request.query_params.getlist(key)) != 1 for key in request.query_params)):
+        raise _http_error(ReadinessReadError('readiness_query_invalid'))
+    try:
+        query = DeliverySummaryQuery(board_id=board_id, spec_id=spec_id,
+            group=group, limit=limit, cursor=cursor)
+    except ValueError as exc:
+        raise _http_error(ReadinessReadError('readiness_query_invalid')) from exc
+    result = await _execute(GetDeliverySummaryUseCase(), query,
+        board_id=board_id, principal=principal, uow=uow, json_ready=True)
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+
 @router.get("/{board_id}/specs/{spec_id}/delivery-readiness-summary")
 async def get_delivery_readiness_summary(board_id: str, spec_id: str, response: Response,
     principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)):

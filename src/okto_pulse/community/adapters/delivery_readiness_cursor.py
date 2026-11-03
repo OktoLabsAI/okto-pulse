@@ -70,6 +70,38 @@ class CommunityReadinessCursorCodec:
         except (ValueError, TypeError, KeyError, UnicodeError, RecursionError) as exc:
             raise ReadinessReadError('readiness_query_invalid', native_code='readiness_cursor_invalid') from exc
 
+    @staticmethod
+    def _summary_binding(binding):
+        return hashlib.sha256(_canonical(binding.model_dump(mode='json',
+            exclude={'spec_edition', 'population_id'}))).hexdigest()
+
+    def encode_summary(self, binding, offset):
+        if type(offset) is not int or offset < 1:
+            raise ReadinessReadError('readiness_query_invalid', native_code='readiness_cursor_position_invalid')
+        payload = _canonical(dict(version=1, kind='delivery-summary',
+            binding=self._summary_binding(binding), spec_edition=binding.spec_edition,
+            population_id=binding.population_id, offset=offset))
+        return _encode(payload) + '.' + _encode(hmac.new(self._key, payload, hashlib.sha256).digest())
+
+    def decode_summary(self, token, binding):
+        payload = self._signed_payload(token)
+        try:
+            if (set(payload) != {'version', 'kind', 'binding', 'spec_edition', 'population_id', 'offset'}
+                    or type(payload['version']) is not int or payload['version'] != 1
+                    or payload['kind'] != 'delivery-summary'
+                    or type(payload['offset']) is not int or payload['offset'] < 1
+                    or type(payload['spec_edition']) is not int or payload['spec_edition'] < 1
+                    or any(not isinstance(payload[key], str) or len(payload[key]) != 64
+                        or any(c not in '0123456789abcdef' for c in payload[key])
+                        for key in ('binding', 'population_id'))
+                    or not hmac.compare_digest(payload['binding'], self._summary_binding(binding))):
+                raise ValueError('invalid_binding_or_shape')
+        except (ValueError, TypeError, KeyError) as exc:
+            raise ReadinessReadError('readiness_query_invalid', native_code='readiness_cursor_invalid') from exc
+        if (payload['spec_edition'], payload['population_id']) != (binding.spec_edition, binding.population_id):
+            raise ReadinessReadError('readiness_cursor_stale', native_code='snapshot_conflict')
+        return payload['offset']
+
     def peek_detail_generation(self, token):
         """Verify the signature before selecting a retained generation.
 
