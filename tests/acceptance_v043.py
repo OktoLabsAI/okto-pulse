@@ -169,6 +169,8 @@ class DeliveryAcceptance(PairedAcceptance):
             'tests/test_readiness_projection_access.py::test_summary_signed_pages_reauthorize_and_refuse_live_metadata_changes_within_one_generation')
         self._pytest('community', 'tests/test_readiness_schema_upgrade.py', 'tests/test_storage_upgrade_v043.py')
         self._pytest('community',
+            'tests/test_f14_distribution_packaging.py::test_community_declares_every_runtime_dependency_directly')
+        self._pytest('community',
             'tests/test_readiness_projection_worker.py::test_backfill_after_v401_upgrade_completes_all_scopes_and_three_restarts',
             'tests/test_readiness_projection_worker.py::test_real_community_lifespan_serves_pending_then_current_on_upgraded_copy')
 
