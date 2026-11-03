@@ -8,16 +8,16 @@ import { requirementLabels } from './taskRequirementLabels';
 
 interface Props {
   boardId: string; specId: string; cards: Array<{ id: string; title: string }>;
-  active?: boolean; canEdit?: boolean; initiallyOpen?: boolean; revision?: string | number; onChanged?: () => void;
+  active?: boolean; canEdit?: boolean; initiallyOpen?: boolean; initiallySelected?: boolean; revision?: string | number; onChanged?: () => void;
 }
 
 // Mount with a board/spec key. Options are fetched only while editing an exact
 // selection; a changed server basis never replaces a human draft silently.
-export function TaskRequirementControl({ boardId, specId, cards, active = true, canEdit = true, initiallyOpen = false, revision, onChanged }: Props) {
+export function TaskRequirementControl({ boardId, specId, cards, active = true, canEdit = true, initiallyOpen = false, initiallySelected = false, revision, onChanged }: Props) {
   const api = useDashboardApi();
   const headingId = useId();
   const [open, setOpen] = useState(initiallyOpen);
-  const [selected, setSelected] = useState<string[]>(cards.length === 1 ? [cards[0].id] : []);
+  const [selected, setSelected] = useState<string[]>(initiallySelected ? cards.map(card => card.id) : cards.length === 1 ? [cards[0].id] : []);
   const [choice, setChoice] = useState<TaskRequirementChoice | ''>('');
   const [note, setNote] = useState('');
   const [options, setOptions] = useState<TaskRequirementOptions | null>(null);

@@ -579,6 +579,16 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-readiness-summary`, { signal });
     },
 
+    async getDeliverySummary(boardId: string, specId: string,
+      options: { group?: import('@/types/delivery-summary').DeliveryGroup; limit?: number; cursor?: string } = {},
+      signal?: AbortSignal): Promise<import('@/types/delivery-summary').DeliverySummary> {
+      const query = new URLSearchParams();
+      if (options.group) query.set('group', options.group);
+      if (options.limit !== undefined) query.set('limit', String(options.limit));
+      if (options.cursor) query.set('cursor', options.cursor);
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/specs/${encodeURIComponent(specId)}/delivery-summary${query.size ? `?${query}` : ''}`, { signal });
+    },
+
     async getPersistedReadinessProjection(boardId: string, specId: string,
       options?: { cardId?: string; unitLimit?: number; cursor?: string }, signal?: AbortSignal): Promise<PersistedReadinessProjection> {
       const query = new URLSearchParams();

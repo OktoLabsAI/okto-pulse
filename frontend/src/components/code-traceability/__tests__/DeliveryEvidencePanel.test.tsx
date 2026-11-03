@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { DeliveryEvidencePanel } from '../DeliveryEvidencePanel';
+// Detailed evidence remains independently covered behind the new summary.
+import { DeliveryEvidenceDetails as DeliveryEvidencePanel } from '../DeliveryEvidencePanel';
 import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 import { persistedProjection, readiness } from './readinessFixture';
 import { AuthenticatedFetchError } from '@/lib/authFetch';

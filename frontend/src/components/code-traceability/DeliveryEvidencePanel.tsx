@@ -14,10 +14,11 @@ import { readinessReadMode } from '@/lib/readinessMode';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { isRetriableReadinessError, ReadinessContractError } from './readinessTransport';
 import { TaskRequirementControl } from './TaskRequirementControl';
+import { DeliverySummaryPanel } from './DeliverySummaryPanel';
 
 class ReadinessGenerationChangedError extends Error {}
 
-interface Props {
+export interface DeliveryEvidencePanelProps {
   boardId: string;
   specId: string;
   revision?: string;
@@ -27,6 +28,12 @@ interface Props {
   onOpenReadinessSpec?: (location: ReadinessSpecLocation) => void;
   focusExceptionId?: string | null;
   canManageTaskRequirements?: boolean;
+}
+
+export function DeliveryEvidencePanel(props: DeliveryEvidencePanelProps) {
+  if (readinessReadMode() === 'legacy') return <DeliveryEvidenceDetails {...props} />;
+  return <DeliverySummaryPanel key={`${props.boardId}:${props.specId}`} {...props}
+    renderDetails={active => <DeliveryEvidenceDetails {...props} active={active} showRequirementControl={false} />} />;
 }
 
 function metricLabel(metric?: ReadinessMetric) {
@@ -97,7 +104,7 @@ function ObligationEvidenceDetails({ data, row, currentRow }: {
 // (mockup sm_5ebd7063). Read-only by design: recording is card-scoped
 // (task DoD) and waivers are rollup-level, human-only — this surface only
 // presents the aggregated verdict, never mutates it.
-export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryEvidence = false, onSkipDeliveryEvidenceChange, onOpenDecisions, onOpenReadinessSpec, focusExceptionId, canManageTaskRequirements = false }: Props) {
+export function DeliveryEvidenceDetails({ boardId, specId, revision, skipDeliveryEvidence = false, onSkipDeliveryEvidenceChange, onOpenDecisions, onOpenReadinessSpec, focusExceptionId, canManageTaskRequirements = false, active = true, showRequirementControl = true }: DeliveryEvidencePanelProps & { active?: boolean; showRequirementControl?: boolean }) {
   const api = useDashboardApi();
   const legacyMode = readinessReadMode() === 'legacy';
   const [storedData, setData] = useState<DeliveryEvidenceProjection | null>(null);
@@ -119,7 +126,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
   const projection = projectionOwner?.api === api && projectionOwner.key === projectionScopeKey ? storedProjection : null;
 
   useEffect(() => {
-    if (legacyMode) return;
+    if (legacyMode || !active) return;
     const refresh = () => setReload(value => value + 1);
     const visible = () => { if (document.visibilityState === 'visible') refresh(); };
     window.addEventListener('pulse:delivery-evidence-changed', refresh);
@@ -130,9 +137,10 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
       window.removeEventListener('focus', refresh);
       document.removeEventListener('visibilitychange', visible);
     };
-  }, [legacyMode]);
+  }, [legacyMode, active]);
 
   useEffect(() => {
+    if (!active) return;
     const controller = new AbortController();
     if (acceptedProjection.current?.api !== api || acceptedProjection.current.key !== projectionScopeKey)
       acceptedProjection.current = undefined;
@@ -219,9 +227,10 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
       }
     })();
     return () => controller.abort();
-  }, [api, boardId, specId, revision, reload, projectionScopeKey, legacyMode]);
+  }, [api, boardId, specId, revision, reload, projectionScopeKey, legacyMode, active]);
 
   useEffect(() => {
+    if (!active) return;
     const controller = new AbortController();
     setData(null); setGateMode(null); setError('');
     if (showDetails || focusExceptionId || showTaskRequirements) api.getDeliveryEvidence(boardId, specId, controller.signal).then(value => {
@@ -241,7 +250,7 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
       if (!controller.signal.aborted) setGateMode(resolveDeliveryGateMode(board.settings?.delivery_evidence_gate));
     }).catch(() => { if (!controller.signal.aborted) setGateMode(null); });
     return () => controller.abort();
-  }, [api, boardId, specId, revision, reload, focusExceptionId, showDetails, showTaskRequirements, scopeKey, taskOwner]);
+  }, [api, boardId, specId, revision, reload, focusExceptionId, showDetails, showTaskRequirements, scopeKey, taskOwner, active]);
 
   const missingImplementation = data?.rows.filter(row => !row.not_required && !row.implementation_satisfied).length ?? 0;
   const currentProofRows = new Map((data?.current_proof_rows ?? []).map(row =>
@@ -257,21 +266,21 @@ export function DeliveryEvidencePanel({ boardId, specId, revision, skipDeliveryE
       .filter(Boolean).join(' · ') + ' obligation' + ((missingImplementation + missingTest) === 1 ? '' : 's');
 
   return <section className="space-y-5" aria-label="Implementation and verification">
-    {!showTaskRequirements && <button type="button" className="btn btn-secondary" onClick={() => setShowTaskRequirements(true)}>
+    {showRequirementControl && !showTaskRequirements && <button type="button" className="btn btn-secondary" onClick={() => setShowTaskRequirements(true)}>
       {canManageTaskRequirements ? 'Change task requirements' : 'View task requirements'}
     </button>}
     {showTaskRequirements && (taskCards?.api !== api || taskCards.owner !== taskOwner) && !error && <PulseLoader label="Loading tasks…" size="sm" />}
     {showTaskRequirements && taskCards?.api === api && taskCards.owner === taskOwner && (taskCards.cards.length ? <TaskRequirementControl
       key={`${boardId}:${specId}`} boardId={boardId} specId={specId}
       cards={taskCards.cards}
-      initiallyOpen canEdit={canManageTaskRequirements} revision={revision}
+      initiallyOpen active={active} canEdit={canManageTaskRequirements} revision={revision}
       onChanged={() => setReload(value => value + 1)} /> : <p>No tasks in this Spec.</p>)}
     {focusExceptionId && data?.board_id === boardId && data.spec_id === specId
       && <DeliveryExceptionDetails data={data} recordId={focusExceptionId} />}
-    {projection && <DeliveryReadinessPanel boardId={boardId} specId={specId} revision={`${revision ?? ''}:${reload}`}
+    {projection && <DeliveryReadinessPanel active={active} boardId={boardId} specId={specId} revision={`${revision ?? ''}:${reload}`}
       persistedValue={projection} onGenerationMismatch={() => setReload(value => value + 1)}
       onOpenReadinessSpec={onOpenReadinessSpec} />}
-    {legacyMode && <DeliveryReadinessPanel boardId={boardId} specId={specId}
+    {legacyMode && <DeliveryReadinessPanel active={active} boardId={boardId} specId={specId}
       revision={`${revision ?? ''}:${reload}`} onOpenReadinessSpec={onOpenReadinessSpec} />}
     {!legacyMode && !projection && !projectionError && <PulseLoader label="Loading readiness projection…" size="sm" className="py-4" />}
     {projectionError && <p role="alert" className="text-xs text-amber-700">{projectionError}</p>}

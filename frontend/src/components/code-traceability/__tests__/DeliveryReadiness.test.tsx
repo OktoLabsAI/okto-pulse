@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { DeliveryReadinessView } from '../DeliveryReadinessView';
 import { KanbanCard } from '@/components/kanban/KanbanCard';
 import { CardDeliveryDoDPanel } from '../CardDeliveryDoDPanel';
-import { DeliveryEvidencePanel } from '../DeliveryEvidencePanel';
+import { DeliveryEvidenceDetails as DeliveryEvidencePanel } from '../DeliveryEvidencePanel';
 import { emptyCounts, metric, persistedProjection, readiness, task } from './readinessFixture';
 
 const api = vi.hoisted(() => ({ getDeliveryReadiness: vi.fn(), getPersistedReadinessProjection: vi.fn(), getDeliveryEvidence: vi.fn(), getBoard: vi.fn() }));
