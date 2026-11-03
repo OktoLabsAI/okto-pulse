@@ -11033,3 +11033,51 @@ for _trigger_name, (
         "after_create",
         DDL(_lifecycle_trigger_ddl).execute_if(dialect="sqlite"),
     )
+
+
+class TaskRequirementDecisionOperationRow(Base):
+    """One immutable receipt for an atomic human task-selection decision."""
+    __tablename__ = 'task_requirement_decision_operations'
+    __table_args__ = (
+        UniqueConstraint('board_id', 'spec_id', 'actor_id', 'idempotency_key', name='uq_task_requirement_operation_key'),
+        Index('ix_task_requirement_operation_scope', 'board_id', 'spec_id', 'spec_edition'),
+    )
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    spec_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    spec_edition: Mapped[int] = mapped_column(Integer, nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    request_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    response: Mapped[dict] = mapped_column(JSON, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class TaskRequirementDecisionRow(Base):
+    """Append-only per-task history, never a mutable lifecycle or proof flag."""
+    __tablename__ = 'task_requirement_decisions'
+    __table_args__ = (
+        UniqueConstraint('board_id', 'spec_id', 'spec_edition', 'card_id', 'revision', name='uq_task_requirement_revision'),
+        Index('ix_task_requirement_card_scope', 'board_id', 'spec_id', 'spec_edition', 'card_id'),
+        CheckConstraint("decision IN ('required', 'optional', 'waived')", name='ck_task_requirement_decision'),
+        CheckConstraint('revision >= 1 AND spec_edition >= 1', name='ck_task_requirement_positive_revision'),
+    )
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    operation_id: Mapped[str] = mapped_column(String(64), ForeignKey('task_requirement_decision_operations.id', ondelete='RESTRICT'), nullable=False)
+    board_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    spec_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    spec_edition: Mapped[int] = mapped_column(Integer, nullable=False)
+    card_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    scope_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+for _decision_table in (TaskRequirementDecisionOperationRow.__table__, TaskRequirementDecisionRow.__table__):
+    for _decision_action in ('UPDATE', 'DELETE'):
+        event.listen(_decision_table, 'after_create', DDL(
+            f'CREATE TRIGGER IF NOT EXISTS immutable_{_decision_table.name}_{_decision_action.lower()} '
+            f'BEFORE {_decision_action} ON {_decision_table.name} BEGIN '
+            "SELECT RAISE(ABORT, 'task_requirement_decision_immutable'); END"
+        ).execute_if(dialect='sqlite'))
