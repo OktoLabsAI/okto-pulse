@@ -5,6 +5,7 @@ import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import { isDeliverySummary, type DeliveryGroup, type DeliveryReason, type DeliverySummary, type DeliveryTaskGroup } from '@/types/delivery-summary';
 import { TaskRequirementControl } from './TaskRequirementControl';
+import { ContextualHelpLink } from '@/components/help/ContextualHelpLink';
 import type { DeliveryEvidencePanelProps } from './DeliveryEvidencePanel';
 
 const labels: Record<DeliveryGroup, string> = { delivered: 'Delivered', in_progress: 'In progress', pending: 'Pending', optional_or_waived: 'Optional / Waived' };
@@ -38,11 +39,20 @@ export function DeliverySummaryPanel({ boardId, specId, revision, focusException
   const [selection, setSelection] = useState<Selection>([]);
   const [editing, setEditing] = useState<Selection>();
   const [editorVersion, setEditorVersion] = useState(0);
+  const editorRoot = useRef<HTMLDivElement>(null);
+  const focusAcceptedDecision = useRef(false);
   const pageRequest = useRef<AbortController>();
 
   useEffect(() => {
     if (focusExceptionId) { setDetailsMounted(true); setDetailsOpen(true); }
   }, [focusExceptionId]);
+
+  useEffect(() => { if (editing) editorRoot.current?.focus(); }, [editorVersion]);
+  useEffect(() => {
+    if (summary && focusAcceptedDecision.current) {
+      editorRoot.current?.focus(); focusAcceptedDecision.current = false;
+    }
+  }, [summary]);
 
   useEffect(() => {
     const reload = () => setRefresh(value => value + 1);
@@ -178,16 +188,17 @@ export function DeliverySummaryPanel({ boardId, specId, revision, focusException
   return <section aria-label="Delivery status" className="space-y-5">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div><h3 className="text-lg font-semibold text-gray-900 dark:text-white">Delivery</h3>
-        <p className="text-sm text-gray-500 dark:text-gray-400">What has been delivered, what is in progress and what is pending.</p></div>
+        <p className="text-sm text-gray-500 dark:text-gray-400">What has been delivered, what is in progress and what is pending.</p>
+        <ContextualHelpLink sectionId="delivery-status" className="mt-2 text-xs">How delivery status works</ContextualHelpLink></div>
       <button type="button" className={button} disabled={loading} onClick={() => setRefresh(value => value + 1)}>Refresh delivery status</button>
     </div>
     {loading && <PulseLoader label="Loading delivery status…" size="sm" />}
     {error && <p role="alert" className="text-sm text-amber-700 dark:text-amber-300">{error}</p>}
-    {editing && <div hidden={!summary || Boolean(error)}>
+    {editing && <div ref={editorRoot} tabIndex={-1} role="group" aria-label="Selected task requirements" hidden={!summary || Boolean(error)}>
       <TaskRequirementControl key={editorVersion} boardId={boardId} specId={specId}
         cards={editing} initiallyOpen initiallySelected active={Boolean(summary) && !error}
         canEdit={canManageTaskRequirements} revision={revision}
-        onChanged={() => setRefresh(value => value + 1)} />
+        onChanged={() => { focusAcceptedDecision.current = true; setRefresh(value => value + 1); }} />
     </div>}
     {summary && <>
       {!summary.complete && <p role="status" className="text-sm text-gray-500 dark:text-gray-400">
@@ -221,7 +232,7 @@ export function DeliverySummaryPanel({ boardId, specId, revision, focusException
       </details>
       {pageError && <p role="alert" className="text-sm text-amber-700 dark:text-amber-300">{pageError}</p>}
     </>}
-    <button type="button" className={button} aria-expanded={detailsOpen} aria-controls={`${sectionId}-details`}
+    <button type="button" className={`${button} disabled:opacity-50`} disabled={detailsBlocked} aria-expanded={detailsOpen} aria-controls={`${sectionId}-details`}
       onClick={() => { setDetailsMounted(true); setDetailsOpen(value => !value); }}>{detailsOpen ? 'Hide Details' : 'Details'}</button>
     {detailsMounted && <div id={`${sectionId}-details`} hidden={!detailsOpen || detailsBlocked}>
       {renderDetails(detailsOpen && !detailsBlocked)}

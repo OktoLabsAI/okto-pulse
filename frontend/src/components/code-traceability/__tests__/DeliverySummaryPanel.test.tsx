@@ -6,6 +6,7 @@ import { deliverySummary, deliveryTask } from './deliverySummaryFixture';
 import { persistedProjection } from './readinessFixture';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { isDeliverySummary } from '@/types/delivery-summary';
+import { subscribeContextualHelp } from '@/components/help/contextualHelp';
 
 const api = vi.hoisted(() => ({ getDeliverySummary:vi.fn(),getPersistedReadinessProjection:vi.fn(),getDeliveryEvidence:vi.fn(),
   getBoard:vi.fn(),getTaskRequirementOptions:vi.fn(),applyTaskRequirementDecision:vi.fn() }));
@@ -41,6 +42,14 @@ it('shows the three user groups with one compact read and leaves all technical r
   expect(api.getDeliveryEvidence).not.toHaveBeenCalled(); expect(api.getBoard).not.toHaveBeenCalled();
   expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
   expect(screen.queryByText(/Generation/)).not.toBeInTheDocument();
+});
+
+it('opens the exact central Help topic from the feature entry without fetching technical data',async()=>{
+  const listener=vi.fn();const stop=subscribeContextualHelp(listener);
+  render(panel());await screen.findByText('Task 0');
+  const help=screen.getByRole('button',{name:'How delivery status works'});help.focus();fireEvent.click(help);
+  expect(help).toHaveFocus();expect(listener).toHaveBeenCalledWith({sectionId:'delivery-status'});
+  expect(api.getDeliveryEvidence).not.toHaveBeenCalled();expect(details).not.toHaveBeenCalled();stop();
 });
 
 it('loads exceptions only when opened and keeps waived work outside Delivered',async()=>{
@@ -100,6 +109,7 @@ it('selects tasks once for a single human save and retains the accepted form acr
   fireEvent.click(screen.getByRole('button',{name:'Change task requirements'}));
   fireEvent.click(screen.getByRole('checkbox',{name:'Select Task 0'}));fireEvent.click(screen.getByRole('checkbox',{name:'Select Task 1'}));
   fireEvent.click(screen.getByRole('button',{name:'Continue with 2 selected'}));
+  expect(screen.getByRole('group',{name:'Selected task requirements'})).toHaveFocus();
   await waitFor(()=>expect(screen.getByLabelText('Requirement')).toBeEnabled());
   expect(api.getTaskRequirementOptions).toHaveBeenCalledWith('b','s',['0','1'],expect.any(AbortSignal));
   fireEvent.change(screen.getByLabelText('Requirement'),{target:{value:'waived'}});
@@ -108,6 +118,7 @@ it('selects tasks once for a single human save and retains the accepted form acr
   expect(api.applyTaskRequirementDecision).toHaveBeenCalledOnce();
   expect(api.applyTaskRequirementDecision.mock.calls[0][2]).toMatchObject({card_ids:['0','1'],decision:'waived',note:null});
   await waitFor(()=>expect(api.getDeliverySummary).toHaveBeenCalledTimes(2));
+  expect(screen.getByRole('group',{name:'Selected task requirements'})).toHaveFocus();
   expect(api.getDeliveryEvidence).not.toHaveBeenCalled();
 });
 
@@ -125,6 +136,7 @@ it('does not label a stale Done task as Delivered and keeps unknown counts unkno
 it.each([403,404,503])('shows unavailability for HTTP %s instead of a successful empty list',async status=>{
   api.getDeliverySummary.mockRejectedValueOnce(new AuthenticatedFetchError({message:'internal',status}));render(panel());
   expect(await screen.findByRole('alert')).not.toHaveTextContent('internal');
+  if ([403,404].includes(status)) expect(screen.getByRole('button',{name:'Details'})).toBeDisabled();
   expect(screen.queryByText('No tasks in this Spec.')).not.toBeInTheDocument();expect(details).not.toHaveBeenCalled();
 });
 
