@@ -3,6 +3,7 @@ import type { ComponentProps } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SpecValidationPanel } from '../SpecValidationPanel';
+import { subscribeContextualHelp } from '@/components/help/contextualHelp';
 
 const apiMock = vi.hoisted(() => ({
   getValidationCycle: vi.fn(),
@@ -299,6 +300,21 @@ describe('SpecValidationPanel lifecycle edition projection', () => {
     renderPanel({}, false);
     expect(await screen.findByText('Validation could not be confirmed')).toBeInTheDocument();
     expect(screen.queryByText('Spec validated')).not.toBeInTheDocument();
+  });
+
+  it('offers contextual help without opening Details or requesting protected assessment history', () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeContextualHelp(listener);
+    renderPanel({ canReadValidation: false, canReadQuality: false, canReadChecklist: false }, false);
+    const help = screen.getByRole('button', { name: 'How validation works' });
+    help.focus();
+    expect(help).toHaveFocus();
+    fireEvent.click(help);
+    expect(listener).toHaveBeenCalledWith({ sectionId: 'spec-validation' });
+    expect(screen.getByRole('button', { name: 'Details' })).toHaveAttribute('aria-expanded', 'false');
+    expect(apiMock.getCurrentSpecValidation).not.toHaveBeenCalled();
+    expect(apiMock.listSpecValidations).not.toHaveBeenCalled();
+    unsubscribe();
   });
 
   it('opens the pending section and moves focus to its tab from the single authorized action', async () => {

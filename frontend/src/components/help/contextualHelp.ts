@@ -8,6 +8,7 @@ export const HELP_SECTION_IDS = [
   'refinements',
   'code-traceability',
   'specs',
+  'spec-validation',
   'tasks',
   'bugs',
   'analytics',

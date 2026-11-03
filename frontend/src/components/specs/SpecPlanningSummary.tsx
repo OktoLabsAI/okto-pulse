@@ -1,5 +1,6 @@
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import type { SpecPlanningReadiness, SpecValidationSummary } from '@/types';
+import { validationVerdicts as verdicts } from './validationHelp';
 
 const labels: Record<string, string> = {
   spec_validation: 'Spec quality', decomposition: 'Task decomposition',
@@ -11,15 +12,6 @@ const labels: Record<string, string> = {
   code_evidence: 'Code evidence', architecture: 'Architecture', resource_coverage: 'Resource allocation',
 };
 const humanize = (value: string) => value.replace(/_/g, ' ');
-
-const verdicts = {
-  validated: ['Spec validated', 'All required planning checks passed for this edition.'],
-  validated_with_exception: ['Spec validated with exceptions', 'Validation is complete with recorded human exceptions.'],
-  ready_to_conclude: ['Ready to conclude validation', 'The required checks are satisfied. Validation still needs to be concluded.'],
-  not_validated: ['Spec not yet validated', 'Required planning checks or the validation conclusion are still pending.'],
-  unavailable: ['Validation could not be confirmed', 'Refresh or check your access to confirm this edition’s validation.'],
-  not_required: ['Validation not required', 'Validation is disabled and the other required planning checks are satisfied.'],
-} as const;
 
 export function SpecValidationSummaryCard({ summary, edition, loading, onAction, actionLabel }: {
   summary?: SpecValidationSummary;

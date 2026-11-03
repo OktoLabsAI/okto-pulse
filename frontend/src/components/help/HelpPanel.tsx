@@ -34,6 +34,7 @@ import { useOptionalGuidedHelp, type GuidedHelpSurface, type GuidedHelpTourProgr
 import pulseIcon from '@/assets/pulse-icon.svg';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import type { HelpSectionId } from './contextualHelp';
+import { specValidationHelp } from '@/components/specs/validationHelp';
 
 interface HelpPanelProps {
   onClose: () => void;
@@ -817,6 +818,8 @@ These checks can be bypassed per-spec (\`skip_test_coverage\`, \`skip_rules_cove
 
 ### Spec Validation Gate
 
+Open **Validation** for the overall result of the current edition. **Details** contains the independent assessments and their history. The **Spec validation** guide in this Help explains each result, exceptions and the next step.
+
 Before a spec can move from **approved** to **validated**, it is evaluated on five dimensions:
 
 | Metric | What it measures |
@@ -827,12 +830,18 @@ Before a spec can move from **approved** to **validated**, it is evaluated on fi
 | **Decidability** (0–100) | How many concrete implementation decisions can be made from the Spec? |
 | **Ambiguity** (0–100) | How many ways can the requirements be interpreted? (lower is better) |
 
-Each score includes a justification and may include metric-tagged pinpoint findings. Thresholds are configurable per board in Settings; the spec must pass all five to advance.
+Each score includes a justification and may include metric-tagged pinpoint findings. Thresholds are configurable per board in Settings. These quality scores are one part of planning validation; all other applicable required checks must also be satisfied before the conclusion is accepted.
 
 ### Export
 
 Specs can be exported as **Markdown** for external documentation or sharing.
 `,
+    },
+    {
+      id: 'spec-validation',
+      title: 'Spec validation',
+      icon: <CheckCircle size={16} />,
+      content: specValidationHelp,
     },
     {
       id: 'tasks',

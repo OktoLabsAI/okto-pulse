@@ -44,6 +44,7 @@ import type {
 
 import { SpecChecklistPanel } from './SpecChecklistPanel';
 import { SpecPlanningSummary, SpecValidationSummaryCard } from './SpecPlanningSummary';
+import { ContextualHelpLink } from '@/components/help/ContextualHelpLink';
 import { SpecDecompositionPanel } from './SpecDecompositionPanel';
 import { SpecValidationHistoryPanel } from './SpecValidationHistoryPanel';
 import { resolveSpecSemanticAnchor } from './specSemanticAnchors';
@@ -669,6 +670,7 @@ export function SpecValidationPanel({
           setDetailsVisited(true);
           setDetailsExpanded(value => !value);
         }}>Details</button>
+      <ContextualHelpLink sectionId="spec-validation" className="ml-3 text-sm">How validation works</ContextualHelpLink>
       <div id={`${tabIdPrefix}-details`} ref={detailsRef} hidden={!detailsExpanded} className="space-y-4">
       {detailsVisited && <>
       {!summary && canSubmitValidation && onSubmitValidation && <button type="button" onClick={onSubmitValidation}
