@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { CardProgressPanel } from '../CardProgressPanel';
 import { CardDeliveryDoDPanel } from '../CardDeliveryDoDPanel';
 import type { DeliveryPerCard } from '@/types/delivery-evidence';
+import { subscribeContextualHelp } from '@/components/help/contextualHelp';
 
 const api = vi.hoisted(() => ({ recordCardDeliveryEvidence: vi.fn(), getDeliveryEvidence: vi.fn(), getBoard: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
@@ -15,6 +16,20 @@ function fill() {
   fireEvent.change(screen.getByLabelText('Remaining work'), { target: { value: 'Normalization missing' } });
   fireEvent.change(screen.getByLabelText('Code change in this checkpoint'), { target: { value: 'none' } });
 }
+
+it('opens progress guidance for a read-only user without submitting or loading the ledger', () => {
+  const listener = vi.fn();
+  const unsubscribe = subscribeContextualHelp(listener);
+  render(<CardProgressPanel {...props()} canWrite={false} />);
+  const help = screen.getByRole('button', { name: 'How task progress works' });
+  help.focus();
+  expect(help).toHaveFocus();
+  fireEvent.click(help);
+  expect(listener).toHaveBeenCalledWith({ sectionId: 'delivery-progress' });
+  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+  expect(api.getDeliveryEvidence).not.toHaveBeenCalled();
+  unsubscribe();
+});
 
 it('requires a change declaration instead of inventing no code change from an empty form', () => {
   render(<CardProgressPanel {...props()} />);

@@ -35,6 +35,7 @@ import pulseIcon from '@/assets/pulse-icon.svg';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import type { HelpSectionId } from './contextualHelp';
 import { specValidationHelp } from '@/components/specs/validationHelp';
+import { deliveryProgressHelp } from '@/components/code-traceability/deliveryProgressHelp';
 
 interface HelpPanelProps {
   onClose: () => void;
@@ -842,6 +843,12 @@ Specs can be exported as **Markdown** for external documentation or sharing.
       title: 'Spec validation',
       icon: <CheckCircle size={16} />,
       content: specValidationHelp,
+    },
+    {
+      id: 'delivery-progress',
+      title: 'Task progress',
+      icon: <LayoutList size={16} />,
+      content: deliveryProgressHelp,
     },
     {
       id: 'tasks',

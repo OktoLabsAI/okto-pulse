@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { CardDeliveryDoDPanel } from '../CardDeliveryDoDPanel';
 import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
-import { readiness } from './readinessFixture';
+import { readiness, persistedProjection } from './readinessFixture';
 
 const api = vi.hoisted(() => ({
   getDeliveryEvidence: vi.fn(),
@@ -10,6 +10,7 @@ const api = vi.hoisted(() => ({
   recordCardDeliveryEvidence: vi.fn(),
   getBoard: vi.fn(),
   getDeliveryReadiness: vi.fn(),
+  getPersistedReadinessProjection: vi.fn(),
 }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 
@@ -48,6 +49,10 @@ beforeEach(() => {
   api.getDeliveryEvidence.mockResolvedValue(projection());
   api.getBoard.mockResolvedValue({ id: 'b', settings: { delivery_evidence_gate: 'blocking' } });
   api.getDeliveryReadiness.mockResolvedValue(readiness('task-1'));
+  api.getPersistedReadinessProjection.mockImplementation((_board: string, _spec: string, query?: { card_id?: string }) => {
+    const value = persistedProjection();
+    return Promise.resolve({ ...value, summaries: [{ ...value.summaries[1], card_id: query?.card_id ?? null }] });
+  });
   api.recordCardDeliveryEvidence.mockResolvedValue({ id: 'new', replayed: false });
   api.recordDeliveryEvidence.mockResolvedValue({ id: 'waiver', replayed: false });
 });
@@ -485,18 +490,18 @@ it('retries a failed submission with its original receipt key and without requir
 it('defers both delivery and readiness reads while hidden, then refreshes without losing the draft', async () => {
   const view = render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord active={false} revision={0} />);
   expect(api.getDeliveryEvidence).not.toHaveBeenCalled();
-  expect(api.getDeliveryReadiness).not.toHaveBeenCalled();
+  expect(api.getPersistedReadinessProjection).not.toHaveBeenCalled();
   view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={0} />);
   await fillRecordingDraft();
   const reads = api.getDeliveryEvidence.mock.calls.length;
-  const readinessReads = api.getDeliveryReadiness.mock.calls.length;
+  const readinessReads = api.getPersistedReadinessProjection.mock.calls.length;
   view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord active={false} revision={1} />);
   fireEvent(window, new Event('pulse:delivery-evidence-changed'));
   expect(api.getDeliveryEvidence).toHaveBeenCalledTimes(reads);
-  expect(api.getDeliveryReadiness).toHaveBeenCalledTimes(readinessReads);
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(readinessReads);
   view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={1} />);
   await waitFor(() => expect(api.getDeliveryEvidence).toHaveBeenCalledTimes(reads + 1));
-  await waitFor(() => expect(api.getDeliveryReadiness).toHaveBeenCalledTimes(readinessReads + 1));
+  await waitFor(() => expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(readinessReads + 1));
   expect(screen.getByRole('textbox')).toHaveValue('Preserved explanation');
   expect(screen.getByRole('button', { name: 'Record delivery evidence' })).toBeDisabled();
   expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
