@@ -1195,6 +1195,42 @@
   },
   {
     "kind": "trigger",
+    "name": "trg_global_discovery_source_revision_task_requirement_decision_operations_delete",
+    "table": "task_requirement_decision_operations",
+    "sql": "CREATE TRIGGER \"trg_global_discovery_source_revision_task_requirement_decision_operations_delete\"\nAFTER DELETE ON \"task_requirement_decision_operations\"\nBEGIN\n    UPDATE \"global_discovery_source_revision\"\n    SET revision = revision + 1,\n        mutation_nonce = lower(hex(randomblob(32))),\n        updated_at = CURRENT_TIMESTAMP\n    WHERE scope_id = '_global';\n    SELECT CASE WHEN changes() <> 1\n        THEN RAISE(ABORT, 'global_discovery_source_revision_missing') END;\nEND"
+  },
+  {
+    "kind": "trigger",
+    "name": "trg_global_discovery_source_revision_task_requirement_decision_operations_insert",
+    "table": "task_requirement_decision_operations",
+    "sql": "CREATE TRIGGER \"trg_global_discovery_source_revision_task_requirement_decision_operations_insert\"\nAFTER INSERT ON \"task_requirement_decision_operations\"\nBEGIN\n    UPDATE \"global_discovery_source_revision\"\n    SET revision = revision + 1,\n        mutation_nonce = lower(hex(randomblob(32))),\n        updated_at = CURRENT_TIMESTAMP\n    WHERE scope_id = '_global';\n    SELECT CASE WHEN changes() <> 1\n        THEN RAISE(ABORT, 'global_discovery_source_revision_missing') END;\nEND"
+  },
+  {
+    "kind": "trigger",
+    "name": "trg_global_discovery_source_revision_task_requirement_decision_operations_update",
+    "table": "task_requirement_decision_operations",
+    "sql": "CREATE TRIGGER \"trg_global_discovery_source_revision_task_requirement_decision_operations_update\"\nAFTER UPDATE ON \"task_requirement_decision_operations\"\nBEGIN\n    UPDATE \"global_discovery_source_revision\"\n    SET revision = revision + 1,\n        mutation_nonce = lower(hex(randomblob(32))),\n        updated_at = CURRENT_TIMESTAMP\n    WHERE scope_id = '_global';\n    SELECT CASE WHEN changes() <> 1\n        THEN RAISE(ABORT, 'global_discovery_source_revision_missing') END;\nEND"
+  },
+  {
+    "kind": "trigger",
+    "name": "trg_global_discovery_source_revision_task_requirement_decisions_delete",
+    "table": "task_requirement_decisions",
+    "sql": "CREATE TRIGGER \"trg_global_discovery_source_revision_task_requirement_decisions_delete\"\nAFTER DELETE ON \"task_requirement_decisions\"\nBEGIN\n    UPDATE \"global_discovery_source_revision\"\n    SET revision = revision + 1,\n        mutation_nonce = lower(hex(randomblob(32))),\n        updated_at = CURRENT_TIMESTAMP\n    WHERE scope_id = '_global';\n    SELECT CASE WHEN changes() <> 1\n        THEN RAISE(ABORT, 'global_discovery_source_revision_missing') END;\nEND"
+  },
+  {
+    "kind": "trigger",
+    "name": "trg_global_discovery_source_revision_task_requirement_decisions_insert",
+    "table": "task_requirement_decisions",
+    "sql": "CREATE TRIGGER \"trg_global_discovery_source_revision_task_requirement_decisions_insert\"\nAFTER INSERT ON \"task_requirement_decisions\"\nBEGIN\n    UPDATE \"global_discovery_source_revision\"\n    SET revision = revision + 1,\n        mutation_nonce = lower(hex(randomblob(32))),\n        updated_at = CURRENT_TIMESTAMP\n    WHERE scope_id = '_global';\n    SELECT CASE WHEN changes() <> 1\n        THEN RAISE(ABORT, 'global_discovery_source_revision_missing') END;\nEND"
+  },
+  {
+    "kind": "trigger",
+    "name": "trg_global_discovery_source_revision_task_requirement_decisions_update",
+    "table": "task_requirement_decisions",
+    "sql": "CREATE TRIGGER \"trg_global_discovery_source_revision_task_requirement_decisions_update\"\nAFTER UPDATE ON \"task_requirement_decisions\"\nBEGIN\n    UPDATE \"global_discovery_source_revision\"\n    SET revision = revision + 1,\n        mutation_nonce = lower(hex(randomblob(32))),\n        updated_at = CURRENT_TIMESTAMP\n    WHERE scope_id = '_global';\n    SELECT CASE WHEN changes() <> 1\n        THEN RAISE(ABORT, 'global_discovery_source_revision_missing') END;\nEND"
+  },
+  {
+    "kind": "trigger",
     "name": "trg_guideline_impact_v2_activity_logs_delete",
     "table": "activity_logs",
     "sql": "CREATE TRIGGER \"trg_guideline_impact_v2_activity_logs_delete\"\nBEFORE DELETE ON \"activity_logs\"\nWHEN (EXISTS (\n    SELECT 1 FROM \"guideline_impact_adoptions\" AS adoption\n    WHERE adoption.\"activity_id\" = OLD.\"id\"\n    UNION ALL\n    SELECT 1 FROM \"guideline_impact_unlinks\" AS unlink\n    WHERE unlink.\"activity_id\" = OLD.\"id\"\n    UNION ALL\n    SELECT 1 FROM \"guideline_retirement_impacts\" AS retirement\n    WHERE retirement.\"activity_id\" = OLD.\"id\"\n)) AND NOT EXISTS (\n    SELECT 1 FROM \"kg_board_erasure_permits\" AS permit\n    WHERE permit.\"board_id\" = OLD.\"board_id\"\n)\nBEGIN\n    SELECT RAISE(ABORT, 'guideline_impact_audit_evidence_immutable');\nEND"
@@ -1318,6 +1354,18 @@
     "name": "trg_guideline_impact_v2_guideline_retirement_impacts_update",
     "table": "guideline_retirement_impacts",
     "sql": "CREATE TRIGGER \"trg_guideline_impact_v2_guideline_retirement_impacts_update\"\nBEFORE UPDATE ON \"guideline_retirement_impacts\"\nBEGIN\n    SELECT RAISE(ABORT, 'guideline_impact_evidence_immutable');\nEND"
+  },
+  {
+    "kind": "trigger",
+    "name": "trg_guideline_import_binding_candidate_delete",
+    "table": "guideline_import_binding_candidates",
+    "sql": "CREATE TRIGGER \"trg_guideline_import_binding_candidate_delete\"\nBEFORE DELETE ON \"guideline_import_binding_candidates\"\nWHEN NOT EXISTS (\n    SELECT 1 FROM \"kg_board_erasure_permits\" AS permit\n    WHERE permit.\"board_id\" = OLD.\"target_board_id\"\n)\nBEGIN\n    SELECT RAISE(ABORT, 'guideline_import_binding_candidate_immutable');\nEND"
+  },
+  {
+    "kind": "trigger",
+    "name": "trg_guideline_import_binding_candidate_update",
+    "table": "guideline_import_binding_candidates",
+    "sql": "CREATE TRIGGER \"trg_guideline_import_binding_candidate_update\"\nBEFORE UPDATE ON \"guideline_import_binding_candidates\"\nBEGIN\n    SELECT RAISE(ABORT, 'guideline_import_binding_candidate_immutable');\nEND"
   },
   {
     "kind": "trigger",
@@ -1894,17 +1942,5 @@
     "name": "trg_semantic_pinpoint_v2_semantic_guideline_metric_results_v2_u",
     "table": "semantic_guideline_metric_results_v2",
     "sql": "CREATE TRIGGER \"trg_semantic_pinpoint_v2_semantic_guideline_metric_results_v2_u\"\nBEFORE UPDATE ON \"semantic_guideline_metric_results_v2\"\nBEGIN\n    SELECT RAISE(ABORT, 'semantic_metric_result_v2_immutable');\nEND"
-  },
-  {
-    "kind": "trigger",
-    "name": "trg_guideline_import_binding_candidate_update",
-    "table": "guideline_import_binding_candidates",
-    "sql": "CREATE TRIGGER \"trg_guideline_import_binding_candidate_update\"\nBEFORE UPDATE ON \"guideline_import_binding_candidates\"\nBEGIN\n    SELECT RAISE(ABORT, 'guideline_import_binding_candidate_immutable');\nEND"
-  },
-  {
-    "kind": "trigger",
-    "name": "trg_guideline_import_binding_candidate_delete",
-    "table": "guideline_import_binding_candidates",
-    "sql": "CREATE TRIGGER \"trg_guideline_import_binding_candidate_delete\"\nBEFORE DELETE ON \"guideline_import_binding_candidates\"\nWHEN NOT EXISTS (\n    SELECT 1 FROM \"kg_board_erasure_permits\" AS permit\n    WHERE permit.\"board_id\" = OLD.\"target_board_id\"\n)\nBEGIN\n    SELECT RAISE(ABORT, 'guideline_import_binding_candidate_immutable');\nEND"
   }
 ]

@@ -318,12 +318,13 @@ def test_non_database_file_is_preserved(tmp_path, contract):
 
 @pytest.mark.asyncio
 async def test_current_catalog_seed_is_repeatable_and_preserves_user_choices(tmp_path, contract, monkeypatch):
-    from okto_pulse.community.adapters import current_data_seeds, permission_preset_reconciliation
+    from okto_pulse.community.adapters import current_data_seeds, permission_preset_reconciliation, card_status_permission_reconciliation
 
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'catalogs.db'}")
     sessions = build_community_session_factory(engine)
     monkeypatch.setattr(current_data_seeds, "get_session_factory", lambda: sessions)
     monkeypatch.setattr(permission_preset_reconciliation, "get_session_factory", lambda: sessions)
+    monkeypatch.setattr(card_status_permission_reconciliation, "get_session_factory", lambda: sessions)
     try:
         await initialize_current_schema(engine, contract)
         await current_data_seeds.seed_current_catalogs()

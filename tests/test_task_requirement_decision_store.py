@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.exc import IntegrityError
 from okto_pulse.community.adapters.sqlalchemy_models import (
     TaskRequirementDecisionOperationRow as Operation, TaskRequirementDecisionRow as Decision,
+    BoardErasurePermit,
 )
 from okto_pulse.community.adapters.sqlalchemy_task_requirement_decisions import CommunityTaskRequirementDecisionStore
 from okto_pulse.core.domain.task_requirement_decision import TaskRequirementScope, TaskRequirementDecisionRecord
@@ -27,7 +28,7 @@ async def db(tmp_path):
         await connection.execute(text('CREATE TABLE card_delivery_evidence_records (id TEXT PRIMARY KEY, payload TEXT NOT NULL)'))
         await connection.execute(text("INSERT INTO card_delivery_evidence_records VALUES ('old', 'immutable legacy bytes')"))
         for _ in range(2):
-            await connection.run_sync(lambda sync: Operation.metadata.create_all(sync, tables=[Operation.__table__, Decision.__table__]))
+            await connection.run_sync(lambda sync: Operation.metadata.create_all(sync, tables=[BoardErasurePermit.__table__, Operation.__table__, Decision.__table__]))
     async with async_sessionmaker(engine, expire_on_commit=False)() as session:
         yield session, CommunityTaskRequirementDecisionStore(session)
     await engine.dispose()

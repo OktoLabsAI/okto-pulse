@@ -7,6 +7,25 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 
 ---
 
+## [0.4.3] - Unreleased
+
+### Added
+
+- Explicit `storage upgrade-copy` for the exact 0.4.2 SQLite format. It writes a
+  new verified 0.4.3 database, preserves historical source rows, refuses drift
+  and existing output files, and leaves the active installation unchanged.
+- Human task requirements (Required, Optional, Waived) with optional notes,
+  immutable history, exact contribution/edition scope, and central/contextual Help.
+
+### Changed
+
+- Spec validation presents one canonical result, with the existing sections in
+  Details. Task requirements do not create proof or mark work Done.
+- Help uses a compact topic selector on mobile. Requirement forms preserve drafts
+  across conflicts and retry uncertain submissions using the original operation.
+- SQLite format 406 includes append-only decision tables and source-revision
+  guards. Runtime initialization continues to refuse mismatched formats.
+
 ## [0.4.2] - 2026-10-21
 
 ### Fixed

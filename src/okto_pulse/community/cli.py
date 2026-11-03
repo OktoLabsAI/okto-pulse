@@ -1299,6 +1299,14 @@ def main():
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
+    sub_storage = subparsers.add_parser('storage', help='Explicit storage operations; startup never converts data')
+    storage_commands = sub_storage.add_subparsers(dest='storage_command', required=True)
+    storage_upgrade = storage_commands.add_parser('upgrade-copy', help='Convert an exact 0.4.2 database to a new verified 0.4.3 copy')
+    storage_upgrade.add_argument('--source-db', type=Path, required=True)
+    storage_upgrade.add_argument('--output-db', type=Path, required=True, help='New file; existing files are never replaced')
+    storage_upgrade.add_argument('--json', action='store_true', help='Print the preservation receipt as JSON')
+    storage_upgrade.set_defaults(func=cmd_storage_upgrade)
+
     # init
     sub_init = subparsers.add_parser(
         "init", help="Initialize data directory and seed database"
@@ -1514,7 +1522,7 @@ def main():
         sub_traceability.print_help()
         sys.exit(1)
 
-    if not (args.command == "status" and getattr(args, "json", False)):
+    if not (args.command in {"status", "storage"} and getattr(args, "json", False)):
         _print_banner()
     from okto_pulse.community.adapters.current_relational_schema import StorageFormatError
 
@@ -1529,9 +1537,14 @@ def main():
         print(
             "\nCannot start Pulse: incompatible stored data.\n"
             f"Data home: {settings.data_dir}\n"
-            "This location contains data incompatible with Pulse 0.4.0. "
-            "Data from earlier Pulse versions cannot be opened by this version.\n"
+            "This location contains data in a different storage format. "
+            "Data from earlier Pulse versions cannot be opened directly by this build.\n"
             f"Diagnostic: storage_format_incompatible:{exc.reason}\n\n"
+            "For an exact 0.4.2 database, create an explicit verified 0.4.3 copy:\n"
+            "  okto-pulse storage upgrade-copy --source-db ORIGINAL_DB --output-db NEW_DB\n"
+            "This preserves the original, refuses schema drift and existing output files, "
+            "and does not switch the active installation. Preserve the associated graph, "
+            "uploads and metrics directories too.\n\n"
             "To keep using this data home:\n"
             "  1. Stop all Pulse processes using these data.\n"
             "  2. Back up and manually rename the entire data home to an unused "
@@ -1566,6 +1579,22 @@ def cmd_test_runner(args):
     print(f"Registered local execution authority: {path}")
     print("Tests execute as the Pulse OS user. Only register trusted project code.")
     print('Execute via scenario evidence with replay={"runner_ref":"' + args.name + '","revision":"<full Git commit>"}.')
+
+
+def cmd_storage_upgrade(args):
+    import sqlite3
+    from okto_pulse.community.adapters.storage_upgrade_v043 import upgrade_copy_v043, StorageUpgradeError
+    try:
+        result = upgrade_copy_v043(args.source_db, args.output_db)
+    except (StorageUpgradeError, OSError, sqlite3.DatabaseError) as exc:
+        print(f'Cannot create upgraded storage copy: {exc}', file=sys.stderr)
+        raise SystemExit(2) from exc
+    if args.json:
+        print(json.dumps(result, ensure_ascii=True))
+    else:
+        print(f"Verified 0.4.3 database copy: {result['output_database']}")
+        print(f"Preserved {len(result['preserved_tables'])} source tables. Source database unchanged.")
+        print('The active installation was not switched. Keep the original database and its associated data directories.')
 
 
 if __name__ == "__main__":

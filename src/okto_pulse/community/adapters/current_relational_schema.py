@@ -20,7 +20,7 @@ from .sqlalchemy_models import Base
 
 
 APPLICATION_ID = 0x4F50554C  # OPUL
-SCHEMA_VERSION = 405
+SCHEMA_VERSION = 406
 _SCHEMA_QUERY = (
     "SELECT type, name, tbl_name, sql FROM main.sqlite_schema "
     "WHERE name NOT GLOB 'sqlite_*' ORDER BY type, name"
@@ -34,8 +34,9 @@ class StorageFormatError(RuntimeError):
         self.reason = reason
         super().__init__(
             f"storage_format_incompatible:{reason}; "
-            "Pulse 0.4.0 requires new storage or storage created by this schema. "
-            "Existing data was not converted; select a new storage location."
+            "Pulse requires storage matching this build. Existing data was not converted; "
+            "select matching storage or explicitly create a verified copy of the exact "
+            "0.4.2 format with 'okto-pulse storage upgrade-copy'."
         )
 
 

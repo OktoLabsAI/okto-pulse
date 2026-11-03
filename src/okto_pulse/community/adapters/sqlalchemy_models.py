@@ -11078,8 +11078,12 @@ class TaskRequirementDecisionRow(Base):
 
 for _decision_table in (TaskRequirementDecisionOperationRow.__table__, TaskRequirementDecisionRow.__table__):
     for _decision_action in ('UPDATE', 'DELETE'):
+        _decision_erasure_guard = (
+            f'WHEN NOT EXISTS (SELECT 1 FROM kg_board_erasure_permits WHERE board_id = OLD.board_id) '
+            if _decision_action == 'DELETE' else ''
+        )
         event.listen(_decision_table, 'after_create', DDL(
             f'CREATE TRIGGER IF NOT EXISTS immutable_{_decision_table.name}_{_decision_action.lower()} '
-            f'BEFORE {_decision_action} ON {_decision_table.name} BEGIN '
+            f'BEFORE {_decision_action} ON {_decision_table.name} {_decision_erasure_guard}BEGIN '
             "SELECT RAISE(ABORT, 'task_requirement_decision_immutable'); END"
         ).execute_if(dialect='sqlite'))
