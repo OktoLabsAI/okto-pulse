@@ -4,10 +4,7 @@ import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { ContextualHelpLink } from '@/components/help/ContextualHelpLink';
 import type { TaskRequirementChoice, TaskRequirementInput, TaskRequirementOptions } from '@/types/task-requirement';
 import { TaskRequirementHistory } from './TaskRequirementHistory';
-
-export const requirementLabels: Record<TaskRequirementChoice, string> = {
-  required: 'Required', optional: 'Optional', waived: 'Waived',
-};
+import { requirementLabels } from './taskRequirementLabels';
 
 interface Props {
   boardId: string; specId: string; cards: Array<{ id: string; title: string }>;
@@ -104,22 +101,28 @@ export function TaskRequirementControl({ boardId, specId, cards, active = true, 
       <p className="text-sm text-gray-600 dark:text-gray-300">{canEdit ? 'Choose Required, Optional or Waived. A note is optional. ' : ''}This is the delivery requirement for this Spec edition; work status and evidence stay unchanged.</p>
       <fieldset disabled={locked || !active} className="space-y-2">
         <legend className="text-sm font-medium">Tasks (up to 50)</legend>
-        {cards.map(card => <label key={card.id} className="flex items-start gap-2 text-sm">
-          <input type="checkbox" checked={selected.includes(card.id)} disabled={!selected.includes(card.id) && selected.length >= 50}
+        {cards.map(card => {
+          const current = options?.cards.find(row => row.card_id === card.id);
+          return <div key={card.id} className="space-y-1">
+          <label className="flex items-start gap-2 text-sm">
+          <input type="checkbox" aria-label={card.title} checked={selected.includes(card.id)} disabled={!selected.includes(card.id) && selected.length >= 50}
             onChange={event => { setSelected(ids => event.target.checked ? [...ids, card.id] : ids.filter(id => id !== card.id)); setRequestedRevision(revision); setOptions(null); setNotice(''); }} />
-          {card.title}
-        </label>)}
+          <span className="min-w-0 flex-1">{card.title}</span>
+          {current && <span className="rounded bg-gray-100 px-2 py-0.5 text-xs dark:bg-gray-800">{requirementLabels[current.decision]}</span>}
+          </label>
+          {current && <div className="ml-5 text-sm">
+            {!current.mutable && <p>Reopen this task before changing its requirement.</p>}
+            <details onToggle={event => { const isOpen = event.currentTarget.open; setHistoryOpen(value => ({ ...value, [card.id]: isOpen })); }}>
+              <summary aria-label={`Decision history for ${card.title}`} className="cursor-pointer">Details · Decision history</summary>
+              {historyOpen[card.id] && <TaskRequirementHistory key={`${boardId}:${specId}:${card.id}`} boardId={boardId} specId={specId} cardId={card.id} />}
+            </details>
+          </div>}
+          </div>;
+        })}
       </fieldset>
       {loading && !basisChanged && <p role="status" className="text-sm">Loading task requirements…</p>}
       {basisChanged && <p role="alert" className="text-sm">The task or Spec changed. Review the latest requirements before saving. Your note and choice are preserved.</p>}
       {options && <>
-        <ul className="text-sm">{options.cards.map(card => <li key={card.card_id}>
-          {card.title}: {requirementLabels[card.decision]}{!card.mutable && ' · Reopen this task before changing its requirement.'}
-          <details className="mt-2" onToggle={event => { const isOpen = event.currentTarget.open; setHistoryOpen(value => ({ ...value, [card.card_id]: isOpen })); }}>
-            <summary className="cursor-pointer">Details · Decision history for {card.title}</summary>
-            {historyOpen[card.card_id] && <TaskRequirementHistory key={`${boardId}:${specId}:${card.card_id}`} boardId={boardId} specId={specId} cardId={card.card_id} />}
-          </details>
-        </li>)}</ul>
         {!options.allowed_decisions.length && <p className="text-sm">Only an authorized human can change these requirements.</p>}
         {options.effects.dependent_tasks.length > 0 && <p className="text-sm">Dependencies stay unchanged. Dependent tasks: {options.effects.dependent_tasks.map(card => card.title).join(', ')}.</p>}
         {options.effects.test_scenarios_remain_governed && <p className="text-sm">This changes only the selected test tasks. Required scenarios for other tasks and the Spec still need verification.</p>}
@@ -139,7 +142,7 @@ export function TaskRequirementControl({ boardId, specId, cards, active = true, 
       {error && <p role="alert" className="text-sm text-amber-700 dark:text-amber-300">{error}</p>}
       {!uncertain && (error || stale || basisChanged) && <button type="button" className="btn btn-secondary" disabled={busy || (loading && !basisChanged) || !selected.length || !active}
         onClick={() => { setRequestedRevision(revision); setRefresh(value => value + 1); }}>Review latest task requirements</button>}
-      {canEdit && <button type="submit" className="btn btn-primary" disabled={!active || busy || (!uncertain && (loading || stale || basisChanged || !options?.can_apply || !choice || !options.allowed_decisions.includes(choice)))}>
+      {canEdit && <button type="submit" className="btn btn-primary disabled:cursor-not-allowed disabled:opacity-50" disabled={!active || busy || (!uncertain && (loading || stale || basisChanged || !options?.can_apply || !choice || !options.allowed_decisions.includes(choice)))}>
         {busy ? 'Saving…' : uncertain ? 'Retry same decision' : 'Save task requirement'}
       </button>}
     </form>}

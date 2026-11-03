@@ -1846,7 +1846,7 @@ export function HelpPanel({ onClose, initialSectionId }: HelpPanelProps) {
         onClick={e => e.stopPropagation()}
       >
         {/* Sidebar navigation */}
-        <nav className="w-56 shrink-0 border-r border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 flex flex-col">
+        <nav className="hidden w-56 shrink-0 border-r border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 flex-col sm:flex">
           <div className="px-4 py-4 border-b border-gray-200 dark:border-gray-700 flex items-center gap-2.5">
             <img src={pulseIcon} alt="Okto Pulse" className="h-8 w-8" />
             <div>
@@ -1878,21 +1878,28 @@ export function HelpPanel({ onClose, initialSectionId }: HelpPanelProps) {
         </nav>
 
         {/* Content area */}
-        <div className="flex-1 flex flex-col min-w-0">
-          <div className="flex items-center justify-between px-6 py-3 border-b border-gray-200 dark:border-gray-700">
-            <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200 flex items-center gap-2">
+        <div className="flex-1 flex flex-col min-w-0 min-h-0">
+          <div className="flex shrink-0 items-center justify-between gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700 sm:px-6">
+            <h3 className="min-w-0 text-sm font-semibold text-gray-800 dark:text-gray-200 flex items-center gap-2">
               {current.icon}
               {current.title}
             </h3>
             <button
               onClick={onClose}
               aria-label="Close help"
-              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+              className="shrink-0 p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
             >
               <X size={18} />
             </button>
           </div>
-          <div className="flex-1 overflow-y-auto px-6 py-4">
+          <label className="block shrink-0 border-b border-gray-200 px-4 py-3 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-300 sm:hidden">
+            Help topic
+            <select className="mt-1 w-full rounded border border-gray-300 bg-white p-2 text-sm dark:border-gray-600 dark:bg-gray-900"
+              value={activeSection} onChange={event => setActiveSection(event.target.value as HelpSectionId)}>
+              {sections.map(section => <option key={section.id} value={section.id}>{section.title}</option>)}
+            </select>
+          </label>
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6">
             {current.id === 'guided-tours' ? (
               <GuidedToursContent />
             ) : (

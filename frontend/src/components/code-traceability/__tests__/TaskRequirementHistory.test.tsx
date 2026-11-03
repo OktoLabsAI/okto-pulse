@@ -24,7 +24,7 @@ it('loads history only when Details opens, including for a read-only user', asyn
   render(<TaskRequirementControl boardId="b" specId="s" cards={[{ id: 'c', title: 'Task' }]} canEdit={false} />);
   expect(api.getTaskRequirementHistory).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: 'View task requirement' }));
-  const summary = await screen.findByText('Details · Decision history for Task');
+  const summary = await screen.findByLabelText('Decision history for Task');
   expect(api.getTaskRequirementHistory).not.toHaveBeenCalled();
   fireEvent.click(summary);
   await screen.findByText('Waived → Required');

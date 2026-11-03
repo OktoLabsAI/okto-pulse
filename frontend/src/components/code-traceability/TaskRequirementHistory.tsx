@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
 import type { TaskRequirementHistory as History } from '@/types/task-requirement';
-
-const labels = { required: 'Required', optional: 'Optional', waived: 'Waived' };
+import { requirementLabels } from './taskRequirementLabels';
 
 /** Mounted only after the human opens Details; notes and pages are bounded. */
 export function TaskRequirementHistory({ boardId, specId, cardId }: { boardId: string; specId: string; cardId: string }) {
@@ -42,7 +41,7 @@ export function TaskRequirementHistory({ boardId, specId, cardId }: { boardId: s
       </div>
       {!data.items.length && <p>No recorded decisions for this edition.</p>}
       <ol className="space-y-3">{data.items.map(item => <li key={item.id} className="space-y-1 rounded border p-3">
-        <p>{labels[item.previous_decision]} → {labels[item.decision]}</p>
+        <p>{requirementLabels[item.previous_decision]} → {requirementLabels[item.decision]}</p>
         <p>Recorded by {item.actor_id} · <time dateTime={item.recorded_at}>{new Date(item.recorded_at).toLocaleString()}</time></p>
         <p className="whitespace-pre-wrap">{item.note || 'No note provided.'}{item.note_truncated ? '…' : ''}</p>
         {item.note_truncated && <button type="button" className="btn btn-secondary" onClick={() => { setBefore(undefined); setRecordId(item.id); }}>Read full note</button>}
