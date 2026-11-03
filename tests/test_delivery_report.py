@@ -70,12 +70,23 @@ async def test_atomic_report_manifest_replay_and_later_rework_do_not_resubmit(db
         assert card.status == "validation"
         assert saved["report"]["manifest_sha256"] == card.conclusions[-1]["delivery_manifest"]["sha256"]
         assert saved["entries"][0]["id"] == card.conclusions[-1]["delivery_manifest"]["records"][0]["id"]
+        assert saved['report']['accepted_state'] == {
+            'contract_version': 'delivery-operation-state/v1', 'scope': 'operation_acceptance',
+            'board_id': 'b', 'card_id': 'c', 'card_version': 1, 'card_status': 'validation',
+            'spec_id': 's', 'spec_edition': 1, 'selected_record_count': 1,
+            'transition_effect': 'submitted_to_validation', 'readiness_evaluated': False,
+            'next_query': {'tool': 'okto_pulse_get_allowed_transitions', 'board_id': 'b', 'entity_type': 'card', 'entity_id': 'c'},
+        }
         count = await session.scalar(select(func.count()).select_from(DomainEventRow))
         assert await use_case.execute(command, actor=actor, uow=uow) == {**saved, "replayed": True}
         await session.execute(update(Card).values(status="in_progress", policy_version=3))
         await session.commit()
         assert await use_case.execute(command, actor=actor, uow=uow) == {**saved, "replayed": True}
         assert (await session.get(Card, "c")).status == "in_progress"
+        # Exact replay still confirms the original accepted state, never the
+        # later worktree or a fresh completion/permission decision.
+        assert saved['report']['accepted_state']['card_status'] == 'validation'
+        assert saved['report']['accepted_state']['card_version'] == 1
         assert await session.scalar(select(func.count()).select_from(Record)) == 1
         assert await session.scalar(select(func.count()).select_from(DomainEventRow)) == count
         denied = ActorContext(actor_id="owner", actor_kind="agent", source="mcp", board_id="b", permissions=["card.conclusion.write"])
