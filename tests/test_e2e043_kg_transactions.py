@@ -1,28 +1,34 @@
 """R3: a paused native graph commit must not reserve SQLite's writer."""
 
 import asyncio
+from datetime import datetime, timezone
 from threading import Event
 
 import pytest
-from sqlalchemy import insert, select, text
+from sqlalchemy import insert, select, text, update
 
 from okto_pulse.core.application.processors.consolidation import ConsolidationProcessor
 from okto_pulse.community.adapters.grafx_graph_transaction import CommunityGrafxGraphTransaction
 from okto_pulse.community.adapters.sqlalchemy_consolidation import CommunitySqlAlchemyConsolidationPersistence
 from okto_pulse.community.adapters.sqlalchemy_models import (
-    Board, ConsolidationAudit, ConsolidationQueue, Ideation, Refinement, Story, Topic,
+    Board, Card, ConsolidationAudit, ConsolidationQueue, Ideation, Refinement, Spec, Story, Topic,
 )
 from test_projection_materialized_parity import materialize
+from test_code_traceability_kg_rebuild_e2e import seed_complete_traceability_source
 
 
 @pytest.mark.asyncio
 @pytest.mark.timeout(180)
-@pytest.mark.parametrize("artifact_type", ["refinement", "ideation", "story"])
+@pytest.mark.parametrize("artifact_type", ["refinement", "ideation", "story", "code_evidence"])
 async def test_native_commit_releases_sql_writer_before_graph_wait(tmp_path, monkeypatch, artifact_type):
-    model = {"refinement": Refinement, "ideation": Ideation, "story": Story}[artifact_type]
-    artifact_id = "idea" if artifact_type == "ideation" else artifact_type
+    model = {"refinement": Refinement, "ideation": Ideation, "story": Story}.get(artifact_type)
+    artifact_id = {"ideation": "idea", "code_evidence": "evidence-1"}.get(artifact_type, artifact_type)
     async def seed(factory):
         async with factory() as session:
+            if artifact_type == "code_evidence":
+                await seed_complete_traceability_source(session, board_id="board", spec_id="spec", card_id="card",
+                    requirement_id="fr_one", include_parents=False, now=datetime.now(timezone.utc), link_spec_version=2)
+                await session.execute(update(Spec).where(Spec.id == "spec").values(version=2))
             await session.execute(insert(Ideation).values(
                 id="idea", board_id="board", title="Idea", status="done", created_by="owner",
             ))
@@ -41,10 +47,11 @@ async def test_native_commit_releases_sql_writer_before_graph_wait(tmp_path, mon
 
     async def exercise(factory, bundle):
         async with factory() as session:
-            artifact = await session.get(model, artifact_id)
-            artifact.title = f"Changed {artifact_type}"
-            if hasattr(artifact, "version"):
-                artifact.version += 1
+            if model is not None:
+                artifact = await session.get(model, artifact_id)
+                artifact.title = f"Changed {artifact_type}"
+                if hasattr(artifact, "version"):
+                    artifact.version += 1
             session.add(ConsolidationQueue(
                 id="write-boundary", board_id="board", artifact_type=artifact_type,
                 artifact_id=artifact_id, source="state_transition",
@@ -110,10 +117,11 @@ async def test_native_commit_releases_sql_writer_before_graph_wait(tmp_path, mon
         # Native graph commit succeeds; SQLite finalization fails. Recovery
         # must settle the prepared operation once, retaining the original audit.
         async with factory() as session:
-            artifact = await session.get(model, artifact_id)
-            artifact.title = f"Recoverable {artifact_type}"
-            if hasattr(artifact, "version"):
-                artifact.version += 1
+            if model is not None:
+                artifact = await session.get(model, artifact_id)
+                artifact.title = f"Recoverable {artifact_type}"
+                if hasattr(artifact, "version"):
+                    artifact.version += 1
             session.add(ConsolidationQueue(id="after-native-commit", board_id="board",
                 artifact_type=artifact_type, artifact_id=artifact_id, source="state_transition"))
             await session.commit()
@@ -146,4 +154,66 @@ async def test_native_commit_releases_sql_writer_before_graph_wait(tmp_path, mon
         async with factory() as session:
             assert await session.get(ConsolidationQueue, "unchanged-replay") is None
 
-    await materialize(tmp_path / f"{artifact_type}-writer", incremental=False, seed=seed, exercise=exercise)
+    await materialize(tmp_path / f"{artifact_type}-writer", incremental=False, seed=seed, exercise=exercise,
+        card_type="normal" if artifact_type == "code_evidence" else None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(180)
+async def test_cancelled_test_card_replay_keeps_native_ack_truthful(tmp_path, monkeypatch):
+    async def seed(factory):
+        async with factory() as session:
+            await session.execute(update(Card).where(Card.id == "card").values(
+                status="cancelled", conclusions=None,
+                cancellation_reason="Controlled regression probe completed; preserve its audit history.",
+            ))
+            await session.commit()
+
+    async def exercise(factory, graph):
+        processor = ConsolidationProcessor(relational_scope_factory=factory, durable_projection_protocol=True)
+        for iteration in range(2):
+            queue_id = f"cancelled-probe-{iteration}"
+            async with factory() as session:
+                session.add(ConsolidationQueue(id=queue_id, board_id="board", artifact_type="card",
+                    artifact_id="card", source="state_transition"))
+                await session.commit()
+            processed = await processor.process_batch()
+            async with factory() as session:
+                pending = await session.get(ConsolidationQueue, queue_id)
+                assert processed == 1 and pending is None, getattr(pending, "last_error", None)
+                assert (await session.get(Card, "card")).status.value == "cancelled"
+                assert not await CommunitySqlAlchemyConsolidationPersistence().list_unsettled_projection_operations(
+                    session, board_id="board")
+
+        # An audit staged for an unchanged graph must roll back with a failed
+        # ACK. A later retry records it once without a native commit marker.
+        async with factory() as session:
+            audits_before = len((await session.execute(select(ConsolidationAudit))).scalars().all())
+            session.add(ConsolidationQueue(id="noop-ack-failure", board_id="board", artifact_type="card",
+                artifact_id="card", source="state_transition"))
+            await session.commit()
+        original_ack = CommunitySqlAlchemyConsolidationPersistence.ack_claimed_queue_entry
+
+        async def fail_ack(*args, **kwargs):
+            raise RuntimeError("injected_noop_ack_failure")
+
+        monkeypatch.setattr(CommunitySqlAlchemyConsolidationPersistence, "ack_claimed_queue_entry", fail_ack)
+        try:
+            assert await processor.process_batch() == 0
+        finally:
+            monkeypatch.setattr(CommunitySqlAlchemyConsolidationPersistence, "ack_claimed_queue_entry", original_ack)
+        async with factory() as session:
+            assert len((await session.execute(select(ConsolidationAudit))).scalars().all()) == audits_before
+            assert await session.get(ConsolidationQueue, "noop-ack-failure") is not None
+            assert not await CommunitySqlAlchemyConsolidationPersistence().list_unsettled_projection_operations(
+                session, board_id="board")
+            # Advance only this isolated fixture's retry time; no live queue is edited.
+            await session.execute(update(ConsolidationQueue).where(
+                ConsolidationQueue.id == "noop-ack-failure").values(next_retry_at=None))
+            await session.commit()
+        assert await processor.process_batch() == 1
+        async with factory() as session:
+            assert await session.get(ConsolidationQueue, "noop-ack-failure") is None
+            assert len((await session.execute(select(ConsolidationAudit))).scalars().all()) == audits_before + 1
+
+    await materialize(tmp_path / "cancelled-test", incremental=False, card_type="test", seed=seed, exercise=exercise)

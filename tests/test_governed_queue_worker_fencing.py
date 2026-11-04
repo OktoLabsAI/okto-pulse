@@ -549,8 +549,12 @@ async def test_worker_graph_pause_does_not_hold_sqlite_writer(queue_store, monke
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("artifact_type", [
+    "spec", "card", "story", "ideation", "refinement", "amendment_hotfix_revision",
+    "code_investigation_receipt", "code_evidence", "implementation_target",
+])
 async def test_journaled_worker_stages_output_after_receipt_and_acks(
-    queue_store, monkeypatch,
+    queue_store, monkeypatch, artifact_type,
 ):
     from okto_pulse.core.application.processors import consolidation
 
@@ -562,6 +566,7 @@ async def test_journaled_worker_stages_output_after_receipt_and_acks(
             generation=0, delete_event_id=None, claim_token=None,
         )
         row.status = "pending"
+        row.artifact_type = artifact_type
         db.add(row)
         await db.commit()
 
