@@ -1952,7 +1952,8 @@ export function CardModal({
                     reportRequest={humanReportRequest?.cardId === card.id ? humanReportRequest : undefined}
                     onReportClosed={() => setHumanReportRequest(undefined)}
                     boardId={card.board_id}
-                    card={{ id: card.id, card_type: card.card_type || 'normal', spec_id: card.spec_id }}
+                    card={{ id: card.id, card_type: card.card_type || 'normal', spec_id: card.spec_id, title: card.title }}
+                    spec={fullSpec}
                     canRecord={perms.has('code_traceability.target.execution_submit')}
                     canProgress={perms.has('card.conclusion.write')}
                     canTest={perms.has('spec.tests.execute')}

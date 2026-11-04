@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { useDashboardApi } from '@/services/api';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { ContextualHelpLink } from '@/components/help/ContextualHelpLink';
@@ -9,11 +10,12 @@ import { requirementLabels } from './taskRequirementLabels';
 interface Props {
   boardId: string; specId: string; cards: Array<{ id: string; title: string }>;
   active?: boolean; canEdit?: boolean; initiallyOpen?: boolean; initiallySelected?: boolean; revision?: string | number; onChanged?: () => void;
+  compact?: boolean; leadingAction?: ReactNode;
 }
 
 // Mount with a board/spec key. Options are fetched only while editing an exact
 // selection; a changed server basis never replaces a human draft silently.
-export function TaskRequirementControl({ boardId, specId, cards, active = true, canEdit = true, initiallyOpen = false, initiallySelected = false, revision, onChanged }: Props) {
+export function TaskRequirementControl({ boardId, specId, cards, active = true, canEdit = true, initiallyOpen = false, initiallySelected = false, revision, onChanged, compact = false, leadingAction }: Props) {
   const api = useDashboardApi();
   const headingId = useId();
   const [open, setOpen] = useState(initiallyOpen);
@@ -88,13 +90,15 @@ export function TaskRequirementControl({ boardId, specId, cards, active = true, 
   }
 
   const locked = busy || Boolean(uncertain);
-  return <section aria-label="Task requirement" className="space-y-3 rounded-lg border border-gray-200 p-4 dark:border-gray-700">
-    <div className="flex flex-wrap items-center justify-between gap-3">
+  return <section aria-label="Task requirement" className={compact ? 'space-y-4' : 'space-y-3 rounded-lg border border-gray-200 p-4 dark:border-gray-700'}>
+    <div className={`flex flex-wrap items-center gap-3 ${compact ? '' : 'justify-between'}`}>
+      {leadingAction}
       <button type="button" className="btn btn-secondary" aria-expanded={open} aria-controls={headingId}
         disabled={!active || locked} onClick={() => { setOpen(value => !value); setRequestedRevision(revision); setNotice(''); }}>
-        {open ? 'Close task requirement' : canEdit ? 'Change task requirement' : 'View task requirement'}
+        {compact ? open ? 'Close task requirements' : canEdit ? 'Change task requirements' : 'View task requirements'
+          : open ? 'Close task requirement' : canEdit ? 'Change task requirement' : 'View task requirement'}
       </button>
-      <ContextualHelpLink sectionId="task-requirements">Task requirement rules</ContextualHelpLink>
+      {(!compact || open) && <ContextualHelpLink sectionId="task-requirements">Task requirement rules</ContextualHelpLink>}
     </div>
     {notice && <p role="status" className="text-sm">{notice}</p>}
     {open && <form id={headingId} className="space-y-3" onSubmit={event => { event.preventDefault(); void save(); }}>

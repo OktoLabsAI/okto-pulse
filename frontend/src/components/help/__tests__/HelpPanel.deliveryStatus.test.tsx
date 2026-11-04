@@ -11,7 +11,8 @@ it('explains delivery status, authority, exceptions and next steps at the contex
   for (const rule of ['Delivered','In progress','Pending','Optional / Waived','Awaiting validation',
     'historical Done status is preserved','Unknown counts are not zero','Only an authorized human',
     'note if useful','whole selection is saved together','does not approve delivery','does not erase history',
-    'Retry same decision','Show details','Hide details','Refresh card','task modal header','Task progress','Task requirements','application Help']) {
+    'Retry same decision','Show details','Hide details','Refresh card','task modal header','Task progress','Task requirements','application Help',
+    'Requirement / Objective', 'Change task requirements', 'Unknown', 'Not applicable', 'Test Cards']) {
     expect(content).toHaveTextContent(rule);
   }
   expect(content).not.toHaveTextContent('delivery-summary/v1');

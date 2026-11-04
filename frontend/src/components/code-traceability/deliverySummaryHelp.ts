@@ -7,7 +7,11 @@ The main screen answers three questions: what was delivered, what is in progress
 
 ### A task's Delivery tab
 
-The task has one current verdict, a short reason, its latest update and at most one primary next action. **Show details** opens the detailed view; **Hide details** closes it. Details starts closed. A check icon accompanies **Delivered**; an X accompanies **Verification failed**. The text conveys the same result without relying on color or the icon.
+The main view shows, in order: the current delivery status, **Implementation** and **Verification** percentages, the **Requirement / Objective** matrix when applicable, and the **Show details** / **Hide details** and **Change task requirements** buttons. Details starts closed. A check icon accompanies **Delivered**; an X accompanies **Verification failed**. The text conveys the same result without relying on color or the icon.
+
+Each matrix row is an item assigned to this task, with independent implementation and verification results. The percentages come from the current assessment of this task, not from its workflow status or from the visible page alone. **100%** proof does not complete the task or replace the delivery verdict. **Unknown** and **Not applicable** are not zero. **Waived** and **Not applicable** do not create passing proof. Test Cards show their assigned test scenarios; implementation can be **Not applicable**. A task without applicable assigned items has no matrix. Use **Next items** or **First items** when the matrix spans more than one page.
+
+Use **Change task requirements** to choose Required, Optional or Waived for this task; a note is optional. The button is next to Details and does not require opening the technical information. Users without edit authority see **View task requirements**. Progress forms, latest updates, history, receipts and technical diagnosis are inside Details.
 
 | Task status | Meaning |
 |-------------|---------|
@@ -23,7 +27,7 @@ The task has one current verdict, a short reason, its latest update and at most 
 
 A human update has its audit receipt generated automatically. This proves who submitted the text and when; it does not prove code execution, passing tests or approval. See **Task progress** for submission, retry and correction rules. There is no manual receipt form, including in Details.
 
-**Show details** provides read-only verification, pending work, evidence history and test navigation. A human may also change whether the task is required. Pages contain at most 20 records; use the next-page controls when needed. Details and its subsections load only when requested. Use **Refresh card** in the task modal header to update the task and its delivery assessment. There is no separate refresh control in the Delivery overview. Pending generation checks are grouped and stop when the tab is inactive. After a network error, use the same header control or **Retry delivery assessment**. Refreshing preserves an open draft and whether Details is expanded; submission is disabled until the assessment is current again.
+**Show details** provides progress and delivery forms, read-only verification diagnosis, pending work, evidence history and test navigation. Pages contain at most 20 records; use the next-page controls when needed. Details and its subsections load only when requested. Use **Refresh card** in the task modal header to update the status, percentages and matrix together; the matrix returns to its first page. There is no separate refresh control in the Delivery overview. Pending generation checks are grouped and stop when the tab is inactive. After a network error, use the same header control or **Retry delivery assessment** inside Details. Refreshing preserves an open draft and whether Details is expanded; submission is disabled until the assessment is current again.
 
 Use Tab to reach **Show details** / **Hide details**, **Refresh card** or **How this works**, then Enter or Space to activate them. The help link opens this exact topic. Each form has named fields and errors; success and failure include visible text.
 

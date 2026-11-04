@@ -9,11 +9,14 @@ import { TaskRequirementControl } from './TaskRequirementControl';
 import { TaskDeliveryDiagnosis } from './TaskDeliveryDiagnosis';
 import { useTaskDelivery } from './useTaskDelivery';
 import type { ReadinessCardLocation } from './readinessNavigation';
+import type { Spec } from '@/types';
+import { TaskDeliveryMatrix } from './TaskDeliveryMatrix';
 
 interface Props {
   active?: boolean; revision?: number; refreshRequest?: number; focusDiagnosis?: boolean; focusRecordId?: string;
   onOpenReadinessCard?: (id: string, target?: ReadinessCardLocation) => void;
   boardId: string; card: { id: string; card_type: string; spec_id: string; title?: string };
+  spec?: Spec | null;
   canRecord?: boolean; canTest?: boolean; canWaiver?: boolean; canProgress?: boolean;
   onChanged?: () => void; onStage?: (draft: CardDeliveryBatchDraft) => void; onOpenTests?: () => void;
   reportRequest?: { status: 'validation' | 'done'; requestId: string };
@@ -25,7 +28,7 @@ const titles: Record<TaskDeliveryState, string> = {
   completion_pending: 'Awaiting completion', delivered: 'Delivered', ready: 'Ready to complete',
 };
 
-export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 0, refreshRequest = 0, canWaiver = false,
+export function CardDeliveryDoDPanel({ boardId, card, spec, active = true, revision = 0, refreshRequest = 0, canWaiver = false,
   canProgress = false, onChanged, onOpenTests, focusDiagnosis, focusRecordId, onOpenReadinessCard, reportRequest, onReportClosed }: Props) {
   const projection = useTaskDelivery(boardId, card.spec_id, card.id, active, revision, refreshRequest);
   const [details, setDetails] = useState(Boolean(focusDiagnosis || focusRecordId));
@@ -44,7 +47,7 @@ export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 
     : state === 'updating_or_unknown' || state.endsWith('_pending') ? Clock3 : Info;
   useEffect(() => { if (focusDiagnosis || focusRecordId) setDetails(true); }, [focusDiagnosis, focusRecordId]);
   useEffect(() => { if (details) setDetailsVisited(true); }, [details]);
-  useEffect(() => { if (reportRequest) { setReportStatus(reportRequest.status); setForm('delivery_report'); } }, [reportRequest]);
+  useEffect(() => { if (reportRequest) { setReportStatus(reportRequest.status); setForm('delivery_report'); setDetails(true); } }, [reportRequest]);
   useEffect(() => { if (details && (focusDiagnosis || focusRecordId)) heading.current?.focus(); }, [details, focusDiagnosis, focusRecordId]);
   function primary() {
     if (action?.kind === 'retry') projection.retry();
@@ -64,41 +67,43 @@ export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 
         <p>{projection.error || (current ? summary?.reason : 'The current assessment is being prepared. Delivery has not been confirmed.')}</p>
       </div>
     </div>
-    {summary?.last_update && <div className="space-y-2">
-      <h4 className="font-semibold">Latest update</h4>
-      <p className="whitespace-pre-wrap break-words">{summary.last_update.content}</p>
-      <h4 className="font-semibold">Remaining</h4>
-      <p className="whitespace-pre-wrap break-words">{summary.last_update.remaining || 'No remaining work was described in this update. See the delivery status above.'}</p>
-      {summary.last_update.text_truncated && <p>Select Show details to read the full update.</p>}
-    </div>}
-    {notice && <p role="status">{notice}</p>}
-    {!form && (projection.error ? <button className="btn btn-primary" onClick={projection.retry}>Retry delivery assessment</button>
-      : action && (action.owner !== 'user' || canProgress || action.kind === 'open_details' || action.kind === 'retry')
-        ? <button ref={button} type="button" className="btn btn-primary" onClick={primary}>{action.label}</button> : null)}
-    {form && summary && <HumanTaskSubmissionForm key={`${card.id}:${form}:${correction?.submissionId ?? ''}`} boardId={boardId} cardId={card.id} summary={summary}
-      correction={form === 'progress' ? correction : undefined}
-      action={form} requestedStatus={reportStatus} active={active && current}
-      onRefresh={projection.retry} onCancel={() => { setForm(null); onReportClosed?.(); button.current?.focus(); }}
-      onAccepted={result => { setForm(null); onReportClosed?.(); setNotice(result.replayed ? 'Submission confirmed.' : 'Submission saved.'); projection.refresh(); onChanged?.(); button.current?.focus(); }} />}
-    <div className="flex">
-      <button type="button" aria-expanded={details} aria-controls={`delivery-details-${card.id}`} className="btn btn-secondary inline-flex items-center gap-2"
+    <TaskDeliveryMatrix value={projection.value} cardId={card.id} spec={spec} current={current}
+      unavailable={Boolean(projection.error)} onNextPage={projection.nextPage} onFirstPage={projection.retry} />
+    <TaskRequirementControl key={card.id} compact boardId={boardId} specId={card.spec_id}
+      cards={[{ id: card.id, title: card.title || 'This task' }]} active={active} canEdit={canWaiver}
+      revision={`${revision}:${refreshRequest}`} onChanged={() => { projection.refresh(); onChanged?.(); }}
+      leadingAction={<button type="button" aria-expanded={details} aria-controls={`delivery-details-${card.id}`} className="btn btn-secondary inline-flex items-center gap-2"
         onClick={() => setDetails(open => !open)}>
         {details ? <ChevronUp size={16} aria-hidden="true" /> : <ChevronDown size={16} aria-hidden="true" />}
         {details ? 'Hide details' : 'Show details'}
-      </button>
-    </div>
+      </button>} />
     <div id={`delivery-details-${card.id}`} hidden={!details}>
-      {detailsVisited && summary && <div className="space-y-5">
+      {detailsVisited && <div className="space-y-5">
         <h4 ref={heading} tabIndex={-1} className="font-semibold">Delivery details</h4>
         <p>Updates are declarations. Technical verification and completion are assessed separately.</p>
-        {canProgress && summary.historical_status === 'in_progress' && !form && <button type="button" className="btn btn-secondary"
+        {summary?.last_update && <div className="space-y-2">
+          <h4 className="font-semibold">Latest update</h4>
+          <p className="whitespace-pre-wrap break-words">{summary.last_update.content}</p>
+          <h4 className="font-semibold">Remaining</h4>
+          <p className="whitespace-pre-wrap break-words">{summary.last_update.remaining || 'No remaining work was described in this update. See the delivery status above.'}</p>
+          {summary.last_update.text_truncated && <p>Open the delivery record history to read the full update.</p>}
+        </div>}
+        {notice && <p role="status">{notice}</p>}
+        {!form && (projection.error ? <button type="button" className="btn btn-primary" onClick={projection.retry}>Retry delivery assessment</button>
+          : action && action.kind !== 'open_details' && (action.owner !== 'user' || canProgress || action.kind === 'retry')
+            ? <button ref={button} type="button" className="btn btn-primary" onClick={primary}>{action.label}</button> : null)}
+        {form && summary && <HumanTaskSubmissionForm key={`${card.id}:${form}:${correction?.submissionId ?? ''}`} boardId={boardId} cardId={card.id} summary={summary}
+          correction={form === 'progress' ? correction : undefined}
+          action={form} requestedStatus={reportStatus} active={active && details && current}
+          onRefresh={projection.retry} onCancel={() => { setForm(null); onReportClosed?.(); button.current?.focus(); }}
+          onAccepted={result => { setForm(null); onReportClosed?.(); setNotice(result.replayed ? 'Submission confirmed.' : 'Submission saved.'); projection.refresh(); onChanged?.(); button.current?.focus(); }} />}
+        {current && canProgress && summary?.historical_status === 'in_progress' && !form && action?.kind !== 'record_progress' && <button type="button" className="btn btn-secondary"
           onClick={() => { setCorrection(undefined); setForm('progress'); }}>Record an update</button>}
-        <TaskDeliveryDiagnosis boardId={boardId} specId={card.spec_id} cardId={card.id} active={active && details}
+        {summary && <TaskDeliveryDiagnosis boardId={boardId} specId={card.spec_id} cardId={card.id} active={active && details}
           revision={`${projection.value?.projection.generation_id ?? ''}:${refreshRequest}`} onOpenReadinessCard={onOpenReadinessCard} />
-        <CardLedgerPanel boardId={boardId} cardId={card.id} specId={card.spec_id} edition={summary.spec_edition} initialRecordId={focusRecordId}
-          active={active && details} onCorrect={canProgress ? entry => { setCorrection(entry); setForm('progress'); } : undefined} />
-        <TaskRequirementControl key={card.id} boardId={boardId} specId={card.spec_id} cards={[{ id: card.id, title: card.title || 'This task' }]}
-          active={active && details} canEdit={canWaiver} revision={`${revision}:${refreshRequest}`} onChanged={() => { projection.refresh(); onChanged?.(); }} />
+        }
+        {summary && <CardLedgerPanel boardId={boardId} cardId={card.id} specId={card.spec_id} edition={summary.spec_edition} initialRecordId={focusRecordId}
+          active={active && details} onCorrect={canProgress ? entry => { setCorrection(entry); setForm('progress'); } : undefined} />}
         {onOpenTests && <button type="button" className="btn btn-secondary" onClick={onOpenTests}>View test results</button>}
       </div>}
     </div>

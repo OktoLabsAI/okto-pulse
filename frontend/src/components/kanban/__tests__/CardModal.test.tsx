@@ -2934,7 +2934,6 @@ describe('human delivery from Card status', () => {
     const card = await prepareHumanReport();
     const input = screen.getByLabelText('What was delivered or changed?');
     fireEvent.change(input, { target: { value: 'Draft survives modal refresh' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
     const next = persistedProjection();
     next.scope = { ...next.scope, board_id: 'board-1', spec_id: 'spec-1', card_id: card.id };
     next.task_delivery = { ...taskDeliverySummary(card.id), board_id: 'board-1', spec_id: 'spec-1', reason: 'Assessment refreshed from the modal' };

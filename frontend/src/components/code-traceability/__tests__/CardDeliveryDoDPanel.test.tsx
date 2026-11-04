@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { CardDeliveryDoDPanel } from '../CardDeliveryDoDPanel';
 import { persistedProjection } from './readinessFixture';
 import type { TaskDeliveryState, TaskDeliverySummary } from '@/types/task-delivery';
+import type { Spec } from '@/types';
+import type { PersistedReadinessProjection } from '@/types/delivery-readiness';
 
 const api = vi.hoisted(() => ({ getPersistedReadinessProjection: vi.fn(), getDeliveryEvidence: vi.fn(), getBoard: vi.fn(),
   getDeliveryReadinessPage: vi.fn(), getCardDeliveryLedger: vi.fn(), getTaskRequirementOptions: vi.fn(), submitHumanTask: vi.fn() }));
@@ -20,6 +22,105 @@ function projection(state?: TaskDeliveryState) {
 }
 beforeEach(() => { vi.resetAllMocks(); api.getPersistedReadinessProjection.mockResolvedValue(projection()); });
 afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+async function openProgress() {
+  await screen.findByText('Work remaining');
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Record progress' }));
+}
+
+function unit(ref: string, implementation = 'satisfied', verification = 'missing'): PersistedReadinessProjection['units'][number] {
+  return { card_id: 'c', kind: 'obligation', ref, semantic_sha256: 'a'.repeat(64), spec_edition: 1,
+    contribution_card_ids: ['c'], implementation_state: implementation, verification_state: verification,
+    implementation_reason_codes: [], verification_reason_codes: [] };
+}
+
+it('shows the verdict, canonical percentages and assigned matrix before the two overview actions', async () => {
+  const value = projection();
+  value.units = [unit('fr:login'), unit('ac:secure', 'partial', 'failed'), unit('tr:audit', 'waived', 'not_applicable')];
+  value.page = { offset: 0, limit: 20, total: 3, has_more: false, next_cursor: null };
+  value.task_delivery!.last_update = { record_id: 'note', content: 'Narrative belongs in Details', remaining: null,
+    submitted_at: '2026-11-04', origin: 'human_submission', text_truncated: false };
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  const spec = { id: 's', edition: 1, version: 1, functional_requirements: [{ id: 'login', text: 'Sign in with a valid account' },
+    { id: 'unassigned', text: 'Unassigned work must not appear' }], acceptance_criteria: [{ id: 'secure', text: 'Reject expired credentials' }],
+    technical_requirements: [{ id: 'audit', text: 'Record access attempts' }] } as Spec;
+  render(<CardDeliveryDoDPanel boardId="b" card={card} spec={spec} canProgress canWaiver />);
+  await screen.findByText('Work remaining');
+  expect(screen.getByRole('progressbar', { name: 'Implementation' })).toHaveAttribute('aria-valuenow', '100');
+  expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');
+  const table = screen.getByRole('table', { name: 'Implementation and verification by requirement' });
+  expect(within(table).getAllByRole('row')).toHaveLength(4);
+  expect(within(table).getByRole('row', { name: /Sign in with a valid account/ })).toHaveTextContent('ImplementedPending');
+  expect(within(table).getByRole('row', { name: /Reject expired credentials/ })).toHaveTextContent('PartialFailed');
+  expect(within(table).getByRole('row', { name: /Record access attempts/ })).toHaveTextContent('WaivedNot applicable');
+  expect(screen.queryByText('Unassigned work must not appear')).not.toBeInTheDocument();
+  expect(screen.queryByText('Narrative belongs in Details')).not.toBeInTheDocument();
+  const overview = screen.getByRole('region', { name: 'Task delivery' });
+  expect(within(overview).getAllByRole('button').map(button => button.textContent)).toEqual(['How this works', 'Show details', 'Change task requirements']);
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(1);
+  expect(api.getTaskRequirementOptions).not.toHaveBeenCalled();
+  expect(api.getDeliveryReadinessPage).not.toHaveBeenCalled();
+});
+
+it('shows test scenarios and keeps unknown and non-applicable percentages distinct from zero', async () => {
+  const value = projection('verification_pending');
+  const metrics = value.summaries.find(row => row.card_id === 'c')!;
+  metrics.card_type = 'test';
+  metrics.implementation = { ...metrics.implementation, status: 'not_applicable', percent: null };
+  metrics.verification = { ...metrics.verification, status: 'unknown', percent: null };
+  value.units = [{ ...unit('scenario-1', 'not_applicable', 'unknown'), kind: 'scenario' }];
+  value.page.total = 1;
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={{ ...card, card_type: 'test' }} spec={{ id: 's', edition: 1, version: 1,
+    test_scenarios: [{ id: 'scenario-1', title: 'Reject expired credentials' }] } as Spec} />);
+  await screen.findByText('Awaiting verification');
+  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+  expect(screen.queryByText('0%')).not.toBeInTheDocument();
+  expect(screen.getByRole('row', { name: /Reject expired credentials/ })).toHaveTextContent('Not applicableUnknown');
+});
+
+it('pages the assigned matrix on demand and returns to the first page on modal refresh', async () => {
+  const first = projection();
+  first.units = Array.from({ length: 20 }, (_, n) => unit(`fr:requirement-${n + 1}`));
+  first.page = { offset: 0, limit: 20, total: 21, has_more: true, next_cursor: 'page-two' };
+  const second = { ...first, units: [unit('fr:requirement-21')], page: { offset: 20, limit: 20, total: 21, has_more: false, next_cursor: null } };
+  api.getPersistedReadinessProjection.mockResolvedValueOnce(first).mockResolvedValueOnce(second).mockResolvedValue(first);
+  const view = render(<CardDeliveryDoDPanel boardId="b" card={card} />);
+  await screen.findByText('1–20 of 21 items');
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Next items' }));
+  await screen.findByText('21–21 of 21 items', {}, { timeout: 2000 });
+  expect(api.getPersistedReadinessProjection.mock.calls[1][2]).toEqual({ cardId: 'c', unitLimit: 20, cursor: 'page-two' });
+  expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');
+  expect(screen.queryByRole('button', { name: 'Next items' })).not.toBeInTheDocument();
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={card} refreshRequest={1} />);
+  await screen.findByText('1–20 of 21 items', {}, { timeout: 2000 });
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(3);
+  expect(api.getPersistedReadinessProjection.mock.calls[2][2]).toEqual({ cardId: 'c', unitLimit: 20 });
+});
+
+it('rejects a matrix from another card instead of showing a false delivery result', async () => {
+  const value = projection('delivered'); value.units = [{ ...unit('fr:foreign'), card_id: 'other' }]; value.page.total = 1;
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={card} />);
+  await screen.findByText('Delivery unavailable');
+  expect(screen.queryByRole('table')).not.toBeInTheDocument();
+  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+});
+
+it('does not mix pages from different assessments or keep green percentages after that conflict', async () => {
+  const first = projection(); first.units = [unit('fr:first')];
+  first.page = { offset: 0, limit: 20, total: 2, has_more: true, next_cursor: 'next' };
+  const next = { ...first, projection: { ...first.projection, generation_id: 'changed' }, units: [unit('fr:second')] };
+  api.getPersistedReadinessProjection.mockResolvedValueOnce(first).mockResolvedValueOnce(next);
+  render(<CardDeliveryDoDPanel boardId="b" card={card} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Next items' }));
+  await screen.findByText('Delivery unavailable', {}, { timeout: 2000 });
+  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+  expect(screen.queryByText('Implemented')).not.toBeInTheDocument();
+  expect(screen.queryByText('Functional requirement (second)')).not.toBeInTheDocument();
+});
 
 it('reads one scoped projection and keeps all technical sections lazy', async () => {
   render(<CardDeliveryDoDPanel boardId="b" card={card} canProgress />);
@@ -56,6 +157,7 @@ it('fails closed on transport loss and retries only when requested', async () =>
   await new Promise(resolve => setTimeout(resolve, 1100));
   expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(1);
   api.getPersistedReadinessProjection.mockResolvedValue(projection('delivered'));
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
   fireEvent.click(screen.getByRole('button', { name: 'Retry delivery assessment' }));
   await screen.findByText('Delivered');
 });
@@ -67,12 +169,15 @@ it.each(['normal', 'bug', 'test'])('shows a single verdict and escapes human con
     submitted_at: '2026-11-04T00:00:00Z', origin: 'human_submission', text_truncated: false };
   api.getPersistedReadinessProjection.mockResolvedValue(value);
   const { container } = render(<CardDeliveryDoDPanel boardId="b" card={{ ...card, card_type: cardType }} canProgress />);
+  await screen.findByText('Verification failed');
+  expect(screen.queryByText(payload)).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Show details' })).toHaveAttribute('aria-expanded', 'false');
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
   expect(await screen.findByText(payload)).toBeVisible();
   expect(screen.getAllByRole('status')).toHaveLength(1);
   expect(screen.getByRole('status')).toHaveTextContent('Verification failed');
   expect(container.querySelector('script, img')).toBeNull();
   expect(container.querySelector('.lucide-circle-x')).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Show details' })).toHaveAttribute('aria-expanded', 'false');
   expect(screen.queryByRole('slider')).not.toBeInTheDocument();
 });
 
@@ -96,7 +201,7 @@ it('coalesces update bursts and stops polling when the tab is inactive', async (
 
 it('does not replace a human draft when a refreshed projection changes its version', async () => {
   const view = render(<CardDeliveryDoDPanel boardId="b" card={card} canProgress />);
-  fireEvent.click(await screen.findByRole('button', { name: 'Record progress' }));
+  await openProgress();
   const input = screen.getByLabelText('What was delivered or changed?');
   fireEvent.change(input, { target: { value: 'My draft' } });
   const next = projection(); next.task_delivery!.card_version = 2;
@@ -110,12 +215,13 @@ it('does not replace a human draft when a refreshed projection changes its versi
 
 it('keeps the same draft, focus and text selection when Details is toggled', async () => {
   render(<CardDeliveryDoDPanel boardId="b" card={card} canProgress />);
-  fireEvent.click(await screen.findByRole('button', { name: 'Record progress' }));
+  await openProgress();
   const input = screen.getByLabelText('What was delivered or changed?') as HTMLTextAreaElement;
   fireEvent.change(input, { target: { value: 'Draft preserved across Details' } });
   input.focus(); input.setSelectionRange(2, 8);
-  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
   fireEvent.click(screen.getByRole('button', { name: 'Hide details' }));
+  expect(screen.queryByRole('form', { name: 'Task update' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
   expect(screen.getByLabelText('What was delivered or changed?')).toBe(input);
   expect(input).toHaveValue('Draft preserved across Details');
   expect(input).toHaveFocus();
@@ -125,10 +231,9 @@ it('keeps the same draft, focus and text selection when Details is toggled', asy
 
 it('preserves the draft and Details after a failed refresh, then recovers only on explicit modal refresh', async () => {
   const view = render(<CardDeliveryDoDPanel boardId="b" card={card} canProgress />);
-  fireEvent.click(await screen.findByRole('button', { name: 'Record progress' }));
+  await openProgress();
   const input = screen.getByLabelText('What was delivered or changed?');
   fireEvent.change(input, { target: { value: 'Keep my draft even offline' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
   api.getPersistedReadinessProjection.mockRejectedValue(new Error('Network unavailable'));
   view.rerender(<CardDeliveryDoDPanel boardId="b" card={card} canProgress refreshRequest={1} />);
   await screen.findByText('Delivery unavailable', {}, { timeout: 2000 });
