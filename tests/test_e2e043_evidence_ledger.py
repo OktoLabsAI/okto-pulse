@@ -191,6 +191,8 @@ async def test_observation_retry_is_bounded_and_never_reexecutes_test(
         ) as error:
             await _produce(tmp_path, ledger=ledger, executor=execute)
         assert error.value.retryable is True
+        assert isinstance(error.value, module.TestEvidenceLedgerBusyError)
+        assert error.value.execution_failure()["retryable"] is False
         assert calls == 3
         assert len(list(ledger.receipt_root.iterdir())) == 1
     else:
@@ -198,6 +200,28 @@ async def test_observation_retry_is_bounded_and_never_reexecutes_test(
         assert calls == 4  # third attempt authenticates then confirms a stable scan
         assert len(list(ledger.receipt_root.iterdir())) == 2
     assert len(executions) == 1
+
+
+@pytest.mark.asyncio
+async def test_rest_busy_failure_matches_core_execution_contract(monkeypatch):
+    from fastapi import HTTPException
+    from okto_pulse.community.api import specs
+
+    calls = []
+
+    async def execute(self, command, **kwargs):
+        calls.append(command)
+        raise module.CommunityReceiptLedgerBusyError()
+
+    monkeypatch.setattr(specs.ExecuteTestScenarioEvidenceUseCase, "execute", execute)
+    with pytest.raises(HTTPException) as error:
+        await specs.execute_test_scenario_evidence(
+            spec_id="spec", scenario_id="scenario", user_id="local-user", uow=object(),
+            body=specs.ScenarioEvidenceExecutionRequest(status="passed", manifest_ref="about.json"))
+    assert len(calls) == 1
+    assert error.value.status_code == 503
+    assert error.value.detail == module.TestEvidenceLedgerBusyError().execution_failure()
+    assert error.value.headers is None
 
 
 def test_receipt_hardlink_is_rejected_even_after_cache_hit(tmp_path):

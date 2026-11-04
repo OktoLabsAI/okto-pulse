@@ -2208,6 +2208,8 @@ async def execute_test_scenario_evidence(
 ):
     """Execute an allowlisted local replay and return signed V2 evidence."""
 
+    from okto_pulse.core.ports.test_evidence import TestEvidenceLedgerBusyError
+
     try:
         result = await ExecuteTestScenarioEvidenceUseCase().execute(
             ExecuteTestScenarioEvidenceCommand(
@@ -2227,6 +2229,8 @@ async def execute_test_scenario_evidence(
         ) from exc
     except SubjectEditRequiresDraftError as exc:
         raise RESTAdapterContract.http_error(exc) from exc
+    except TestEvidenceLedgerBusyError as exc:
+        raise HTTPException(status_code=503, detail=exc.execution_failure()) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

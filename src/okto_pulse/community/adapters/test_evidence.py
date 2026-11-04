@@ -38,6 +38,7 @@ from okto_pulse.community import __version__ as community_code_version
 from okto_pulse.core.ports.test_evidence import (
     TestEvidenceExecutionRequest,
     TestEvidenceExecutionResult,
+    TestEvidenceLedgerBusyError,
     TestEvidenceWriteVerification,
 )
 from okto_pulse.core.services.test_scenario_lifecycle import (
@@ -95,6 +96,10 @@ class CommunityTestEvidenceError(ValueError):
     def retryable(self) -> bool:
         """Only ledger observation may be retried; never repeat execution."""
         return str(self) == "evidence_v2.receipt_ledger_busy"
+
+
+class CommunityReceiptLedgerBusyError(CommunityTestEvidenceError, TestEvidenceLedgerBusyError):
+    """Keep the Community validation type and expose the shared execution boundary."""
 
 
 class _DuplicateJsonKeyError(ValueError):
@@ -948,7 +953,7 @@ class CommunityEvidenceLedger:
                 }:
                     raise
                 self._validated_history_cache = None
-        raise CommunityTestEvidenceError("evidence_v2.receipt_ledger_busy")
+        raise CommunityReceiptLedgerBusyError()
 
     def _validate_existing_receipts_once(
         self, key: bytes
