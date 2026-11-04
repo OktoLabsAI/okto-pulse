@@ -80,11 +80,13 @@ export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 
       action={form} requestedStatus={reportStatus} active={active && current}
       onRefresh={projection.retry} onCancel={() => { setForm(null); onReportClosed?.(); button.current?.focus(); }}
       onAccepted={result => { setForm(null); onReportClosed?.(); setNotice(result.replayed ? 'Submission confirmed.' : 'Submission saved.'); projection.refresh(); onChanged?.(); button.current?.focus(); }} />}
-    <button type="button" aria-expanded={details} aria-controls={`delivery-details-${card.id}`} className="btn btn-secondary inline-flex items-center gap-2"
-      onClick={() => setDetails(open => !open)}>
-      {details ? <ChevronUp size={16} aria-hidden="true" /> : <ChevronDown size={16} aria-hidden="true" />}
-      {details ? 'Hide details' : 'Show details'}
-    </button>
+    <div className="flex">
+      <button type="button" aria-expanded={details} aria-controls={`delivery-details-${card.id}`} className="btn btn-secondary inline-flex items-center gap-2"
+        onClick={() => setDetails(open => !open)}>
+        {details ? <ChevronUp size={16} aria-hidden="true" /> : <ChevronDown size={16} aria-hidden="true" />}
+        {details ? 'Hide details' : 'Show details'}
+      </button>
+    </div>
     <div id={`delivery-details-${card.id}`} hidden={!details}>
       {detailsVisited && summary && <div className="space-y-5">
         <h4 ref={heading} tabIndex={-1} className="font-semibold">Delivery details</h4>
