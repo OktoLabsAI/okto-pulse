@@ -96,6 +96,30 @@ describe('SpecModal Q&A answer submission', () => {
     vi.clearAllMocks();
   });
 
+  it('shows native recommendation and tradeoff in preview, answer and saved view without selecting it', async () => {
+    const question = { ...choiceQuestion, choices: [
+      { id: 'opt_0', label: 'Kuzu', recommended: true, tradeoff: 'Preserves graph relationships.' },
+      { id: 'opt_1', label: 'SQLite', recommended: null, tradeoff: null },
+    ] };
+    renderQATab([question]);
+    expect(await screen.findByText('Recommended')).toBeVisible();
+    expect(screen.getByText('Preserves graph relationships.')).toBeVisible();
+    fireEvent.click(screen.getByText('Answer this question'));
+    const option = screen.getByRole('button', { name: /Kuzu Recommended Preserves graph relationships/ });
+    expect(option).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByRole('button', { name: 'Submit' })).toBeDisabled();
+    fireEvent.click(option);
+    expect(option).toHaveAttribute('aria-pressed', 'true');
+    const saved = { ...question, selected: ['opt_0'], answered_at: '2026-11-04T23:00:00Z', answer: 'Kuzu' };
+    apiMock.answerSpecQuestion.mockResolvedValue(saved);
+    apiMock.listSpecQA.mockResolvedValue([saved]);
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument());
+    expect(screen.getByText('Recommended')).toBeVisible();
+    expect(screen.getByText('Preserves graph relationships.')).toBeVisible();
+    expect(apiMock.answerSpecQuestion).toHaveBeenCalledTimes(1);
+  });
+
   it('disables the submit button while the answer is in flight and re-enables it after', async () => {
     const pending = deferred<SpecQAItem>();
     apiMock.answerSpecQuestion.mockReturnValue(pending.promise);

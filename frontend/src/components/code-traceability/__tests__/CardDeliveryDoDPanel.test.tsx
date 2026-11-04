@@ -169,7 +169,7 @@ it('waits for the refreshed overview before reading checks and makes only one di
 });
 
 it.each([
-  ['updating_or_unknown', 'Checking delivery'], ['optional_or_waived', 'Not required'],
+  ['updating_or_unknown', 'Delivery not confirmed'], ['needs_attention', 'Needs attention'], ['optional_or_waived', 'Not required'],
   ['verification_failed', 'Verification failed'], ['historical_done', 'Previously completed'],
   ['implementation_pending', 'Work remaining'], ['verification_pending', 'Awaiting verification'],
   ['completion_pending', 'Awaiting completion'], ['delivered', 'Delivered'], ['ready', 'Ready to complete'],
@@ -210,6 +210,32 @@ it.each(['normal', 'bug', 'test'])('shows a single verdict and escapes human con
   expect(container.querySelector('script, img')).toBeNull();
   expect(container.querySelector('.lucide-circle-x')).toBeInTheDocument();
   expect(screen.queryByRole('slider')).not.toBeInTheDocument();
+});
+
+it('labels old remaining work as a dated declaration even after delivery is complete', async () => {
+  const value = projection('delivered');
+  value.task_delivery!.last_update = { record_id: 'old-update', content: 'Work was still being collected',
+    remaining: 'Finish the old classifier', submitted_at: '2026-11-01T10:00:00Z',
+    origin: 'technical_checkpoint', text_truncated: false };
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={card} />);
+  await screen.findByText('Delivered');
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+  expect(await screen.findByText('Last recorded update')).toBeVisible();
+  expect(screen.getByText('Work remaining when this update was recorded')).toBeVisible();
+  expect(screen.getByText(/This is a historical declaration/)).toBeVisible();
+  expect(document.querySelector('time')).toHaveAttribute('dateTime', '2026-11-01T10:00:00Z');
+  expect(screen.getByRole('status')).toHaveTextContent('Delivered');
+});
+
+it('does not label an unavailable persisted generation as checking or show cached percentages', async () => {
+  const value = projection('delivered');
+  value.projection.freshness = 'unavailable';
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={card} />);
+  await screen.findByText('Delivery unavailable');
+  expect(screen.queryByText('Checking delivery')).not.toBeInTheDocument();
+  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
 });
 
 it('coalesces update bursts and stops polling when the tab is inactive', async () => {

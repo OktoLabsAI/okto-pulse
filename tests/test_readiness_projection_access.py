@@ -50,6 +50,36 @@ async def test_projection_skips_second_policy_query_without_concurrent_commit(le
     assert result.summaries == tuple(json.loads(payload) for payload in stored)
 
 
+async def test_task_read_re_presents_legacy_summary_without_rewriting_generation(ledger):
+    session, _, _ = ledger
+    await setup(session)
+    worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
+    assert await worker.process_once() == 1
+    reader = CommunityDeliveryReadinessReader(session.bind, clock=CommunityReadinessClock())
+    current, _, _, _ = await reader.load_persisted(board_id=delivery.BOARD_ID,
+        spec_id=delivery.SPEC_ID, actor=ACTOR, card_id='task')
+    expected = current.task_delivery
+    async with session.bind.begin() as connection:
+        raw = (await connection.exec_driver_sql(
+            'SELECT payload FROM readiness_summary WHERE generation_id=? AND card_key=?',
+            (current.generation_id, 'task'))).scalar_one()
+        legacy = json.loads(raw)
+        legacy['task_delivery'].update(state='updating_or_unknown', reason_code='assessment_incomplete',
+            reason='Previous presentation policy')
+        encoded = json.dumps(legacy)
+        await connection.exec_driver_sql(
+            'UPDATE readiness_summary SET payload=? WHERE generation_id=? AND card_key=?',
+            (encoded, current.generation_id, 'task'))
+    result, _, _, _ = await reader.load_persisted(board_id=delivery.BOARD_ID,
+        spec_id=delivery.SPEC_ID, actor=ACTOR, card_id='task')
+    assert result.task_delivery == expected
+    async with session.bind.connect() as connection:
+        unchanged = (await connection.exec_driver_sql(
+            'SELECT payload FROM readiness_summary WHERE generation_id=? AND card_key=?',
+            (current.generation_id, 'task'))).scalar_one()
+    assert unchanged == encoded
+
+
 async def test_projection_pages_are_actor_bound_and_reauthorized(ledger, monkeypatch):
     session, _, _ = ledger
     await setup(session)

@@ -15,7 +15,10 @@ Use **Change task requirements** to choose Required, Optional or Waived for this
 
 | Task status | Meaning |
 |-------------|---------|
-| **Checking delivery / Delivery unavailable** | The current result is not confirmed. Wait for preparation or explicitly retry a failed read. |
+| **Checking delivery** | A current assessment is being requested or prepared. Wait for the result. |
+| **Needs attention** | The assessment found unclear requirement responsibility. Open Details to review the affected items and next steps. |
+| **Delivery not confirmed** | The assessment returned insufficient information. Read the reason and resolve the missing information; this is not an active loading state. |
+| **Delivery unavailable** | The current result could not be read. Use Refresh card to retry. |
 | **Not required** | An authorized decision made the task optional or waived for this edition. It does not mean delivered. |
 | **Verification failed** | Current verification contains a failure that needs attention. |
 | **Previously completed** | Historical Done is preserved, but current proof no longer confirms delivery. |
@@ -26,6 +29,8 @@ Use **Change task requirements** to choose Required, Optional or Waived for this
 | **Ready to complete** | The current checks permit the next completion action; it has not yet been performed. |
 
 A human update has its audit receipt generated automatically. This proves who submitted the text and when; it does not prove code execution, passing tests or approval. See **Task progress** for submission, retry and correction rules. There is no manual receipt form, including in Details.
+
+**Last recorded update** includes its submission time. **Work remaining when this update was recorded** preserves what the author reported then. These historical declarations can describe work that is now complete; use the current status and matrix to see what remains today.
 
 **Show details** opens **Pending work and verification** directly, followed by progress and delivery forms, evidence history and test navigation. There is no second button to reveal the checks.
 

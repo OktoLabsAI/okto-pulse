@@ -865,6 +865,24 @@ Specs can be exported as **Markdown** for external documentation or sharing.
       content: taskRequirementHelp,
     },
     {
+      id: 'choice-questions',
+      title: 'Questions and recommendations',
+      icon: <ListChecks size={16} />,
+      content: `
+## Questions and recommendations
+
+Choice questions on Ideations, Refinements, Specs and Tasks show each option's label and any recorded tradeoff. **Recommended** identifies the option suggested by the author; its explanation helps you compare the choices.
+
+A recommendation does not select, answer or approve anything. Choose an option yourself, add a comment when available, then submit. Single-choice questions accept one option; multiple-choice questions accept several. Saved answers remain distinct from recommendations.
+
+The same recommendation and explanation appear before answering, while choosing, and when reviewing the saved answer. Older questions without recommendation metadata remain readable and do not receive an inferred recommendation.
+
+Use **How recommendations work** in the question area to return here. Use Tab to reach an answer option, then Enter or Space to choose it. Product labels are in English; authored questions, answers and notes keep their original language.
+
+Story status is separate from Q&A: **Draft** can move to **Triage** or **Ready**; **Triage** can move to **Draft** or **Ready**; **Ready** can return to **Triage**. The header shows the last saved status. **Converted** is set by the native ideation conversion/linking workflow and is never a manual choice. A failed save leaves the last confirmed status visible and shows an error.
+`,
+    },
+    {
       id: 'tasks',
       title: 'Tasks (Kanban)',
       icon: <LayoutList size={16} />,

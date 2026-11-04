@@ -12,6 +12,7 @@ export const HELP_SECTION_IDS = [
   'delivery-progress',
   'delivery-status',
   'task-requirements',
+  'choice-questions',
   'tasks',
   'bugs',
   'analytics',

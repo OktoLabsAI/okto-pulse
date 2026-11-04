@@ -13,6 +13,8 @@ export const specValidationHelp = `
 
 Open a Spec's **Validation** tab to see the overall result for its current edition. This checks whether the implementation plan has been validated. Delivery and execution tests have their own results.
 
+A visible check or X accompanies the textual verdict. Read the text to distinguish validated, pending, unavailable and exception outcomes; color alone never conveys approval.
+
 ### What each result means
 
 | Result | Meaning |

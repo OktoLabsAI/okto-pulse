@@ -390,6 +390,8 @@ export interface QAItem {
 export interface ChoiceOption {
   id: string;
   label: string;
+  recommended?: boolean | null;
+  tradeoff?: string | null;
 }
 
 export interface ChoiceResponse {
@@ -1008,7 +1010,7 @@ export interface IdeationQAItem {
   ideation_id: string;
   question: string;
   question_type: 'text' | 'choice' | 'single_choice' | 'multi_choice';
-  choices: { id: string; label: string }[] | null;
+  choices: ChoiceOption[] | null;
   allow_free_text: boolean;
   answer: string | null;
   selected: string[] | null;
@@ -1024,7 +1026,7 @@ export interface RefinementQAItem {
   refinement_id: string;
   question: string;
   question_type: 'text' | 'choice' | 'single_choice' | 'multi_choice';
-  choices: { id: string; label: string }[] | null;
+  choices: ChoiceOption[] | null;
   allow_free_text: boolean;
   answer: string | null;
   selected: string[] | null;
@@ -2101,10 +2103,7 @@ export interface SpecHistoryEntry {
 }
 
 // Spec Q&A
-export interface SpecQAChoiceOption {
-  id: string;
-  label: string;
-}
+export type SpecQAChoiceOption = ChoiceOption;
 
 export interface SpecQAItem {
   id: string;
@@ -3190,6 +3189,8 @@ export interface CodeTraceabilityProjection {
   source_refinement_snapshot_id?: string | null;
   source_refinement_version?: number | null;
   source_context?: SourceContextSummaryV2 | null;
+  source_context_snapshot?: { kind: 'historical_snapshot'; snapshot_id: string; snapshot_version: number; manifest_sha256: string } | null;
+  current_source_context?: SourceContextSummaryV2 | null;
   source_context_items?: SourceContextEvidenceItemV2[];
 
   contextual_evidence_coverage?: ContextualEvidenceCoverage;

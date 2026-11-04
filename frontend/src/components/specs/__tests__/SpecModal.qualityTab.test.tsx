@@ -270,6 +270,8 @@ describe('SpecModal Requirement lint in Validation', () => {
 
       expect(validationTab).toBeInTheDocument();
       fireEvent.click(validationTab!);
+      expect(screen.queryByRole('tab', { name: /Requirement lint/ })).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Details' }));
       if (!lintVisible) {
         expect(
           screen.queryByRole('tab', { name: /Requirement lint/ }),
@@ -315,6 +317,7 @@ describe('SpecModal Requirement lint in Validation', () => {
       fireEvent.click(
         screen.getByRole('tab', { name: 'Validation' }),
       );
+      fireEvent.click(screen.getByRole('button', { name: 'Details' }));
       fireEvent.click(
         screen.getByRole('tab', { name: /Requirement lint/ }),
       );

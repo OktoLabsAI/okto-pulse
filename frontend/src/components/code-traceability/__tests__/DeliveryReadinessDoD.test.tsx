@@ -14,6 +14,7 @@ it('keeps completion pending even when raw technical metrics are all 100%', asyn
   await screen.findByText('Awaiting completion');
   expect(screen.getByText('Independent review is required.')).toBeVisible();
   expect(screen.queryByText('Delivered', { exact: true })).not.toBeInTheDocument();
-  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+  expect(screen.getByRole('progressbar', { name: 'Implementation' })).toHaveAttribute('aria-valuenow', '100');
+  expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '100');
   expect(api.getDeliveryEvidence).not.toHaveBeenCalled();
 });

@@ -59,11 +59,20 @@ function renderDetailed(view: React.ReactElement) {
 }
 
 it('selects several tasks directly from the Spec entry without opening evidence Details', async () => {
+  const options = api.getTaskRequirementOptions.getMockImplementation()!;
+  const lookups: Array<() => Promise<void>> = [];
+  api.getTaskRequirementOptions.mockImplementation((...args) => new Promise(resolve => {
+    lookups.push(async () => { resolve(await options(...args)); });
+  }));
   render(<DeliveryEvidencePanel boardId="b" specId="s" canManageTaskRequirements />);
   expect(api.getDeliveryEvidence).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: 'Change task requirements' }));
   fireEvent.click(await screen.findByRole('checkbox', { name: 'TASK-142 — Re-anchor delivery bindings' }));
   fireEvent.click(screen.getByRole('checkbox', { name: 'TASK-143 — Rollup aggregation query' }));
+  expect(lookups).toHaveLength(2);
+  // Settle the selected pair first, then the aborted single-task lookup.
+  // This explicitly exercises async isolation without timing assumptions.
+  await act(async () => { await lookups[1](); await lookups[0](); });
   await waitFor(() => expect(screen.getByLabelText('Requirement')).toBeEnabled());
   fireEvent.change(screen.getByLabelText('Requirement'), { target: { value: 'waived' } });
   fireEvent.click(screen.getByRole('button', { name: 'Save task requirement' }));

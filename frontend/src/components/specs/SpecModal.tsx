@@ -64,6 +64,8 @@ import { getErrorMessage } from '@/lib/getErrorMessage';
 import { answerErrorMessage, submitQaAnswerWithRetry } from '@/lib/qaAnswerSubmit';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import { useDashboardApi } from '@/services/api';
+import { ChoiceOptionContent } from '@/components/shared/ChoiceOptionContent';
+import { ChoiceQuestionHelp } from '@/components/shared/ChoiceQuestionHelp';
 import { useCurrentBoard } from '@/store/dashboard';
 import { openLineageGraph } from '@/components/traceability';
 import type {
@@ -876,7 +878,7 @@ function ChoiceOptionsDisplay({ choices, selected }: { choices: SpecQAItem['choi
             }`}>
               {isSelected && <CheckCircle2 size={12} className="text-white" />}
             </span>
-            {opt.label}
+            <ChoiceOptionContent option={opt} />
           </div>
         );
       })}
@@ -918,6 +920,7 @@ function ChoiceAnswerForm({
           <button
             key={opt.id}
             onClick={() => toggleOption(opt.id)}
+            aria-pressed={sel.includes(opt.id)}
             className={`flex items-center gap-2 w-full text-sm text-left px-2 py-1.5 rounded transition-colors ${
               sel.includes(opt.id)
                 ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300'
@@ -929,7 +932,7 @@ function ChoiceAnswerForm({
             }`}>
               {sel.includes(opt.id) && <CheckCircle2 size={10} className="text-white" />}
             </span>
-            {opt.label}
+            <ChoiceOptionContent option={opt} />
           </button>
         ))}
       </div>
@@ -1068,6 +1071,7 @@ export function QATab({
   return (
     <div className="space-y-4">
       {/* Ask mode toggle + form */}
+      <ChoiceQuestionHelp />
       <div className="space-y-2">
         <div className="flex items-center gap-2">
           <button
@@ -1158,7 +1162,7 @@ export function QATab({
                       <div className="mt-1 space-y-0.5">
                         {qa.choices.map((opt) => (
                           <div key={opt.id} className="text-xs text-gray-500 dark:text-gray-400 pl-2">
-                            &bull; {opt.label}
+                            <ChoiceOptionContent option={opt} />
                           </div>
                         ))}
                       </div>

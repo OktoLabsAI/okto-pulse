@@ -1,5 +1,5 @@
 export type TaskDeliveryState = 'updating_or_unknown' | 'optional_or_waived' | 'verification_failed'
-  | 'historical_done' | 'implementation_pending' | 'verification_pending' | 'completion_pending' | 'delivered' | 'ready';
+  | 'historical_done' | 'implementation_pending' | 'verification_pending' | 'completion_pending' | 'delivered' | 'ready' | 'needs_attention';
 export interface TaskDeliverySummary {
   contract_version: 'task-delivery-summary/v1';
   board_id: string; spec_id: string; card_id: string; spec_edition: number; card_version: number;
@@ -21,7 +21,7 @@ export interface HumanTaskSubmissionResult {
   card_version: number; spec_edition: number; summary: TaskDeliverySummary;
 }
 const states: TaskDeliveryState[] = ['updating_or_unknown', 'optional_or_waived', 'verification_failed',
-  'historical_done', 'implementation_pending', 'verification_pending', 'completion_pending', 'delivered', 'ready'];
+  'historical_done', 'implementation_pending', 'verification_pending', 'completion_pending', 'delivered', 'ready', 'needs_attention'];
 /** Transport validation only; the verdict and next action are owned by Core. */
 export function isTaskDeliverySummary(value: unknown): value is TaskDeliverySummary {
   if (!value || typeof value !== 'object') return false;

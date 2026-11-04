@@ -32,6 +32,7 @@ import {
   codeEvidenceBaselinePresenceLabel,
   codeEvidenceContextOriginLabel,
   codeEvidenceSourceRoleLabel,
+  contextualInvestigationOutcomeLabel,
   groupSourceContextEvidence,
 } from './sourceContextPresentation';
 
@@ -652,6 +653,14 @@ export function CodeEvidencePanel({ boardId, subjectId, subjectVersion }: Props)
       )}
 
       {!loading && !error && projection && (
+        <>
+        {projection.source_context_snapshot && <section aria-label="Finalized source context" className="rounded-lg border border-blue-200 p-4 text-sm dark:border-blue-900">
+          <h3 className="font-semibold">Finalized source context</h3>
+          <p>Recorded for Refinement version {projection.source_context_snapshot.snapshot_version} and preserved at finalization. This historical context does not authorize new execution.</p>
+          <p className="mt-2">Current investigation: {projection.current_source_context?.investigation_outcome
+            ? contextualInvestigationOutcomeLabel(projection.current_source_context.investigation_outcome)
+            : 'No current investigation outcome is available. New execution requires current evidence.'}</p>
+        </section>}
         <SourceContextOverview
           sourceContext={projection.source_context}
           contextualEvidenceCoverage={projection.contextual_evidence_coverage}
@@ -660,6 +669,7 @@ export function CodeEvidencePanel({ boardId, subjectId, subjectVersion }: Props)
 
 
         />
+        </>
       )}
       {!loading && !error && projection && !projection.source_context && evidenceGroups.length === 0 && (
         <TraceabilityEmptyState noun="code evidence" />

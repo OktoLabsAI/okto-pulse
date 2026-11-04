@@ -508,6 +508,26 @@ describe('CardModal', () => {
     expect(apiMock.moveCard).not.toHaveBeenCalled();
   });
 
+  it('presents task choice recommendations without selecting or submitting an answer', async () => {
+    const card = cardForType('normal');
+    card.comments = [{ id: 'choice-1', card_id: card.id, author_id: 'agent-1',
+      content: 'Which delivery policy?', comment_type: 'choice',
+      choices: [{ id: 'recommended', label: 'Preserve traceability', recommended: true, tradeoff: 'Keeps the audit history.' },
+        { id: 'legacy', label: 'Legacy choice' }], responses: [], allow_free_text: true,
+      created_at: '2026-11-04T23:00:00Z', updated_at: '2026-11-04T23:00:00Z' }];
+    storeMock.selectedCardId = card.id;
+    apiMock.getCard.mockResolvedValue(card);
+    render(<CardModal boardId="board-1" />);
+    fireEvent.click(await screen.findByRole('tab', { name: /^Comments/ }));
+    const option = await screen.findByRole('button', { name: /Preserve traceability Recommended Keeps the audit history/ });
+    expect(option).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByText('Recommended')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'How recommendations work' })).toBeVisible();
+    fireEvent.click(option);
+    expect(option).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText('Legacy choice')).toBeVisible();
+  });
+
   beforeEach(() => {
     learningCaptureApi.source.mockReset().mockResolvedValue({ source_digest: 'a'.repeat(64), source_policy_version: 1, scenarios: [] });
     learningCaptureApi.history.mockReset().mockResolvedValue({ items: [], next_cursor: null });

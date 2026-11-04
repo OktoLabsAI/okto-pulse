@@ -2,7 +2,8 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, expect, it, vi } from 'vitest';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
 import type { SpecCoverageResponse } from './specCoverageTypes';
-const api = vi.hoisted(() => ({ getSpecCoverage: vi.fn() }));
+import { persistedProjection, metric } from '@/components/code-traceability/__tests__/readinessFixture';
+const api = vi.hoisted(() => ({ getSpecCoverage: vi.fn(), getPersistedReadinessProjection: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 vi.mock('@/components/code-traceability/DeliveryEvidencePanel', () => ({ DeliveryEvidencePanel: ({ focusExceptionId }: { focusExceptionId?: string }) => <div>Unified implementation checks{focusExceptionId && <span>Exception: {focusExceptionId}</span>}</div> }));
 import { SpecCoveragePanel } from './SpecCoveragePanel';
@@ -26,7 +27,23 @@ const base: SpecCoverageResponse = {
 function page(title: string, next: string | null = null): SpecCoverageResponse {
   return { ...base, next_cursor: next, items: [{ kind: 'structure_node', node_type: 'spec', subject_ref: title, observation: 'observed' }] };
 }
-beforeEach(() => { vi.clearAllMocks(); api.getSpecCoverage.mockResolvedValue(base); });
+function proof(implementation = 0, verification = 0, total = 2, boardId = 'board', specId = 'spec') {
+  const value = persistedProjection();
+  value.scope.board_id = boardId;
+  value.scope.spec_id = specId;
+  value.summaries = [value.summaries[0]];
+  const phase = (satisfied: number) => ({ ...metric(total ? satisfied / total * 100 : 0, satisfied),
+    total, applicable: total, unresolved: total - satisfied,
+    counts_by_state: { ...metric(0, 0).counts_by_state, satisfied, missing: total - satisfied } });
+  value.summaries[0].implementation = phase(implementation);
+  value.summaries[0].verification = phase(verification);
+  return value;
+}
+beforeEach(() => {
+  vi.clearAllMocks();
+  api.getSpecCoverage.mockResolvedValue(base);
+  api.getPersistedReadinessProjection.mockImplementation((boardId: string, specId: string) => Promise.resolve(proof(0, 0, 2, boardId, specId)));
+});
 
 it('opens the native implementation subtab for an exact exception and retains read authority', async () => {
   const view = render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" focusExceptionId="waiver" onOpenSection={vi.fn()} />);
@@ -107,6 +124,7 @@ it('aborts on Spec changes and ignores a late response', async () => {
 });
 
 it('keeps restricted proof unknown rather than zero', async () => {
+  api.getPersistedReadinessProjection.mockRejectedValue(new AuthenticatedFetchError({ status: 403, message: 'Restricted proof' }));
   api.getSpecCoverage.mockResolvedValue({ ...base, delivery: { ...base.delivery, state: 'restricted',
     counts: { obligations: null, implementation_proven: null, verification_proven: null, observed_obligations: null } } });
   render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" onOpenSection={vi.fn()} />);
@@ -141,6 +159,7 @@ it('updates factual delivery progress on a delivery revision without a new Spec 
     counts: { ...base.delivery.counts, implementation_proven: 2, verification_proven: 1 },
     blockers: ['delivery_test_result_missing'],
   } });
+  api.getPersistedReadinessProjection.mockResolvedValue(proof(2, 1));
   view.rerender(<SpecCoveragePanel boardId="board" specId="spec" revision="delivery-2" onOpenSection={vi.fn()} />);
   await waitFor(() => expect(screen.getByRole('progressbar', { name: 'Implementation proof' })).toHaveAttribute('aria-valuenow', '2'));
   expect(screen.getByRole('progressbar', { name: 'Verification proof' })).toHaveAttribute('aria-valuenow', '1');
@@ -160,9 +179,20 @@ it('merges implementation and verification navigation into the original checks',
   expect(screen.getByRole('tab', { name: 'Implementation' })).toHaveAttribute('aria-selected', 'true');
   expect(screen.getByText('Unified implementation checks')).toBeInTheDocument();
   fireEvent.click(screen.getByRole('tab', { name: 'Overview' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Review planning gaps' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Review planning gaps' }));
   expect(screen.getByRole('tab', { name: 'Planning' })).toHaveAttribute('aria-selected', 'true');
-  expect(api.getSpecCoverage).toHaveBeenCalledTimes(1);
+  expect(api.getSpecCoverage).toHaveBeenCalledTimes(2);
+});
+
+it('reloads both structural coverage and persisted proof when explicitly requested', async () => {
+  render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" onOpenSection={vi.fn()} />);
+  expect(await screen.findByRole('progressbar', { name: 'Implementation proof' })).toHaveAttribute('aria-valuenow', '0');
+  api.getPersistedReadinessProjection.mockResolvedValue(proof(2, 1));
+  fireEvent.click(screen.getByRole('button', { name: 'Reload coverage' }));
+  await waitFor(() => expect(screen.getByRole('progressbar', { name: 'Implementation proof' })).toHaveAttribute('aria-valuenow', '2'));
+  expect(screen.getByRole('progressbar', { name: 'Verification proof' })).toHaveAttribute('aria-valuenow', '1');
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(2);
+  expect(api.getSpecCoverage).toHaveBeenCalledTimes(2);
 });
 
 it('preserves implementation access without requiring broader summary permissions', () => {
@@ -182,19 +212,32 @@ it('does not expose implementation without its permission', async () => {
 it('shows empty scopes without claiming full coverage', async () => {
   api.getSpecCoverage.mockResolvedValue({ ...base,
     structure: { ...base.structure, summary: Object.fromEntries(Object.keys(base.structure.summary!).map(key => [key, 0])) },
-    delivery: { ...base.delivery, counts: { obligations: 0, implementation_proven: 0, verification_proven: 0, observed_obligations: 0 } },
+    delivery: { ...base.delivery, counts: { obligations: 0, implementation_proven: 0, verification_proven: 0, observed_obligations: 0, decisions: 0, decisions_verified: 0 } },
   });
+  const empty = proof(0, 0, 0);
+  for (const phase of [empty.summaries[0].implementation, empty.summaries[0].verification]) {
+    phase.status = 'not_applicable'; phase.percent = null;
+  }
+  api.getPersistedReadinessProjection.mockResolvedValue(empty);
   render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" onOpenSection={vi.fn()} />);
-  expect(await screen.findAllByText('No items')).toHaveLength(3);
+  expect(await screen.findAllByText('No items')).toHaveLength(2);
+  expect(await screen.findAllByText('Not applicable')).toHaveLength(2);
   expect(screen.queryByText('100%')).not.toBeInTheDocument();
 });
 
 it('does not derive scores from partial counts', async () => {
+  const incomplete = proof();
+  incomplete.summaries[0].population_known = false;
+  for (const phase of [incomplete.summaries[0].implementation, incomplete.summaries[0].verification]) {
+    phase.status = 'unknown'; phase.percent = null; phase.applicable = null;
+  }
+  api.getPersistedReadinessProjection.mockResolvedValue(incomplete);
   api.getSpecCoverage.mockResolvedValue({ ...base,
     structure: { ...base.structure, complete_for_scope: false },
     delivery: { ...base.delivery, complete_for_scope: false },
   });
   render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" onOpenSection={vi.fn()} />);
-  expect(await screen.findAllByText('Unavailable')).toHaveLength(4);
+  expect(await screen.findAllByText('Unavailable')).toHaveLength(2);
+  expect(await screen.findAllByText('Unable to evaluate')).toHaveLength(2);
   expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
 });

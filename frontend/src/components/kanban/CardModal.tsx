@@ -15,6 +15,8 @@ import { X, HelpCircle, Trash2, Clock, Link, Unlink, RefreshCw, FileText, FlaskC
 import toast from 'react-hot-toast';
 import { EntityExportButton } from '@/components/export';
 import { useDashboardApi, type ActivityLogEntry } from '@/services/api';
+import { ChoiceOptionContent } from '@/components/shared/ChoiceOptionContent';
+import { ChoiceQuestionHelp } from '@/components/shared/ChoiceQuestionHelp';
 import {
   useDashboardStore,
   useSelectedCard,
@@ -3758,6 +3760,7 @@ function QATab({
   return (
     <div className="space-y-4">
       {/* Add question */}
+      <ChoiceQuestionHelp />
       {canAsk && (
         <div className="flex gap-2">
           <div className="flex-1">
@@ -4678,6 +4681,7 @@ function ChoiceBoardRenderer({
 
   return (
     <div className="space-y-2">
+      <ChoiceQuestionHelp />
       <p className="font-medium text-sm text-gray-800 dark:text-gray-100">{comment.content}</p>
       <p className="text-xs text-gray-400">{isMulti ? 'Select one or more' : 'Select one'}</p>
 
@@ -4695,6 +4699,7 @@ function ChoiceBoardRenderer({
                 if (canRespond) toggle(opt.id);
               }}
               disabled={!canRespond}
+              aria-pressed={isSelected}
               className={`w-full text-left relative rounded-lg border px-3 py-2 text-sm transition-colors ${
                 isSelected
                   ? 'border-blue-400 bg-blue-50 dark:bg-blue-900/30 dark:border-blue-500/50'
@@ -4715,7 +4720,7 @@ function ChoiceBoardRenderer({
                   }`}>
                     {isSelected && <span className="text-white text-[10px]">✓</span>}
                   </span>
-                  <span className="text-gray-700 dark:text-gray-200">{opt.label}</span>
+                  <ChoiceOptionContent option={opt} />
                 </div>
                 {totalResponses > 0 && (
                   <span className="text-xs text-gray-400">{votes} ({pct}%)</span>

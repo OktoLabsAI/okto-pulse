@@ -35,7 +35,6 @@ import type {
 } from '@/types';
 import {
   IDEATION_STATUS_LABELS,
-  STORY_STATUSES,
   STORY_STATUS_LABELS,
 } from '@/types';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
@@ -104,6 +103,7 @@ export function StoryModal({
   const [activeTab, setActiveTab] = useState<StoryModalTab>('details');
   const [loading, setLoading] = useState(Boolean(storyId));
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const [expanded, setExpanded] = useState(false);
   const [editableIdeations, setEditableIdeations] = useState<IdeationSummary[]>([]);
   const [loadingIdeations, setLoadingIdeations] = useState(false);
@@ -124,6 +124,12 @@ export function StoryModal({
   useEscapeToClose(onEscape ?? onClose);
 
   const existing = Boolean(storyId);
+  const persistedStatus = story?.status ?? 'draft';
+  // Mirrors the native Story lifecycle: Ready can return to Triage only;
+  // Converted is derived by conversion and has no manual transition.
+  const statusChoices: StoryStatus[] = !story ? ['draft', 'triage', 'ready']
+    : { draft: ['draft', 'triage', 'ready'], triage: ['triage', 'draft', 'ready'],
+      ready: ['ready', 'triage'], converted: [] }[story.status] as StoryStatus[];
 
   const syncStoryState = (data: Story) => {
     setStory(data);
@@ -243,6 +249,8 @@ export function StoryModal({
   const handleSave = async () => {
     if (!canSave) return;
     setSaving(true);
+    setSaveError('');
+    let confirmedStory = story;
     try {
       if (story) {
         let updated = await api.updateStory(story.id, {
@@ -255,7 +263,9 @@ export function StoryModal({
           labels: parseLabels(labels),
           screen_mockups: mockups,
         });
-        if (status !== story.status) {
+        confirmedStory = updated;
+        setStory(updated);
+        if (status !== updated.status) {
           updated = await api.moveStory(story.id, { status });
         }
         syncStoryState(updated);
@@ -278,6 +288,12 @@ export function StoryModal({
       onChanged();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to save story';
+      if (confirmedStory) {
+        setStory(confirmedStory);
+        setStatus(confirmedStory.status);
+        if (confirmedStory !== story) onChanged();
+      }
+      setSaveError(`Story status was not confirmed. ${message}`);
       toast.error(message);
     } finally {
       setSaving(false);
@@ -413,16 +429,19 @@ export function StoryModal({
         </select>
       </div>
       <div>
-        <label className="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">Status</label>
-        <select
+        <label htmlFor="story-status" className="mb-1 block text-xs font-medium text-gray-500 dark:text-gray-400">Status</label>
+        {persistedStatus === 'converted' ? <p>Converted</p> : <select
+          id="story-status"
           value={status}
+          disabled={saving}
           onChange={(event) => setStatus(event.target.value as StoryStatus)}
           className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
         >
-          {STORY_STATUSES.map((item) => (
+          {statusChoices.map((item) => (
             <option key={item} value={item}>{STORY_STATUS_LABELS[item]}</option>
           ))}
-        </select>
+        </select>}
+        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Converted is set when an ideation is linked through the conversion workflow.</p>
       </div>
     </>
   );
@@ -756,8 +775,8 @@ export function StoryModal({
               <h3 className="truncate text-lg font-semibold text-gray-900 dark:text-white">
                 {existing ? title || 'Story' : 'New Story'}
               </h3>
-              <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[status]}`}>
-                {STORY_STATUS_LABELS[status]}
+              <span aria-label="Saved story status" className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[persistedStatus]}`}>
+                {STORY_STATUS_LABELS[persistedStatus]}
               </span>
             </div>
             <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">{topicName}</div>
@@ -842,6 +861,7 @@ export function StoryModal({
         </HorizontalOverflowNav>
 
         <div className="flex-1 overflow-auto p-5">
+          {saveError && <p role="alert" className="mb-4 rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-800 dark:bg-red-950/30 dark:text-red-200">{saveError}</p>}
           {loading ? (
             <div className="py-12 text-center text-sm text-gray-500 dark:text-gray-400">Loading story...</div>
           ) : (

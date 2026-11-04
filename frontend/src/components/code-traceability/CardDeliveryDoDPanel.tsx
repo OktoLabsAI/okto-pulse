@@ -23,7 +23,7 @@ interface Props {
   onReportClosed?: () => void;
 }
 const titles: Record<TaskDeliveryState, string> = {
-  updating_or_unknown: 'Checking delivery', optional_or_waived: 'Not required', verification_failed: 'Verification failed',
+  updating_or_unknown: 'Delivery not confirmed', needs_attention: 'Needs attention', optional_or_waived: 'Not required', verification_failed: 'Verification failed',
   historical_done: 'Previously completed', implementation_pending: 'Work remaining', verification_pending: 'Awaiting verification',
   completion_pending: 'Awaiting completion', delivered: 'Delivered', ready: 'Ready to complete',
 };
@@ -43,9 +43,12 @@ export function CardDeliveryDoDPanel({ boardId, card, spec, active = true, revis
   const current = projection.value?.projection.freshness === 'current' && !projection.error && !projection.loading
     && projection.resolvedRefreshRequest === refreshRequest;
   const state = current && summary ? summary.state : 'updating_or_unknown';
+  const checking = !projection.error && (projection.loading || projection.resolvedRefreshRequest !== refreshRequest
+    || ['pending_initial', 'updating'].includes(projection.value?.projection.freshness ?? ''));
+  const unavailable = Boolean(projection.error) || projection.value?.projection.freshness === 'unavailable';
   const action = current ? summary?.next_action : null;
   const Icon = state === 'delivered' ? CircleCheck : state === 'verification_failed' ? CircleX
-    : state === 'updating_or_unknown' || state.endsWith('_pending') ? Clock3 : Info;
+    : checking || state.endsWith('_pending') ? Clock3 : Info;
   useEffect(() => { if (focusDiagnosis || focusRecordId) setDetails(true); }, [focusDiagnosis, focusRecordId]);
   useEffect(() => { if (details) setDetailsVisited(true); }, [details]);
   useEffect(() => { if (reportRequest) { setReportStatus(reportRequest.status); setForm('delivery_report'); setDetails(true); } }, [reportRequest]);
@@ -64,12 +67,14 @@ export function CardDeliveryDoDPanel({ boardId, card, spec, active = true, revis
     <div className={`flex items-start gap-3 rounded-xl border p-5 ${state === 'delivered' ? 'border-green-300 bg-green-50 dark:bg-green-950/20'
       : state === 'verification_failed' ? 'border-red-300 bg-red-50 dark:bg-red-950/20' : 'border-gray-200 dark:border-gray-700'}`}>
       <Icon size={30} aria-hidden="true" className="shrink-0" />
-      <div className="space-y-1"><h4 className="font-semibold" role="status">{projection.error ? 'Delivery unavailable' : titles[state]}</h4>
-        <p>{projection.error || (current ? summary?.reason : 'The current assessment is being prepared. Delivery has not been confirmed.')}</p>
+      <div className="space-y-1"><h4 className="font-semibold" role="status">{unavailable ? 'Delivery unavailable' : checking ? 'Checking delivery' : titles[state]}</h4>
+        <p>{projection.error || (current ? summary?.reason : checking
+          ? 'The current assessment is being prepared. Delivery has not been confirmed.'
+          : 'A current assessment is unavailable. Use Refresh card to try again.')}</p>
       </div>
     </div>
     <TaskDeliveryMatrix value={projection.value} cardId={card.id} spec={spec} current={current}
-      unavailable={Boolean(projection.error)} onNextPage={projection.nextPage} onFirstPage={projection.retry} />
+      unavailable={unavailable} onNextPage={projection.nextPage} onFirstPage={projection.retry} />
     <TaskRequirementControl key={card.id} compact boardId={boardId} specId={card.spec_id}
       cards={[{ id: card.id, title: card.title || 'This task' }]} active={active} canEdit={canWaiver}
       revision={`${revision}:${refreshRequest}`} onChanged={() => { projection.refresh(); onChanged?.(); }}
@@ -86,9 +91,10 @@ export function CardDeliveryDoDPanel({ boardId, card, spec, active = true, revis
           revision={`${projection.value?.projection.generation_id ?? ''}:${refreshRequest}`} onOpenReadinessCard={onOpenReadinessCard} />}
         <p>Updates are declarations. Technical verification and completion are assessed separately.</p>
         {summary?.last_update && <div className="space-y-2">
-          <h4 className="font-semibold">Latest update</h4>
+          <h4 className="font-semibold">Last recorded update</h4>
+          <p className="text-xs text-gray-500 dark:text-gray-400">Recorded on <time dateTime={summary.last_update.submitted_at}>{new Date(summary.last_update.submitted_at).toLocaleString('en-US')}</time>. This is a historical declaration; the current status and matrix above determine what remains.</p>
           <p className="whitespace-pre-wrap break-words">{summary.last_update.content}</p>
-          <h4 className="font-semibold">Remaining</h4>
+          <h4 className="font-semibold">Work remaining when this update was recorded</h4>
           <p className="whitespace-pre-wrap break-words">{summary.last_update.remaining || 'No remaining work was described in this update. See the delivery status above.'}</p>
           {summary.last_update.text_truncated && <p>Open the delivery record history to read the full update.</p>}
         </div>}

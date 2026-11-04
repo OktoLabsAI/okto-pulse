@@ -1081,7 +1081,7 @@ class CommunityDeliveryReadinessReader:
                         card_version=after[3][0], status=getattr(after[3][1], 'value', after[3][1]),
                         freshness=projection.freshness if projection else 'pending_initial',
                         actor_kind=actor.actor_kind, allowed_operations=after[0].allowed_operations,
-                        last_update=after[3][2]).model_dump(mode='json')
+                        last_update=after[3][2], assessment=rows[0] if len(rows) == 1 else None).model_dump(mode='json')
                     if projection is None:
                         projection = ProjectionRead(board_id, spec_id, after[1], 0, None, None, None,
                             'pending_initial', None, (), (), 0, None, task_delivery=verdict)
