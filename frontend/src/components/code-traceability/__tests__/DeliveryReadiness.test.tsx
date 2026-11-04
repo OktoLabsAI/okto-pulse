@@ -4,7 +4,7 @@ import { DeliveryReadinessView } from '../DeliveryReadinessView';
 import { KanbanCard } from '@/components/kanban/KanbanCard';
 import { CardDeliveryDoDPanel } from '../CardDeliveryDoDPanel';
 import { DeliveryEvidenceDetails as DeliveryEvidencePanel } from '../DeliveryEvidencePanel';
-import { emptyCounts, metric, persistedProjection, readiness, task } from './readinessFixture';
+import { emptyCounts, metric, persistedProjection, readiness, task, taskDeliverySummary } from './readinessFixture';
 
 const api = vi.hoisted(() => ({ getDeliveryReadiness: vi.fn(), getPersistedReadinessProjection: vi.fn(), getDeliveryEvidence: vi.fn(), getBoard: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
@@ -15,6 +15,7 @@ beforeEach(() => {
   api.getPersistedReadinessProjection.mockImplementation((_board, _spec, options) => {
     const value = persistedProjection();
     value.scope.card_id = options?.cardId ?? null;
+    if (options?.cardId) value.task_delivery = taskDeliverySummary(options.cardId);
     return Promise.resolve(value);
   });
   api.getDeliveryEvidence.mockResolvedValue({ board_id: 'b', spec_id: 's', edition: 1, version: 1, complete: true,
@@ -23,10 +24,12 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-it.each(['normal', 'bug', 'test'] as const)('U01: %s cover and Delivery share backend metrics in independent bars', async card_type => {
+it.each(['normal', 'bug', 'test'] as const)('U01: %s cover retains diagnostic metrics while Delivery presents one canonical verdict', async card_type => {
   render(<><KanbanCard card={{ ...task, card_type }} nameMap={{}} onClick={vi.fn()} deliveryReadiness={{ value: readiness() }} />
     <CardDeliveryDoDPanel boardId="b" card={{ id: 'c', card_type, spec_id: 's' }} /></>);
-  await waitFor(() => expect(screen.getAllByRole('progressbar')).toHaveLength(4));
+  await screen.findByText('Awaiting verification');
+  await waitFor(() => expect(screen.getAllByRole('progressbar')).toHaveLength(2));
+  expect(screen.getByRole('region', { name: 'Task delivery' }).querySelector('[role="progressbar"]')).toBeNull();
   const implementation = screen.getAllByRole('progressbar', { name: 'Implementation' });
   const verification = screen.getAllByRole('progressbar', { name: 'Verification' });
   implementation.forEach((bar, i) => {

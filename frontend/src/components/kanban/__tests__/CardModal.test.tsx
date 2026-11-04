@@ -1,3 +1,4 @@
+import { persistedProjection, taskDeliverySummary } from '@/components/code-traceability/__tests__/readinessFixture';
 import { taskValidationFixture } from '@/test/taskValidationFixture';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -33,6 +34,8 @@ async function externalRevision() {
 const apiMock = vi.hoisted(() => ({
   getCard: vi.fn(),
   getDeliveryEvidence: vi.fn(),
+  getPersistedReadinessProjection: vi.fn(),
+  submitHumanTask: vi.fn(),
   getBoard: vi.fn(),
   recordCardDeliveryEvidence: vi.fn(),
   getSpec: vi.fn(),
@@ -2869,7 +2872,7 @@ describe('ExecutionReportsPanel impact evidence (TS-11)', () => {
 // SK-B2-S1 — TS-16: under 'require', the 409 impact_evidence_required
 // remediation renders IN-PLACE and the prompt keeps its state; the same
 // submit succeeds after the gate clears.
-describe('conclusion prompt keeps state on impact_evidence_required (TS-16)', () => {
+describe('human delivery from Card status', () => {
   beforeEach(() => {
     // This group must also run alone, without state from the CardModal group.
     vi.clearAllMocks();
@@ -2892,214 +2895,50 @@ describe('conclusion prompt keeps state on impact_evidence_required (TS-16)', ()
     });
     learningCaptureApi.history.mockReset().mockResolvedValue({ items: [], next_cursor: null });
   });
-  async function prepareAtomicReport(target: 'validation' | 'done' = 'validation', cardType: 'normal' | 'bug' = 'normal') {
-    const normalCard = { ...cardForType(cardType), status: 'in_progress', spec_id: 'spec-1' } as Card;
-    storeMock.selectedCardId = normalCard.id;
-    apiMock.getCard.mockResolvedValue(normalCard);
-    apiMock.getBoard.mockResolvedValue({ settings: { delivery_evidence_gate: 'blocking' } });
-    apiMock.getAllowedTransitions.mockResolvedValue(transitionEnvelope(normalCard.id, 'in_progress', [allowedTransition(target)]));
-    apiMock.getDeliveryEvidence.mockResolvedValue({ board_id: 'board-1', spec_id: 'spec-1', edition: 1,
-      rows: [], implementations: [], candidates: [], records: [], rejected_record_ids: [],
-      per_card: [{ card_id: normalCard.id, status: 'in_progress', card_version: 2, delivery_revision: 3, obligations: [],
-        selection: { total: 1, truncated: false, records: [{ id: 'saved-proof', kind: 'implementation', summary: 'Delivered parser' }] } }] });
+  async function prepareHumanReport(cardType: 'normal' | 'bug' | 'test' = 'normal') {
+    const card = { ...cardForType(cardType), status: 'in_progress', spec_id: 'spec-1' } as Card;
+    storeMock.selectedCardId = card.id;
+    apiMock.getCard.mockResolvedValue(card);
+    apiMock.getAllowedTransitions.mockResolvedValue(transitionEnvelope(card.id, 'in_progress', [allowedTransition('validation')]));
+    const value = persistedProjection();
+    value.scope = { ...value.scope, board_id: 'board-1', spec_id: 'spec-1', card_id: card.id };
+    value.task_delivery = { ...taskDeliverySummary(card.id), board_id: 'board-1', spec_id: 'spec-1' };
+    apiMock.getPersistedReadinessProjection.mockResolvedValue(value);
+    apiMock.submitHumanTask.mockResolvedValue({ submission_id: 'human-update', replayed: false, status: 'validation' });
     render(<CardModal boardId="board-1" />);
     const status = await screen.findByRole('combobox', { name: 'Card status' });
     await waitFor(() => expect(status).not.toBeDisabled());
-    fireEvent.change(status, { target: { value: target } });
-    await screen.findByText('Execution Report Required');
-    fireEvent.change(screen.getByPlaceholderText(/## Implementation Summary/), { target: { value: 'Final review summary' } });
-    fireEvent.change(screen.getByPlaceholderText('Justify the completeness score...'), { target: { value: 'complete' } });
-    fireEvent.change(screen.getByPlaceholderText('Justify the drift score...'), { target: { value: 'no drift' } });
-    fireEvent.click(screen.getByLabelText('Save a last batch together with this report'));
-    const submit = screen.getByRole('button', { name: /Complete & Move to/ });
-    expect(submit).toBeDisabled();
-    fireEvent.click(screen.getByLabelText('Seal recorded evidence with this report'));
-    await screen.findByText('Delivery revision 3 · 1 selected');
-    await screen.findByLabelText('Work recorded');
-    return { submit, normalCard };
-  }
-
-  function stageReportProgress() {
-    fireEvent.change(screen.getByLabelText('Work recorded'), { target: { value: 'Review notes' } });
-    fireEvent.change(screen.getByLabelText('Remaining work'), { target: { value: 'Independent review' } });
-    fireEvent.change(screen.getByLabelText('Code change in this checkpoint'), { target: { value: 'none' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add progress to report draft' }));
-  }
-
-  it.each([[false, false], [false, true], [true, false], [true, true]])(
-    'submits joint Bug Learning once with stable retry; batch=%s edit=%s', async (batch, edit) => {
-      learningCaptureApi.source.mockReset().mockResolvedValue({ source_digest: 'a'.repeat(64), source_policy_version: 7,
-        scenarios: [{ id: 'proof', title: 'Signed inspection', authenticated: true }] });
-      const { submit } = await prepareAtomicReport('validation', 'bug');
-      if (batch) stageReportProgress();
-      else fireEvent.click(screen.getByLabelText('Save a last batch together with this report'));
-      fireEvent.click(screen.getByLabelText('Record a Learning with this report'));
-      expect(submit).toBeDisabled();
-      for (const label of ['Learning for this report', 'Learning context', 'Learning applicability']) {
-        fireEvent.change(screen.getByLabelText(label), { target: { value: 'The authored lesson' } });
-      }
-      fireEvent.click(await screen.findByRole('checkbox', { name: 'Signed inspection' }));
-      const writer = batch ? apiMock.recordCardDeliveryEvidence : apiMock.moveCard;
-      writer.mockReset().mockRejectedValueOnce(new Error('Joint request timed out'))
-        .mockResolvedValueOnce({ ...cardForType('bug'), status: 'validation' });
-      fireEvent.click(submit); await screen.findByText('Joint request timed out');
-      expect(screen.getByLabelText('Learning for this report')).toHaveValue('The authored lesson');
-      if (edit) fireEvent.change(screen.getByPlaceholderText(/## Implementation Summary/), { target: { value: 'Corrected report' } });
-      fireEvent.click(submit);
-      await waitFor(() => expect(screen.queryByText('Execution Report Required')).not.toBeInTheDocument());
-      const reports = writer.mock.calls.map(call => batch ? call[3].report : call[1]);
-      expect(reports[0].learning_submission).toEqual({ capture_id: expect.any(String),
-        expected_source_digest: 'a'.repeat(64), expected_source_version: 7, scenario_ids: ['proof'],
-        content: 'The authored lesson', context: 'The authored lesson', applicability: 'The authored lesson' });
-      if (edit) expect(reports[1].learning_submission.capture_id).not.toBe(reports[0].learning_submission.capture_id);
-      else expect(reports[1]).toEqual(reports[0]);
-    });
-
-  it('keeps the Done report, selection and unsent batch when delivery proof blocks completion', async () => {
-    const { submit } = await prepareAtomicReport('done');
-    apiMock.recordCardDeliveryEvidence.mockReset().mockRejectedValueOnce(new Error('delivery_evidence_incomplete: obligations=fr:fr'));
-    stageReportProgress();
-    fireEvent.click(submit);
-    await screen.findByText('delivery_evidence_incomplete: obligations=fr:fr');
-    expect(screen.getByPlaceholderText(/## Implementation Summary/)).toHaveValue('Final review summary');
-    expect(screen.getByRole('list', { name: 'Unsent delivery entries' })).toHaveTextContent('Review notes');
-    expect(screen.getByText('Delivery revision 3 · 1 selected')).toBeInTheDocument();
-    expect(submit).not.toBeDisabled();
-    expect(apiMock.moveCard).not.toHaveBeenCalled();
-    expect(apiMock.recordCardDeliveryEvidence.mock.calls[0][3].report.status).toBe('done');
-  });
-
-  it.each([false, true])('submits the last batch once and preserves retry content, edit=%s', async edit => {
-    const { submit } = await prepareAtomicReport();
-    apiMock.recordCardDeliveryEvidence.mockReset().mockRejectedValueOnce(new Error('Request timed out')).mockResolvedValueOnce({ entries: [{ id: 'new' }], replayed: true });
-    stageReportProgress();
-    expect(apiMock.recordCardDeliveryEvidence).not.toHaveBeenCalled();
-    expect(apiMock.moveCard).not.toHaveBeenCalled();
-    fireEvent.click(submit);
-    await screen.findByText('Request timed out');
-    expect(screen.getByRole('list', { name: 'Unsent delivery entries' })).toHaveTextContent('Review notes');
-    if (edit) fireEvent.change(screen.getByPlaceholderText(/## Implementation Summary/), { target: { value: 'Corrected review summary' } });
-    fireEvent.click(submit);
-    await waitFor(() => expect(screen.queryByText('Execution Report Required')).not.toBeInTheDocument());
-    expect(apiMock.moveCard).not.toHaveBeenCalled();
-    const first = apiMock.recordCardDeliveryEvidence.mock.calls[0][3];
-    const second = apiMock.recordCardDeliveryEvidence.mock.calls[1][3];
-    expect(first).toMatchObject({ contract_version: 'card-delivery-report/v1', expected_card_status: 'in_progress',
-      batch: { expected_card_version: 2, expected_spec_edition: 1, expected_delivery_revision: 3, entries: [{ kind: 'progress', justification: 'Review notes' }] },
-      report: { status: 'validation', conclusion: 'Final review summary' }, existing_record_ids: ['saved-proof'], reuse_impact: false });
-    expect(first.report).not.toHaveProperty('delivery_selection');
-    if (edit) expect(second.batch.idempotency_key).not.toBe(first.batch.idempotency_key);
-    else expect(second).toEqual(first);
-  });
-
-  it('blocks double submission and treats a refresh failure after commit as saved', async () => {
-    const { submit } = await prepareAtomicReport();
-    let finish!: () => void;
-    apiMock.recordCardDeliveryEvidence.mockReset().mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
-    stageReportProgress();
-    fireEvent.click(submit); fireEvent.click(submit);
-    expect(apiMock.recordCardDeliveryEvidence).toHaveBeenCalledOnce();
-    expect(submit).toBeDisabled();
-    apiMock.getCard.mockRejectedValueOnce(new Error('Refresh failed'));
-    await act(async () => finish());
-    await waitFor(() => expect(screen.queryByText('Execution Report Required')).not.toBeInTheDocument());
-    expect(apiMock.recordCardDeliveryEvidence).toHaveBeenCalledOnce();
-    expect(apiMock.moveCard).not.toHaveBeenCalled();
-  });
-
-  it('keeps a changed delivery revision from silently rebasing queued entries', async () => {
-    const { submit } = await prepareAtomicReport(); stageReportProgress();
-    const projection = await apiMock.getDeliveryEvidence.mock.results[0].value;
-    apiMock.getDeliveryEvidence.mockResolvedValue({ ...projection, per_card: [{ ...projection.per_card[0], delivery_revision: 4 }] });
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh evidence selection' }));
-    await screen.findByText('Delivery revision 4 · 1 selected');
-    expect(submit).toBeDisabled();
-    expect(screen.getByRole('list', { name: 'Unsent delivery entries' })).toHaveTextContent('Review notes');
-    expect(apiMock.recordCardDeliveryEvidence).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Remove draft entry 1' }));
-    expect(submit).toBeDisabled();
-  });
-
-  it.each([false, true])('shows the remediation and retries with sealed selection=%s', async seal => {
-    apiMock.moveCard.mockReset();
-    const normalCard = {
-      ...cardForType('normal'),
-      status: 'in_progress',
-      spec_id: 'spec-1',
-    } as Card;
-    storeMock.selectedCardId = normalCard.id;
-    apiMock.getCard.mockResolvedValue(normalCard);
-    apiMock.getAllowedTransitions.mockResolvedValue(
-      transitionEnvelope(normalCard.id, 'in_progress', [
-        allowedTransition('validation'),
-        allowedTransition('on_hold'),
-      ]),
-    );
-    apiMock.moveCard
-      .mockRejectedValueOnce(
-        new Error(
-          'impact_evidence_required: This board requires declared impact evidence on the execution report',
-        ),
-      )
-      .mockResolvedValueOnce({ ...normalCard, status: 'validation' });
-
-    render(<CardModal boardId="board-1" />);
-
-    const status = await screen.findByRole('combobox', {
-      name: 'Card status',
-    });
-    await waitFor(() => expect(status).not.toBeDisabled());
     fireEvent.change(status, { target: { value: 'validation' } });
+    await screen.findByRole('form', { name: 'Delivery report' });
+    return card;
+  }
 
-    // The executor-report prompt opens instead of calling the API.
-    expect(
-      await screen.findByText('Execution Report Required'),
-    ).toBeInTheDocument();
-    fireEvent.change(
-      screen.getByPlaceholderText(/## Implementation Summary/),
-      { target: { value: 'Executor claim' } },
-    );
-    fireEvent.change(
-      screen.getByPlaceholderText('Justify the completeness score...'),
-      { target: { value: 'complete' } },
-    );
-    fireEvent.change(
-      screen.getByPlaceholderText('Justify the drift score...'),
-      { target: { value: 'no drift' } },
-    );
+  it.each(['normal', 'bug', 'test'] as const)('submits %s through the human command without manual proof inputs', async type => {
+    const card = await prepareHumanReport(type);
+    expect(screen.queryByText('Execution Report Required')).not.toBeInTheDocument();
+    expect(screen.queryByRole('slider')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Seal recorded evidence with this report')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('What was delivered or changed?'), { target: { value: 'Entrega revisada' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit for validation' }));
+    await waitFor(() => expect(apiMock.submitHumanTask).toHaveBeenCalledTimes(1));
+    expect(apiMock.submitHumanTask.mock.calls[0]).toEqual(['board-1', card.id, {
+      contract_version: 'human-task-submission/v1', action: 'delivery_report', content: 'Entrega revisada',
+      expected_card_version: 1, expected_spec_edition: 1, idempotency_key: expect.any(String), requested_status: 'validation',
+    }]);
+    expect(apiMock.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+    expect(apiMock.moveCard).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByRole('form', { name: 'Delivery report' })).not.toBeInTheDocument());
+  });
 
-    const submit = screen.getByRole('button', {
-      name: /Complete & Move to/,
-    });
-    if (seal) {
-      apiMock.getDeliveryEvidence.mockResolvedValue({ edition: 1, per_card: [{ card_id: normalCard.id, card_version: 2, delivery_revision: 3,
-        selection: { total: 1, truncated: false, records: [{ id: 'saved-proof', kind: 'implementation', summary: 'Delivered parser' }] } }] });
-      fireEvent.click(screen.getByLabelText('Seal recorded evidence with this report'));
-      expect(submit).toBeDisabled();
-      await screen.findByText('Delivery revision 3 · 1 selected');
-      fireEvent.click(screen.getByLabelText('Use accumulated impact from the selected records'));
-    }
-    fireEvent.click(submit);
-
-    // Gate rejection: remediation in-place, prompt still open, state intact.
-    expect(
-      await screen.findByTestId('impact-evidence-gate-error'),
-    ).toHaveTextContent('impact_evidence_required');
-    expect(screen.getByText('Execution Report Required')).toBeInTheDocument();
-    expect(
-      screen.getByPlaceholderText(/## Implementation Summary/),
-    ).toHaveValue('Executor claim');
-
-    // Same submit succeeds once the block/gate situation is resolved.
-    fireEvent.click(submit);
-    await waitFor(() =>
-      expect(
-        screen.queryByText('Execution Report Required'),
-      ).not.toBeInTheDocument(),
-    );
-    expect(apiMock.moveCard).toHaveBeenCalledTimes(2);
-    if (seal) expect(apiMock.moveCard.mock.calls[1][1].delivery_selection).toEqual({
-      expected_card_version: 2, expected_spec_edition: 1, expected_delivery_revision: 3, record_ids: ['saved-proof'], reuse_impact: true,
-    });
+  it('keeps the draft after a rejected delivery and does not silently save progress', async () => {
+    await prepareHumanReport();
+    apiMock.submitHumanTask.mockRejectedValue(new AuthenticatedFetchError({ status: 409, message: 'Technical proof is required.' }));
+    fireEvent.change(screen.getByLabelText('What was delivered or changed?'), { target: { value: 'Preserved report' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit for validation' }));
+    await screen.findByText('Technical proof is required.');
+    expect(screen.getByLabelText('What was delivered or changed?')).toHaveValue('Preserved report');
+    expect(apiMock.submitHumanTask).toHaveBeenCalledTimes(1);
+    expect(apiMock.submitHumanTask.mock.calls[0][2].action).toBe('delivery_report');
+    expect(apiMock.moveCard).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { CardProgressPanel } from '../CardProgressPanel';
-import { CardDeliveryDoDPanel } from '../CardDeliveryDoDPanel';
 import type { DeliveryPerCard } from '@/types/delivery-evidence';
 import { subscribeContextualHelp } from '@/components/help/contextualHelp';
 
@@ -155,7 +154,7 @@ it('shows several saved facts and an explicit history limit after reload', async
   const entries = ['First change', 'Second change'].map((summary, i) => ({ id: String(i), actor_id: 'original-author', created_at: 'today', summary, remaining: 'Next work', text_truncated: false, material_change: 'unknown', source_state: { workspace_state: 'dirty', recoverability: 'external_workspace' }, target_ids: [] }));
   api.getBoard.mockResolvedValue({ settings: {} });
   api.getDeliveryEvidence.mockResolvedValue({ edition: 2, candidates: [], implementations: [], rejected_record_ids: [], rows: [], per_card: [{ ...card, progress: { total: 25, truncated: true, recovery_verified: false, items: entries } }] });
-  render(<CardDeliveryDoDPanel boardId="board" card={{ id: 'card', card_type: 'normal', spec_id: 'spec' }} canProgress />);
+  render(<CardProgressPanel {...props()} card={{ ...card, progress: { total: 25, truncated: true, recovery_verified: false, items: entries } }} />);
   const first = await screen.findByText('First change', { selector: 'summary span' });
   expect(first.closest('details')).not.toHaveAttribute('open');
   fireEvent.click(first.closest('summary')!);

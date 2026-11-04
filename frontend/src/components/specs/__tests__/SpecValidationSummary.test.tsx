@@ -26,6 +26,20 @@ describe('Canonical validation result', () => {
     render(<SpecValidationSummaryCard summary={{ ...summary, edition: 1, exception_count: 7 }} edition={2} loading={false} />);
     expect(screen.getByText('Validation could not be confirmed')).toBeInTheDocument();
     expect(screen.queryByText(/7 recorded/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: 'Validation succeeded' })).not.toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Validation unavailable' })).toBeInTheDocument();
+  });
+
+  it.each([
+    ['validated', 'Validation succeeded', 'lucide-circle-check'],
+    ['validated_with_exception', 'Validation succeeded', 'lucide-circle-check'],
+    ['not_validated', 'Validation not complete', 'lucide-circle-x'],
+    ['ready_to_conclude', 'Validation not complete', 'lucide-circle-x'],
+    ['unavailable', 'Validation unavailable', 'lucide-circle-help'],
+    ['not_required', 'Validation not required', 'lucide-circle-minus'],
+  ] as const)('shows an accessible status icon for %s', (verdict, label, iconClass) => {
+    render(<SpecValidationSummaryCard summary={{ ...summary, verdict }} edition={2} loading={false} />);
+    expect(screen.getByRole('img', { name: label })).toHaveClass(iconClass);
   });
 
   it('requires both a server action and a permitted callback', () => {

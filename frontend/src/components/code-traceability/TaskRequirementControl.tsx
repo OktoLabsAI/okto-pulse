@@ -125,7 +125,7 @@ export function TaskRequirementControl({ boardId, specId, cards, active = true, 
       {options && <>
         {!options.allowed_decisions.length && <p className="text-sm">Only an authorized human can change these requirements.</p>}
         {options.effects.dependent_tasks.length > 0 && <p className="text-sm">Dependencies stay unchanged. Dependent tasks: {options.effects.dependent_tasks.map(card => card.title).join(', ')}.</p>}
-        {options.effects.test_scenarios_remain_governed && <p className="text-sm">This changes only the selected test tasks. Required scenarios for other tasks and the Spec still need verification.</p>}
+        {options.effects.test_scenarios_remain_governed && <p className="text-sm">Test task decisions change execution responsibility only. Required scenarios for other tasks and the Spec still need verification.</p>}
       </>}
       {(canEdit && Boolean(options?.allowed_decisions.length) || uncertain) && <><label className="block text-sm">Requirement
         <select className="mt-1 w-full rounded border bg-white p-2 dark:bg-gray-900" value={choice} disabled={locked || !active || !options?.can_apply || loading || stale || basisChanged}

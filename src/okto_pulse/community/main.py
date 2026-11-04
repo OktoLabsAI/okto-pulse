@@ -1168,6 +1168,7 @@ def create_community_app():
     _community_uow_factory = build_community_unit_of_work_factory(_rc_session_factory)
     _community_worker_registry = build_community_worker_registry(
         _rc_session_factory,
+        evidence_root=Path(settings.data_dir) / "evidence",
         kg_cleanup_enabled=getattr(settings, "kg_cleanup_enabled", True),
         kg_cleanup_interval_seconds=getattr(
             settings,

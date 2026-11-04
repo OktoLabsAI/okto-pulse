@@ -82,6 +82,11 @@ class CommunityDeliveryEvidenceStore:
         self.inventory = inventory if inventory is not None else default_delivery_inventory_policy()
         self._locked = False
 
+    async def record_human_submission(self, command, *, actor_id, actor_kind, report_submitter=None):
+        from .human_task_submissions import CommunityHumanTaskSubmissions
+        return await CommunityHumanTaskSubmissions(self).record(command, actor_id=actor_id,
+            actor_kind=actor_kind, report_submitter=report_submitter)
+
     async def task_requirement_options(self, command, *, actor_id, allowed_decisions):
         from okto_pulse.community.adapters.task_requirement_commands import CommunityTaskRequirementCommands
         return await CommunityTaskRequirementCommands(self).preview(command,
@@ -355,6 +360,7 @@ class CommunityDeliveryEvidenceStore:
             *filters, CardRecord.kind == "progress", CardRecord.id.not_in(revoked),
         ).order_by(CardRecord.created_at, CardRecord.id))).all()
         return [(record, declaration) for record in records
+                if record.payload.get("kind") != "human_submission"
                 if (declaration := DeliveryProgress.model_validate(record.payload["progress"])).material_change != "none"]
 
     async def _test(self, record, scope, bindings, spec, *, native_run=None):
@@ -981,7 +987,7 @@ class CommunityDeliveryEvidenceStore:
     def _impact_claims(self, records):
         claims = []
         for row in records:
-            if row.kind != "progress":
+            if row.kind != "progress" or row.payload.get("kind") == "human_submission":
                 continue
             progress = DeliveryProgress.model_validate(row.payload["progress"])
             if progress.impact_delta is not None:
@@ -1438,6 +1444,7 @@ class CommunityDeliveryEvidenceStore:
 
     async def _progress_summary(self, scope):
         """Bounded history for resumption; currentness reads the full population."""
+        from .delivery_progress_reader import progress_item
         filters = (
             CardRecord.board_id == scope.board_id,
             CardRecord.card_id == scope.card_id,
@@ -1473,21 +1480,7 @@ class CommunityDeliveryEvidenceStore:
             "total": total,
             "truncated": total > len(records),
             "recovery_verified": False,
-            "items": [
-                {
-                    "id": record.id, "actor_id": record.actor_id,
-                    "revoked": record.id in revoked,
-                    "created_at": record.created_at.isoformat(),
-                    "summary": record.payload["justification"][:1000],
-                    "remaining": record.payload["progress"]["remaining"][:1000],
-                    "text_truncated": len(record.payload["justification"]) > 1000 or len(record.payload["progress"]["remaining"]) > 1000,
-                    "source_state": record.payload["progress"]["source_state"],
-                    "material_change": DeliveryProgress.model_validate(record.payload["progress"]).material_change,
-                    "target_ids": record.payload["progress"]["target_ids"][:10],
-                    "targets_truncated": len(record.payload["progress"]["target_ids"]) > 10,
-                }
-                for record in reversed(records)
-            ],
+            "items": [progress_item(record, revoked) for record in reversed(records)],
         }
 
     async def _rollup_waivers(self, scope):

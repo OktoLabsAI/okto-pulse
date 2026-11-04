@@ -1,3 +1,4 @@
+import { CircleCheck, CircleHelp, CircleMinus, CircleX } from 'lucide-react';
 import { PulseLoader } from '@/components/shared/PulseLoader';
 import type { SpecPlanningReadiness, SpecValidationSummary } from '@/types';
 import { validationVerdicts as verdicts } from './validationHelp';
@@ -26,11 +27,24 @@ export function SpecValidationSummaryCard({ summary, edition, loading, onAction,
   const verdict = current?.verdict ?? 'unavailable';
   const [title, description] = verdicts[verdict];
   const validated = verdict === 'validated' || verdict === 'validated_with_exception';
+  const StatusIcon = validated ? CircleCheck
+    : verdict === 'unavailable' ? CircleHelp
+      : verdict === 'not_required' ? CircleMinus : CircleX;
+  const iconLabel = validated ? 'Validation succeeded'
+    : verdict === 'unavailable' ? 'Validation unavailable'
+      : verdict === 'not_required' ? 'Validation not required' : 'Validation not complete';
+  const iconColor = validated ? 'text-emerald-600 dark:text-emerald-400'
+    : verdict === 'not_validated' ? 'text-red-600 dark:text-red-400'
+      : verdict === 'ready_to_conclude' ? 'text-amber-600 dark:text-amber-400'
+        : 'text-surface-500 dark:text-surface-400';
   return <section aria-label="Validation result" data-testid="spec-validation-summary"
     className={`rounded-xl border p-4 ${validated
       ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-950/20'
       : 'border-surface-200 bg-surface-50 dark:border-surface-700 dark:bg-surface-900/40'}`}>
-    <h3 className="text-base font-semibold text-surface-900 dark:text-white">{title}</h3>
+    <div className="flex items-center gap-3">
+      <StatusIcon size={28} role="img" aria-label={iconLabel} className={`shrink-0 ${iconColor}`} />
+      <h3 className="text-base font-semibold text-surface-900 dark:text-white">{title}</h3>
+    </div>
     <p className="mt-2 text-sm text-surface-600 dark:text-surface-300">{description}</p>
     {current?.blockers_count != null && current.blockers_count > 0 && <p className="mt-2 text-xs text-surface-600 dark:text-surface-300">
       {current.blockers_count} required {current.blockers_count === 1 ? 'check needs' : 'checks need'} attention.

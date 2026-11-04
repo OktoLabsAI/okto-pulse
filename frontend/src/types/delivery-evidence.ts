@@ -164,10 +164,14 @@ export interface CardLedgerPage {
   current_edition: number; historical: boolean; total: number;
   next_cursor: string | null;
   items: Array<{ id: string; kind: string; actor_id: string; created_at: string;
+    can_correct?: boolean;
     revoked: boolean; summary: string; text_truncated: boolean;
     obligation_refs: string[]; obligations_truncated: boolean;
     currentness: 'not_evaluated';
     payload?: { contributions?: Array<{ obligation_ref: string; contribution: string }>;
+      human_submission?: { remaining?: string; action: string; receipt: {
+        id: string; received_at: string; content_sha256: string; supersedes_submission_id?: string | null;
+      } };
       execution_id?: string; scenario_id?: string; test_result?: string;
       progress?: { remaining: string; source_state: { workspace_state: string; recoverability: string } } };
   }>;

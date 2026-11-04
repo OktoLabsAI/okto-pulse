@@ -123,6 +123,7 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
   const currentBoard = useCurrentBoard();
   const {
     openCardModal,
+    isCardModalOpen,
     optimisticMoveCard,
     beginColumnsGeneration,
     applyColumnsBatch,
@@ -535,7 +536,7 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
   );
   const deliveryCards = useMemo(() => CARD_STATUSES.flatMap(status => renderedColumns[status] || []), [renderedColumns]);
   const deliveryReadiness = useBoardDeliveryReadiness(boardId, deliveryCards,
-    !accessLost && !authorizing && permissions.has('code_traceability.evidence.read'), `${refreshKey}:${liveRevision}`);
+    !isCardModalOpen && !stackOwnsCard && !accessLost && !authorizing && permissions.has('code_traceability.evidence.read'), `${refreshKey}:${liveRevision}`);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -599,7 +600,15 @@ export function KanbanBoard({ boardId, refreshKey = 0 }: KanbanBoardProps) {
       return;
     }
 
-    // Require the executor's report before a reviewer sees the card in Validation.
+    // Dragging a Spec task opens the same human submission form as its status
+    // control. It must not expose a second technical proof/impact workflow.
+    if (card?.spec_id && targetStatus !== fromStatus && ['validation', 'done'].includes(targetStatus)) {
+      openCardModal(cardId, { tab: 'delivery', focusDiagnosis: false,
+        ...(fromStatus === 'in_progress' ? { humanReport: { status: targetStatus as 'validation' | 'done', requestId: crypto.randomUUID() } } : {}) });
+      if (fromStatus !== 'in_progress') toast.error('Review the current delivery and its next permitted action.');
+      return;
+    }
+    // Legacy executor reports for cards outside a Spec.
     if (requiresExecutionReport(card, targetStatus, fromStatus)) {
       setConclusionPending({ cardId, sourceStatus: fromStatus, destination });
       resetConclusionFields();

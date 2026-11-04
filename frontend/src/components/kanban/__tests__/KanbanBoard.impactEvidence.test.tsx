@@ -46,6 +46,7 @@ const mocks = vi.hoisted(() => {
     open_qa_count: 0,
   } as unknown as CardSummary;
   const dashboardState = {
+    isCardModalOpen: false,
     columns: { ...emptyColumns, in_progress: [card] },
     columnsMeta: {},
     columnsGeneration: 1,
@@ -67,8 +68,12 @@ const mocks = vi.hoisted(() => {
     onDragStart?: (event: unknown) => void;
     onDragEnd?: (event: unknown) => void;
   } = {};
-  return { moveCard, emptyColumns, card, dashboardState, dashboardHook, dragHandlers };
+  return { moveCard, emptyColumns, card, dashboardState, dashboardHook, dragHandlers, readiness: vi.fn(() => ({})) };
 });
+
+vi.mock('@/components/code-traceability/useBoardDeliveryReadiness', () => ({
+  useBoardDeliveryReadiness: mocks.readiness,
+}));
 
 const permissionState = vi.hoisted(() => ({
   denied: new Set<string>(),
@@ -184,8 +189,37 @@ async function fillReport() {
 describe('KanbanBoard DnD execution report — impact evidence (TS-16)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.card.spec_id = null;
+    mocks.dashboardState.isCardModalOpen = false;
     permissionState.denied = new Set();
     mocks.dragHandlers.onDragEnd = undefined;
+  });
+
+  it.each(['normal', 'bug', 'test'])('routes a Spec %s drop to the single human Delivery form', async (cardType) => {
+    mocks.card.spec_id = 'spec-1';
+    const originalType = mocks.card.card_type;
+    mocks.card.card_type = cardType as CardSummary['card_type'];
+    render(<KanbanBoard boardId="board-1" refreshKey={0} />);
+    await waitFor(() => expect(mocks.dragHandlers.onDragEnd).toBeDefined());
+    dropOnValidation();
+    expect(mocks.dashboardState.openCardModal).toHaveBeenCalledWith(mocks.card.id, expect.objectContaining({
+      tab: 'delivery', humanReport: { status: 'validation', requestId: expect.any(String) },
+    }));
+    expect(mocks.moveCard).not.toHaveBeenCalled();
+    expect(mocks.dashboardState.optimisticMoveCard).not.toHaveBeenCalled();
+    expect(screen.queryByText('Execution Report Required')).not.toBeInTheDocument();
+    mocks.card.card_type = originalType;
+  });
+
+  it('suspends background delivery reads while a task modal is open and resumes after closing', async () => {
+    const { rerender } = render(<KanbanBoard boardId="board-1" refreshKey={0} />);
+    await waitFor(() => expect(mocks.readiness).toHaveBeenLastCalledWith('board-1', expect.any(Array), true, expect.any(String)));
+    mocks.dashboardState.isCardModalOpen = true;
+    rerender(<KanbanBoard boardId="board-1" refreshKey={1} />);
+    expect(mocks.readiness).toHaveBeenLastCalledWith('board-1', expect.any(Array), false, expect.any(String));
+    mocks.dashboardState.isCardModalOpen = false;
+    rerender(<KanbanBoard boardId="board-1" refreshKey={2} />);
+    expect(mocks.readiness).toHaveBeenLastCalledWith('board-1', expect.any(Array), true, expect.any(String));
   });
 
   it.each([

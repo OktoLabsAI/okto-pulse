@@ -528,6 +528,11 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
 
     // ==================== CODE TRACEABILITY ====================
 
+    async submitHumanTask(boardId: string, cardId: string, body: import('@/types/task-delivery').HumanTaskSubmission): Promise<import('@/types/task-delivery').HumanTaskSubmissionResult> {
+      return apiClient.fetchJson(`/boards/${encodeURIComponent(boardId)}/cards/${encodeURIComponent(cardId)}/human-submissions`,
+        { method: 'POST', body: JSON.stringify(body), maxRetries: 0 });
+    },
+
     async getCardDeliveryLedger(boardId: string, cardId: string, specId: string, edition: number, options: { cursor?: string; recordId?: string } = {}, signal?: AbortSignal): Promise<import('@/types/delivery-evidence').CardLedgerPage> {
       const query = new URLSearchParams({ card_id: cardId, view: 'ledger', edition: String(edition) });
       if (options.cursor) query.set('cursor', options.cursor);

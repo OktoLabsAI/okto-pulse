@@ -17,3 +17,13 @@ it('explains delivery status, authority, exceptions and next steps at the contex
   expect(content).not.toHaveTextContent('delivery-summary/v1');
   expect(content).not.toHaveTextContent('population_id');
 });
+
+it('documents automatic human receipts, immutable correction and explicit retry at the form help destination', () => {
+  render(<HelpPanel initialSectionId="delivery-progress" onClose={vi.fn()} />);
+  expect(screen.getByLabelText('Help topic')).toHaveValue('delivery-progress');
+  const content = screen.getByRole('heading', { name: 'Task progress — What changed and what remains' }).parentElement!;
+  for (const rule of ['creates the audit receipt automatically', 'never need to obtain, select or enter a receipt',
+    'Test Cards', 'not create a passing run', 'Retry same submission', 'Correct this update',
+    'original author, time and content remain unchanged', 'not stored in browser local storage', 'Your text stays in the form'])
+    expect(content).toHaveTextContent(rule);
+});

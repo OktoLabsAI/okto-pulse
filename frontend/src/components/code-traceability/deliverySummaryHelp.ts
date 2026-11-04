@@ -5,6 +5,28 @@ export const deliverySummaryHelp = `
 Open a Spec's **Coverage → Implementation** view to see its delivery status.
 The main screen answers three questions: what was delivered, what is in progress and what is pending.
 
+### A task's Delivery tab
+
+The task has one current verdict, a short reason, its latest update and at most one primary next action. **Details** starts closed. A check icon accompanies **Delivered**; an X accompanies **Verification failed**. The text conveys the same result without relying on color or the icon.
+
+| Task status | Meaning |
+|-------------|---------|
+| **Checking delivery / Delivery unavailable** | The current result is not confirmed. Wait for preparation or explicitly retry a failed read. |
+| **Not required** | An authorized decision made the task optional or waived for this edition. It does not mean delivered. |
+| **Verification failed** | Current verification contains a failure that needs attention. |
+| **Previously completed** | Historical Done is preserved, but current proof no longer confirms delivery. |
+| **Work remaining** | Implementation remains pending. The reason distinguishes not started, paused and cancelled work. |
+| **Awaiting verification** | Implementation is present; required verification remains pending. |
+| **Awaiting completion** | Evidence alone is insufficient: a report, review or other completion check remains. |
+| **Delivered** | Current required proof and completion are confirmed. |
+| **Ready to complete** | The current checks permit the next completion action; it has not yet been performed. |
+
+A human update has its audit receipt generated automatically. This proves who submitted the text and when; it does not prove code execution, passing tests or approval. See **Task progress** for submission, retry and correction rules. There is no manual receipt form, including in Details.
+
+**Details** provides read-only verification, pending work, evidence history and test navigation. A human may also change whether the task is required. Pages contain at most 20 records; use the next-page controls when needed. Details and its subsections load only when requested. **Refresh** updates the shared task assessment; pending generation checks are grouped and stop when the tab is inactive. Network errors require an explicit retry, and refreshing preserves an open draft.
+
+Use Tab to reach **Details**, **Refresh** or **How this works**, then Enter or Space to activate them. The help link opens this exact topic. Each form has named fields and errors; success and failure include visible text.
+
 ### Read the groups
 
 | Group | Meaning | Next step |

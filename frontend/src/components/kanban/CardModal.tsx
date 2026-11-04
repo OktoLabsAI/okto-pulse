@@ -8,7 +8,6 @@ import { useNativeReferenceFocus } from '@/components/shared/useNativeReferenceF
 import { CardScenarioReferenceNotice } from './CardScenarioReferenceNotice';
 import { MissingLinkNotice } from '@/components/shared/MissingLinkNotice';
 import { DeliverySelectionEditor } from '@/components/code-traceability/DeliverySelectionEditor';
-import { DeliveryReportBatchEditor } from '@/components/code-traceability/DeliveryReportBatchEditor';
 import { sameDeliveryBasis } from '@/components/code-traceability/deliveryReportDraft';
 import type { CardDeliveryBatchDraft, CardDeliveryReportInput, DeliverySelectionInput } from '@/types/delivery-evidence';
 import { v4 as uuidv4 } from 'uuid';
@@ -417,6 +416,8 @@ export function CardModal({
   const [specKBsFull, setSpecKBsFull] = useState<{ id: string; title: string; description?: string; content: string; mime_type?: string }[]>([]);
   const [knowledgeReaderActive, setKnowledgeReaderActive] = useState(false);
   const [showConclusionPrompt, setShowConclusionPrompt] = useState(false);
+  const [humanReportRequest, setHumanReportRequest] = useState<{ cardId: string; status: 'validation' | 'done'; requestId: string }>();
+  const consumedHumanReportRequest = useRef<string>();
   const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [conclusionTargetStatus, setConclusionTargetStatus] = useState<CardStatus>('done');
   const [conclusionDraft, setConclusionDraft] = useState('');
@@ -687,10 +688,11 @@ export function CardModal({
     const isCurrentLoad = () =>
       isCurrentFullLoad()
       && dataGeneration === cardDataGenerationRef.current;
-    setIsLoading(true);
+    // Refreshing the same card must keep the human submission draft mounted.
+    setIsLoading(card?.id !== cardId);
     setBugRegressionPreview(null);
     setAmendmentRevisions(null);
-    setFullSpec(null);
+    if (card?.id !== cardId) setFullSpec(null);
     setSpecKBsFull([]);
     setTaskValidationHierarchy(null);
     setTaskValidationHierarchyLoading(true);
@@ -1026,8 +1028,14 @@ export function CardModal({
   }, [selectedCardId, isOpen, canReadAmendmentRevisions, canReadBoardAgents]);
 
   useEffect(() => {
-    if (isOpen && card?.id === selectedCardId && canReadCodeTraceability && cardModalTarget)
+    if (isOpen && card?.id === selectedCardId && canReadCodeTraceability && cardModalTarget) {
       setActiveTab(cardModalTarget.tab);
+      const request = cardModalTarget.humanReport;
+      if (request && consumedHumanReportRequest.current !== request.requestId && card.status === 'in_progress') {
+        consumedHumanReportRequest.current = request.requestId;
+        setHumanReportRequest({ cardId: card.id, ...request });
+      }
+    }
   }, [isOpen, card?.id, selectedCardId, canReadCodeTraceability, cardModalTarget]);
 
   useEffect(() => {
@@ -1236,7 +1244,19 @@ export function CardModal({
       return false;
     }
 
-    // Intercept Validation/Done — require executor report
+    // Human Spec delivery uses one audited application command. Technical
+    // receipt selection and assessment scores belong to the agent workflow.
+    if (card.spec_id && ['normal', 'bug', 'test'].includes(card.card_type || 'normal')
+      && ['validation', 'done'].includes(status) && !conclusion) {
+      setActiveTab('delivery');
+      if (card.status !== 'in_progress') {
+        toast.error('Review the task in Delivery. A new delivery report requires In Progress; existing validation remains authoritative.');
+        return false;
+      }
+      setHumanReportRequest({ cardId: card.id, status: status as 'validation' | 'done', requestId: crypto.randomUUID() });
+      return false;
+    }
+    // Legacy reports for cards outside a Spec.
     if (requiresExecutionReport(status) && !conclusion) {
       setConclusionTargetStatus(status);
       setShowConclusionPrompt(true);
@@ -1539,8 +1559,8 @@ export function CardModal({
       {syncAuthorizing && <PulseLoader label="Checking Card access…" />}
       <div ref={nativeReferenceRoot} style={{ display: syncAuthorizing ? 'none' : undefined }} className={`modal-content ${expanded ? '!max-w-[95vw] !h-[95vh]' : ''}`} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
-        <div className="modal-header">
-          <div className="flex items-center gap-3 flex-1">
+        <div className="modal-header flex-wrap gap-2">
+          <div className="flex min-w-0 basis-full items-center gap-3 sm:basis-0 sm:flex-1">
             <select
               value={card?.status || ''}
               onChange={(e) => handleStatusChange(e.target.value as CardStatus)}
@@ -1586,14 +1606,14 @@ export function CardModal({
           {parentSpec && (
             <button
               onClick={() => setViewingSpecId(parentSpec.id)}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300 hover:ring-2 hover:ring-violet-300 dark:hover:ring-violet-600 transition-all shrink-0"
+              className="inline-flex min-w-0 flex-1 items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300 hover:ring-2 hover:ring-violet-300 dark:hover:ring-violet-600 transition-all sm:max-w-[13rem] sm:flex-none"
               title="View linked spec"
             >
-              <FileText size={11} />
-              {parentSpec.title.length > 30 ? parentSpec.title.slice(0, 27) + '...' : parentSpec.title}
+              <FileText size={11} className="shrink-0" />
+              <span className="truncate">{parentSpec.title.length > 30 ? parentSpec.title.slice(0, 27) + '...' : parentSpec.title}</span>
             </button>
           )}
-          <div className="flex items-center gap-1">
+          <div className="ml-auto flex shrink-0 items-center gap-1">
             <button
               onClick={() => {
                 if (!card) return;
@@ -1921,8 +1941,11 @@ export function CardModal({
                   mount="lazy-keep"
                 >
                   <CardDeliveryDoDPanel
+                    key={card.id}
                     active={activeTab === 'delivery' && !syncAuthorizing}
                     revision={liveRevision}
+                    reportRequest={humanReportRequest?.cardId === card.id ? humanReportRequest : undefined}
+                    onReportClosed={() => setHumanReportRequest(undefined)}
                     boardId={card.board_id}
                     card={{ id: card.id, card_type: card.card_type || 'normal', spec_id: card.spec_id }}
                     canRecord={perms.has('code_traceability.target.execution_submit')}
@@ -1933,7 +1956,7 @@ export function CardModal({
                     focusDiagnosis={cardModalTarget?.focusDiagnosis}
                     focusRecordId={cardModalTarget?.recordId}
                     onOpenReadinessCard={openCardModal}
-                    onChanged={() => { void loadCard(card.id); notifyReadinessChanged(); }}
+                    onChanged={() => { toast.success('Task updated'); void loadCard(card.id); notifyReadinessChanged(); }}
                   />
                 </AccessibleTabPanel>
               )}
@@ -2741,16 +2764,6 @@ export function CardModal({
               onChange={setConclusionImpactDraft}
             />}
             {card?.spec_id && <DeliverySelectionEditor key={card.id} boardId={card.board_id} cardId={card.id} specId={card.spec_id} onChange={setConclusionDeliverySelection} onPending={setConclusionSelectionPending} />}
-            {card?.spec_id && conclusionOrigin.current?.status === 'in_progress' && <div className="mt-3 space-y-2">
-              <label><input type="checkbox" checked={conclusionBatchMode} onChange={event => { setConclusionBatchMode(event.target.checked); if (!event.target.checked) setConclusionBatch(undefined); }} /> Save a last batch together with this report</label>
-              {conclusionBatchMode && (!conclusionDeliverySelection
-                ? <p>Enable evidence selection above to prepare the last batch.</p>
-                : <DeliveryReportBatchEditor key={`${card.id}:${card.spec_id}`} boardId={card.board_id}
-                  card={{ id: card.id, card_type: card.card_type || 'normal', spec_id: card.spec_id }}
-                  selection={conclusionDeliverySelection} draft={conclusionBatch} onChange={setConclusionBatch}
-                  canRecord={perms.has('code_traceability.target.execution_submit')} canTest={perms.has('spec.tests.execute')}
-                  canProgress={perms.has('card.conclusion.write')} />)}
-            </div>}
             </fieldset>
             {conclusionGateError && (
               <p

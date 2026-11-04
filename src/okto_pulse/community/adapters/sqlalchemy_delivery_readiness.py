@@ -237,6 +237,7 @@ class _BatchFacts(CommunityDeliveryEvidenceStore):
                        if r.kind == 'revoke' and r.actor_kind in {'human', 'user'}}
             self.progress[card_id] = tuple((r, value) for r in records
                 if r.kind == 'progress' and r.id not in revoked
+                and r.payload.get('kind') != 'human_submission'
                 and (value := DeliveryProgress.model_validate(r.payload['progress'])).material_change != 'none')
         return self.progress[card_id]
 
@@ -913,7 +914,7 @@ class CommunityDeliveryReadinessReader:
         facts are retried once, then fail closed.
         """
         from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import (
-            CommunityPersistedReadinessStore,
+            CommunityPersistedReadinessStore, ProjectionRead,
         )
         if include_summary_cards and (card_id is not None or unit_limit or cursor is not None or include_diagnostics):
             raise ReadinessReadError('readiness_query_invalid')
@@ -934,12 +935,35 @@ class CommunityDeliveryReadinessReader:
                         raise ReadinessReadError('readiness_scope_mismatch')
                     card_policy_version = None
                     if card_id is not None:
-                        card_policy_version = (await session.execute(select(Card.policy_version).where(
+                        card_policy_version = (await session.execute(select(Card.policy_version, Card.status).where(
                             Card.id == card_id,
                             Card.board_id == board_id, Card.spec_id == spec_id,
-                            Card.archived.is_(False)))).scalar_one_or_none()
+                            Card.archived.is_(False)))).one_or_none()
                         if card_policy_version is None:
                             raise ReadinessReadError('readiness_scope_mismatch')
+                        # One bounded Card-local note accompanies the projection.
+                        # No Spec-wide ledger read and no technical proof evaluation.
+                        revoked_note = aliased(CardRecord)
+                        note_row = (await session.execute(select(CardRecord.id, CardRecord.payload, CardRecord.created_at).where(
+                            CardRecord.board_id == board_id, CardRecord.card_id == card_id,
+                            CardRecord.spec_id == spec_id, CardRecord.spec_edition == spec.edition,
+                            CardRecord.kind == 'progress', ~select(revoked_note.id).where(
+                                revoked_note.board_id == board_id, revoked_note.card_id == card_id,
+                                revoked_note.spec_id == spec_id, revoked_note.spec_edition == spec.edition,
+                                revoked_note.kind == 'revoke', revoked_note.actor_kind.in_(('human', 'user')),
+                                revoked_note.payload['record_id'].as_string() == CardRecord.id).exists()
+                            ).order_by(CardRecord.created_at.desc(), CardRecord.id.desc()).limit(1))).first()
+                        note = None
+                        if note_row:
+                            payload = note_row.payload
+                            human = payload.get('kind') == 'human_submission'
+                            body = payload.get('human_submission' if human else 'progress') or {}
+                            content, remaining = payload.get('justification') or '', body.get('remaining') or ''
+                            note = dict(record_id=note_row.id, content=content[:1000], remaining=remaining[:1000] or None,
+                                submitted_at=note_row.created_at.isoformat(),
+                                origin='human_submission' if human else 'technical_checkpoint',
+                                text_truncated=len(content) > 1000 or len(remaining) > 1000)
+                        card_policy_version = (*card_policy_version, note)
                     source_revision = None
                     if check_source_revision:
                         source_revision = (await connection.exec_driver_sql(
@@ -1049,6 +1073,20 @@ class CommunityDeliveryReadinessReader:
                         card_id=card_id, limit=unit_limit,
                         generation_id=projection.generation_id,
                         offset=unit_offset + len(projection.units))
+                if card_id is not None:
+                    from okto_pulse.core.services.task_delivery_summary import present_task_delivery_summary
+                    rows = [row for row in projection.summaries if row.get('card_id') == card_id] if projection else []
+                    verdict = present_task_delivery_summary(rows[0].get('task_delivery') if len(rows) == 1 else None,
+                        board_id=board_id, spec_id=spec_id, card_id=card_id, spec_edition=after[1],
+                        card_version=after[3][0], status=getattr(after[3][1], 'value', after[3][1]),
+                        freshness=projection.freshness if projection else 'pending_initial',
+                        actor_kind=actor.actor_kind, allowed_operations=after[0].allowed_operations,
+                        last_update=after[3][2]).model_dump(mode='json')
+                    if projection is None:
+                        projection = ProjectionRead(board_id, spec_id, after[1], 0, None, None, None,
+                            'pending_initial', None, (), (), 0, None, task_delivery=verdict)
+                    else:
+                        projection = replace(projection, task_delivery=verdict)
                 result = (projection, before[1], before[2], {'offset': unit_offset,
                     'limit': unit_limit, 'total': projection.unit_total if projection else 0,
                     'has_more': has_more, 'next_cursor': next_cursor})

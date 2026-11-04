@@ -72,6 +72,7 @@ def build_community_worker_registry(
     kg_queue_heartbeat_seconds: int = 30,
     kg_queue_recovery_scan_interval_seconds: int = 60,
     kg_queue_max_concurrent_workers: int = 1,
+    evidence_root: Path | None = None,
 ) -> RuntimeWorkerRegistry:
     """Build all runners before app construction and register their lifecycle."""
 
@@ -95,6 +96,7 @@ def build_community_worker_registry(
     readiness_runner = PollingRunner(
         ReadinessProjectionProcessor(readiness_engine, readiness_blocking_execution,
             full_projection_executor=readiness_pool, database_path=database_path,
+            evidence_root=evidence_root,
             max_inflight=2 if file_backed else 1),
         name="community.readiness_projection",
         interval_seconds=0.1,

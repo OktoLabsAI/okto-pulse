@@ -38,6 +38,7 @@ export interface PersistedReadinessSummary {
   population_known: boolean; evaluation_complete: boolean;
 }
 export interface PersistedReadinessProjection {
+  task_delivery?: import('./task-delivery').TaskDeliverySummary | null;
   contract_version: 'delivery-readiness-projection/v1';
   scope: { board_id: string; spec_id: string; spec_edition: number | null;
     spec_version: number; card_id: string | null };

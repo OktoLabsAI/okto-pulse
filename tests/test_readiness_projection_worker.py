@@ -902,6 +902,44 @@ async def test_process_projects_and_stages_before_parent_publish(tmp_path, caplo
 
 
 @pytest.mark.asyncio
+async def test_spawned_projection_uses_installation_verifier_without_creating_ledger(tmp_path):
+    database = tmp_path / 'pulse.sqlite3'
+    evidence_root = tmp_path / 'evidence'
+    engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
+    try:
+        await _seed_one_spec(engine)
+        requirements = [dict(id='fr', text='Show the validation result', linked_task_ids=['card'],
+            verification=dict(mode='explicit', required_profiles=['functional']),
+            implementation_plan=dict(contributions=[dict(card_id='card', scope='selected_criteria',
+                criterion_ids=['ac'], summary='Validation result UI')]))]
+        criteria = [dict(id='ac', text='The current verdict is visible', verification_profile='functional',
+            linked_task_ids=['card'], requirement_links=[dict(requirement_type='functional_requirement', requirement_id='fr')])]
+        scenarios = [dict(id='scenario', title='Inspect verdict', status='draft', scenario_type='manual',
+            verification_method='demonstration', linked_criteria=['ac'], linked_task_ids=['test'],
+            given='A current Spec', when='Validation is opened', then='The verdict is visible')]
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(f'PRAGMA main.application_id={APPLICATION_ID}')
+            await connection.exec_driver_sql(f'PRAGMA main.user_version={SCHEMA_VERSION}')
+            await connection.exec_driver_sql("UPDATE specs SET functional_requirements=?, acceptance_criteria=?, test_scenarios=?, technical_requirements='[]', business_rules='[]', api_contracts='[]', integration_requirements='[]', observability_requirements='[]', decisions='[]' WHERE id='spec'",
+                (json.dumps(requirements), json.dumps(criteria), json.dumps(scenarios)))
+            await connection.exec_driver_sql("INSERT INTO cards (id,board_id,spec_id,title,status,position,created_by,card_type) VALUES ('card','board','spec','Work','not_started',0,'owner','normal')")
+            await connection.exec_driver_sql("INSERT INTO cards (id,board_id,spec_id,title,status,position,created_by,card_type,test_scenario_ids) VALUES ('test','board','spec','Verify','not_started',1,'owner','test','[\"scenario\"]')")
+        with ProcessPoolExecutor(max_workers=1, mp_context=get_context('spawn')) as executor:
+            worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution(),
+                full_projection_executor=executor, database_path=database, evidence_root=evidence_root)
+            assert await worker.process_once() == 1
+            visible = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+            assert visible is not None and visible.freshness == 'current'
+            summary = next(row for row in visible.summaries if row['card_id'] is None)
+            assert summary['verification']['status'] == 'known', json.dumps(summary)
+            assert summary['verification']['satisfied'] == 0
+            assert 'delivery_verification_methods_unavailable' not in json.dumps(visible.summaries)
+        assert not evidence_root.exists()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_process_stage_cancellation_waits_for_child_result(tmp_path):
     database = tmp_path / 'pulse.sqlite3'
     engine = create_async_engine(f'sqlite+aiosqlite:///{database}')

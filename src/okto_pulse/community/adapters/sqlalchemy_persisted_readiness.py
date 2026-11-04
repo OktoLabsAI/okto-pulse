@@ -84,6 +84,7 @@ class ProjectionRead:
     unit_total: int
     source_snapshot_id: str | None
     diagnostics: dict | None = None
+    task_delivery: dict | None = None
 
 
 class ReadinessLeaseLost(RuntimeError):

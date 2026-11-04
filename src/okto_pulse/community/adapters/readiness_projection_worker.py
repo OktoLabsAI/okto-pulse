@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 from concurrent.futures.process import BrokenProcessPool
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 import gc
 import hashlib
@@ -151,7 +151,28 @@ def _build_with_predecessor(snapshot, revision, deadline, candidate, *, phase_me
     return generation, "full"
 
 
-def _project_and_stage_from_database(database_path, claim, deadline):
+@contextmanager
+def _projection_verifier_scope(evidence_root):
+    """Bind the installation verifier in a spawned process, without writers.
+
+    Spawn does not inherit the API's ContextVars. The parent supplies the
+    installation ledger location; clients cannot declare verifier capability.
+    Constructing the ledger is read-only, including when its key is absent.
+    """
+    if evidence_root is None:
+        yield
+        return
+    from okto_pulse.core.composition import isolated_runtime_provider_scope
+    from okto_pulse.core.ports.test_evidence import register_test_evidence_write_verifier
+    from .test_evidence import CommunityEvidenceLedger, CommunityTestEvidenceWriteVerifier
+
+    with isolated_runtime_provider_scope():
+        register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(
+            ledger=CommunityEvidenceLedger(evidence_root=Path(evidence_root))))
+        yield
+
+
+def _project_and_stage_from_database(database_path, claim, deadline, evidence_root=None):
     """Keep the large generation in one child until its rows are durable."""
     from .worker_runners import TrackedBlockingExecution
 
@@ -229,9 +250,13 @@ def _project_and_stage_from_database(database_path, claim, deadline):
             predecessor_ms, compute_ms, stage_ms, projection_mode,
             snapshot_phases, phases)
 
+    async def project_with_verifier():
+        with _projection_verifier_scope(evidence_root):
+            return await project_and_stage()
+
     gc.callbacks.append(observe_gc)
     try:
-        result = runner.run(project_and_stage())
+        result = runner.run(project_with_verifier())
     finally:
         gc.callbacks.remove(observe_gc)
     snapshot_phases = result[8]
@@ -256,12 +281,14 @@ def _stage_from_database(database_path, claim, generation):
 
 class ReadinessProjectionProcessor:
     def __init__(self, engine, blocking_execution, *, full_projection_executor=None,
-                 database_path=None, maintenance_enabled=True, max_inflight=1):
+                 database_path=None, maintenance_enabled=True, max_inflight=1,
+                 evidence_root=None):
         self.store = CommunityPersistedReadinessStore(engine)
         self.reader = CommunityDeliveryReadinessReader(engine, clock=CommunityReadinessClock())
         self.blocking_execution = blocking_execution
         self.full_projection_executor = full_projection_executor
         self.database_path = database_path
+        self.evidence_root = str(Path(evidence_root).resolve()) if evidence_root is not None else None
         self.maintenance_enabled = maintenance_enabled
         if max_inflight not in (1, 2):
             raise ValueError("readiness_max_inflight_invalid")
@@ -396,7 +423,7 @@ class ReadinessProjectionProcessor:
                     future = asyncio.get_running_loop().run_in_executor(
                         self.full_projection_executor, _project_and_stage_from_database,
                         str(self.database_path), claim,
-                        snapshot_started + 30)
+                        snapshot_started + 30, self.evidence_root)
                     (generation_id, captured_revision, unit_count, snapshot_ms,
                         predecessor_ms, compute_ms, child_stage_ms, projection_mode,
                         snapshot_phases, phases) = await asyncio.shield(future)
