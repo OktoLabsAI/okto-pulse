@@ -1333,6 +1333,55 @@ async def get_requirement_verification(
         raise HTTPException(status_code=503 if str(exc) == "verification_snapshot_unavailable" else 422, detail=str(exc)) from exc
 
 
+class BugAllocationRepairRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_spec_version: int = Field(ge=1, strict=True)
+    expected_scope_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    selected_link_ids: list[str] = Field(min_length=1, max_length=200)
+    idempotency_key: str = Field(min_length=1, max_length=160)
+
+
+async def _bug_allocation_repair(board_id, spec_id, bug_id, user_id, uow, body=None):
+    from okto_pulse.core.application.use_cases.bug_allocation_repair import (
+        BugAllocationRepairCommand, BugAllocationRepairUseCase,
+    )
+    from okto_pulse.core.services.bug_allocation_repair import BugAllocationRepairError
+
+    values = body.model_dump() if body is not None else {}
+    try:
+        return await BugAllocationRepairUseCase().execute(
+            BugAllocationRepairCommand(board_id, spec_id, bug_id, **values),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            uow=uow, apply=body is not None,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Repair subjects not found") from exc
+    except PermissionDeniedError as exc:
+        raise HTTPException(status_code=403, detail=exc.message) from exc
+    except BugAllocationRepairError as exc:
+        code = 404 if exc.code == "repair_subject_not_found" else 422 if exc.code in {
+            "repair_selection_invalid", "repair_preview_required"} else 409
+        raise HTTPException(status_code=code, detail=exc.to_dict()) from exc
+
+
+@router.get("/boards/{board_id}/specs/{spec_id}/bugs/{bug_id}/allocation-repair")
+async def preview_bug_allocation_repair(
+    board_id: str, spec_id: str, bug_id: str,
+    user_id: str = Depends(require_user), uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Read proven legacy automatic allocations without changing scope."""
+    return await _bug_allocation_repair(board_id, spec_id, bug_id, user_id, uow)
+
+
+@router.post("/boards/{board_id}/specs/{spec_id}/bugs/{bug_id}/allocation-repair")
+async def apply_bug_allocation_repair(
+    board_id: str, spec_id: str, bug_id: str, body: BugAllocationRepairRequest,
+    user_id: str = Depends(require_user), uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Apply one unchanged, selected repair through the same owner as MCP."""
+    return await _bug_allocation_repair(board_id, spec_id, bug_id, user_id, uow, body)
+
+
 @router.get("/boards/{board_id}/specs/{spec_id}/architecture-candidates")
 async def get_architecture_candidates(
     board_id: str,

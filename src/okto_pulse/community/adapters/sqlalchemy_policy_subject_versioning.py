@@ -263,7 +263,7 @@ def _history_values(instance: object, attribute_name: str) -> set[str]:
 
 def _bumped_by_transaction(
     session: Session,
-) -> dict[Any, set[tuple[str, str]]]:
+) -> dict[Any, set[tuple[str, str, str]]]:
     value = session.info.setdefault(_BUMPED_KEY, {})
     if not isinstance(value, dict):
         value = {}
@@ -443,7 +443,7 @@ def _was_bumped(
     session: Session,
     *,
     transaction: Any,
-    key: tuple[str, str],
+    key: tuple[str, str, str],
 ) -> bool:
     markers = _bumped_by_transaction(session)
     current = transaction
@@ -461,7 +461,9 @@ def _bump(
     identity: str,
     field_name: str,
 ) -> None:
-    key = (model.__tablename__, identity)
+    # Spec.version and test_scenario_policy_epoch are independent fences.
+    # Sharing a row-only marker let a scenario bump suppress the Spec bump.
+    key = (model.__tablename__, identity, field_name)
     transaction = _active_transaction(session)
     if _was_bumped(session, transaction=transaction, key=key):
         return
