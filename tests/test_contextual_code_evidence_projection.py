@@ -471,9 +471,12 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
             )
 
             assert refinement.source_context is not None
-            assert refinement.source_context.role_counts.reference_pattern_count == 2
+            assert refinement.current_source_context.role_counts.reference_pattern_count == 2
+            assert refinement.source_context_snapshot.kind == "historical_snapshot"
+            assert refinement.source_context_snapshot.snapshot_version == 3
+            assert refinement.source_context.role_counts.existing_constraint_count == 1
             assert refinement.source_context.technical_details_available is True
-            assert len(refinement.source_context_items) == 3
+            assert len(refinement.source_context_items) == 1
             assert all(
                 item.context_origin is domain.CodeEvidenceContextOrigin.AUTHORED
                 for item in refinement.source_context_items
@@ -533,6 +536,71 @@ def test_current_refinement_and_frozen_spec_card_source_context(tmp_path: Path) 
                 assert item.relevance_summary == (evidence.relevance_summary)
                 assert redacted.source_context is not None
                 assert redacted.source_context.technical_details_available is True
+
+        # Persist a real equal-digest status edge. Native projection can reuse
+        # v3 at v4, and loses that compatibility on any content change.
+        from okto_pulse.community.adapters.sqlalchemy_models import Refinement
+        from okto_pulse.core.domain.refinement_source_compatibility import compatibility_change, refinement_source_digest
+        async with sessions() as session:
+            await session.execute(text("UPDATE refinements SET status = 'review' WHERE id = 'refinement-1'"))
+            root = await session.get(Refinement, "refinement-1")
+            before_digest = refinement_source_digest(root)
+            await session.execute(text("UPDATE refinements SET status = 'approved', version = 4 WHERE id = 'refinement-1'"))
+            await session.refresh(root)
+            proof = compatibility_change(subject=root, before_version=3, before_status="review", before_digest=before_digest)
+            assert proof is not None
+            await session.execute(text(
+                "INSERT INTO refinement_history (id, refinement_id, action, actor_type, actor_id, actor_name, changes, version) "
+                "VALUES ('compatible-approval', 'refinement-1', 'status_changed', 'user', 'owner-1', 'Owner', :changes, 4)"
+            ), {"changes": json.dumps([{"field": "status", "old": "review", "new": "approved"}, proof])})
+            await session.commit()
+        query = _projection_query(subject_type=domain.CodeTraceabilitySubjectType.REFINEMENT,
+            subject_id="refinement-1", subject_version=4, profile=domain.CodeTraceabilityProjectionProfile.FULL)
+        async with sessions() as session:
+            read = CommunityRelationalApplicationAdapter().code_traceability_read(session)
+            compatible = await read.refinement_context(query)
+            assert compatible.refinement_source_compatibility.compatible_versions == (4, 3)
+            assert compatible.source_context.investigation_outcome == receipt.contextual_outcome
+            assert compatible.source_context_snapshot is None
+        async with sessions() as session:
+            await session.execute(text("UPDATE refinements SET description = 'Changed content' WHERE id = 'refinement-1'"))
+            await session.commit()
+        async with sessions() as session:
+            incompatible = await CommunityRelationalApplicationAdapter().code_traceability_read(session).refinement_context(query)
+            assert incompatible.refinement_source_compatibility is None
+            assert incompatible.source_context.investigation_outcome is None
+
+        # A legacy completion wrote snapshot/history v3 before the adapter's
+        # status-only bump to v4. Read that exact historical source while the
+        # current assessment remains unavailable at v4; never relabel it current.
+        async with sessions() as session:
+            await session.execute(text("UPDATE refinements SET status = 'done', description = NULL, version = 4 WHERE id = 'refinement-1'"))
+            await session.execute(text(
+                "INSERT INTO refinement_history (id, refinement_id, action, actor_type, actor_id, actor_name, changes, version) "
+                "VALUES ('legacy-done', 'refinement-1', 'status_changed', 'user', 'owner-1', 'Owner', :changes, 3)"
+            ), {"changes": json.dumps([{"field": "status", "old": "approved", "new": "done"}])})
+            await session.commit()
+        async with sessions() as session:
+            read = CommunityRelationalApplicationAdapter().code_traceability_read(session)
+            query = _projection_query(subject_type=domain.CodeTraceabilitySubjectType.REFINEMENT,
+                subject_id="refinement-1", subject_version=4, profile=domain.CodeTraceabilityProjectionProfile.FULL)
+            legacy = await read.refinement_context(query)
+            assert legacy.subject_version == 4
+            assert legacy.source_context_snapshot.snapshot_version == 3
+            assert legacy.source_context_snapshot.manifest_sha256 == frozen_manifest.payload_sha256
+            assert legacy.source_context.investigation_outcome == frozen_summary.investigation_outcome
+            assert legacy.current_source_context.investigation_outcome is None
+            assert legacy.refinement_source_compatibility is None
+        async with sessions() as session:
+            await session.execute(text(
+                "INSERT INTO refinement_history (id, refinement_id, action, actor_type, actor_id, actor_name, changes, version) "
+                "VALUES ('ambiguous-done', 'refinement-1', 'status_changed', 'user', 'owner-1', 'Owner', :changes, 3)"
+            ), {"changes": json.dumps([{"field": "status", "old": "approved", "new": "done"}])})
+            await session.commit()
+        async with sessions() as session:
+            read = CommunityRelationalApplicationAdapter().code_traceability_read(session)
+            with pytest.raises(traceability_port.CodeTraceabilityPersistenceError):
+                await read.refinement_context(query)
 
         async with sessions() as session:
             await session.execute(

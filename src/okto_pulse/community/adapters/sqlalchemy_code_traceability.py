@@ -47,11 +47,15 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ImplementationTargetRow,
     ImplementationTargetSpecLinkRow,
     Refinement,
+    RefinementHistory,
     RefinementSnapshot,
     Spec,
     TargetOverlapAcknowledgementRow,
 )
 from okto_pulse.core.domain import code_traceability as domain
+from okto_pulse.core.domain.refinement_source_compatibility import (
+    is_legacy_approved_to_done_history, resolve_source_compatibility,
+)
 from okto_pulse.core.ports import code_investigation as investigation_port
 from okto_pulse.core.ports import code_traceability as traceability_port
 from okto_pulse.core.services.reference_resolution import resolve_spec_references
@@ -4078,11 +4082,61 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
             ) from exc
         return tuple(items)
 
+    async def _refinement_source_compatibility(self, refinement: Refinement):
+        history = (await self._session.execute(
+            select(RefinementHistory).where(
+                RefinementHistory.refinement_id == refinement.id,
+                RefinementHistory.version <= refinement.version,
+            ).order_by(RefinementHistory.version.desc(), RefinementHistory.created_at.desc(),
+                       RefinementHistory.id.desc()).limit(51)
+        )).scalars().all()
+        return resolve_source_compatibility(refinement, history)
+
+    async def _completed_refinement_source_context(self, query, refinement, *, evidence):
+        # Match the native lineage owner's strict N/N+1 resolver using this
+        # transaction-bound adapter. No global application-persistence registry
+        # is required by an otherwise self-contained read model.
+        snapshots = (await self._session.execute(select(RefinementSnapshot).where(
+            RefinementSnapshot.refinement_id == refinement.id,
+            RefinementSnapshot.version.in_((refinement.version, refinement.version - 1)),
+        ).limit(2))).scalars().all()
+        snapshot = next((row for row in snapshots if row.version == refinement.version), None)
+        if snapshot is None:
+            previous = next((row for row in snapshots if row.version == refinement.version - 1), None)
+            history = (await self._session.execute(select(RefinementHistory).where(
+                RefinementHistory.refinement_id == refinement.id,
+                RefinementHistory.version == refinement.version - 1,
+                RefinementHistory.action == "status_changed",
+            ).limit(2))).scalars().all()
+            if previous is not None and is_legacy_approved_to_done_history(history):
+                snapshot = previous
+        if snapshot is None:
+            raise self._source_context_error(query, reason="refinement_completed_snapshot_missing")
+        raw, digest = snapshot.source_context_manifest, snapshot.source_context_sha256
+        if (not isinstance(raw, Mapping) or not self._sha256_text(digest)
+                or domain.canonical_code_traceability_sha256(raw) != digest):
+            raise self._source_context_error(query, reason="refinement_snapshot_manifest_invalid")
+        try:
+            manifest = domain.parse_refinement_source_context_manifest_v2(raw)
+        except (domain.CodeTraceabilityContractError, TypeError, ValueError) as exc:
+            raise self._source_context_error(query, reason="refinement_snapshot_manifest_invalid") from exc
+        if (manifest.refinement_id != refinement.id or manifest.refinement_version != snapshot.version
+                or manifest.payload_sha256 != digest):
+            raise self._source_context_error(query, reason="refinement_snapshot_scope_mismatch")
+        entries = self._frozen_evidence_context_manifest(query, snapshot)
+        # Current visible evidence can contain later records. Historical context
+        # contains only the identities sealed by this snapshot.
+        members = tuple(item for item in evidence if item.id in entries)
+        items = await self._frozen_source_context_items(query, evidence=members, entries=entries)
+        basis = domain.RefinementSourceSnapshotBasis(snapshot.id, snapshot.version, digest)
+        return manifest.summary, items, basis
+
     async def _current_refinement_receipt_outcomes(
         self,
         query: traceability_port.CodeTraceabilityProjectionQuery,
         *,
         expected_delivery_context: domain.DeliveryContext | None,
+        compatible_versions: tuple[int, ...] = (),
     ) -> tuple[domain.ContextualInvestigationOutcomeV2 | None, ...]:
         receipt_rows = tuple(
             (
@@ -4093,8 +4147,8 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
                         CodeInvestigationReceiptRow.subject_type
                         == domain.CodeTraceabilitySubjectType.REFINEMENT.value,
                         CodeInvestigationReceiptRow.subject_id == query.subject_id,
-                        CodeInvestigationReceiptRow.subject_version
-                        == query.subject_version,
+                        CodeInvestigationReceiptRow.subject_version.in_(
+                            compatible_versions or (query.subject_version,)),
                     )
                     .order_by(
                         CodeInvestigationReceiptRow.source_ref,
@@ -4193,6 +4247,7 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
         refinement: Refinement,
         *,
         visible_evidence: tuple[domain.CodeEvidence, ...],
+        compatible_versions: tuple[int, ...] = (),
     ) -> tuple[
         domain.SourceContextSummaryV2 | None,
         tuple[domain.SourceContextEvidenceItemV2, ...],
@@ -4236,6 +4291,7 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
             outcomes = await self._current_refinement_receipt_outcomes(
                 query,
                 expected_delivery_context=delivery_context,
+                compatible_versions=compatible_versions,
             )
             active_visible_evidence = tuple(
                 item
@@ -4746,6 +4802,7 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
         target_rows: tuple[ImplementationTargetRow, ...],
         resolution_rows: tuple[ImplementationTargetResolutionRow, ...],
         execution_rows: tuple[ImplementationTargetExecutionRecordRow, ...],
+        compatible_versions: tuple[int, ...] = (),
     ) -> tuple[
         tuple[domain.CodeInvestigationHead, ...],
         tuple[domain.CodeInvestigationReceipt, ...],
@@ -4758,8 +4815,8 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
                 CodeInvestigationReceiptRow.subject_type
                 == query.subject_type.value,
                 CodeInvestigationReceiptRow.subject_id == query.subject_id,
-                CodeInvestigationReceiptRow.subject_version
-                == query.subject_version,
+                CodeInvestigationReceiptRow.subject_version.in_(
+                    compatible_versions or (query.subject_version,)),
             )
             .order_by(
                 CodeInvestigationReceiptRow.generation,
@@ -5084,6 +5141,10 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
                 omitted_collections=omitted_collections,
             )
 
+        compatibility = (
+            await self._refinement_source_compatibility(subject) if isinstance(subject, Refinement) else None
+        )
+        compatible_versions = compatibility.compatible_versions if compatibility is not None else ()
         heads, receipts, revocations = await self._context_attestations(
             query,
             omitted_collections=omitted_collections,
@@ -5091,10 +5152,13 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
             target_rows=target_rows,
             resolution_rows=resolution_rows,
             execution_rows=execution_rows,
+            compatible_versions=compatible_versions,
         )
         evidence = await self._evidence_values(evidence_rows)
         source_context: domain.SourceContextSummaryV2 | None = None
         source_context_items: tuple[domain.SourceContextEvidenceItemV2, ...] = ()
+        source_context_snapshot = None
+        current_source_context = None
         if isinstance(subject, Refinement):
             (
                 source_context,
@@ -5104,8 +5168,13 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
                     query,
                     subject,
                     visible_evidence=evidence,
+                    compatible_versions=compatible_versions,
                 )
             )
+            current_source_context = source_context
+            if _value(subject.status) == "done":
+                source_context, source_context_items, source_context_snapshot = await self._completed_refinement_source_context(
+                    query, subject, evidence=evidence)
         elif linked_spec is not None:
             source_context, frozen_entries = await self._frozen_source_context(
                 query,
@@ -5215,6 +5284,9 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
             source_refinement_version=lineage[2],
             source_context=source_context,
             source_context_items=source_context_items,
+            refinement_source_compatibility=compatibility,
+            source_context_snapshot=source_context_snapshot,
+            current_source_context=current_source_context,
         )
 
     async def refinement_context(
