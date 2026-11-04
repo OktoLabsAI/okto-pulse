@@ -1,26 +1,7 @@
 import { CircleCheck, CircleHelp, CircleX, Clock3, MinusCircle, TriangleAlert } from 'lucide-react';
 import type { Spec } from '@/types';
 import type { PersistedReadinessProjection, ReadinessMetric } from '@/types/delivery-readiness';
-
-type Unit = PersistedReadinessProjection['units'][number];
-type LabelSource = { id: string; title?: string | null; text?: string; description?: string };
-const families: Record<string, string> = { fr: 'Functional requirement', ac: 'Acceptance criterion',
-  tr: 'Technical requirement', br: 'Business rule', api: 'API contract', ir: 'Integration requirement',
-  or: 'Observability requirement', decision: 'Decision', scenario: 'Test scenario' };
-
-function labelFor(unit: Unit, spec?: Spec | null) {
-  const separator = unit.ref.indexOf(':');
-  const family = unit.kind === 'scenario' ? 'scenario' : unit.ref.slice(0, separator);
-  const id = unit.kind === 'scenario' ? unit.ref : unit.ref.slice(separator + 1);
-  const collections: Record<string, LabelSource[] | null | undefined> = {
-    fr: spec?.functional_requirements, ac: spec?.acceptance_criteria, tr: spec?.technical_requirements,
-    br: spec?.business_rules, api: spec?.api_contracts, ir: spec?.integration_requirements,
-    or: spec?.observability_requirements, decision: spec?.decisions, scenario: spec?.test_scenarios,
-  };
-  const source = collections[family]?.find(row => row.id === id);
-  return { title: source?.title || source?.text || source?.description || `${families[family] || 'Assigned objective'} (${id})`,
-    family: families[family] || 'Assigned objective' };
-}
+import { deliveryItemLabel } from './deliveryItemLabel';
 
 function PhaseState({ state, phase, current, unavailable }: {
   state: string; phase: 'implementation' | 'verification'; current: boolean; unavailable: boolean;
@@ -79,7 +60,7 @@ export function TaskDeliveryMatrix({ value, cardId, spec, current, unavailable, 
             <th scope="col" className="px-4 py-3">Verification</th>
           </tr></thead>
           <tbody className="divide-y divide-gray-200 dark:divide-gray-700">{units.map(unit => {
-            const label = labelFor(unit, labelSpec);
+            const label = deliveryItemLabel(unit, labelSpec);
             return <tr key={`${unit.kind}:${unit.ref}:${unit.semantic_sha256}`}>
               <th scope="row" className="min-w-56 max-w-xl break-words px-4 py-3 font-normal">
                 <span className="mb-1 block text-xs text-gray-500 dark:text-gray-400">{label.family}</span>

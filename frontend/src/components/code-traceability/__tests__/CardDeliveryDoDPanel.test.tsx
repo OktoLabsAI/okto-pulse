@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { CardDeliveryDoDPanel } from '../CardDeliveryDoDPanel';
-import { persistedProjection } from './readinessFixture';
+import { persistedProjection, readiness } from './readinessFixture';
 import type { TaskDeliveryState, TaskDeliverySummary } from '@/types/task-delivery';
 import type { Spec } from '@/types';
 import type { PersistedReadinessProjection } from '@/types/delivery-readiness';
@@ -20,7 +20,11 @@ export function summary(state: TaskDeliveryState = 'implementation_pending'): Ta
 function projection(state?: TaskDeliveryState) {
   const result = persistedProjection(); result.scope.card_id = 'c'; result.task_delivery = summary(state); return result;
 }
-beforeEach(() => { vi.resetAllMocks(); api.getPersistedReadinessProjection.mockResolvedValue(projection()); });
+beforeEach(() => {
+  vi.resetAllMocks(); api.getPersistedReadinessProjection.mockResolvedValue(projection());
+  api.getDeliveryReadinessPage.mockResolvedValue({ ...readiness(), projection: {
+    projection_version: 1, generation_id: 'generation-1', snapshot_id: 'a'.repeat(64), freshness: 'current' } });
+});
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
 async function openProgress() {
@@ -122,7 +126,7 @@ it('does not mix pages from different assessments or keep green percentages afte
   expect(screen.queryByText('Functional requirement (second)')).not.toBeInTheDocument();
 });
 
-it('reads one scoped projection and keeps all technical sections lazy', async () => {
+it('reads one scoped projection and loads pending work only inside Details', async () => {
   render(<CardDeliveryDoDPanel boardId="b" card={card} canProgress />);
   await screen.findByText('Work remaining');
   expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(1);
@@ -134,7 +138,34 @@ it('reads one scoped projection and keeps all technical sections lazy', async ()
   fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
   expect(await screen.findByText('Delivery details')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Hide details' })).toHaveAttribute('aria-expanded', 'true');
-  for (const fn of [api.getBoard, api.getDeliveryEvidence, api.getDeliveryReadinessPage, api.getCardDeliveryLedger, api.getTaskRequirementOptions]) expect(fn).not.toHaveBeenCalled();
+  await screen.findByText(/No pending checks were identified/);
+  expect(api.getDeliveryReadinessPage).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole('button', { name: 'Verification and pending work' })).not.toBeInTheDocument();
+  for (const fn of [api.getBoard, api.getDeliveryEvidence, api.getCardDeliveryLedger, api.getTaskRequirementOptions]) expect(fn).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Hide details' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+  await screen.findByText(/No pending checks were identified/);
+  expect(api.getDeliveryReadinessPage).toHaveBeenCalledTimes(1);
+});
+
+it('waits for the refreshed overview before reading checks and makes only one diagnostic request per refresh', async () => {
+  const view = render(<CardDeliveryDoDPanel boardId="b" card={card} />);
+  await screen.findByText('Work remaining');
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+  await screen.findByText(/No pending checks were identified/);
+  expect(api.getDeliveryReadinessPage).toHaveBeenCalledTimes(1);
+  let finish!: (value: PersistedReadinessProjection) => void;
+  api.getPersistedReadinessProjection.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={card} refreshRequest={1} />);
+  expect(screen.getByRole('status')).toHaveTextContent('Checking delivery');
+  await waitFor(() => expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(2), { timeout: 2000 });
+  expect(api.getDeliveryReadinessPage).toHaveBeenCalledTimes(1);
+  const next = projection(); next.projection.generation_id = 'generation-2';
+  api.getDeliveryReadinessPage.mockResolvedValue({ ...readiness(), projection: {
+    projection_version: 1, generation_id: 'generation-2', snapshot_id: 'a'.repeat(64), freshness: 'current' } });
+  await act(async () => finish(next));
+  await screen.findByText(/No pending checks were identified/);
+  expect(api.getDeliveryReadinessPage).toHaveBeenCalledTimes(2);
 });
 
 it.each([

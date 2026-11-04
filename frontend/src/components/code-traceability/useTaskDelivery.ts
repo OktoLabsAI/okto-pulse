@@ -21,6 +21,8 @@ export function useTaskDelivery(boardId: string, specId: string, cardId: string,
   const [value, setValue] = useState<PersistedReadinessProjection | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [resolvedRefreshRequest, setResolvedRefreshRequest] = useState(refreshRequest);
+  const previousRefreshRequest = useRef(refreshRequest);
   const requestRefresh = useRef<(explicit?: boolean, page?: PageRequest) => void>(() => {});
   const retry = useCallback(() => requestRefresh.current(true), []);
   useEffect(() => {
@@ -41,6 +43,7 @@ export function useTaskDelivery(boardId: string, specId: string, cardId: string,
     async function read() {
       if (controller.signal.aborted || document.visibilityState === 'hidden') return;
       const page = requestedPage; requestedPage = undefined;
+      const refreshKey = previousRefreshRequest.current;
       inFlight = true; lastStart = Date.now(); setLoading(true); setError('');
       // Keep the draft and Details mounted, but never keep a stale green verdict.
       setValue(previous => previous ? { ...previous, projection: { ...previous.projection, freshness: 'updating' } } : null);
@@ -55,6 +58,7 @@ export function useTaskDelivery(boardId: string, specId: string, cardId: string,
         if (page && result.projection.generation_id !== page.generation)
           throw new Error('The assessment changed. Use Refresh card to load the current requirements.');
         setValue(result);
+        setResolvedRefreshRequest(refreshKey);
         again ||= ['pending_initial', 'updating'].includes(result.projection.freshness);
       } catch (e) {
         // Retain the last summary to keep a human draft mounted. The error and
@@ -80,14 +84,13 @@ export function useTaskDelivery(boardId: string, specId: string, cardId: string,
   useEffect(() => {
     if (previousRevision.current !== revision) { previousRevision.current = revision; requestRefresh.current(); }
   }, [revision]);
-  const previousRefreshRequest = useRef(refreshRequest);
   useEffect(() => {
     if (previousRefreshRequest.current !== refreshRequest) {
       previousRefreshRequest.current = refreshRequest;
       requestRefresh.current(true);
     }
   }, [refreshRequest]);
-  return { value, error, loading, retry, refresh: useCallback(() => requestRefresh.current(), []),
+  return { value, error, loading, resolvedRefreshRequest, retry, refresh: useCallback(() => requestRefresh.current(), []),
     nextPage: () => {
       if (!loading && !error && value?.projection.freshness === 'current' && value.page.next_cursor && value.projection.generation_id)
         requestRefresh.current(true, { cursor: value.page.next_cursor, generation: value.projection.generation_id });

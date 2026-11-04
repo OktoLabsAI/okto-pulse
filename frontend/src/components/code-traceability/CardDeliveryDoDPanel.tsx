@@ -40,7 +40,8 @@ export function CardDeliveryDoDPanel({ boardId, card, spec, active = true, revis
   const button = useRef<HTMLButtonElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const summary = projection.value?.task_delivery;
-  const current = projection.value?.projection.freshness === 'current' && !projection.error && !projection.loading;
+  const current = projection.value?.projection.freshness === 'current' && !projection.error && !projection.loading
+    && projection.resolvedRefreshRequest === refreshRequest;
   const state = current && summary ? summary.state : 'updating_or_unknown';
   const action = current ? summary?.next_action : null;
   const Icon = state === 'delivered' ? CircleCheck : state === 'verification_failed' ? CircleX
@@ -80,6 +81,9 @@ export function CardDeliveryDoDPanel({ boardId, card, spec, active = true, revis
     <div id={`delivery-details-${card.id}`} hidden={!details}>
       {detailsVisited && <div className="space-y-5">
         <h4 ref={heading} tabIndex={-1} className="font-semibold">Delivery details</h4>
+        {summary && <TaskDeliveryDiagnosis boardId={boardId} specId={card.spec_id} cardId={card.id} spec={spec} active={active && details && current}
+          generationId={projection.value?.projection.generation_id}
+          revision={`${projection.value?.projection.generation_id ?? ''}:${refreshRequest}`} onOpenReadinessCard={onOpenReadinessCard} />}
         <p>Updates are declarations. Technical verification and completion are assessed separately.</p>
         {summary?.last_update && <div className="space-y-2">
           <h4 className="font-semibold">Latest update</h4>
@@ -99,9 +103,6 @@ export function CardDeliveryDoDPanel({ boardId, card, spec, active = true, revis
           onAccepted={result => { setForm(null); onReportClosed?.(); setNotice(result.replayed ? 'Submission confirmed.' : 'Submission saved.'); projection.refresh(); onChanged?.(); button.current?.focus(); }} />}
         {current && canProgress && summary?.historical_status === 'in_progress' && !form && action?.kind !== 'record_progress' && <button type="button" className="btn btn-secondary"
           onClick={() => { setCorrection(undefined); setForm('progress'); }}>Record an update</button>}
-        {summary && <TaskDeliveryDiagnosis boardId={boardId} specId={card.spec_id} cardId={card.id} active={active && details}
-          revision={`${projection.value?.projection.generation_id ?? ''}:${refreshRequest}`} onOpenReadinessCard={onOpenReadinessCard} />
-        }
         {summary && <CardLedgerPanel boardId={boardId} cardId={card.id} specId={card.spec_id} edition={summary.spec_edition} initialRecordId={focusRecordId}
           active={active && details} onCorrect={canProgress ? entry => { setCorrection(entry); setForm('progress'); } : undefined} />}
         {onOpenTests && <button type="button" className="btn btn-secondary" onClick={onOpenTests}>View test results</button>}

@@ -12,7 +12,9 @@ it('explains delivery status, authority, exceptions and next steps at the contex
     'historical Done status is preserved','Unknown counts are not zero','Only an authorized human',
     'note if useful','whole selection is saved together','does not approve delivery','does not erase history',
     'Retry same decision','Show details','Hide details','Refresh card','task modal header','Task progress','Task requirements','application Help',
-    'Requirement / Objective', 'Change task requirements', 'Unknown', 'Not applicable', 'Test Cards']) {
+    'Requirement / Objective', 'Change task requirements', 'Unknown', 'Not applicable', 'Test Cards',
+    'Affected stage', 'What needs attention', 'Next step', 'Task-wide and unassigned checks',
+    'Evidence and technical details', 'reuses that page', 'Retry delivery checks']) {
     expect(content).toHaveTextContent(rule);
   }
   expect(content).not.toHaveTextContent('delivery-summary/v1');

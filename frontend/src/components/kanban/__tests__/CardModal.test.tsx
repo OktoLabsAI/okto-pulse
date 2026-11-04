@@ -1,4 +1,4 @@
-import { persistedProjection, taskDeliverySummary } from '@/components/code-traceability/__tests__/readinessFixture';
+import { persistedProjection, taskDeliverySummary, readiness } from '@/components/code-traceability/__tests__/readinessFixture';
 import { taskValidationFixture } from '@/test/taskValidationFixture';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -35,6 +35,7 @@ const apiMock = vi.hoisted(() => ({
   getCard: vi.fn(),
   getDeliveryEvidence: vi.fn(),
   getPersistedReadinessProjection: vi.fn(),
+  getDeliveryReadinessPage: vi.fn(),
   submitHumanTask: vi.fn(),
   getBoard: vi.fn(),
   recordCardDeliveryEvidence: vi.fn(),
@@ -2904,6 +2905,10 @@ describe('human delivery from Card status', () => {
     value.scope = { ...value.scope, board_id: 'board-1', spec_id: 'spec-1', card_id: card.id };
     value.task_delivery = { ...taskDeliverySummary(card.id), board_id: 'board-1', spec_id: 'spec-1' };
     apiMock.getPersistedReadinessProjection.mockResolvedValue(value);
+    const checks = readiness(card.id);
+    checks.scope = { ...checks.scope, board_id: 'board-1', spec_id: 'spec-1' };
+    checks.projection = { projection_version: 1, generation_id: 'generation-1', snapshot_id: checks.snapshot_id, freshness: 'current' };
+    apiMock.getDeliveryReadinessPage.mockResolvedValue(checks);
     apiMock.submitHumanTask.mockResolvedValue({ submission_id: 'human-update', replayed: false, status: 'validation' });
     render(<CardModal boardId="board-1" />);
     const status = await screen.findByRole('combobox', { name: 'Card status' });
