@@ -58,6 +58,22 @@ it('fails closed on transport loss and retries only when requested', async () =>
   await screen.findByText('Delivered');
 });
 
+it.each(['normal', 'bug', 'test'])('shows a single verdict and escapes human content for %s cards', async cardType => {
+  const payload = '<script>window.deliveryInjected=true</script><img src=x onerror=alert(1)>';
+  const value = projection('verification_failed');
+  value.task_delivery!.last_update = { record_id: 'human-record', content: payload, remaining: 'Review required',
+    submitted_at: '2026-11-04T00:00:00Z', origin: 'human_submission', text_truncated: false };
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  const { container } = render(<CardDeliveryDoDPanel boardId="b" card={{ ...card, card_type: cardType }} canProgress />);
+  expect(await screen.findByText(payload)).toBeVisible();
+  expect(screen.getAllByRole('status')).toHaveLength(1);
+  expect(screen.getByRole('status')).toHaveTextContent('Verification failed');
+  expect(container.querySelector('script, img')).toBeNull();
+  expect(container.querySelector('.lucide-circle-x')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Details' })).toHaveAttribute('aria-expanded', 'false');
+  expect(screen.queryByRole('slider')).not.toBeInTheDocument();
+});
+
 it('coalesces update bursts and stops polling when the tab is inactive', async () => {
   vi.useFakeTimers();
   const pending = projection(); pending.projection.freshness = 'updating';

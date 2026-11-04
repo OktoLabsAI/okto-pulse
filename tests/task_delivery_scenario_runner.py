@@ -77,15 +77,17 @@ class TaskDeliveryScenarios(unittest.TestCase):
     def test_s03_atomic_rollback(self):
         self._pytest('community', 'tests/test_human_task_submissions.py::test_event_failure_rolls_back_receipt_even_if_caller_catches_and_commits',
                      'tests/test_human_task_submissions.py::test_report_writer_failure_reverts_transition_content_and_audit')
-        self._pytest('core', 'tests/test_human_task_submission.py', '-k', 'failure or commit')
+        self._pytest('core', 'tests/test_human_task_submission.py', '-k', 'failure or commit or telemetry')
 
     def test_s04_concurrent_retry(self):
         self._pytest('community', 'tests/test_human_task_submissions.py::test_concurrent_same_key_and_lost_response_retry_share_receipt',
                      'tests/test_human_task_submissions.py::test_exact_retry_after_terminal_state_and_edition_change_returns_original_result')
         self._vitest([FRONT + 'HumanTaskSubmissionForm.test.tsx'], 'uncertain|double submission')
+        self._pytest('core', 'tests/test_human_task_submission.py', '-k', 'telemetry')
 
     def test_s05_append_only_correction(self):
-        self._pytest('community', 'tests/test_human_task_submissions.py::test_changed_payload_under_same_key_is_conflict_and_correction_is_append_only')
+        self._pytest('community', 'tests/test_human_task_submissions.py::test_changed_payload_under_same_key_is_conflict_and_correction_is_append_only',
+                     'tests/test_human_task_submissions.py::test_human_history_does_not_change_technical_facts_or_impact')
 
     def test_s06_canonical_states(self):
         self._pytest('core', 'tests/test_task_delivery_summary.py')
