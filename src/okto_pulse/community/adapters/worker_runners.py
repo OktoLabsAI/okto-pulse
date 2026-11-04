@@ -14,6 +14,7 @@ from okto_pulse.core.ports.runtime_workers import (
 )
 
 logger = logging.getLogger("okto_pulse.community.workers")
+POLLING_SHUTDOWN_TIMEOUT_SECONDS = 10.0
 
 
 class UtcWorkerClock:
@@ -242,7 +243,7 @@ class PollingRunner:
                 )
             raise
 
-    async def stop(self, timeout: float = 10.0) -> None:
+    async def stop(self, timeout: float = POLLING_SHUTDOWN_TIMEOUT_SECONDS) -> None:
         self._running = False
         self.notify()
         loop = asyncio.get_running_loop()

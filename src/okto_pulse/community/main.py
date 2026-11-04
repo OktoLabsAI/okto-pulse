@@ -78,11 +78,11 @@ _NATIVE_DIAGNOSTICS_LOGGER = logging.getLogger(
 )
 _DEFAULT_STARTUP_TIMEOUT_SECONDS = 120.0
 _DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 15.0
-# KGD-01 (TR7): budget próprio do checkpoint+close dos grafos no teardown —
-# MENOR que o force-exit de 15s do _shutdown_server_pair, para que a etapa
-# complete (ou desista logando) antes de qualquer cancel forçado.
+# These application teardown phases run after Uvicorn's HTTP drain. The outer
+# deadline reserves their combined budget, including every active worker family.
 _GRAPH_CLOSE_SHUTDOWN_TIMEOUT_S = 10.0
 _RECOVERY_NATIVE_DRAIN_TIMEOUT_S = 5.0
+_APPLICATION_SHUTDOWN_MARGIN_SECONDS = 5.0
 _DEFAULT_METRICS_BEACON_INTERVAL_SECONDS = 3600.0
 
 
@@ -707,20 +707,13 @@ window.OKTO_PULSE_CONFIG = {{
 
 
 async def _close_graphs_on_teardown() -> None:
-    """KGD-01 (FR2/BR3/TR7): checkpoint+close de todos os board graphs abertos.
+    """Checkpoint and close board graphs after the native workers have drained.
 
-    Roda em ``asyncio.to_thread`` (o close guard drena leitores — bloquear o
-    event loop impediria os próprios leitores de saírem) e é protegido contra
-    cancelamento: o force-exit de 15s do ``_shutdown_server_pair`` cancela a
-    task do servidor — e com ela o teardown do lifespan — mas esta etapa NÃO
-    pode ser abandonada com um CHECKPOINT em curso (escritor stale zera o
-    WAL). O ``asyncio.shield`` mantém a task interna viva através de cancels
-    repetidos, dentro de um budget próprio menor que o force-exit
-    (``_GRAPH_CLOSE_SHUTDOWN_TIMEOUT_S``). Mesmo no pior caso (budget
-    estourado), a worker thread NÃO é abandonada antes do exit do processo:
-    ``asyncio.Runner``/``asyncio.run`` aguardam o default executor no close
-    do loop (``loop.shutdown_default_executor``). Nunca propaga exceção — o
-    teardown segue para o close do SQLite.
+    The close guard drains readers in a thread so the event loop remains free.
+    Shield the checkpoint from repeated cancellation within its own deadline;
+    the outer listener budget reserves this phase separately from HTTP drain.
+    If the deadline expires, the default executor still owns and joins the
+    thread at loop shutdown. A checkpoint is never abandoned midway through I/O.
     """
     from okto_pulse.community.adapters.kg_shutdown import (
         close_all_graphs_on_shutdown,
@@ -1404,6 +1397,21 @@ def _log_ready_servers(api_port: int, mcp_port: int) -> None:
     _STARTUP_LOGGER.info("Startup complete - The application is ready")
 
 
+def _application_shutdown_budget_seconds(worker_registry) -> float:
+    from okto_pulse.community.adapters.workers import (
+        community_worker_shutdown_budget_seconds,
+    )
+
+    workers = (
+        community_worker_shutdown_budget_seconds(worker_registry)
+        if worker_registry is not None else 0.0
+    )
+    return (
+        workers + _RECOVERY_NATIVE_DRAIN_TIMEOUT_S
+        + _GRAPH_CLOSE_SHUTDOWN_TIMEOUT_S + _APPLICATION_SHUTDOWN_MARGIN_SECONDS
+    )
+
+
 async def _shutdown_server_pair(
     api_server: uvicorn.Server,
     mcp_server: uvicorn.Server,
@@ -1411,23 +1419,35 @@ async def _shutdown_server_pair(
     mcp_task: asyncio.Task[None],
     *,
     timeout_seconds: float | None = None,
+    application_timeout_seconds: float = 0.0,
 ) -> None:
-    """Stop both uvicorn servers without letting open streams hang forever."""
+    """Bound HTTP drain plus application teardown without sharing their deadlines."""
     timeout = (
         _shutdown_timeout_seconds() if timeout_seconds is None else timeout_seconds
     )
+    # Uvicorn rounds the HTTP budget to whole seconds and starts lifespan
+    # shutdown only after draining/cancelling connections. Worker budgets are
+    # sequential, not concurrent; reserve them in addition to HTTP drain.
+    total_timeout = math.ceil(timeout) + application_timeout_seconds + 1.0
     set_shutdown_log_suppression(True)
     try:
         api_server.should_exit = True
         mcp_server.should_exit = True
 
-        _, pending = await asyncio.wait({api_task, mcp_task}, timeout=timeout + 1.0)
+        _, pending = await asyncio.wait({api_task, mcp_task}, timeout=total_timeout)
         if not pending:
             return
 
         _STARTUP_LOGGER.warning(
-            "Shutdown timeout exceeded after %.0fs; forcing API/UI and MCP servers to stop.",
-            timeout,
+            "Shutdown deadline exceeded after %.1fs "
+            "(HTTP %.1fs, application %.1fs); forcing API/UI and MCP servers to stop.",
+            total_timeout, timeout, application_timeout_seconds,
+            extra={
+                "event": "community.shutdown.deadline_exceeded",
+                "http_timeout_seconds": timeout,
+                "application_timeout_seconds": application_timeout_seconds,
+                "total_timeout_seconds": total_timeout,
+            },
         )
 
         api_server.force_exit = True
@@ -1449,6 +1469,7 @@ async def _shutdown_launched_server_tasks(
     mcp_task: asyncio.Task[None] | None,
     *,
     timeout_seconds: float,
+    application_timeout_seconds: float = 0.0,
 ) -> None:
     """Drain a partially launched listener pair without orphaning one task."""
 
@@ -1459,6 +1480,7 @@ async def _shutdown_launched_server_tasks(
             api_task,
             mcp_task,
             timeout_seconds=timeout_seconds,
+            application_timeout_seconds=application_timeout_seconds,
         )
         return
 
@@ -1693,6 +1715,9 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
             api_task,
             mcp_task,
             timeout_seconds=shutdown_timeout,
+            application_timeout_seconds=_application_shutdown_budget_seconds(
+                composition.worker_registry
+            ),
         )
     except asyncio.CancelledError:
         # Ctrl+C reached the loop before our handler could flip should_exit.
@@ -1705,6 +1730,9 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
                 api_task,
                 mcp_task,
                 timeout_seconds=shutdown_timeout,
+                application_timeout_seconds=_application_shutdown_budget_seconds(
+                    composition.worker_registry
+                ),
             )
         finally:
             transaction.rollback()
@@ -1716,6 +1744,9 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
                 api_task,
                 mcp_task,
                 timeout_seconds=shutdown_timeout,
+                application_timeout_seconds=_application_shutdown_budget_seconds(
+                    composition.worker_registry
+                ),
             )
         finally:
             transaction.rollback()

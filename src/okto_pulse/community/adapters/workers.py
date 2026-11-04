@@ -22,6 +22,7 @@ from okto_pulse.core.ports.runtime_workers import (
     RuntimeWorkerSpec,
 )
 from okto_pulse.community.adapters.worker_runners import (
+    POLLING_SHUTDOWN_TIMEOUT_SECONDS,
     ConsolidationRunner,
     PollingRunner,
     TrackedBlockingExecution,
@@ -49,6 +50,26 @@ COMMUNITY_WORKER_CAPABLE_FAMILIES: tuple[str, ...] = (
     "cognitive_closeout_worker",
     "schema_sweep",
 )
+READINESS_SHUTDOWN_TIMEOUT_SECONDS = 45.0
+
+
+def community_worker_shutdown_budget_seconds(registry: RuntimeWorkerRegistry) -> float:
+    """Reserve the sequential drain budgets of this composition's active runners.
+
+    Readiness runners stop concurrently inside one family. Consolidation may
+    configure its own join timeout; the remaining families use PollingRunner's
+    shared default. The outer listener deadline must not cut these drains short.
+    """
+    budget = 0.0
+    for family in registry.active_families:
+        handle = registry.get_handle(family)
+        if family == "readiness_projection_worker":
+            budget += READINESS_SHUTDOWN_TIMEOUT_SECONDS
+        elif isinstance(handle, ConsolidationRunner):
+            budget += max(0.0, float(handle.join_timeout))
+        else:
+            budget += POLLING_SHUTDOWN_TIMEOUT_SECONDS
+    return budget
 
 
 def _cancel_safe_scope_factory(session_factory: Any):
@@ -114,7 +135,7 @@ def build_community_worker_registry(
                 started.append(runner)
         except BaseException:
             for runner in reversed(started):
-                await runner.stop(timeout=45.0)
+                await runner.stop(timeout=READINESS_SHUTDOWN_TIMEOUT_SECONDS)
             if readiness_pool is not None:
                 await asyncio.to_thread(readiness_pool.shutdown, wait=True,
                     cancel_futures=True)
@@ -123,7 +144,7 @@ def build_community_worker_registry(
 
     async def stop_readiness(_runner):
         outcomes = await asyncio.gather(
-            *(runner.stop(timeout=45.0) for runner in readiness_runners),
+            *(runner.stop(timeout=READINESS_SHUTDOWN_TIMEOUT_SECONDS) for runner in readiness_runners),
             return_exceptions=True)
         failures = [outcome for outcome in outcomes if isinstance(outcome, BaseException)]
         if failures:
@@ -253,4 +274,5 @@ __all__ = [
     "COMMUNITY_WORKER_BASELINE_FAMILIES",
     "COMMUNITY_WORKER_CAPABLE_FAMILIES",
     "build_community_worker_registry",
+    "community_worker_shutdown_budget_seconds",
 ]
