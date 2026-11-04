@@ -63,6 +63,13 @@ contract plus the frontend checks that cover edited files.
 
 ## Frontend
 
+All application UI copy must be in English, including accessible labels, help,
+notifications, and backend messages displayed by the frontend. Requirement lint
+language profiles describe authored content, not the application's UI language.
+Keep user-authored content and immutable audit records in their original language.
+When changing text stored in derived projections, invalidate the old projection
+version so installed instances regenerate the displayed copy.
+
 ```bash
 cd frontend
 npm install

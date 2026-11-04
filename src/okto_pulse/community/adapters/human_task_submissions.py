@@ -51,7 +51,7 @@ class CommunityHumanTaskSubmissions:
         card = await self.store._card(command.board_id, command.card_id)
         spec = await self.store._spec(command.board_id, command.spec_id)
         if card.archived or card.spec_id != spec.id:
-            raise _conflict("scope_changed", "A tarefa mudou. Atualize antes de enviar.")
+            raise _conflict("scope_changed", "The task has changed. Refresh it before submitting.")
         digest = command.intent_digest()
         head = await self.session.scalar(select(Record).where(
             Record.board_id == command.board_id, Record.card_id == command.card_id,
@@ -59,21 +59,21 @@ class CommunityHumanTaskSubmissions:
         if head is not None:
             if (head.payload_sha256 != digest or head.actor_kind != actor_kind
                     or head.spec_id != command.spec_id or not is_human_submission(head.payload)):
-                raise _conflict("idempotency_conflict", "Este envio já foi usado para outro conteúdo.")
+                raise _conflict("idempotency_conflict", "This submission was already used for different content.")
             receipt = head.payload["human_submission"]["receipt"]
             if receipt["intent_sha256"] != digest or receipt["actor_id"] != actor_id:
-                raise _conflict("receipt_unavailable", "Não foi possível confirmar o envio anterior.")
+                raise _conflict("receipt_unavailable", "The previous submission could not be confirmed.")
             return {**head.payload["human_submission"]["result"], "replayed": True}
         if card.policy_version != command.expected_card_version or spec.edition != command.expected_spec_edition:
-            raise _conflict("version_changed", "A tarefa ou a Spec mudou. Atualize e revise seu texto.")
+            raise _conflict("version_changed", "The task or Spec has changed. Refresh and review your text.")
         if card.status != "in_progress" or card.card_type not in {"normal", "bug", "test"}:
-            raise _conflict("lifecycle_changed", "O envio está disponível somente para tarefas em andamento.")
+            raise _conflict("lifecycle_changed", "Submission is available only for tasks in progress.")
         if command.supersedes_submission_id:
             prior = await self.session.scalar(select(Record).where(
                 Record.id == command.supersedes_submission_id, Record.board_id == command.board_id,
                 Record.card_id == command.card_id, Record.spec_id == command.spec_id, Record.actor_id == actor_id))
             if prior is None or not is_human_submission(prior.payload):
-                raise _conflict("supersession_unavailable", "O registro a corrigir não está disponível para você.")
+                raise _conflict("supersession_unavailable", "The record to correct is not available to you.")
         scope = CardDeliveryScope(command.board_id, command.card_id, command.spec_id, spec.edition)
         before_version = card.policy_version
         submission_id, receipt_id = "human_submission_" + uuid.uuid4().hex, "human_receipt_" + uuid.uuid4().hex
@@ -130,7 +130,7 @@ class CommunityHumanTaskSubmissions:
         records = await self.store._card_records(scope)
         snapshot = await self.store.load_card_snapshot(scope, records=records)
         if not snapshot.complete:
-            raise _conflict("proof_unavailable", "A verificação da entrega ainda não está disponível.", technical=True)
+            raise _conflict("proof_unavailable", "Delivery verification is not available yet.", technical=True)
         evaluation = EvaluatedDeliverySnapshot(snapshot)
         assessment = (evaluation.scenarios(card_id=card.id, scenario_ids=tuple(card.test_scenario_ids or ()))
             if card.card_type == "test" else evaluation.obligations(card_id=card.id, card_type=card.card_type))
@@ -140,7 +140,7 @@ class CommunityHumanTaskSubmissions:
         excepted = any(item.card_id == card.id and resolution.decision in {"optional", "waived"}
                        for item, resolution in responsibilities)
         if not excepted and (phase.status == "unknown" or phase.unresolved != 0):
-            raise _conflict("proof_required", "O responsável técnico precisa concluir a comprovação desta tarefa antes do envio.", technical=True)
+            raise _conflict("proof_required", "The technical owner must complete the evidence for this task before submission.", technical=True)
         selected_ids = {fact.id for fact in snapshot.implementations
             if fact.bindings and all(implementation_binding_proof_current(fact, binding) for binding in fact.bindings)}
         selected_ids.update(fact.id for fact in snapshot.tests if fact.current_verified_run)
@@ -151,7 +151,7 @@ class CommunityHumanTaskSubmissions:
             and not is_human_submission(row.payload) and (row.payload.get("progress") or {}).get("impact_delta")]
         selected_ids.update(row.id for row in impact_rows)
         if len(selected_ids) > 200:
-            raise _conflict("proof_selection_ambiguous", "O responsável técnico precisa revisar as provas da entrega.", technical=True)
+            raise _conflict("proof_selection_ambiguous", "The technical owner must review the delivery evidence.", technical=True)
         assessment = None
         obligations = await self.store._snapshot_obligations(await self.store._spec(scope.board_id, scope.spec_id), card)
         hashes = {row.id: self.store._selection_record_hash(row) for row in records}
@@ -179,7 +179,7 @@ class CommunityHumanTaskSubmissions:
                     "completeness_justification": latest.get("completeness_justification"),
                     "drift": latest.get("estimated_drift"), "drift_justification": latest.get("drift_justification")}
         if assessment is None or any(value is None for value in assessment.values()):
-            raise _conflict("assessment_required", "O responsável técnico precisa registrar a avaliação da entrega antes do envio.", technical=True)
+            raise _conflict("assessment_required", "The technical owner must record the delivery assessment before submission.", technical=True)
         selection = DeliverySelectionInput(expected_card_version=card.policy_version,
             expected_spec_edition=scope.spec_edition, expected_delivery_revision=len(records),
             record_ids=sorted(selected_ids), reuse_impact=bool(impact_rows))
@@ -188,6 +188,6 @@ class CommunityHumanTaskSubmissions:
             try:
                 await self.store.resolve_selection_impact(scope, selection, expected_status="in_progress")
             except ValueError as exc:
-                raise _conflict("impact_confirmation_required", "O responsável técnico precisa confirmar o impacto das alterações.", technical=True) from exc
+                raise _conflict("impact_confirmation_required", "The technical owner must confirm the impact of the changes.", technical=True) from exc
         return CardMove(status=command.requested_status, conclusion=command.content,
                         delivery_selection=selection, **assessment)

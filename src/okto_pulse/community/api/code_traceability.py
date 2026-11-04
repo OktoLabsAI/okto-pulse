@@ -1395,18 +1395,18 @@ async def submit_human_task(board_id: str, card_id: str, body: HumanTaskSubmissi
         raise HTTPException(409, detail=exc.to_error_dict()) from exc
     except DeliveryReportRejected as exc:
         raise HTTPException(409, detail={"code": "submission_conflict",
-            "message": "A entrega ainda não pode ser concluída. O responsável precisa resolver as condições pendentes.",
+            "message": "Delivery cannot be completed yet. The owner must resolve the pending conditions.",
             "details": {"reason": exc.code}, "next_action": "resolve_delivery_conditions",
             "next_owner": "technical_owner"}) from exc
     except (PermissionDeniedError, EntityNotFoundError) as exc:
         raise _http_error(exc) from exc
     except ValueError as exc:
         raise HTTPException(409, detail={"code": "submission_conflict",
-            "message": "Não foi possível aceitar o envio. Atualize a tarefa e revise seu texto.",
+            "message": "The submission could not be accepted. Refresh the task and review your text.",
             "next_action": "refresh_and_retry", "next_owner": "user"}) from exc
     except Exception as exc:
         raise HTTPException(503, detail={"code": "submission_unavailable",
-            "message": "Não foi possível confirmar o envio. Tente novamente com o mesmo conteúdo.",
+            "message": "The submission could not be confirmed. Try again with the same content.",
             "next_action": "retry_same_intent", "next_owner": "user"}) from exc
     return JSONResponse(result, status_code=200 if result["replayed"] else 201, headers={"Cache-Control": "no-store"})
 

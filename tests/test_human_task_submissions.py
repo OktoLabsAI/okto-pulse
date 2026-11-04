@@ -86,7 +86,7 @@ async def test_exact_retry_after_terminal_state_and_edition_change_returns_origi
     replay = await record(store)
     assert replay == {**saved, "replayed": True}
     assert replay["status"] == "in_progress" and replay["spec_edition"] == 1
-    with pytest.raises(HumanSubmissionConflict, match="mudou"):
+    with pytest.raises(HumanSubmissionConflict, match="has changed"):
         await record(store, command(idempotency_key="new-intent-00002"))
     assert await session.scalar(select(func.count()).select_from(Record)) == 1
 
@@ -97,7 +97,7 @@ async def test_changed_payload_under_same_key_is_conflict_and_correction_is_appe
     first = await record(store)
     await session.commit()
     before = deepcopy((await session.get(Record, first["submission_id"])).payload)
-    with pytest.raises(HumanSubmissionConflict, match="outro conteúdo"):
+    with pytest.raises(HumanSubmissionConflict, match="different content"):
         await record(store, command(content="Changed"))
     second = await record(store, command(content="Correção", idempotency_key="human-correction-2",
                                         supersedes_submission_id=first["submission_id"]))
@@ -105,7 +105,7 @@ async def test_changed_payload_under_same_key_is_conflict_and_correction_is_appe
     row = await session.get(Record, second["submission_id"])
     assert row.payload["human_submission"]["receipt"]["supersedes_submission_id"] == first["submission_id"]
     assert (await session.get(Record, first["submission_id"])).payload == before
-    with pytest.raises(HumanSubmissionConflict, match="não está disponível"):
+    with pytest.raises(HumanSubmissionConflict, match="is not available"):
         await store.record_human_submission(command(idempotency_key="foreign-correction-1",
             supersedes_submission_id=first["submission_id"]), actor_id="other", actor_kind="user")
 
