@@ -15,6 +15,7 @@ propagates unchanged.
 from __future__ import annotations
 
 from fastapi import HTTPException, status
+from okto_pulse.core.domain.pending_qa import PendingQuestionsError
 
 from okto_pulse.core.application.use_cases import (
     ActorContext,
@@ -92,6 +93,8 @@ class RESTAdapterContract:
         Order matters: the typed gate errors are ValueError subclasses and must
         be matched before the plain ValueError fallback.
         """
+        if isinstance(exc, PendingQuestionsError):
+            return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.to_error_dict())
         if isinstance(exc, DeliveryGateBlocked):
             return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=exc.to_error_dict())
         if isinstance(exc, CommandValidationError):

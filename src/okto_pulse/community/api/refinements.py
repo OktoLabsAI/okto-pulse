@@ -12,6 +12,7 @@ transition + content/critical-context gates stay inside ``RefinementService``.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from okto_pulse.core.domain.pending_qa import PendingQuestionsError
 
 from okto_pulse.community.api.deps import (
     get_unit_of_work,
@@ -216,6 +217,8 @@ async def create_refinement(
             detail=e.to_error_dict(),
         ) from e
     except ValueError as e:
+        if isinstance(e, PendingQuestionsError):
+            raise RESTAdapterContract.http_error(e) from e
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
         raise HTTPException(
@@ -543,6 +546,8 @@ async def move_refinement(
         raise RESTAdapterContract.http_error(e) from e
     except LifecycleTransitionConflictError as e:
         raise RESTAdapterContract.http_error(e) from e
+    except PendingQuestionsError as e:
+        raise RESTAdapterContract.http_error(e) from e
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:
@@ -629,6 +634,8 @@ async def derive_spec(
     except (KnowledgePropagationContractError, KnowledgePropagationPortError) as exc:
         await uow.rollback()
         return knowledge_propagation_error_response(exc)
+    except PendingQuestionsError as e:
+        raise RESTAdapterContract.http_error(e) from e
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except EntityNotFoundError as exc:

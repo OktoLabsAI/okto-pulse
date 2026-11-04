@@ -1,6 +1,7 @@
 """Spec API endpoints."""
 
 from collections.abc import Awaitable, Callable
+from okto_pulse.core.domain.pending_qa import PendingQuestionsError
 from okto_pulse.core.ports.spec_planning_manifest import SpecPlanningManifestUnavailable
 from datetime import datetime
 from typing import Any, Literal
@@ -1124,6 +1125,8 @@ async def create_spec(
             status_code=status.HTTP_409_CONFLICT,
             detail=exc.to_error_dict(),
         ) from exc
+    except PendingQuestionsError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except (
         ResourceLineageResolutionError,
         SpecLineagePreflightError,
@@ -1582,6 +1585,8 @@ async def update_spec(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=exc.to_error_dict(),
         ) from exc
+    except PendingQuestionsError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except SubjectEditRequiresDraftError as e:
         raise RESTAdapterContract.http_error(e) from e
     except LifecycleTransitionConflictError as e:
