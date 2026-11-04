@@ -7,7 +7,7 @@ The main screen answers three questions: what was delivered, what is in progress
 
 ### A task's Delivery tab
 
-The task has one current verdict, a short reason, its latest update and at most one primary next action. **Details** starts closed. A check icon accompanies **Delivered**; an X accompanies **Verification failed**. The text conveys the same result without relying on color or the icon.
+The task has one current verdict, a short reason, its latest update and at most one primary next action. **Show details** opens the detailed view; **Hide details** closes it. Details starts closed. A check icon accompanies **Delivered**; an X accompanies **Verification failed**. The text conveys the same result without relying on color or the icon.
 
 | Task status | Meaning |
 |-------------|---------|
@@ -23,9 +23,9 @@ The task has one current verdict, a short reason, its latest update and at most 
 
 A human update has its audit receipt generated automatically. This proves who submitted the text and when; it does not prove code execution, passing tests or approval. See **Task progress** for submission, retry and correction rules. There is no manual receipt form, including in Details.
 
-**Details** provides read-only verification, pending work, evidence history and test navigation. A human may also change whether the task is required. Pages contain at most 20 records; use the next-page controls when needed. Details and its subsections load only when requested. **Refresh** updates the shared task assessment; pending generation checks are grouped and stop when the tab is inactive. Network errors require an explicit retry, and refreshing preserves an open draft.
+**Show details** provides read-only verification, pending work, evidence history and test navigation. A human may also change whether the task is required. Pages contain at most 20 records; use the next-page controls when needed. Details and its subsections load only when requested. Use **Refresh card** in the task modal header to update the task and its delivery assessment. There is no separate refresh control in the Delivery overview. Pending generation checks are grouped and stop when the tab is inactive. After a network error, use the same header control or **Retry delivery assessment**. Refreshing preserves an open draft and whether Details is expanded; submission is disabled until the assessment is current again.
 
-Use Tab to reach **Details**, **Refresh** or **How this works**, then Enter or Space to activate them. The help link opens this exact topic. Each form has named fields and errors; success and failure include visible text.
+Use Tab to reach **Show details** / **Hide details**, **Refresh card** or **How this works**, then Enter or Space to activate them. The help link opens this exact topic. Each form has named fields and errors; success and failure include visible text.
 
 ### Read the groups
 

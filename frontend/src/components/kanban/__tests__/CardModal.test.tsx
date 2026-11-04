@@ -2930,6 +2930,27 @@ describe('human delivery from Card status', () => {
     await waitFor(() => expect(screen.queryByRole('form', { name: 'Delivery report' })).not.toBeInTheDocument());
   });
 
+  it('refreshes Delivery from the modal header without replacing a human draft or collapsing Details', async () => {
+    const card = await prepareHumanReport();
+    const input = screen.getByLabelText('What was delivered or changed?');
+    fireEvent.change(input, { target: { value: 'Draft survives modal refresh' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+    const next = persistedProjection();
+    next.scope = { ...next.scope, board_id: 'board-1', spec_id: 'spec-1', card_id: card.id };
+    next.task_delivery = { ...taskDeliverySummary(card.id), board_id: 'board-1', spec_id: 'spec-1', reason: 'Assessment refreshed from the modal' };
+    apiMock.getPersistedReadinessProjection.mockResolvedValue(next);
+    const previousCardReads = apiMock.getCard.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh card' }));
+    await screen.findByText('Assessment refreshed from the modal', {}, { timeout: 2000 });
+    expect(apiMock.getCard.mock.calls.length).toBeGreaterThan(previousCardReads);
+    expect(apiMock.getPersistedReadinessProjection).toHaveBeenCalledTimes(2);
+    expect(screen.getByLabelText('What was delivered or changed?')).toBe(input);
+    expect(input).toHaveValue('Draft survives modal refresh');
+    expect(screen.getByRole('button', { name: 'Hide details' })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.queryByRole('button', { name: /^Refresh$/ })).not.toBeInTheDocument();
+    expect(apiMock.submitHumanTask).not.toHaveBeenCalled();
+  });
+
   it('keeps the draft after a rejected delivery and does not silently save progress', async () => {
     await prepareHumanReport();
     apiMock.submitHumanTask.mockRejectedValue(new AuthenticatedFetchError({ status: 409, message: 'Technical proof is required.' }));

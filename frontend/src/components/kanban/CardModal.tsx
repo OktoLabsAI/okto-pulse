@@ -366,6 +366,7 @@ export function CardModal({
   const [card, setCard] = useState<Card | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [liveRevision, setLiveRevision] = useState(0);
+  const [deliveryRefreshRequest, setDeliveryRefreshRequest] = useState(0);
   const [syncAuthorizing, setSyncAuthorizing] = useState(false);
   const syncGeneration = useRef(0);
   const authorizationRequired = useRef(false);
@@ -1207,7 +1208,10 @@ export function CardModal({
   }, [boardId, selectedCardId, isOpen]);
 
   const handleRefresh = () => {
-    if (selectedCardId) loadCard(selectedCardId);
+    if (selectedCardId) {
+      loadCard(selectedCardId);
+      setDeliveryRefreshRequest(request => request + 1);
+    }
   };
 
   const handleClose = () => {
@@ -1640,7 +1644,7 @@ export function CardModal({
                 entityTitle={card.title}
               />
             )}
-            <button onClick={handleRefresh} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title="Refresh card">
+            <button type="button" onClick={handleRefresh} aria-label="Refresh card" className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title="Refresh card">
               <RefreshCw size={16} className={isLoading ? 'animate-spin' : ''} />
             </button>
             <button onClick={() => setExpanded(!expanded)} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title={expanded ? 'Collapse' : 'Expand'}>
@@ -1944,6 +1948,7 @@ export function CardModal({
                     key={card.id}
                     active={activeTab === 'delivery' && !syncAuthorizing}
                     revision={liveRevision}
+                    refreshRequest={deliveryRefreshRequest}
                     reportRequest={humanReportRequest?.cardId === card.id ? humanReportRequest : undefined}
                     onReportClosed={() => setHumanReportRequest(undefined)}
                     boardId={card.board_id}

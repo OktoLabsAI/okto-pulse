@@ -4,14 +4,13 @@ import { isPersistedReadinessProjection, type PersistedReadinessProjection } fro
 import { isTaskDeliverySummary } from '@/types/task-delivery';
 
 /** One owner for the card projection. Events coalesce; failed reads need explicit retry. */
-export function useTaskDelivery(boardId: string, specId: string, cardId: string, active: boolean, revision: number) {
+export function useTaskDelivery(boardId: string, specId: string, cardId: string, active: boolean, revision: number, refreshRequest = 0) {
   const api = useDashboardApi();
   const [value, setValue] = useState<PersistedReadinessProjection | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [refresh, setRefresh] = useState(0);
-  const requestRefresh = useRef<() => void>(() => {});
-  const retry = useCallback(() => setRefresh(n => n + 1), []);
+  const requestRefresh = useRef<(explicit?: boolean) => void>(() => {});
+  const retry = useCallback(() => requestRefresh.current(true), []);
   useEffect(() => {
     setValue(null); setError('');
   }, [api, boardId, specId, cardId]);
@@ -41,13 +40,15 @@ export function useTaskDelivery(boardId: string, specId: string, cardId: string,
         setValue(result);
         again ||= ['pending_initial', 'updating'].includes(result.projection.freshness);
       } catch (e) {
-        if (!controller.signal.aborted) { failed = true; setValue(null); setError(e instanceof Error ? e.message : 'Delivery could not be loaded.'); }
+        // Retain the last summary to keep a human draft mounted. The error and
+        // non-current freshness prevent it from authorizing another submission.
+        if (!controller.signal.aborted) { failed = true; setError(e instanceof Error ? e.message : 'Delivery could not be loaded.'); }
       } finally {
         inFlight = false;
         if (!controller.signal.aborted) { setLoading(false); if (again) { again = false; schedule(); } }
       }
     }
-    requestRefresh.current = schedule;
+    requestRefresh.current = (explicit = false) => { if (explicit) failed = false; schedule(); };
     const visible = () => { if (document.visibilityState === 'visible') schedule(); };
     window.addEventListener('pulse:delivery-evidence-changed', schedule);
     document.addEventListener('visibilitychange', visible);
@@ -57,10 +58,17 @@ export function useTaskDelivery(boardId: string, specId: string, cardId: string,
       window.removeEventListener('pulse:delivery-evidence-changed', schedule);
       document.removeEventListener('visibilitychange', visible);
     };
-  }, [api, boardId, specId, cardId, active, refresh]);
+  }, [api, boardId, specId, cardId, active]);
   const previousRevision = useRef(revision);
   useEffect(() => {
     if (previousRevision.current !== revision) { previousRevision.current = revision; requestRefresh.current(); }
   }, [revision]);
+  const previousRefreshRequest = useRef(refreshRequest);
+  useEffect(() => {
+    if (previousRefreshRequest.current !== refreshRequest) {
+      previousRefreshRequest.current = refreshRequest;
+      requestRefresh.current(true);
+    }
+  }, [refreshRequest]);
   return { value, error, loading, retry, refresh: useCallback(() => requestRefresh.current(), []) };
 }

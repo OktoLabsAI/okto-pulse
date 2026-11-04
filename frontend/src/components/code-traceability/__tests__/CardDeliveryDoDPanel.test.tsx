@@ -26,11 +26,13 @@ it('reads one scoped projection and keeps all technical sections lazy', async ()
   await screen.findByText('Work remaining');
   expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(1);
   expect(api.getPersistedReadinessProjection.mock.calls[0][2]).toEqual({ cardId: 'c', unitLimit: 20 });
-  expect(screen.getByRole('button', { name: 'Details' })).toHaveAttribute('aria-expanded', 'false');
+  expect(screen.getByRole('button', { name: 'Show details' })).toHaveAttribute('aria-expanded', 'false');
+  expect(screen.queryByRole('button', { name: /^Refresh$/ })).not.toBeInTheDocument();
   for (const fn of [api.getBoard, api.getDeliveryEvidence, api.getDeliveryReadinessPage, api.getCardDeliveryLedger, api.getTaskRequirementOptions]) expect(fn).not.toHaveBeenCalled();
   expect(screen.queryByRole('slider')).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
   expect(await screen.findByText('Delivery details')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Hide details' })).toHaveAttribute('aria-expanded', 'true');
   for (const fn of [api.getBoard, api.getDeliveryEvidence, api.getDeliveryReadinessPage, api.getCardDeliveryLedger, api.getTaskRequirementOptions]) expect(fn).not.toHaveBeenCalled();
 });
 
@@ -70,7 +72,7 @@ it.each(['normal', 'bug', 'test'])('shows a single verdict and escapes human con
   expect(screen.getByRole('status')).toHaveTextContent('Verification failed');
   expect(container.querySelector('script, img')).toBeNull();
   expect(container.querySelector('.lucide-circle-x')).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Details' })).toHaveAttribute('aria-expanded', 'false');
+  expect(screen.getByRole('button', { name: 'Show details' })).toHaveAttribute('aria-expanded', 'false');
   expect(screen.queryByRole('slider')).not.toBeInTheDocument();
 });
 
@@ -81,6 +83,8 @@ it('coalesces update bursts and stops polling when the tab is inactive', async (
   const view = render(<CardDeliveryDoDPanel boardId="b" card={card} />);
   await act(async () => { await Promise.resolve(); });
   act(() => { for (let n = 0; n < 30; n++) window.dispatchEvent(new Event('pulse:delivery-evidence-changed')); });
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={card} refreshRequest={1} />);
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={card} refreshRequest={2} />);
   await act(async () => { await vi.advanceTimersByTimeAsync(999); });
   expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(1);
   await act(async () => { await vi.advanceTimersByTimeAsync(1); });
@@ -91,13 +95,14 @@ it('coalesces update bursts and stops polling when the tab is inactive', async (
 });
 
 it('does not replace a human draft when a refreshed projection changes its version', async () => {
-  render(<CardDeliveryDoDPanel boardId="b" card={card} canProgress />);
+  const view = render(<CardDeliveryDoDPanel boardId="b" card={card} canProgress />);
   fireEvent.click(await screen.findByRole('button', { name: 'Record progress' }));
   const input = screen.getByLabelText('What was delivered or changed?');
   fireEvent.change(input, { target: { value: 'My draft' } });
   const next = projection(); next.task_delivery!.card_version = 2;
   api.getPersistedReadinessProjection.mockResolvedValue(next);
-  fireEvent.click(screen.getByRole('button', { name: /^Refresh$/ }));
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={card} canProgress refreshRequest={1} />);
+  await waitFor(() => expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(2), { timeout: 2000 });
   await waitFor(() => expect(screen.getByRole('button', { name: 'Save update' })).toBeDisabled());
   expect(input).toHaveValue('My draft');
   expect(api.submitHumanTask).not.toHaveBeenCalled();
@@ -109,11 +114,36 @@ it('keeps the same draft, focus and text selection when Details is toggled', asy
   const input = screen.getByLabelText('What was delivered or changed?') as HTMLTextAreaElement;
   fireEvent.change(input, { target: { value: 'Draft preserved across Details' } });
   input.focus(); input.setSelectionRange(2, 8);
-  fireEvent.click(screen.getByRole('button', { name: 'Details' }));
-  fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Hide details' }));
   expect(screen.getByLabelText('What was delivered or changed?')).toBe(input);
   expect(input).toHaveValue('Draft preserved across Details');
   expect(input).toHaveFocus();
   expect([input.selectionStart, input.selectionEnd]).toEqual([2, 8]);
+  expect(api.submitHumanTask).not.toHaveBeenCalled();
+});
+
+it('preserves the draft and Details after a failed refresh, then recovers only on explicit modal refresh', async () => {
+  const view = render(<CardDeliveryDoDPanel boardId="b" card={card} canProgress />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Record progress' }));
+  const input = screen.getByLabelText('What was delivered or changed?');
+  fireEvent.change(input, { target: { value: 'Keep my draft even offline' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+  api.getPersistedReadinessProjection.mockRejectedValue(new Error('Network unavailable'));
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={card} canProgress refreshRequest={1} />);
+  await screen.findByText('Delivery unavailable', {}, { timeout: 2000 });
+  expect(input).toHaveValue('Keep my draft even offline');
+  expect(screen.getByRole('button', { name: 'Save update' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Hide details' })).toHaveAttribute('aria-expanded', 'true');
+  act(() => { for (let n = 0; n < 30; n++) window.dispatchEvent(new Event('pulse:delivery-evidence-changed')); });
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(2);
+  api.getPersistedReadinessProjection.mockResolvedValue(projection());
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={card} canProgress refreshRequest={2} />);
+  await screen.findByText('Work remaining');
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(3);
+  expect(screen.getByLabelText('What was delivered or changed?')).toBe(input);
+  expect(input).toHaveValue('Keep my draft even offline');
+  expect(screen.getByRole('button', { name: 'Save update' })).toBeEnabled();
   expect(api.submitHumanTask).not.toHaveBeenCalled();
 });

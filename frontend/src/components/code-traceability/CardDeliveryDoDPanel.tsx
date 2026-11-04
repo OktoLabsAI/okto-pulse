@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { CircleCheck, CircleX, Clock3, Info } from 'lucide-react';
+import { ChevronDown, ChevronUp, CircleCheck, CircleX, Clock3, Info } from 'lucide-react';
 import { ContextualHelpLink } from '@/components/help/ContextualHelpLink';
 import type { CardDeliveryBatchDraft } from '@/types/delivery-evidence';
 import type { TaskDeliveryState } from '@/types/task-delivery';
@@ -11,7 +11,7 @@ import { useTaskDelivery } from './useTaskDelivery';
 import type { ReadinessCardLocation } from './readinessNavigation';
 
 interface Props {
-  active?: boolean; revision?: number; focusDiagnosis?: boolean; focusRecordId?: string;
+  active?: boolean; revision?: number; refreshRequest?: number; focusDiagnosis?: boolean; focusRecordId?: string;
   onOpenReadinessCard?: (id: string, target?: ReadinessCardLocation) => void;
   boardId: string; card: { id: string; card_type: string; spec_id: string; title?: string };
   canRecord?: boolean; canTest?: boolean; canWaiver?: boolean; canProgress?: boolean;
@@ -25,9 +25,9 @@ const titles: Record<TaskDeliveryState, string> = {
   completion_pending: 'Awaiting completion', delivered: 'Delivered', ready: 'Ready to complete',
 };
 
-export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 0, canWaiver = false,
+export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 0, refreshRequest = 0, canWaiver = false,
   canProgress = false, onChanged, onOpenTests, focusDiagnosis, focusRecordId, onOpenReadinessCard, reportRequest, onReportClosed }: Props) {
-  const projection = useTaskDelivery(boardId, card.spec_id, card.id, active, revision);
+  const projection = useTaskDelivery(boardId, card.spec_id, card.id, active, revision, refreshRequest);
   const [details, setDetails] = useState(Boolean(focusDiagnosis || focusRecordId));
   const [form, setForm] = useState<'progress' | 'delivery_report' | null>(null);
   const [notice, setNotice] = useState('');
@@ -69,7 +69,7 @@ export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 
       <p className="whitespace-pre-wrap break-words">{summary.last_update.content}</p>
       <h4 className="font-semibold">Remaining</h4>
       <p className="whitespace-pre-wrap break-words">{summary.last_update.remaining || 'No remaining work was described in this update. See the delivery status above.'}</p>
-      {summary.last_update.text_truncated && <p>Open Details to read the full update.</p>}
+      {summary.last_update.text_truncated && <p>Select Show details to read the full update.</p>}
     </div>}
     {notice && <p role="status">{notice}</p>}
     {!form && (projection.error ? <button className="btn btn-primary" onClick={projection.retry}>Retry delivery assessment</button>
@@ -77,14 +77,14 @@ export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 
         ? <button ref={button} type="button" className="btn btn-primary" onClick={primary}>{action.label}</button> : null)}
     {form && summary && <HumanTaskSubmissionForm key={`${card.id}:${form}:${correction?.submissionId ?? ''}`} boardId={boardId} cardId={card.id} summary={summary}
       correction={form === 'progress' ? correction : undefined}
-      action={form} requestedStatus={reportStatus} active={active}
+      action={form} requestedStatus={reportStatus} active={active && current}
       onRefresh={projection.retry} onCancel={() => { setForm(null); onReportClosed?.(); button.current?.focus(); }}
       onAccepted={result => { setForm(null); onReportClosed?.(); setNotice(result.replayed ? 'Submission confirmed.' : 'Submission saved.'); projection.refresh(); onChanged?.(); button.current?.focus(); }} />}
-    <div className="flex gap-4">
-      <button type="button" aria-expanded={details} aria-controls={`delivery-details-${card.id}`} className="underline underline-offset-4"
-        onClick={() => setDetails(open => !open)}>Details</button>
-      <button type="button" disabled={projection.loading || !active} className="underline underline-offset-4" onClick={projection.retry}>Refresh</button>
-    </div>
+    <button type="button" aria-expanded={details} aria-controls={`delivery-details-${card.id}`} className="btn btn-secondary inline-flex items-center gap-2"
+      onClick={() => setDetails(open => !open)}>
+      {details ? <ChevronUp size={16} aria-hidden="true" /> : <ChevronDown size={16} aria-hidden="true" />}
+      {details ? 'Hide details' : 'Show details'}
+    </button>
     <div id={`delivery-details-${card.id}`} hidden={!details}>
       {detailsVisited && summary && <div className="space-y-5">
         <h4 ref={heading} tabIndex={-1} className="font-semibold">Delivery details</h4>
@@ -92,11 +92,11 @@ export function CardDeliveryDoDPanel({ boardId, card, active = true, revision = 
         {canProgress && summary.historical_status === 'in_progress' && !form && <button type="button" className="btn btn-secondary"
           onClick={() => { setCorrection(undefined); setForm('progress'); }}>Record an update</button>}
         <TaskDeliveryDiagnosis boardId={boardId} specId={card.spec_id} cardId={card.id} active={active && details}
-          revision={projection.value?.projection.generation_id ?? ''} onOpenReadinessCard={onOpenReadinessCard} />
+          revision={`${projection.value?.projection.generation_id ?? ''}:${refreshRequest}`} onOpenReadinessCard={onOpenReadinessCard} />
         <CardLedgerPanel boardId={boardId} cardId={card.id} specId={card.spec_id} edition={summary.spec_edition} initialRecordId={focusRecordId}
           active={active && details} onCorrect={canProgress ? entry => { setCorrection(entry); setForm('progress'); } : undefined} />
         <TaskRequirementControl key={card.id} boardId={boardId} specId={card.spec_id} cards={[{ id: card.id, title: card.title || 'This task' }]}
-          active={active && details} canEdit={canWaiver} revision={revision} onChanged={() => { projection.refresh(); onChanged?.(); }} />
+          active={active && details} canEdit={canWaiver} revision={`${revision}:${refreshRequest}`} onChanged={() => { projection.refresh(); onChanged?.(); }} />
         {onOpenTests && <button type="button" className="btn btn-secondary" onClick={onOpenTests}>View test results</button>}
       </div>}
     </div>
