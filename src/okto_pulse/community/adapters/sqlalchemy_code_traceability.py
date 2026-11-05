@@ -46,6 +46,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     ImplementationTargetResolutionRow,
     ImplementationTargetRow,
     ImplementationTargetSpecLinkRow,
+    QualityAssessmentReceiptRow,
     Refinement,
     RefinementHistory,
     RefinementSnapshot,
@@ -54,7 +55,8 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 )
 from okto_pulse.core.domain import code_traceability as domain
 from okto_pulse.core.domain.refinement_source_compatibility import (
-    is_legacy_approved_to_done_history, resolve_source_compatibility,
+    MAX_HISTORY_ROWS, MAX_NEUTRAL_AUDITS,
+    is_legacy_approved_to_done_history, quality_audit_receipt_id, resolve_source_compatibility,
 )
 from okto_pulse.core.ports import code_investigation as investigation_port
 from okto_pulse.core.ports import code_traceability as traceability_port
@@ -4122,15 +4124,40 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
             ) from exc
         return tuple(items)
 
+    async def refinement_source_compatibility(self, *, board_id: str, refinement_id: str):
+        refinement = await self._session.get(Refinement, refinement_id)
+        if refinement is None or refinement.board_id != board_id:
+            raise traceability_port.CodeTraceabilityPersistenceError(
+                "refinement_source_scope_mismatch"
+            )
+        return await self._refinement_source_compatibility(refinement)
+
     async def _refinement_source_compatibility(self, refinement: Refinement):
         history = (await self._session.execute(
-            select(RefinementHistory).where(
+            select(RefinementHistory.id, RefinementHistory.refinement_id,
+                   RefinementHistory.version, RefinementHistory.action,
+                   RefinementHistory.changes, RefinementHistory.created_at).where(
                 RefinementHistory.refinement_id == refinement.id,
                 RefinementHistory.version <= refinement.version,
             ).order_by(RefinementHistory.version.desc(), RefinementHistory.created_at.desc(),
-                       RefinementHistory.id.desc()).limit(51)
-        )).scalars().all()
-        return resolve_source_compatibility(refinement, history)
+                       RefinementHistory.id.desc()).limit(MAX_HISTORY_ROWS + 1)
+        )).mappings().all()
+        if len(history) > MAX_HISTORY_ROWS:
+            return None
+        receipt_ids = {identity for row in history
+                       if (identity := quality_audit_receipt_id(row)) is not None}
+        if len(receipt_ids) > MAX_NEUTRAL_AUDITS:
+            return None
+        receipts = []
+        if receipt_ids:
+            q = QualityAssessmentReceiptRow
+            receipts = (await self._session.execute(select(
+                q.id, q.board_id, q.subject_type, q.subject_id, q.subject_version,
+                q.subject_edition, q.assessment_kind, q.source, q.history_id,
+                q.predecessor_receipt_id,
+            ).where(q.board_id == refinement.board_id, q.id.in_(sorted(receipt_ids)))
+                .order_by(q.id).limit(MAX_NEUTRAL_AUDITS + 1))).mappings().all()
+        return resolve_source_compatibility(refinement, history, quality_receipts=receipts)
 
     async def _completed_refinement_source_context(self, query, refinement, *, evidence):
         # Match the native lineage owner's strict N/N+1 resolver using this
