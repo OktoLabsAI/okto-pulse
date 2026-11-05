@@ -7,6 +7,7 @@ aborts the source mutation too; no outbox worker or KG write is involved.
 from __future__ import annotations
 
 _DIRECT = {
+    "verification_scenario_states": "s.id = {row}.spec_id AND s.board_id = {row}.board_id AND s.edition = {row}.spec_edition",
     "task_requirement_decisions": "s.id = {row}.spec_id AND s.board_id = {row}.board_id AND s.edition = {row}.spec_edition",
     "boards": "s.board_id = {row}.id",
     "specs": "s.id = {row}.id",
@@ -61,11 +62,15 @@ def _statements(table: str, row: str, operation: str) -> str:
         delta_card = "CASE WHEN NEW.kind='progress' THEN NEW.card_id ELSE NULL END"
     else:
         delta_kind, delta_card = "'full'", "NULL"
+    # An outer SQLite UPSERT may override a nested INSERT OR IGNORE conflict
+    # policy. Test absence explicitly; the source transaction owns the writer.
     return f"""
-    INSERT OR IGNORE INTO readiness_scope
+    INSERT INTO readiness_scope
       (id,realm_id,board_id,spec_id,edition,source_revision,active_generation_id,tombstone,updated_at)
     SELECT s.id || ':' || s.edition,coalesce(b.realm_id,'local'),s.board_id,s.id,s.edition,
-      0,NULL,0,{now} {selection};
+      0,NULL,0,{now} {selection}
+      AND NOT EXISTS (SELECT 1 FROM readiness_scope existing_scope
+        WHERE existing_scope.id=s.id || ':' || s.edition);
     UPDATE readiness_scope SET source_revision=source_revision+1,updated_at={now},
       realm_id=(SELECT coalesce(realm_id,'local') FROM boards WHERE id=readiness_scope.board_id),
       tombstone=CASE WHEN EXISTS(SELECT 1 FROM specs active_spec
@@ -105,7 +110,8 @@ def _statements(table: str, row: str, operation: str) -> str:
 def readiness_trigger_statements() -> tuple[str, ...]:
     statements = []
     for table in _DIRECT:
-        for operation in (("UPDATE",) if table == "boards" else ("INSERT", "UPDATE", "DELETE")):
+        operations = ("UPDATE",) if table in {"boards", "verification_scenario_states"} else ("INSERT", "UPDATE", "DELETE")
+        for operation in operations:
             row = "OLD" if operation == "DELETE" else "NEW"
             # A deleted Spec is removed by foreign-key cascade; its old scope
             # must not be reintroduced with a dangling FK.
@@ -129,6 +135,12 @@ def readiness_trigger_statements() -> tuple[str, ...]:
                 END""")
             condition = (" WHEN OLD.settings IS NOT NEW.settings OR OLD.realm_id IS NOT NEW.realm_id"
                 if table == "boards" else "")
+            if table == "verification_scenario_states" and operation == "UPDATE":
+                # Spec mutation already invalidates its scope once, regardless
+                # of how many scenario generations it changes/creates. Only a
+                # new acceptance needs this additional publication signal.
+                # Reservation order and exact replay do not change authority.
+                condition = " WHEN OLD.revision IS NOT NEW.revision AND OLD.generation=NEW.generation"
             statements.append(f"CREATE TRIGGER trg_readiness_{table}_{operation.lower()} "
                 f"AFTER {operation} ON {table}{condition} BEGIN {body} END")
     return tuple(statements)

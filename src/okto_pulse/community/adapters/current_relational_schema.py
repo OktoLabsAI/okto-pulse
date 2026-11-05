@@ -73,6 +73,12 @@ def create_current_schema_objects(connection: Any) -> None:
     The JSON contains concrete DDL, with no upgrade execution or version selection.
     """
     Base.metadata.create_all(connection)
+    from .sqlite_verification_currentness import (
+        install_verification_currentness_functions, install_verification_currentness_triggers,
+    )
+
+    install_verification_currentness_functions(connection.connection)
+    install_verification_currentness_triggers(connection)
     definitions = json.loads(files(__package__).joinpath("current_relational_objects.json").read_text(encoding="utf-8"))
     existing = {(row[0],row[1]): row[3] for row in connection.exec_driver_sql(_SCHEMA_QUERY)}
     for item in definitions:
