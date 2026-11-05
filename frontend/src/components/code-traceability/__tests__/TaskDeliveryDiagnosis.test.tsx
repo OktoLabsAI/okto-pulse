@@ -88,13 +88,30 @@ it('separates task-wide and unknown impacts and does not invent associations fro
 });
 
 it('names the failed verification check beside the requirement it impacts', async () => {
-  api.getDeliveryReadinessPage.mockResolvedValue(response([issue('failed', {
-    code: 'verification_failed', scenario_ids: ['scenario-login'], expected: [{ scenario_id: 'scenario-login' }] })]));
+  const value = response([issue('failed', {
+    code: 'verification_failed', scenario_ids: ['scenario-login'], expected: [{ scenario_id: 'scenario-login' }] })]);
+  // Actual Core failure diagnostics lead with implement_contribution even
+  // when implementation is complete; that means repair, not missing evidence.
+  value.next_actions = [{ ...action, kind: 'implement_contribution', issue_ids: ['failed'], state: 'ready' }];
+  api.getDeliveryReadinessPage.mockResolvedValue(value);
   render(<TaskDeliveryDiagnosis {...props} />);
   const row = await screen.findByRole('row', { name: /Sign in with a valid account/ });
   expect(row).toHaveTextContent('The required verification failed.');
   expect(row).toHaveTextContent('Verification checks:Verify sign-in');
   expect(within(row).getAllByText('Verify sign-in')).toHaveLength(1);
+  expect(row).toHaveTextContent('Review the failed check, fix its cause, then repeat verification and record the result.');
+  expect(row).not.toHaveTextContent('complete the work and record its implementation evidence');
+  expect(row).toHaveTextContent('Responsible task: Build sign-in');
+});
+
+it('still asks for implementation evidence when implementation is missing', async () => {
+  const value = response([issue('missing', { code: 'implementation_missing', phase: 'implementation' })]);
+  value.next_actions = [{ ...action, kind: 'implement_contribution', issue_ids: ['missing'], state: 'ready' }];
+  api.getDeliveryReadinessPage.mockResolvedValue(value);
+  render(<TaskDeliveryDiagnosis {...props} />);
+  const row = await screen.findByRole('row', { name: /Sign in with a valid account/ });
+  expect(row).toHaveTextContent('The responsible agent needs to complete the work and record its implementation evidence.');
+  expect(row).not.toHaveTextContent('Review the failed check');
 });
 
 it('shows every provided affected requirement and marks truncated impacts explicitly', async () => {

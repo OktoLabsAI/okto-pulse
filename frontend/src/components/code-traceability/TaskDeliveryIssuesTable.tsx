@@ -4,7 +4,7 @@ import type { ReadinessAction, ReadinessIssue, ReadinessResponse } from '@/types
 import type { ReadinessNavigator } from './readinessNavigation';
 import { DeliveryReadinessIssue } from './DeliveryReadinessIssues';
 import { deliveryItemLabel, isRequirementReference } from './deliveryItemLabel';
-import { taskDeliveryActions, taskDeliveryReasons } from './taskDeliveryDiagnosisCopy';
+import { taskDeliveryActionText, taskDeliveryReasons } from './taskDeliveryDiagnosisCopy';
 
 const actionStates: Record<ReadinessAction['state'], string> = { ready: '', waiting_dependency: 'Waiting for another step.',
   requires_input: 'More information is required.', requires_human: 'An authorized human decision is required.',
@@ -25,7 +25,7 @@ function NextStep({ issue, actions, spec, onNavigate }: {
   return <div className="space-y-2">
     {matching.length ? matching.map(action => <div key={action.id} className="space-y-1">
       {actionStates[action.state] && <p className="font-medium">{actionStates[action.state]}</p>}
-      <p>{taskDeliveryActions[action.kind] || 'Review the action plan in the technical evidence.'}</p>
+      <p>{taskDeliveryActionText(action.kind, issue.code)}</p>
     </div>) : <p>{taskDeliveryReasons[issue.code]?.next || 'Open the technical evidence to review this check with the responsible person.'}</p>}
     {issue.depends_on_issue_ids.length > 0 && !matching.some(action => action.state === 'waiting_dependency')
       && <p className="text-xs text-gray-500 dark:text-gray-400">Waiting for {issue.depends_on_issue_ids.length} related {issue.depends_on_issue_ids.length === 1 ? 'check' : 'checks'}.</p>}

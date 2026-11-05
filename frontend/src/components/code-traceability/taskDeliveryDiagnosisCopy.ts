@@ -11,7 +11,7 @@ export const taskDeliveryReasons: Record<string, { reason: string; next: string 
   material_progress_unresolved: { reason: 'A recorded change has not yet been checked against the implementation.', next: 'Finish or recheck the recorded change before relying on earlier evidence.' },
   verification_plan_missing: { reason: 'The required verification has not been defined.', next: 'Define the check that will confirm this requirement.' },
   verification_not_run: { reason: 'There is no valid execution of the required check.', next: 'Have the responsible agent run the check and record the actual result.' },
-  verification_failed: { reason: 'The required verification failed.', next: 'Review the failure, correct the affected work and repeat the required verification.' },
+  verification_failed: { reason: 'The required verification failed.', next: 'Review the failed check, fix its cause, then repeat verification and record the result.' },
   verification_inconclusive: { reason: 'The recorded result is insufficient to confirm verification.', next: 'Complete the missing observations or required review.' },
   verification_conflict: { reason: 'The current verification results disagree.', next: 'Review and reconcile the conflicting results.' },
   verification_association_missing: { reason: 'A valid verification result exists but is not linked to this delivery.', next: 'The responsible agent needs to link the result to the implementation it verified.' },
@@ -46,3 +46,12 @@ export const taskDeliveryActions: Record<string, string> = {
   restore_evaluation: 'Restore the required information or access, then refresh the task.',
   request_authorized_decision: 'Ask an authorized person to review and decide.',
 };
+
+export function taskDeliveryActionText(kind: string, reasonCode: string): string {
+  // Core uses this action for both missing implementation and repairing a
+  // failed check. The latter must not imply that accepted implementation is missing.
+  if (kind === 'implement_contribution' && reasonCode === 'verification_failed') {
+    return taskDeliveryReasons.verification_failed.next;
+  }
+  return taskDeliveryActions[kind] || 'Review the action plan in the technical evidence.';
+}
