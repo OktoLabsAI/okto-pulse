@@ -60,13 +60,13 @@ class PairedAcceptance(unittest.TestCase):
             raise AssertionError(f'Acceptance command failed ({arguments[0]}):\n{result.stdout[-6000:]}')
         return result
 
-    def _pytest(self, role, *selectors):
+    def _pytest(self, role, *selectors, timeout=300):
         report = self.root / f'{role}-pytest.xml'
         report.unlink(missing_ok=True)
         # Both repositories' conftest fixtures configure the paired source roots
         # and isolated persistence. Integration selectors depend on those fixtures.
         self._run([str(self.python), '-m', 'pytest', *selectors,
-                   '-q', '--tb=short', f'--junitxml={report}'], self.repos[role])
+                   '-q', '--tb=short', f'--junitxml={report}'], self.repos[role], timeout=timeout)
         suites = ET.parse(report).getroot()
         cases = list(suites.iter('testcase'))
         self.assertGreater(len(cases), 0, 'The selected acceptance suite must execute tests')
@@ -276,6 +276,10 @@ class VerificationAuthorityAcceptance(PairedAcceptance):
             'or current_heads_and_revision')
 
     def test_legacy_seed_replay_and_transport_authorization(self):
+        # Exact-format copy/replay tests perform real SQLite persistence. Keep
+        # every assertion while allowing this suite a bounded 10-minute budget
+        # within its separately authorized 15-minute native runner deadline.
         self._pytest('community', 'tests/test_verification_storage_upgrade.py',
             'tests/test_verification_report_admission.py',
-            'tests/test_verification_currentness_store.py::test_result_publication_retains_state_permissions_authentication_and_locked_spec_guard')
+            'tests/test_verification_currentness_store.py::test_result_publication_retains_state_permissions_authentication_and_locked_spec_guard',
+            timeout=600)
