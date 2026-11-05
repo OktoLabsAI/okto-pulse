@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import time
+import math
 from types import SimpleNamespace
 
 from sqlalchemy import func, select
@@ -41,6 +42,22 @@ def _revision(source, cards):
         sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
 
 
+def _deadline(timeout_ms, deadline):
+    if type(timeout_ms) is not int or not 1 <= timeout_ms <= 30000:
+        raise ValueError('query_timeout_ms_requires_1_to_30000')
+    if deadline is not None and (type(deadline) not in (int, float) or not math.isfinite(deadline)):
+        raise ValueError('query_deadline_requires_finite_monotonic_time')
+    local = time.monotonic() + timeout_ms / 1000
+    return min(local, deadline) if deadline is not None else local
+
+
+def _remaining(deadline):
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise GraphQueryTimeout('Spec coverage read deadline exceeded.')
+    return left
+
+
 class CommunitySpecCoverageReader:
     def __init__(self, session, *, delivery_store=None, graph_reader=None, query_execution=None):
         self._session = session
@@ -48,46 +65,41 @@ class CommunitySpecCoverageReader:
         self._graph_reader = graph_reader
         self._query_execution = query_execution
 
-    async def read_graph(self, query, scope, source_revision, *, timeout_ms):
+    async def read_graph(self, query, scope, source_revision, *, timeout_ms, deadline=None):
         if not query.read_graph:
             raise ValueError('spec_coverage_graph_outside_authority')
-        if type(timeout_ms) is not int or not 1 <= timeout_ms <= 30000:
-            raise ValueError('query_timeout_ms_requires_1_to_30000')
-        deadline = time.monotonic() + timeout_ms / 1000
-
-        def remaining():
-            value = int((deadline - time.monotonic()) * 1000)
-            if value <= 0:
-                raise GraphQueryTimeout('Spec coverage graph deadline exceeded.')
-            return value
-
-        async def check_source():
-            try:
-                async with asyncio.timeout(remaining() / 1000):
-                    if _revision(*(await self._source(query))) != source_revision:
-                        raise ValueError('spec_coverage_source_changed')
-            except TimeoutError as exc:
-                raise GraphQueryTimeout('Spec coverage source deadline exceeded.') from exc
-
-        await check_source()
+        deadline = _deadline(timeout_ms, deadline)
+        # Avoid touching the graph when the source is already known to differ.
+        # Core owns the separate mandatory final fence after this optional phase.
+        await self.verify_source(query, source_revision, timeout_ms=timeout_ms, deadline=deadline)
         try:
             reader = self._graph_reader or resolve_spec_coverage_graph_read()
             execution = self._query_execution or resolve_graph_query_execution()
 
             def observe():
-                with execution.scope(query.board_id, timeout_ms=remaining()):
+                with execution.scope(query.board_id, timeout_ms=timeout_ms,
+                                     deadline=deadline, existing_only=True):
                     return reader.read_spec_coverage_graph(query.board_id, scope)
 
             observed = await run_blocking_graph_io(observe, task_name='community.spec_coverage.read')
         except (GraphCapabilityUnavailable, GraphUnavailable, BoardCloseInProgressError):
             # A closing graph refuses readers before touching its native handle.
             # This optional observation must not discard relational Coverage.
-            # Keep the source fence and deadline below, and let unrelated graph
+            # Core still performs the mandatory final source fence. Unrelated graph
             # or programming failures propagate instead of reporting success.
             observed = SpecCoverageGraphFacts(state='unavailable')
-        await check_source()
-        remaining()
+        _remaining(deadline)
         return observed
+
+    async def verify_source(self, query, source_revision, *, timeout_ms, deadline=None):
+        deadline = _deadline(timeout_ms, deadline)
+        try:
+            async with asyncio.timeout(_remaining(deadline)):
+                if _revision(*(await self._source(query))) != source_revision:
+                    raise ValueError('spec_coverage_source_changed')
+                _remaining(deadline)
+        except TimeoutError as exc:
+            raise GraphQueryTimeout('Spec coverage source deadline exceeded.') from exc
 
     async def _source(self, query):
         spec = (await self._session.execute(select(*(getattr(Spec, key) for key in _SPEC_FIELDS))
@@ -115,11 +127,10 @@ class CommunitySpecCoverageReader:
         if count > MAX_SPEC_COVERAGE_FACTS:
             raise ValueError('spec_coverage_delivery_bound')
 
-    async def read(self, query, *, timeout_ms):
-        if type(timeout_ms) is not int or not 1 <= timeout_ms <= 30000:
-            raise ValueError('query_timeout_ms_requires_1_to_30000')
+    async def read(self, query, *, timeout_ms, deadline=None):
+        deadline = _deadline(timeout_ms, deadline)
         try:
-            async with asyncio.timeout(timeout_ms / 1000):
+            async with asyncio.timeout(_remaining(deadline)):
                 # A read savepoint pins the SQLite snapshot without a Board
                 # no-op UPDATE, semantic fence or any projection/repair write.
                 # Its cleanup is awaited before a timeout leaves this method.
@@ -135,6 +146,7 @@ class CommunitySpecCoverageReader:
                     if (await self._source(query)) != (source, cards):
                         raise ValueError('spec_coverage_source_changed')
                     revision = _revision(source, cards)
+                    _remaining(deadline)
                     return SpecCoverageSnapshot(scope, query.actor_scope_ref, revision, datetime.now(timezone.utc),
                         SimpleNamespace(**source), tuple(SimpleNamespace(**row) for row in cards), True,
                         proof, 'available' if query.read_delivery else 'restricted')

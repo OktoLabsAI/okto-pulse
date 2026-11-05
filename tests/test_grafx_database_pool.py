@@ -30,6 +30,50 @@ from okto_pulse.community.adapters.grafx_database_pool import (
 PAGE_SIZE = 8192
 
 
+def test_existing_lease_deadline_refuses_before_pin_or_open(tmp_path):
+    from okto_pulse.core.kg.interfaces.graph_errors import GraphQueryTimeout
+    connector = _Connector()
+    pool = CommunityGrafxDatabasePool(tmp_path, connect=connector)
+    path = tmp_path / 'deadline'
+    database = pool.get(path, page_size=PAGE_SIZE)
+    with pytest.raises(GraphQueryTimeout):
+        pool.acquire_existing(path, page_size=PAGE_SIZE, deadline=time.monotonic() - 1)
+    assert pool.pin_count(path) == 0
+    assert len(connector.calls) == 1
+    with pool.acquire_existing(path, page_size=PAGE_SIZE, deadline=time.monotonic() + 1) as lease:
+        assert lease.database is database and pool.pin_count(path) == 1
+    assert lease.release() is False
+    assert pool.pin_count(path) == 0
+    pool.close_all()
+
+
+def test_existing_lease_lock_contention_is_bounded_without_late_acquisition(tmp_path):
+    from okto_pulse.core.kg.interfaces.graph_errors import GraphQueryTimeout
+    connector = _Connector()
+    pool = CommunityGrafxDatabasePool(tmp_path, connect=connector)
+    path = tmp_path / 'contended'
+    pool.get(path, page_size=PAGE_SIZE)
+    locked, release = threading.Event(), threading.Event()
+    def holder():
+        with pool._lock:
+            locked.set()
+            assert release.wait(2)
+    thread = threading.Thread(target=holder)
+    thread.start()
+    try:
+        assert locked.wait(1)
+        started = time.monotonic()
+        with pytest.raises(GraphQueryTimeout):
+            pool.acquire_existing(path, page_size=PAGE_SIZE, deadline=started + 0.02)
+        assert time.monotonic() - started < 1
+    finally:
+        release.set()
+        thread.join(2)
+    assert not thread.is_alive()
+    assert pool.pin_count(path) == 0 and len(connector.calls) == 1
+    pool.close_all()
+
+
 class _FakeIdentity:
     def __init__(self, page_size: int) -> None:
         self.page_size = page_size

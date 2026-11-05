@@ -172,8 +172,10 @@ async def test_closing_graph_preserves_coverage_and_source_fence(ledger, monkeyp
         if source_changed:
             with pytest.raises(ValueError, match='^spec_coverage_source_changed$'):
                 await reader.read_graph(query, scope, snapshot.source_revision, timeout_ms=15000)
+                await reader.verify_source(query, snapshot.source_revision, timeout_ms=15000)
         else:
             graph = await reader.read_graph(query, scope, snapshot.source_revision, timeout_ms=15000)
+            await reader.verify_source(query, snapshot.source_revision, timeout_ms=15000)
             result = project_spec_coverage(query, replace(snapshot, graph=graph, graph_scope=scope))
             assert result['projection_freshness']['state'] == 'unavailable'
             assert result['structure']['graph']['observed_nodes'] is None
@@ -219,8 +221,8 @@ async def test_close_fallback_still_obeys_graph_read_deadline(ledger, monkeypatc
     reader = CommunitySpecCoverageReader(session, graph_reader=Reader(),
         query_execution=CommunityGraphQueryExecution())
     snapshot = await reader.read(query, timeout_ms=15000)
-    # Deterministic elapsed time: source and graph access fit; the second source
-    # check does not. Replace only this adapter's clock, not the event-loop clock.
+    # Deterministic phase expiry before native entry; final source fencing is a
+    # separate call. Replace this adapter's clock, not the event-loop clock.
     ticks = iter((0.0, 0.0, 0.0, 0.020))
     monkeypatch.setattr(coverage, 'time', SimpleNamespace(monotonic=lambda: next(ticks)))
     with pytest.raises(GraphQueryTimeout):
@@ -324,9 +326,14 @@ async def test_persisted_native_generation_change_invalidates_next_page(ledger, 
                 physical_path=paths["page-generation-a"], page_size=8192, database=database)
 
         async def observe():
+            # Coverage is existing-only. Explicitly prepare the isolated test
+            # generation through the normal non-Coverage reader path first.
+            with bundle.graph_query_execution.scope(board, timeout_ms=15000):
+                bundle.graph_store.read_spec_coverage_graph(board, SpecCoverageGraphScope((), ()))
             source = await reader.read(query, timeout_ms=15000)
             scope = build_spec_coverage_graph_scope(source)
             graph = await reader.read_graph(query, scope, source.source_revision, timeout_ms=15000)
+            await reader.verify_source(query, source.source_revision, timeout_ms=15000)
             return replace(source, graph=graph, graph_scope=scope)
 
         first_snapshot = await observe()

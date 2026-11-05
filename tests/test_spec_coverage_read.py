@@ -93,7 +93,8 @@ async def test_signed_proof_matches_gate_rollup_without_write_or_hidden_paths(le
     evaluated = evaluate_delivery_coverage(expected)
     assert evaluated.allowed
     statements = []
-    listener = lambda conn, cursor, statement, *args: statements.append(statement)
+    def listener(conn, cursor, statement, *args):
+        statements.append(statement)
     event.listen(session.bind.sync_engine, 'before_cursor_execute', listener)
     try:
         observed = await CommunitySpecCoverageReader(session, delivery_store=store).read(QUERY, timeout_ms=15000)
@@ -114,7 +115,8 @@ async def test_restricted_proof_is_not_even_read_or_counted(ledger):
     session, _, _ = ledger
     proof = SimpleNamespace(load_rollup_snapshot=AsyncMock(side_effect=AssertionError('private proof read')))
     statements = []
-    listener = lambda conn, cursor, statement, *args: statements.append(statement)
+    def listener(conn, cursor, statement, *args):
+        statements.append(statement)
     event.listen(session.bind.sync_engine, 'before_cursor_execute', listener)
     try:
         observed = await CommunitySpecCoverageReader(session, delivery_store=proof).read(replace(QUERY, read_delivery=False), timeout_ms=15000)
@@ -168,3 +170,41 @@ async def test_timeout_drains_read_scope_before_returning(ledger):
     assert cleaned
     assert not session.in_nested_transaction()
     assert await session.scalar(select(Card.id).where(Card.id == 'test')) == 'test'
+
+
+@pytest.mark.asyncio
+async def test_expired_absolute_deadline_never_reads_or_starts_savepoint(ledger, monkeypatch):
+    import time
+    session, _, _ = ledger
+    reader = CommunitySpecCoverageReader(session)
+    source = AsyncMock(side_effect=AssertionError('expired source read'))
+    monkeypatch.setattr(reader, '_source', source)
+    for operation in (lambda: reader.read(QUERY, timeout_ms=15000, deadline=time.monotonic() - 1),
+                      lambda: reader.verify_source(QUERY, 'old', timeout_ms=15000,
+                                                   deadline=time.monotonic() - 1)):
+        with pytest.raises(GraphQueryTimeout):
+            await operation()
+    source.assert_not_called()
+    assert not session.in_nested_transaction()
+
+
+@pytest.mark.asyncio
+async def test_mandatory_final_fence_detects_source_change_and_drains_timeout(ledger, monkeypatch):
+    session, _, _ = ledger
+    query = replace(QUERY, read_delivery=False)
+    reader = CommunitySpecCoverageReader(session)
+    snapshot = await reader.read(query, timeout_ms=15000)
+    await session.execute(update(Card).where(Card.id == 'test').values(status='in_progress'))
+    await session.commit()
+    with pytest.raises(ValueError, match='source_changed'):
+        await reader.verify_source(query, snapshot.source_revision, timeout_ms=15000)
+    cleaned = []
+    async def slow(_query):
+        try:
+            await asyncio.sleep(5)
+        finally:
+            cleaned.append(True)
+    monkeypatch.setattr(reader, '_source', slow)
+    with pytest.raises(GraphQueryTimeout):
+        await reader.verify_source(query, snapshot.source_revision, timeout_ms=10)
+    assert cleaned == [True]

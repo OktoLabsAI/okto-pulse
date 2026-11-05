@@ -14,6 +14,7 @@ from okto_grafx.errors import GrafxSchemaVersionMismatch, GrafxUnsupportedOperat
 from okto_pulse.core.kg.interfaces.graph_errors import (
     GraphCapabilityUnavailable,
 )
+from okto_pulse.core.kg.safe_write_lifecycle import STEP_CHECKPOINT, STEP_FLUSH, STEP_FSYNC
 
 import okto_pulse.community.adapters.routed_board_graph_composition as composition
 import okto_pulse.community.adapters.routed_graph_transaction as routed_transaction
@@ -26,6 +27,103 @@ from okto_pulse.community.adapters.graph_backend_binding import (
 )
 
 PAGE_SIZE = 8192
+
+
+def _coverage_access(tmp_path, monkeypatch):
+    connector = _GrafxConnector()
+    snapshot = SimpleNamespace(scope_id='r7-readers', backend='grafx',
+        active_path=tmp_path / 'generation-1', page_size=PAGE_SIZE)
+    fences, admissions = [], []
+    resolver = SimpleNamespace(
+        current_board_snapshot=lambda *args, **kwargs: snapshot,
+        revalidate_snapshot=lambda *args, **kwargs: None,
+        admit_grafx_route=lambda snap, db, operation: admissions.append((snap.active_path, db.path)),
+    )
+    monkeypatch.setattr(composition, 'revalidate_board_graph_write_lease',
+        lambda board_id, failure_phase: fences.append(failure_phase))
+    pools = tuple(CommunityGrafxDatabasePool(tmp_path, connect=connector, read_only=True)
+                  for _ in range(2))
+    access = composition._GrafxBoardAccess(resolver, SimpleNamespace(), SimpleNamespace(),
+        configured_page_size=PAGE_SIZE, connect=None, read_pools=pools, query_pools=pools)
+    return access, snapshot, pools, connector, fences, admissions
+
+
+def test_coverage_cold_readers_never_open_checkpoint_or_prepare(tmp_path, monkeypatch):
+    access, snapshot, _, connector, fences, _ = _coverage_access(tmp_path, monkeypatch)
+    board = snapshot.scope_id
+    with access.query_execution.scope(board, timeout_ms=500, existing_only=True):
+        with pytest.raises(GraphCapabilityUnavailable):
+            with access.read_database_scope(board):
+                pytest.fail('cold reader admitted')
+        with pytest.raises(GraphCapabilityUnavailable):
+            access.read_database(board)
+        with pytest.raises(GraphCapabilityUnavailable):
+            access.prepare_query_readers(board)
+        with pytest.raises(GraphCapabilityUnavailable):
+            access.database(board)
+        with pytest.raises(GraphCapabilityUnavailable):
+            access.write_fence(board, 'checkpoint')
+    assert connector.calls == [] and fences == []
+
+
+def test_prepared_readers_pin_exact_generation_and_release_on_failure(tmp_path, monkeypatch):
+    access, snapshot, pools, connector, fences, admissions = _coverage_access(tmp_path, monkeypatch)
+    board = snapshot.scope_id
+    access.prepare_query_readers(board)
+    assert len(connector.calls) == 2 and len(fences) == 3
+    with pytest.raises(RuntimeError, match='native failure'):
+        with access.query_execution.scope(board, timeout_ms=500, existing_only=True):
+            with access.read_database_scope(board) as reader:
+                assert reader.path == str(snapshot.active_path)
+                assert sum(pool.pin_count(snapshot.active_path) for pool in pools) == 1
+                raise RuntimeError('native failure')
+    assert sum(pool.pin_count(snapshot.active_path) for pool in pools) == 0
+    assert len(connector.calls) == 2
+    snapshot.active_path = tmp_path / 'generation-2'
+    with access.query_execution.scope(board, timeout_ms=500, existing_only=True):
+        with pytest.raises(GraphCapabilityUnavailable):
+            with access.read_database_scope(board):
+                pytest.fail('old generation was reused')
+    assert len(connector.calls) == 2
+    access.prepare_query_readers(board)
+    with access.query_execution.scope(board, timeout_ms=500, existing_only=True):
+        with access.read_database_scope(board) as reader:
+            assert reader.path == str(snapshot.active_path)
+    assert all(str(path) == observed for path, observed in admissions)
+    for pool in pools:
+        pool.close_all()
+
+
+@pytest.mark.parametrize(('step', 'expected'), [
+    (STEP_CHECKPOINT, ['checkpoint', 'prepare']),
+    (STEP_FLUSH, ['flush']),
+    (STEP_FSYNC, ['flush', 'checkpoint', 'prepare']),
+])
+def test_lifecycle_prepares_after_durability_without_removing_any_step(tmp_path, step, expected):
+    from okto_pulse.community.adapters.grafx_graph_lifecycle import CommunityGrafxGraphLifecycle
+    events = []
+    database = SimpleNamespace(identity=SimpleNamespace(page_size=PAGE_SIZE),
+        checkpoint=lambda: events.append('checkpoint'), flush=lambda: events.append('flush'))
+    lifecycle = CommunityGrafxGraphLifecycle(lambda _: database, lambda _: tmp_path,
+        lambda _: None, lambda *args: None,
+        prepare_query_readers=lambda _: events.append('prepare'))
+    result = lifecycle.apply_step('r7-durability', 'board_graph', step)
+    assert result.ok, result.detail
+    assert events == expected
+
+
+def test_optional_reader_preparation_failure_does_not_rewrite_durability(tmp_path, monkeypatch):
+    access, snapshot, pools, connector, fences, _ = _coverage_access(tmp_path, monkeypatch)
+    def busy(*args, **kwargs):
+        raise GrafxDatabasePoolError('busy reader', reason='pool_open_failed')
+    for pool in pools:
+        monkeypatch.setattr(pool, 'get', busy)
+    access.prepare_query_readers(snapshot.scope_id)
+    assert connector.calls == [] and len(fences) == 3
+    with access.query_execution.scope(snapshot.scope_id, timeout_ms=500, existing_only=True):
+        with pytest.raises(GraphCapabilityUnavailable):
+            with access.read_database_scope(snapshot.scope_id):
+                pytest.fail('failed preparation manufactured a reader')
 
 
 class _FakeGrafxTransaction:

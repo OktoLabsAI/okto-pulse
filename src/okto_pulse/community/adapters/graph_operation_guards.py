@@ -7,8 +7,10 @@ Core write authority is revalidated by the calling Community boundary.
 
 from __future__ import annotations
 import threading
+import time
+import math
 from contextlib import contextmanager
-from okto_pulse.core.kg.interfaces.graph_errors import GraphLockContention
+from okto_pulse.core.kg.interfaces.graph_errors import GraphLockContention, GraphQueryTimeout
 
 _CLOSE_DRAIN_TIMEOUT_S = 5.0
 _READER_ENTER_TIMEOUT_S = 10.0
@@ -57,17 +59,36 @@ class _BoardCloseGuard:
         # janelas simult�neas n�o podem mais se sobrepor.
         self._close_serial_lock = threading.Lock()
 
-    def reader_enter(self) -> None:
+    def reader_enter(self, *, deadline: float | None = None) -> None:
         """Registra um leitor; FAIL-CLOSED (KGD-01 C6): bloqueia (bounded)
         enquanto um close drena e levanta :class:`BoardCloseInProgressError`
         se a janela closing continuar ativa ap�s o timeout (lookup do m�dulo
         em runtime para os testes encurtarem via monkeypatch)."""
-        timeout = _READER_ENTER_TIMEOUT_S
-        with self._cond:
-            ok = self._cond.wait_for(lambda: not self._closing, timeout)
+        if deadline is not None and (type(deadline) not in (int, float) or not math.isfinite(deadline)):
+            raise ValueError('query_deadline_requires_finite_monotonic_time')
+
+        def remaining():
+            if deadline is None:
+                return _READER_ENTER_TIMEOUT_S
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise GraphQueryTimeout('Board graph admission deadline exceeded.')
+            return min(_READER_ENTER_TIMEOUT_S, left)
+
+        timeout = remaining()
+        if not self._cond.acquire(timeout=timeout):
+            remaining()
+            raise BoardCloseInProgressError(self.board_id, timeout)
+        try:
+            ok = self._cond.wait_for(lambda: not self._closing, remaining())
+            # A close can finish just after the budget expires. Never pin that
+            # late reader or let it touch a native participant afterwards.
+            remaining()
             if not ok:
                 raise BoardCloseInProgressError(self.board_id, timeout)
             self._readers += 1
+        finally:
+            self._cond.release()
 
     def reader_exit(self) -> None:
         with self._cond:
@@ -185,7 +206,7 @@ def _get_close_guard(board_id: str) -> _BoardCloseGuard:
 
 
 @contextmanager
-def board_graph_operation_window(board_id: str):
+def board_graph_operation_window(board_id: str, *, deadline: float | None = None):
     """Pin one board operation against lifecycle close and storage mutation.
 
     This is the backend-neutral reader side of :func:`board_storage_mutation_window`.
@@ -196,7 +217,7 @@ def board_graph_operation_window(board_id: str):
     if type(board_id) is not str or not board_id:
         raise ValueError("board_graph_operation_window_invalid")
     guard = _get_close_guard(board_id)
-    guard.reader_enter()
+    guard.reader_enter(deadline=deadline)
     try:
         yield
     finally:

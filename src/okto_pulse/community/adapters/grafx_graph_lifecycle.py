@@ -105,6 +105,7 @@ class CommunityGrafxGraphLifecycle:
         *,
         admission: AdmissionValidator | None = None,
         recover_latched_checkpoint: RecoveryCallback | None = None,
+        prepare_query_readers: Callable[[str], None] | None = None,
     ) -> None:
         self._database_resolver = database_resolver
         self._path_resolver = path_resolver
@@ -112,6 +113,7 @@ class CommunityGrafxGraphLifecycle:
         self._revalidate_fence = revalidate_fence
         self._admission = admission
         self._recover_latched_checkpoint = recover_latched_checkpoint
+        self._prepare_query_readers = prepare_query_readers
 
     def _database(self, board_id: str):
         database = self._database_resolver(board_id)
@@ -212,6 +214,8 @@ class CommunityGrafxGraphLifecycle:
                 bootstrapped_at=current_grafx_timestamp(),
                 revalidate_fence=lambda phase: self._revalidate_fence(board_id, phase),
             )
+            if self._prepare_query_readers is not None:
+                self._prepare_query_readers(board_id)
             return GraphHandle(
                 board_id=board_id,
                 storage_ref=grafx_board_storage_ref(board_id),
@@ -355,6 +359,8 @@ class CommunityGrafxGraphLifecycle:
                     )
                 database = self._database(board_id)
                 validate_current_grafx_schema(database)
+                if self._prepare_query_readers is not None:
+                    self._prepare_query_readers(board_id)
                 return GraphLifecycleStepResult(ok=True)
 
             if step == STEP_CHECKPOINT:
@@ -374,6 +380,8 @@ class CommunityGrafxGraphLifecycle:
                 database.flush()
                 self._revalidate_fence(board_id, "checkpoint")
                 self._checkpoint_with_transparent_recovery(board_id, database)
+            if step in {STEP_CHECKPOINT, STEP_FSYNC} and self._prepare_query_readers is not None:
+                self._prepare_query_readers(board_id)
             return GraphLifecycleStepResult(ok=True)
         except Exception as exc:
             mapped = map_grafx_error(exc, operation=f"lifecycle_{step}")
