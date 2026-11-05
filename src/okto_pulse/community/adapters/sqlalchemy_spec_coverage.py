@@ -12,6 +12,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Spec, Card, DeliveryEvidenceRecordRow, CardDeliveryEvidenceRecordRow,
 )
 from okto_pulse.community.adapters.sqlalchemy_delivery_evidence import CommunityDeliveryEvidenceStore
+from okto_pulse.community.adapters.graph_operation_guards import BoardCloseInProgressError
 from okto_pulse.core.application.use_cases.base import EntityNotFoundError
 from okto_pulse.core.domain.delivery_evidence import DeliveryScope
 from okto_pulse.core.domain.delivery_inventory import COLLECTIONS
@@ -78,7 +79,11 @@ class CommunitySpecCoverageReader:
                     return reader.read_spec_coverage_graph(query.board_id, scope)
 
             observed = await run_blocking_graph_io(observe, task_name='community.spec_coverage.read')
-        except (GraphCapabilityUnavailable, GraphUnavailable):
+        except (GraphCapabilityUnavailable, GraphUnavailable, BoardCloseInProgressError):
+            # A closing graph refuses readers before touching its native handle.
+            # This optional observation must not discard relational Coverage.
+            # Keep the source fence and deadline below, and let unrelated graph
+            # or programming failures propagate instead of reporting success.
             observed = SpecCoverageGraphFacts(state='unavailable')
         await check_source()
         remaining()
