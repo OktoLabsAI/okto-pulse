@@ -2,6 +2,17 @@ import { CircleCheck, CircleHelp, CircleX, Clock3, MinusCircle, TriangleAlert } 
 import type { Spec } from '@/types';
 import type { PersistedReadinessProjection, ReadinessMetric } from '@/types/delivery-readiness';
 import { deliveryItemLabel } from './deliveryItemLabel';
+import { taskDeliveryReasons } from './taskDeliveryDiagnosisCopy';
+
+function PhaseNextStep({ state, reasons, current }: { state: string; reasons: string[]; current: boolean }) {
+  // Render the server's diagnosis only. Never infer authority from another row,
+  // a scenario's latest result, or a previously displayed assessment.
+  if (!current || ['satisfied', 'waived', 'not_applicable'].includes(state)) return null;
+  const next = reasons.map(code => taskDeliveryReasons[code]?.next).find(Boolean);
+  return <p className="mt-2 max-w-sm text-xs text-gray-600 dark:text-gray-400">
+    {next || 'Open Details to review this item’s pending checks and next steps.'}
+  </p>;
+}
 
 function PhaseState({ state, phase, current, unavailable }: {
   state: string; phase: 'implementation' | 'verification'; current: boolean; unavailable: boolean;
@@ -66,8 +77,10 @@ export function TaskDeliveryMatrix({ value, cardId, spec, current, unavailable, 
                 <span className="mb-1 block text-xs text-gray-500 dark:text-gray-400">{label.family}</span>
                 {label.title}
               </th>
-              <td className="px-4 py-3"><PhaseState state={unit.implementation_state} phase="implementation" current={current} unavailable={unavailable} /></td>
-              <td className="px-4 py-3"><PhaseState state={unit.verification_state} phase="verification" current={current} unavailable={unavailable} /></td>
+              <td className="px-4 py-3 align-top"><PhaseState state={unit.implementation_state} phase="implementation" current={current} unavailable={unavailable} />
+                <PhaseNextStep state={unit.implementation_state} reasons={unit.implementation_reason_codes} current={current} /></td>
+              <td className="px-4 py-3 align-top"><PhaseState state={unit.verification_state} phase="verification" current={current} unavailable={unavailable} />
+                <PhaseNextStep state={unit.verification_state} reasons={unit.verification_reason_codes} current={current} /></td>
             </tr>;
           })}</tbody>
         </table>

@@ -96,12 +96,26 @@ it('names the failed verification check beside the requirement it impacts', asyn
   api.getDeliveryReadinessPage.mockResolvedValue(value);
   render(<TaskDeliveryDiagnosis {...props} />);
   const row = await screen.findByRole('row', { name: /Sign in with a valid account/ });
-  expect(row).toHaveTextContent('The required verification failed.');
+  expect(row).toHaveTextContent('The check for this delivered version failed.');
   expect(row).toHaveTextContent('Verification checks:Verify sign-in');
   expect(within(row).getAllByText('Verify sign-in')).toHaveLength(1);
-  expect(row).toHaveTextContent('Review the failed check, fix its cause, then repeat verification and record the result.');
+  expect(row).toHaveTextContent('Review the failed check, fix its cause, then verify the corrected version and record the result.');
   expect(row).not.toHaveTextContent('complete the work and record its implementation evidence');
   expect(row).toHaveTextContent('Responsible task: Build sign-in');
+});
+
+it('explains an unclear applicable result without claiming that independent checks disagree', async () => {
+  const value = response([issue('ambiguous', { code: 'verification_conflict', intrinsic_state: 'conflict',
+    scenario_ids: ['scenario-login'], action_ids: ['action-1'] })]);
+  value.next_actions = [{ ...action, kind: 'resolve_verification_conflict', issue_ids: ['ambiguous'], state: 'ready' }];
+  api.getDeliveryReadinessPage.mockResolvedValue(value);
+  render(<TaskDeliveryDiagnosis {...props} />);
+  const row = await screen.findByRole('row', { name: /Sign in with a valid account/ });
+  expect(row).toHaveTextContent('Verification cannot be confirmed because the applicable result is unclear.');
+  expect(row).toHaveTextContent('Ask the responsible agent to identify the result for this delivered version and resolve the ambiguity.');
+  expect(row).toHaveTextContent('Verify sign-in');
+  expect(row).not.toHaveTextContent('results disagree');
+  expect(row).not.toHaveTextContent('run the required check');
 });
 
 it('still asks for implementation evidence when implementation is missing', async () => {

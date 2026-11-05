@@ -166,10 +166,9 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
             zeroLabel="Not applicable" description="Persisted proof for applicable obligations." />
         </div>
         {readiness.persisted && <p role="status" className="text-xs text-gray-500">
-          {readiness.persisted.freshness === 'current' ? 'Current' : readiness.persisted.freshness === 'updating'
-            ? 'Updating · previous coherent generation' : readiness.persisted.freshness === 'pending_initial'
-              ? 'Waiting for calculation' : 'Calculation unavailable'}
-          {readiness.persisted.generationId ? ` · Generation ${readiness.persisted.generationId}` : ''}
+          {readiness.persisted.freshness === 'current' ? 'Delivery data is current' : readiness.persisted.freshness === 'updating'
+            ? 'Delivery data is updating' : readiness.persisted.freshness === 'pending_initial'
+              ? 'Delivery data is waiting for calculation' : 'Delivery calculation is unavailable'}
         </p>}
         {readiness.error && <p role="alert" className="text-xs text-amber-700">{readiness.error}</p>}
         <section aria-label="Next steps" className="rounded-xl border border-gray-200 p-4 dark:border-gray-700">
@@ -208,6 +207,7 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
       </section></AccessibleTabPanel>
       <details className="rounded-lg border border-gray-200 p-3 text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
         <summary className="cursor-pointer">Technical diagnostics</summary>
+        {readiness.persisted?.generationId && <p className="mt-3 break-all">Delivery generation: {readiness.persisted.generationId}</p>}
         <section aria-label="Structural graph observations" className="mt-3 space-y-2">
         <h4 className="font-semibold">Structural graph observations</h4>
         <p>Graph freshness: {data.projection_freshness.state}. Observation: {data.projection_freshness.checked_at}.</p>

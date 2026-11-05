@@ -1,4 +1,4 @@
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
 import { HelpPanel } from '../HelpPanel';
 
@@ -19,6 +19,25 @@ it('explains delivery status, authority, exceptions and next steps at the contex
   }
   expect(content).not.toHaveTextContent('delivery-summary/v1');
   expect(content).not.toHaveTextContent('population_id');
+});
+
+it('shares the delivered-version rules between central and contextual Help', () => {
+  const view = render(<HelpPanel onClose={vi.fn()} />);
+  fireEvent.change(screen.getByLabelText('Help topic'), { target: { value: 'delivery-status' } });
+  const central = screen.getByRole('heading', { name: 'Delivery status — See what has been delivered' }).parentElement!;
+  const centralText = central.textContent;
+  for (const rule of ['different delivered versions independently', 'version B does not replace a valid check for version A',
+    'same version', 'without repeating the check', 'does not silently choose the newest passing result',
+    'Needs review does not necessarily mean that checks disagree', 'Reset verification',
+    'Old results stay in history', 'does not make them current again', 'Fresh verification is required',
+    'never need to obtain, select or type a receipt', 'Delivery data is current', 'Graph details are temporarily unavailable']) {
+    expect(central).toHaveTextContent(rule);
+  }
+  expect(central).not.toHaveTextContent('accepted_result_id');
+  expect(central).not.toHaveTextContent('ordinal');
+  view.unmount();
+  render(<HelpPanel initialSectionId="delivery-status" onClose={vi.fn()} />);
+  expect(screen.getByRole('heading', { name: 'Delivery status — See what has been delivered' }).parentElement!.textContent).toBe(centralText);
 });
 
 it('documents automatic human receipts, immutable correction and explicit retry at the form help destination', () => {

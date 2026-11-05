@@ -11,6 +11,20 @@ The main view shows, in order: the current delivery status, **Implementation** a
 
 Each matrix row is an item assigned to this task, with independent implementation and verification results. The percentages come from the current assessment of this task, not from its workflow status or from the visible page alone. **100%** proof does not complete the task or replace the delivery verdict. **Unknown** and **Not applicable** are not zero. **Waived** and **Not applicable** do not create passing proof. Test Cards show their assigned test scenarios; implementation can be **Not applicable**. A task without applicable assigned items has no matrix. Use **Next items** or **First items** when the matrix spans more than one page.
 
+Pending rows show a next step under the affected phase, using the current assessment. Open **Show details** for all checks, related scenarios and responsible tasks. A result in one row does not decide the result in another row.
+
+### Verification follows the delivered version
+
+Each requirement is checked against the version of the work it delivers. The same check can verify different delivered versions independently. For example, a failed check for version B does not replace a valid check for version A. A newer failure for **the same version** removes its earlier passing result from current delivery confirmation, even before another update is linked.
+
+After a correction, the responsible agent verifies the corrected version and links the accepted result to that delivery. If a suitable current result already exists, the agent can link it without repeating the check. When several results could apply, the agent must identify the correct one; the application does not silently choose the newest passing result. **Needs review** does not necessarily mean that checks disagree.
+
+**Run again** records a new result for the version being checked. **Reset verification**, or a change to the scenario's requirements, expected outcome or verification method, invalidates the affected current results. A reset can affect every delivered version checked by that scenario. Old results stay in history; restoring old text or evidence does not make them current again. Fresh verification is required for the changed scope. A changed delivered version also needs its own applicable verification.
+
+You submit an update normally. The application creates its audit record automatically; you never need to obtain, select or type a receipt. This records the submission, not a passing test. Technical version references and verification history remain inside **Details**.
+
+### Delivery actions and pending work
+
 Use **Change task requirements** to choose Required, Optional or Waived for this task; a note is optional. The button is next to Details and does not require opening the technical information. Users without edit authority see **View task requirements**. Progress forms, latest updates, history, receipts and technical diagnosis are inside Details.
 
 | Task status | Meaning |
@@ -85,6 +99,7 @@ An accepted save confirms the decision; it does not approve delivery.
 
 While status is **updating** or **being prepared**, completion and counts may not yet be confirmed.
 Unknown counts are not zero. The screen makes a few automatic refresh attempts; use **Refresh delivery status** to check again.
+On the Coverage overview, **Delivery data is current** refers to the delivery assessment only. **Graph details are temporarily unavailable** means the relationship graph could not be read; it does not erase available planning or delivery information. Use **Reload coverage** to retry. Technical calculation identifiers are available under **Technical diagnostics**.
 An access error or unavailable calculation is not an empty Spec. Review your access with the Board owner, or refresh after the service recovers.
 **No tasks in this Spec** appears only when the complete current task list is known to be empty.
 

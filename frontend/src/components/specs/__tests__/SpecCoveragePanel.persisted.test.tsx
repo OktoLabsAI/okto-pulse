@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { SpecCoveragePanel } from '../SpecCoveragePanel';
 import type { SpecCoverageResponse } from '../specCoverageTypes';
 import { persistedProjection } from '@/components/code-traceability/__tests__/readinessFixture';
@@ -52,7 +52,16 @@ it('uses the persisted Spec generation for Overview proof percentages', async ()
   await waitFor(() => expect(within(implementation.closest('div')!).getByText('88%')).toBeVisible());
   const verification = screen.getByText('Verification proof');
   expect(within(verification.closest('div')!).getByText('50%')).toBeVisible();
-  expect(screen.getByText(/Generation generation-1/)).toBeVisible();
+  expect(screen.getByText('Delivery data is current')).toBeVisible();
+  expect(screen.getByText(/Graph details are temporarily unavailable/)).toBeVisible();
+  const generation = screen.getByText('Delivery generation: generation-1');
+  expect(generation).not.toBeVisible();
+  const diagnostics = screen.getByText('Technical diagnostics');
+  expect(generation.closest('details')).not.toHaveAttribute('open');
+  fireEvent.click(diagnostics);
+  expect(generation).toBeVisible();
+  fireEvent.click(diagnostics);
+  expect(generation).not.toBeVisible();
   expect(api.getSpecCoverage).toHaveBeenCalledOnce();
   expect(api.getPersistedReadinessProjection).toHaveBeenCalledOnce();
 });

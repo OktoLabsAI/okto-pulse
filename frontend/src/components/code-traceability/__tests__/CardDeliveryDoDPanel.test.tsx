@@ -56,7 +56,9 @@ it('shows the verdict, canonical percentages and assigned matrix before the two 
   const table = screen.getByRole('table', { name: 'Implementation and verification by requirement' });
   expect(within(table).getAllByRole('row')).toHaveLength(4);
   expect(within(table).getByRole('row', { name: /Sign in with a valid account/ })).toHaveTextContent('ImplementedPending');
-  expect(within(table).getByRole('row', { name: /Reject expired credentials/ })).toHaveTextContent('PartialFailed');
+  const partial = within(table).getByRole('row', { name: /Reject expired credentials/ });
+  expect(within(partial).getByText('Partial')).toBeVisible();
+  expect(within(partial).getByText('Failed')).toBeVisible();
   expect(within(table).getByRole('row', { name: /Record access attempts/ })).toHaveTextContent('WaivedNot applicable');
   expect(screen.queryByText('Unassigned work must not appear')).not.toBeInTheDocument();
   expect(screen.queryByText('Narrative belongs in Details')).not.toBeInTheDocument();
@@ -65,6 +67,59 @@ it('shows the verdict, canonical percentages and assigned matrix before the two 
   expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(1);
   expect(api.getTaskRequirementOptions).not.toHaveBeenCalled();
   expect(api.getDeliveryReadinessPage).not.toHaveBeenCalled();
+});
+
+it('keeps an independently verified requirement green and attributes the failed version and repair to its own row', async () => {
+  const value = projection('verification_failed');
+  value.units = [unit('fr:stable', 'satisfied', 'satisfied'), {
+    ...unit('fr:changed', 'satisfied', 'failed'), verification_reason_codes: ['verification_failed'] }];
+  value.page.total = 2;
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  const spec = { id: 's', edition: 1, version: 1, functional_requirements: [
+    { id: 'stable', text: 'Preserve answered questions' }, { id: 'changed', text: 'Explain ambiguity scores' }] } as Spec;
+  render(<CardDeliveryDoDPanel boardId="b" card={card} spec={spec} canProgress canWaiver />);
+  const stable = await screen.findByRole('row', { name: /Preserve answered questions/ });
+  const failed = screen.getByRole('row', { name: /Explain ambiguity scores/ });
+  expect(within(stable).getByText('Verified')).toBeVisible();
+  expect(stable.querySelector('.lucide-circle-check')).toHaveAttribute('aria-hidden', 'true');
+  expect(stable).not.toHaveTextContent('failed check');
+  expect(within(failed).getByText('Failed')).toBeVisible();
+  expect(failed.querySelector('.lucide-circle-x')).toHaveAttribute('aria-hidden', 'true');
+  expect(failed).toHaveTextContent('verify the corrected version and record the result');
+  // The server percentage is authoritative even when only two rows are visible.
+  expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledOnce();
+  expect(api.getDeliveryReadinessPage).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: 'Verification and pending work' })).not.toBeInTheDocument();
+});
+
+it.each([
+  ['missing', 'verification_association_missing', 'link the result to the implementation it verified'],
+  ['missing', 'verification_not_run', 'run the check and record the actual result'],
+  ['conflict', 'verification_conflict', 'identify the result for this delivered version and resolve the ambiguity'],
+  ['stale', 'verification_base_mismatch', 'Link a valid result for the current version or repeat verification against it'],
+  ['unknown', 'assessment_unavailable', 'Restore the missing information or access, then refresh the task'],
+])('renders the server %s diagnosis and next step without loading technical checks', async (state, reason, next) => {
+  const value = projection('verification_pending');
+  value.units = [{ ...unit('fr:item', 'satisfied', state), verification_reason_codes: [reason] }];
+  value.page.total = 1;
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={card} spec={{ id: 's', edition: 1, version: 1,
+    functional_requirements: [{ id: 'item', text: 'Affected requirement' }] } as Spec} />);
+  expect(await screen.findByRole('row', { name: /Affected requirement/ })).toHaveTextContent(next);
+  expect(api.getDeliveryReadinessPage).not.toHaveBeenCalled();
+});
+
+it('does not present previous next steps as current while the projection is unavailable', async () => {
+  const value = projection('verification_failed');
+  value.units = [{ ...unit('fr:item', 'satisfied', 'failed'), verification_reason_codes: ['verification_failed'] }];
+  value.page.total = 1;
+  value.projection.freshness = 'unavailable';
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={card} />);
+  await screen.findByText('Delivery unavailable');
+  expect(screen.queryByText(/verify the corrected version/)).not.toBeInTheDocument();
+  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
 });
 
 it('shows test scenarios and keeps unknown and non-applicable percentages distinct from zero', async () => {
