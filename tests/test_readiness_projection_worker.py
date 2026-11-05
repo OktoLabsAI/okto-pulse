@@ -36,6 +36,9 @@ from okto_pulse.core.services.persisted_delivery_readiness import (
     ProjectedUnit, build_readiness_generation, readiness_manifest_digest,
 )
 from test_readiness_schema_upgrade import _v401_predecessor
+import test_delivery_evidence_integration as delivery
+
+ledger = delivery.ledger
 
 
 def test_projection_child_reuses_canonical_database_path(tmp_path, monkeypatch):
@@ -533,9 +536,13 @@ def _seed_migrated_v401_many_specs(database):
         predecessor.commit()
     backup = upgrade_readiness_schema(predecessor_path)
     assert backup.is_file()
-    # Exercise the supported two-step chain, retaining the old source and
-    # backup. Runtime v406 never admits an intermediate v405 file implicitly.
-    conversion = upgrade_copy_v043(predecessor_path, database)
+    # Retain every predecessor; the current runtime admits only format 407.
+    from okto_pulse.community.adapters.verification_storage_upgrade import upgrade_verification_copy
+    intermediate = database.with_name(database.stem + '-legacy406.sqlite3')
+    conversion = upgrade_copy_v043(predecessor_path, intermediate)
+    assert conversion['source_database_unchanged'] and conversion['target_schema_version'] == 406
+    conversion = upgrade_verification_copy(intermediate, database,
+        evidence_root=database.parent / 'migration-evidence')
     assert conversion['source_database_unchanged'] and conversion['target_schema_version'] == SCHEMA_VERSION
     return backup
 
@@ -937,6 +944,73 @@ async def test_spawned_projection_uses_installation_verifier_without_creating_le
         assert not evidence_root.exists()
     finally:
         await engine.dispose()
+
+
+def _read_spawned_native_authority(database, evidence_root, board_id, spec_id):
+    """Read real accepted results with exactly the projection child's bindings."""
+    from sqlalchemy import event
+    from okto_pulse.core.composition import isolated_runtime_provider_scope
+    from okto_pulse.core.domain.verification_currentness import VerificationCurrentnessError
+    from okto_pulse.core.ports.test_evidence import (
+        resolve_test_evidence_execution_issuer, resolve_test_verification_report_issuer,
+    )
+    from okto_pulse.core.ports.verification_currentness import (
+        require_verification_currentness_store, resolve_verification_reservation_port,
+    )
+    from okto_pulse.community.adapters.delivery_verification import native_verification_population
+    from okto_pulse.community.adapters.sqlalchemy_models import Spec
+
+    async def read():
+        engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
+        statements = []
+
+        @event.listens_for(engine.sync_engine, 'before_cursor_execute')
+        def readonly(_conn, _cursor, statement, _parameters, _context, _many):
+            statements.append(statement)
+            assert statement.lstrip().upper().startswith(('SELECT', 'PRAGMA', 'BEGIN'))
+
+        try:
+            async with database_module.build_community_session_factory(engine)() as session:
+                spec = await session.get(Spec, spec_id)
+                assert spec.board_id == board_id
+                with isolated_runtime_provider_scope():
+                    with pytest.raises(VerificationCurrentnessError):
+                        require_verification_currentness_store(session)
+                    with worker_module._projection_verifier_scope(evidence_root):
+                        assert resolve_test_evidence_execution_issuer() is None
+                        assert resolve_test_verification_report_issuer() is None
+                        assert resolve_verification_reservation_port() is None
+                        population = await native_verification_population(spec, session)
+                    with pytest.raises(VerificationCurrentnessError):
+                        require_verification_currentness_store(session)
+                assert statements
+                return population
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('ledger', ['native_schema'], indirect=True)
+@pytest.mark.parametrize('ledger_present', [True, False])
+async def test_spawned_projection_reads_native_authority_without_writers(ledger, tmp_path, ledger_present):
+    session, _, evidence = ledger
+    evidence_root = tmp_path / ('evidence' if ledger_present else 'absent-evidence')
+    with ProcessPoolExecutor(max_workers=1, mp_context=get_context('spawn')) as executor:
+        population = await asyncio.get_running_loop().run_in_executor(
+            executor, _read_spawned_native_authority, session.bind.url.database,
+            evidence_root, delivery.BOARD_ID, delivery.SPEC_ID)
+    if ledger_present:
+        assert population.complete, population.reason_codes
+        assert len(population.runs) == 1
+        run = population.runs[0]
+        assert run.authenticated and run.current and run.outcome == 'passed'
+        assert run.accepted_result_id and run.receipt_id == evidence['execution_receipt']
+    else:
+        assert not population.complete
+        assert not any(run.authenticated for run in population.runs)
+        assert not evidence_root.exists()
 
 
 @pytest.mark.asyncio
@@ -1752,7 +1826,10 @@ async def test_over_cap_scope_is_unknown_while_healthy_scope_progresses(tmp_path
         async with engine.begin() as connection:
             await connection.exec_driver_sql(
                 "UPDATE specs SET test_scenarios=? WHERE id='spec'",
-                (json.dumps([f'scenario-{index}' for index in range(5001)]),),
+                (json.dumps([dict(id=f'scenario-{index}', title='Bounded scenario',
+                    status='draft', scenario_type='manual', verification_method='inspection',
+                    given='A source scope', when='It is read', then='The cap is enforced',
+                    linked_criteria=[]) for index in range(5001)]),),
             )
             await connection.exec_driver_sql(
                 "INSERT INTO specs (id,board_id,title,status,version,created_by,"

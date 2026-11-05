@@ -153,7 +153,7 @@ def _build_with_predecessor(snapshot, revision, deadline, candidate, *, phase_me
 
 @contextmanager
 def _projection_verifier_scope(evidence_root):
-    """Bind the installation verifier in a spawned process, without writers.
+    """Bind verification reads in a spawned process, without evidence issuers.
 
     Spawn does not inherit the API's ContextVars. The parent supplies the
     installation ledger location; clients cannot declare verifier capability.
@@ -164,9 +164,14 @@ def _projection_verifier_scope(evidence_root):
         return
     from okto_pulse.core.composition import isolated_runtime_provider_scope
     from okto_pulse.core.ports.test_evidence import register_test_evidence_write_verifier
+    from okto_pulse.core.ports.verification_currentness import (
+        register_verification_currentness_store_factory,
+    )
+    from .sqlalchemy_verification_currentness import CommunityVerificationCurrentnessStore
     from .test_evidence import CommunityEvidenceLedger, CommunityTestEvidenceWriteVerifier
 
     with isolated_runtime_provider_scope():
+        register_verification_currentness_store_factory(CommunityVerificationCurrentnessStore)
         register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(
             ledger=CommunityEvidenceLedger(evidence_root=Path(evidence_root))))
         yield
