@@ -125,3 +125,30 @@ it('rejects another selection response and never saves it', async () => {
   expect(screen.getByRole('button', { name: 'Save task requirement' })).toBeDisabled();
   expect(api.applyTaskRequirementDecision).not.toHaveBeenCalled();
 });
+
+it.each([
+  new AuthenticatedFetchError({ status: 503, code: 'task_requirement_scope_unavailable', message: 'Scope unavailable' }),
+  new Error('task_requirement_scope_unavailable'),
+])('explains unresolved scope and keeps saving disabled until a valid reload', async error => {
+  api.getTaskRequirementOptions.mockRejectedValueOnce(error);
+  render(<TaskRequirementControl {...props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Change task requirement' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent("The tasks' delivery scope could not be confirmed.");
+  expect(screen.getByRole('alert')).toHaveTextContent('Review the requirements and task assignments in the Spec');
+  expect(screen.queryByText('task_requirement_scope_unavailable')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Save task requirement' })).toBeDisabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Review latest task requirements' }));
+  await waitFor(() => expect(screen.getByLabelText('Requirement')).toBeEnabled());
+  expect(api.applyTaskRequirementDecision).not.toHaveBeenCalled();
+});
+
+it('does not expose an internal rejection code or silently resubmit a rejected choice', async () => {
+  api.applyTaskRequirementDecision.mockRejectedValueOnce(new AuthenticatedFetchError({ status: 422, message: 'task_requirement_scope_invalid' }));
+  render(<TaskRequirementControl {...props} />);
+  await open();
+  fireEvent.click(screen.getByRole('button', { name: 'Save task requirement' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent('The requirement change could not be saved.');
+  expect(screen.getByRole('button', { name: 'Save task requirement' })).toBeDisabled();
+  expect(screen.getByLabelText('Requirement')).toHaveValue('waived');
+  expect(api.applyTaskRequirementDecision).toHaveBeenCalledOnce();
+});

@@ -25,6 +25,8 @@ Saving multiple selected tasks is one operation: either all decisions are saved 
 
 If the task or Spec changed, **Review latest task requirements** refreshes the options and keeps your note and choice for review before saving again. If the response is uncertain, **Retry same decision** checks the original submission without creating a duplicate. This does not automatically apply your draft to changed work.
 
+If the delivery scope cannot be confirmed, saving is unavailable. Review the requirements and task assignments in the Spec, then use **Review latest task requirements** to reload the confirmed scope. An unresolved assignment cannot be waived by guessing which work belongs to the task.
+
 Visible actions depend on your permissions. **Details** retains the existing evidence, test and governed exception tools for investigation. These remain separate from changing a task's requirement.
 
 Open **Details · Decision history** for the selected task to inspect the author, time, choice and note. History loads only when opened, in pages. **Older decisions** and the edition selector let you inspect previous decisions; **Read full note** opens a long note on demand. Historical decisions do not establish the current requirement shown above.

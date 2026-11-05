@@ -13,6 +13,15 @@ interface Props {
   compact?: boolean; leadingAction?: ReactNode;
 }
 
+function requirementErrorMessage(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? error.message : '';
+  const code = error instanceof AuthenticatedFetchError ? error.code : null;
+  if (code === 'task_requirement_scope_unavailable' || message === 'task_requirement_scope_unavailable') {
+    return 'The tasks\' delivery scope could not be confirmed. Review the requirements and task assignments in the Spec, then reload the task requirements.';
+  }
+  return !message || /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/.test(message) ? fallback : message;
+}
+
 // Mount with a board/spec key. Options are fetched only while editing an exact
 // selection; a changed server basis never replaces a human draft silently.
 export function TaskRequirementControl({ boardId, specId, cards, active = true, canEdit = true, initiallyOpen = false, initiallySelected = false, revision, onChanged, compact = false, leadingAction }: Props) {
@@ -50,7 +59,8 @@ export function TaskRequirementControl({ boardId, specId, cards, active = true, 
       }
       setOptions(value);
     }).catch(err => {
-      if (!controller.signal.aborted) setError(err instanceof Error ? err.message : 'Task requirements could not be loaded.');
+      if (!controller.signal.aborted) setError(requirementErrorMessage(err,
+        'Task requirements could not be loaded. Review the latest task requirements and try again.'));
     }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
   // Selection identity is a value, rather than the caller's array identity.
@@ -81,7 +91,8 @@ export function TaskRequirementControl({ boardId, specId, cards, active = true, 
       if (err instanceof AuthenticatedFetchError && [400, 401, 403, 404, 409, 422].includes(err.status)) {
         setUncertain(null); setStale(true);
         if ([401, 403, 404].includes(err.status)) setOptions(null);
-        setError(err.status === 409 ? 'The task requirements changed or this draft conflicts with an earlier operation. Review the latest requirements; your note and choice are preserved.' : err.message);
+        setError(err.status === 409 ? 'The task requirements changed or this draft conflicts with an earlier operation. Review the latest requirements; your note and choice are preserved.' : requirementErrorMessage(err,
+          'The requirement change could not be saved. Review the latest task requirements and try again.'));
       } else {
         setUncertain(request);
         setError('The response is uncertain. Retry the same decision before making another change.');
