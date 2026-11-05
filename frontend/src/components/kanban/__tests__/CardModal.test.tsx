@@ -1627,29 +1627,30 @@ describe('CardModal', () => {
     render(<CardModal boardId="board-1" />);
     fireEvent.click(await screen.findByRole('tab', { name: /^Validation/ }));
     fireEvent.click(await screen.findByRole('tab', { name: /^Task validation/ }));
-    fireEvent.click(screen.getByRole('button', { name: 'Choose saved Learning' }));
-    fireEvent.click(await screen.findByRole('radio', { name: /Saved lesson/ }));
+    const validation = within(screen.getByRole('tabpanel', { name: /^Task validation/ }));
+    fireEvent.click(validation.getByRole('button', { name: 'Choose saved Learning' }));
+    fireEvent.click(await validation.findByRole('radio', { name: /Saved lesson/ }));
     for (const placeholder of ['Justify the confidence score...', 'Justify the completeness score...',
       'Justify the drift score...', 'Overall validation summary...']) {
-      fireEvent.change(screen.getByPlaceholderText(placeholder), { target: { value: 'Independent review supported by the current evidence.' } });
+      fireEvent.change(validation.getByPlaceholderText(placeholder), { target: { value: 'Independent review supported by the current evidence.' } });
     }
-    const submit = () => screen.getByRole('button', { name: 'Submit Validation (Approve)' });
-    fireEvent.click(submit());
+    const submit = validation.getByRole('button', { name: 'Submit Validation (Approve)' });
+    fireEvent.click(submit);
     await waitFor(() => expect(apiMock.submitTaskValidation).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(submit()).toBeEnabled());
+    await waitFor(() => expect(submit).toBeEnabled());
     const first = apiMock.submitTaskValidation.mock.calls[0][1];
     expect(first.learning_capture).toEqual(selection);
-    fireEvent.click(submit());
+    fireEvent.click(submit);
     await waitFor(() => expect(apiMock.submitTaskValidation).toHaveBeenCalledTimes(2));
     expect(apiMock.submitTaskValidation.mock.calls[1][1]).toEqual(first);
-    await waitFor(() => expect(submit()).toBeEnabled());
-    fireEvent.click(screen.getByRole('button', { name: 'Clear Learning selection' }));
-    fireEvent.click(submit());
+    await waitFor(() => expect(submit).toBeEnabled());
+    fireEvent.click(validation.getByRole('button', { name: 'Clear Learning selection' }));
+    fireEvent.click(submit);
     await waitFor(() => expect(apiMock.submitTaskValidation).toHaveBeenCalledTimes(3));
     const last = apiMock.submitTaskValidation.mock.calls[2][1];
     expect(last).not.toHaveProperty('learning_capture');
     expect(last.idempotency_key).not.toBe(first.idempotency_key);
-    await waitFor(() => expect(submit()).toBeEnabled());
+    await waitFor(() => expect(submit).toBeEnabled());
   });
 
   it.each(['board.read', 'card.entity.read', 'card.entity.context_read', 'card.validation.read',
