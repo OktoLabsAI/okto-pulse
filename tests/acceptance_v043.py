@@ -283,3 +283,51 @@ class VerificationAuthorityAcceptance(PairedAcceptance):
             'tests/test_verification_report_admission.py',
             'tests/test_verification_currentness_store.py::test_result_publication_retains_state_permissions_authentication_and_locked_spec_guard',
             timeout=600)
+
+
+class RequirementVerificationAcceptance(PairedAcceptance):
+    """R6 paired-source checks; installed My Board acceptance remains separate.
+
+    These selectors run final Delivery/readiness evaluation as well as native
+    association and persistence. A passing component suite cannot stand in for
+    the separately observed package installation, browser journey or signed
+    evidence required by the installed-acceptance scenario.
+    """
+
+    def test_independent_bases_keep_exact_requirement_credit(self):
+        self._pytest('community',
+            'tests/test_delivery_readiness_acceptance.py::test_R6_independent_bases_remain_verified_in_one_final_projection',
+            'tests/test_external_test_delivery_binding.py')
+
+    def test_same_basis_failure_and_fresh_binding(self):
+        self._pytest('community',
+            'tests/test_delivery_readiness_acceptance.py::test_R6_same_basis_failure_only_impacts_its_requirement_and_recovery_requires_binding',
+            'tests/test_multicard_delivery_integration.py::test_one_signed_report_preserves_distinct_criterion_verdicts')
+
+    def test_reset_and_bounded_coherent_projection(self):
+        self._pytest('community',
+            'tests/test_delivery_readiness_acceptance.py::test_R6_reset_never_revives_old_bases_and_fresh_bindings_restore_each_requirement',
+            'tests/test_delivery_readiness_batch.py',
+            'tests/test_spec_coverage_read.py', 'tests/test_spec_coverage_transport.py')
+        self._pytest('core', 'tests/test_persisted_delivery_readiness.py')
+
+    def test_english_requirement_diagnosis_and_help(self):
+        self._react('src/components/code-traceability/__tests__/DeliveryReadiness.test.tsx',
+            'src/components/code-traceability/__tests__/DeliveryEvidencePanel.test.tsx',
+            'src/components/specs/SpecCoveragePanel.test.tsx',
+            'src/components/specs/__tests__/SpecCoveragePanel.persisted.test.tsx',
+            'src/components/help/__tests__/HelpPanel.taskProgress.test.tsx')
+
+    def test_human_submission_and_copy_upgrade_preconditions(self):
+        # This method deliberately does not claim installed My Board acceptance.
+        # It exercises native human submission and isolated format conversion;
+        # installation, restart and direct browser evidence are additional work.
+        self._pytest('community', 'tests/test_human_task_delivery_report.py',
+            'tests/test_verification_storage_upgrade.py', timeout=600)
+
+    def test_economical_agent_protocol_preserves_exact_proof(self):
+        self._pytest('core', 'tests/test_delivery_protocol_guidance.py')
+        self._pytest('community', 'tests/test_delivery_report.py',
+            'tests/test_external_test_delivery_binding.py',
+            'tests/test_delivery_readiness_batch.py::test_query_count_does_not_grow_per_card',
+            'tests/test_delivery_readiness_batch.py::test_near_native_card_limit_has_fixed_query_count')

@@ -3,6 +3,7 @@
 from copy import deepcopy
 from dataclasses import replace
 from datetime import datetime, timezone
+from hashlib import sha256
 import json
 
 from fastapi import FastAPI
@@ -45,18 +46,21 @@ async def ledger(base_ledger):
         yield session, CommunityDeliveryEvidenceStore(session), evidence
 
 
-async def seed_authorization(session):
+async def seed_authorization(session, *, source_ref='source-main', revision='a' * 40):
     now = datetime.now(timezone.utc)
     opened, request, receipt, head, workspace = _attestation_bundle(now, subject_id="authorization")
-    workspace = replace(workspace, declared_revision="a" * 40)
-    request = replace(request, id="request-auth", board_id=BOARD, idempotency_key="request-auth",
+    workspace = replace(workspace, declared_revision=revision)
+    source_identity = receipt.source_identity_digest if source_ref == receipt.source_ref else sha256(source_ref.encode()).hexdigest()
+    opened = replace(opened, source_ref=source_ref)
+    request = replace(request, id="request-auth", board_id=BOARD, source_ref=source_ref, idempotency_key="request-auth",
         challenge_token_hash="e" * 64)
     receipt = replace(receipt, id="receipt-auth", request_id=request.id, board_id=BOARD,
+        source_ref=source_ref, source_identity_digest=source_identity,
         declared_revision=workspace.declared_revision, workspace_state=workspace,
         idempotency_key="receipt-auth", observation_sha256=delivery.code_investigation_observation_sha256_v2(
-            source_ref=receipt.source_ref, selector_scope_digest=receipt.selector_scope_digest,
+            source_ref=source_ref, selector_scope_digest=receipt.selector_scope_digest,
             delivery_context=receipt.delivery_context, outcome=receipt.contextual_outcome, capabilities=receipt.capabilities,
-            source_identity_digest=receipt.source_identity_digest, declared_revision=workspace.declared_revision,
+            source_identity_digest=source_identity, declared_revision=workspace.declared_revision,
             workspace_state=workspace, omission_manifest=()))
     session.add(Card(id="authorization", board_id=BOARD, spec_id=SPEC, title="Authorization",
         status="done", card_type="normal", created_by="owner"))
@@ -75,7 +79,7 @@ async def seed_authorization(session):
     await origin.create_request(replace(opened, id=request.id, board_id=BOARD,
         idempotency_key=request.idempotency_key, challenge_token_hash=request.challenge_token_hash))
     await origin.consume_request_append_receipt_and_advance_head(request=request, receipt=receipt,
-        head=replace(head, board_id=BOARD, current_receipt_id=receipt.id, latest_receipt_id=receipt.id),
+        head=replace(head, board_id=BOARD, source_ref=source_ref, current_receipt_id=receipt.id, latest_receipt_id=receipt.id),
         expected_head_revision=current.revision if current else None)
     session.add(delivery.ImplementationTargetRow(id="target-auth", board_id=BOARD, card_id="authorization",
         source_ref=receipt.source_ref, selector_kind="file", relative_path_hint="src/auth.py", role="modify",
@@ -85,14 +89,14 @@ async def seed_authorization(session):
     session.add(delivery.ImplementationTargetExecutionRecordRow(id="execution-auth", board_id=BOARD,
         card_id="authorization", target_id="target-auth", target_revision=1,
         result_investigation_receipt_id=receipt.id, source_ref=receipt.source_ref, disposition="touched",
-        result_declared_revision="a" * 40, result_workspace_state_id=workspace.workspace_state_id,
+        result_declared_revision=revision, result_workspace_state_id=workspace.workspace_state_id,
         actual_relative_path="src/auth.py", justification="Authorization enforced", submitted_by="agent-1",
         received_at=now, payload_sha256="c" * 64, idempotency_key="execution-auth"))
 
 
-async def setup(ledger):
+async def setup(ledger, *, authorization_source_ref='source-main', authorization_revision='a' * 40):
     session, store, _ = ledger
-    await seed_authorization(session)
+    await seed_authorization(session, source_ref=authorization_source_ref, revision=authorization_revision)
     criteria = [dict(id="ac-" + name, text=text, verification_profile=profile,
         linked_task_ids=[card], requirement_links=[dict(requirement_type="functional_requirement", requirement_id="fr")])
         for name, card, profile, text in [
@@ -128,7 +132,8 @@ def implementation(card="task", *, contribution="complete", key=None):
         bindings=[dict(obligation_ref=ref, contribution=contribution) for ref in refs])
 
 
-async def run_result(session, tmp_path, name, *, passed=True, response_body=None, assertions=None):
+async def run_result(session, tmp_path, name, *, passed=True, response_body=None, assertions=None,
+                     execution_id='execution'):
     """Run a controlled HTTP subject, then authenticate via the real issuer."""
     spec = await session.get(Spec, SPEC)
     scenarios = deepcopy(spec.test_scenarios)
@@ -155,7 +160,7 @@ async def run_result(session, tmp_path, name, *, passed=True, response_body=None
     from okto_pulse.community.adapters.external_test_runner import SCHEMA, validate_external_manifest
     scope = dict(board_id=BOARD, spec_id=SPEC, scenario_id=scenario['id'], scenario_sha256=digest)
     http_plan = validate_replay_manifest(manifest, **scope)
-    execution = await session.get(delivery.ImplementationTargetExecutionRecordRow, 'execution')
+    execution = await session.get(delivery.ImplementationTargetExecutionRecordRow, execution_id)
     basis = dict(source_ref=execution.source_ref, revision=execution.result_declared_revision,
                  runner_ref='pytest-http-subject', test_ids=[name])
     normalized = dict(schema_version=SCHEMA, purpose='test_scenario_evidence', **scope, execution_basis=basis)
@@ -168,15 +173,15 @@ async def run_result(session, tmp_path, name, *, passed=True, response_body=None
         # immutable source. Keep actual HTTP execution and native signing.
         return await http_executor(http_plan, manifest_ref)
 
+    context = await delivery.reserve_verification(session, scenario['id'], actor_id='tester')
     evidence = await _execute_validated_manifest_and_build_evidence_v2(
         manifest=manifest_bytes, canonical_ref=canonical_ref, normalized_manifest=normalized,
         **scope, status=status, actor_id='tester', executor=execute, ledger=evidence_ledger,
-        environment='pytest-asgi', execution_basis=basis)
+        environment='pytest-asgi', execution_basis=basis, verification_context=context)
     assert calls == [name] and evidence["execution_receipt"].startswith("ev2r.")
-    scenario.update(status=status, evidence=evidence)
-    await session.execute(update(Spec).where(Spec.id == SPEC).values(test_scenarios=scenarios))
-    await session.commit()
     register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger))
+    accepted = await delivery.publish_verification(session, evidence, status, actor_id='tester')
+    return evidence, accepted
 
 
 async def bind_test(session, store, tmp_path, name, implementations, *, passed=True, refs=None):
@@ -517,11 +522,11 @@ async def test_one_signed_report_preserves_distinct_criterion_verdicts(ledger, t
     register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger))
     digest = compute_test_scenario_semantic_sha256(board_id=BOARD, spec_id=SPEC,
         scenario=scenario, acceptance_criteria=spec.acceptance_criteria)
+    context = await delivery.reserve_verification(session, scenario['id'], actor_id='tester')
     issued = await issuer.admit(ReportRequest(board_id=BOARD, spec_id=SPEC,
-        scenario_id=scenario['id'], scenario_sha256=digest, actor_id='tester', report=value))
-    await session.execute(update(Spec).where(Spec.id == SPEC).values(
-        test_scenarios=[{**scenario, 'status': 'failed', 'evidence': dict(issued.evidence)}]))
-    await session.commit()
+        scenario_id=scenario['id'], scenario_sha256=digest, actor_id='tester', report=value,
+        verification_context=context))
+    await delivery.publish_verification(session, dict(issued.evidence), 'failed', actor_id='tester')
     result = await delivery.record(store, delivery.command('test', scenario_id=scenario['id'],
         idempotency_key='mixed-report', implementation_ids=[ui['id'], authorization['id']],
         obligation_refs=list(dict.fromkeys(UI_REFS + AUTH_REFS))))
@@ -543,15 +548,17 @@ async def test_one_signed_report_preserves_distinct_criterion_verdicts(ledger, t
     await session.execute(update(Spec).where(Spec.id == SPEC).values(
         test_scenarios=[{**scenario, 'status': 'passed', 'evidence': tampered}]))
     await session.commit()
+    # An unauthenticated summary replacement invalidates the scenario generation;
+    # it cannot promote the failed criterion or keep old proof current.
     assert not any(row['test_satisfied'] for row in (await store.projection(BOARD, SPEC))['rows'])
     # A later applicable failure cannot be hidden by selecting the old binding.
     value['observations'][0]['outcome'] = 'failed'
     value['observed_at'] = datetime.now(timezone.utc).isoformat()
+    context = await delivery.reserve_verification(session, scenario['id'], actor_id='tester')
     later = await issuer.admit(ReportRequest(board_id=BOARD, spec_id=SPEC,
-        scenario_id=scenario['id'], scenario_sha256=digest, actor_id='tester', report=value))
-    await session.execute(update(Spec).where(Spec.id == SPEC).values(
-        test_scenarios=[{**scenario, 'status': 'failed', 'evidence': dict(later.evidence)}]))
-    await session.commit()
+        scenario_id=scenario['id'], scenario_sha256=digest, actor_id='tester', report=value,
+        verification_context=context))
+    await delivery.publish_verification(session, dict(later.evidence), 'failed', actor_id='tester')
     assert not any(row['test_satisfied'] for row in (await store.projection(BOARD, SPEC))['rows'])
     assert (await session.get(CardDeliveryEvidenceRecordRow, result['id'])).payload == historical_payload
 
