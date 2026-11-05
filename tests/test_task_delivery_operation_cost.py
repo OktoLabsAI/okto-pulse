@@ -8,10 +8,14 @@ import json
 import pytest
 from sqlalchemy import select, func
 
-from test_delivery_report import db, setup, request
+from test_delivery_report import db as report_fixture, setup, request
 from test_delivery_progress import command as progress_command
 from okto_pulse.community.adapters.sqlalchemy_models import Card, CardDeliveryEvidenceRecordRow as Record
 from okto_pulse.core.application.use_cases.delivery_evidence import RecordCardDeliveryEvidenceUseCase
+from test_delivery_evidence_integration import ledger as ledger_fixture
+
+db = report_fixture
+ledger = ledger_fixture
 
 
 @pytest.mark.asyncio
@@ -71,3 +75,35 @@ async def test_material_events_handoff_conflict_and_exact_retry_are_bounded(db, 
         assert metrics['request_bytes'] + metrics['response_bytes'] < 32768
     finally:
         await session.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('associations', [1, 8])
+async def test_delivery_projection_reads_current_authority_once_per_scope(ledger, monkeypatch, associations):
+    from unittest.mock import Mock
+    import test_delivery_evidence_integration as delivery
+    from test_delivery_readiness_batch import statements
+    from okto_pulse.community.adapters.sqlalchemy_verification_currentness import CommunityVerificationCurrentnessStore
+    from okto_pulse.core.ports.test_evidence import resolve_test_evidence_write_verifier
+    session, store, _ = ledger
+    implementation = await delivery.record(store, delivery.command())
+    for index in range(associations):
+        await delivery.record(store, delivery.command('test', idempotency_key=f'association-{index}',
+            implementation_ids=[implementation['id']]))
+    await session.commit()
+    verifier = resolve_test_evidence_write_verifier()
+    verify = Mock(wraps=verifier.verify)
+    monkeypatch.setattr(verifier, 'verify', verify)
+    reads = []
+    original = CommunityVerificationCurrentnessStore.read_current
+    async def counted(self, **kwargs):
+        reads.append(kwargs)
+        return await original(self, **kwargs)
+    monkeypatch.setattr(CommunityVerificationCurrentnessStore, 'read_current', counted)
+    with statements(session.bind) as sql:
+        view = await store.projection(delivery.BOARD_ID, delivery.SPEC_ID)
+    assert view['allowed'] and len(reads) == 1 and verify.call_count == 1
+    assert reads[0]['accepted_result_ids'] == ()
+    authority = [s for s in sql if 'verification_acceptances' in s]
+    assert len(authority) == 1 and 'FROM verification_basis_heads' in authority[0]
+    assert not session.dirty and not session.new

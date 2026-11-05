@@ -177,6 +177,11 @@ def _resolve_persisted_policy(*, actor, board_id, realm_id, owner_id, share,
         _policy_fact_key(board_overrides))
 
 
+class _ReadinessRows(dict):
+    """ORM rows plus immutable authority captured in the same read transaction."""
+    native_verification = None
+
+
 class _BatchFacts(CommunityDeliveryEvidenceStore):
     """Only storage access is replaced; admission/selection rules are inherited."""
     def __init__(self, session, rows, *, inventory=None, cached_plan=None,
@@ -300,8 +305,7 @@ class _BatchFacts(CommunityDeliveryEvidenceStore):
         scope = DeliveryScope(spec.board_id, spec.id, int(spec.edition))
         phase_started = perf_counter()
         plan = await self._execution_plan(spec)
-        native = (self.cached_plan[4] if self.cached_plan is not None
-            else native_verification_population(spec))
+        native = self.rows.native_verification
         self.native = native
         plan_ms = (perf_counter() - phase_started) * 1000
         if not plan.inventory.population_complete:
@@ -603,8 +607,8 @@ class CommunityDeliveryReadinessReader:
 
     async def _load_transaction(self, session, board_id, spec_id, card_id, counts,
                                 *, defer_facts=False, cached_records=None,
-                                progress_counts=None):
-        rows = {}
+                                progress_counts=None, cached_verification=None):
+        rows = _ReadinessRows()
         rows[Spec] = await self._rows(session, select(Spec).where(Spec.id == spec_id,
             Spec.board_id == board_id, Spec.archived.is_(False)), 1, counts)
         rows[Board] = await self._rows(session, select(Board).where(Board.id == board_id), 1, counts)
@@ -652,6 +656,8 @@ class CommunityDeliveryReadinessReader:
             Receipt.id.in_(receipts)).order_by(Receipt.id), MAX_FACTS, counts)
         rows[Revocation] = await self._rows(session, select(Revocation).where(Revocation.receipt_id.in_(receipts))
             .order_by(Revocation.id), MAX_FACTS, counts)
+        rows.native_verification = (cached_verification if cached_verification is not None
+            else await native_verification_population(spec, session))
         if defer_facts:
             return rows
         return await self._snapshot_from_rows(rows)
@@ -850,7 +856,8 @@ class CommunityDeliveryReadinessReader:
                         rows = await self._load_transaction(
                             session, board_id, spec_id, None, counts, defer_facts=True,
                             cached_records=cached_records,
-                            progress_counts=progress_counts)
+                            progress_counts=progress_counts,
+                            cached_verification=cached_plan[4] if cached_plan is not None else None)
                     except ReadinessReadError as exc:
                         if exc.code != 'readiness_limit_exceeded':
                             raise

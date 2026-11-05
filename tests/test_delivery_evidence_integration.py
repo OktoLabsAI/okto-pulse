@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select, update, insert
+from sqlalchemy import select, update, insert, event
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -51,12 +51,71 @@ from okto_pulse.core.ports.test_evidence import (
 )
 from test_code_traceability_persistence import _attestation_bundle
 from test_evidence_v2_adapter import (
-    _produce,
     BOARD_ID,
     SPEC_ID,
     SCENARIO,
     ACCEPTANCE_CRITERIA,
+    ACTOR_ID,
 )
+
+
+async def reserve_verification(session, scenario_id=SCENARIO['id'], *, actor_id=ACTOR_ID, actor_kind='agent'):
+    """Allocate native authority before a controlled, genuinely signed test run."""
+    from okto_pulse.community.adapters.sqlalchemy_verification_currentness import CommunityVerificationReservationPort
+    from okto_pulse.core.domain.verification_currentness import VerificationScope, canonical_scenario_sha256
+    from okto_pulse.core.ports.verification_currentness import VerificationReservationRequest
+    from okto_pulse.core.services.test_scenario_lifecycle import compute_test_scenario_semantic_sha256
+    spec = await session.get(Spec, SPEC_ID, populate_existing=True)
+    scenario = next(s for s in spec.test_scenarios if s['id'] == scenario_id)
+    digest = canonical_scenario_sha256(compute_test_scenario_semantic_sha256(board_id=BOARD_ID,
+        spec_id=SPEC_ID, scenario=scenario, acceptance_criteria=spec.acceptance_criteria))
+    request = VerificationReservationRequest(VerificationScope(board_id=BOARD_ID, spec_id=SPEC_ID,
+        spec_edition=spec.edition, scenario_id=scenario_id), digest, scenario['verification_method'],
+        actor_id, actor_kind, spec.version)
+    await session.commit()
+    return (await CommunityVerificationReservationPort(build_community_session_factory(session.bind)).reserve(request)).context
+
+
+async def publish_verification(session, evidence, status, *, actor_id=ACTOR_ID, actor_kind='agent'):
+    """Use native publication and its summary decision; never seed a passing head."""
+    from okto_pulse.community.adapters.sqlalchemy_verification_currentness import CommunityVerificationCurrentnessStore
+    from okto_pulse.core.domain.verification_currentness import result_from_authenticated_evidence
+    result = result_from_authenticated_evidence(evidence, actor_id=actor_id, actor_kind=actor_kind)
+    spec = await session.get(Spec, SPEC_ID, populate_existing=True)
+    accepted = await CommunityVerificationCurrentnessStore(session).publish(result, evidence=evidence,
+        evidence_status=status, expected_spec_version=spec.version)
+    if accepted.replace_operational_summary:
+        scenarios = [dict(s, status=status, evidence=evidence) if s['id'] == result.context.scenario_id
+            else s for s in spec.test_scenarios]
+        await session.execute(update(Spec).where(Spec.id == SPEC_ID).values(test_scenarios=scenarios))
+    await session.commit()
+    return accepted.acceptance
+
+
+async def issue_runner_verification(session, tmp_path, *, source_ref, revision, outcome='passed',
+                                    companions=(), executed_at='2026-07-14T15:00:00Z'):
+    from okto_pulse.community.adapters.test_evidence import (CommunityEvidenceLedger,
+        _persist_inline_manifest, _execute_validated_manifest_and_build_evidence_v2, ProductExecutionObservation)
+    from okto_pulse.community.adapters.external_test_runner import SCHEMA
+    context = await reserve_verification(session)
+    evidence_ledger = CommunityEvidenceLedger(evidence_root=tmp_path / 'evidence')
+    register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger))
+    basis = dict(source_ref=source_ref, revision=revision, runner_ref='pytest-delivery',
+        test_ids=['tests.test_about.About.test_version'])
+    if companions:
+        basis['companion_sources'] = [dict(role='community', source_ref=ref, revision=rev) for ref, rev in companions]
+    scope = dict(board_id=BOARD_ID, spec_id=SPEC_ID, scenario_id=SCENARIO['id'],
+        scenario_sha256='sha256:' + context.scenario_sha256)
+    manifest = dict(schema_version=SCHEMA, purpose='test_scenario_evidence', **scope, execution_basis=basis)
+    raw, reference = _persist_inline_manifest(manifest, ledger=evidence_ledger)
+    def observe(*_):
+        return ProductExecutionObservation('controlled-delivery-run', outcome,
+            (dict(name='about-version', expected='0.3.0', observed='0.3.0' if outcome == 'passed' else 'wrong', status=outcome),), executed_at)
+    evidence = await _execute_validated_manifest_and_build_evidence_v2(manifest=raw, canonical_ref=reference,
+        normalized_manifest=manifest, **scope, status=outcome, actor_id=ACTOR_ID, executor=observe,
+        ledger=evidence_ledger, environment='pytest', execution_basis=basis, verification_context=context)
+    acceptance = await publish_verification(session, evidence, outcome)
+    return evidence, acceptance
 
 
 @pytest_asyncio.fixture
@@ -70,12 +129,18 @@ async def ledger(tmp_path, request):
         install_community_sqlite_pragmas(engine)
     else:
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'delivery.sqlite'}")
+        from okto_pulse.community.adapters.sqlite_verification_currentness import (
+            install_verification_currentness_functions, install_verification_currentness_triggers)
+        @event.listens_for(engine.sync_engine, 'connect')
+        def verification_functions(connection, _):
+            install_verification_currentness_functions(connection)
     if native_schema:
         from okto_pulse.community.adapters.current_relational_schema import current_schema_contract, initialize_current_schema
         await initialize_current_schema(engine, current_schema_contract())
     async with engine.begin() as conn:
         if not native_schema:
             await conn.run_sync(Base.metadata.create_all)
+            await conn.run_sync(install_verification_currentness_triggers)
         await conn.exec_driver_sql(
             "INSERT INTO boards (id, name, owner_id, realm_id) VALUES (?, 'Delivery', 'owner', 'local')",
             (BOARD_ID,),
@@ -110,12 +175,10 @@ async def ledger(tmp_path, request):
     observation_time = (datetime.now(timezone.utc).isoformat()
                         if native_schema and not native_bug else "2026-07-14T15:00:00Z")
     open_request, consumed, receipt, head, workspace = _attestation_bundle(now, subject_id="task")
-    evidence_ledger, _, evidence = await _produce(tmp_path, executed_at=observation_time,
-        execution_basis=dict(source_ref=receipt.source_ref, revision='a' * 40,
-            runner_ref='pytest-delivery', test_ids=['tests.test_about.About.test_version']))
-    register_test_evidence_write_verifier(
-        CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger)
-    )
+    from okto_pulse.community.adapters.sqlalchemy_verification_currentness import CommunityVerificationCurrentnessStore
+    from okto_pulse.core.ports.verification_currentness import (
+        register_verification_currentness_store_factory, reset_verification_currentness_store_factory_for_tests)
+    register_verification_currentness_store_factory(CommunityVerificationCurrentnessStore)
     await session.execute(
         update(Spec)
         .where(Spec.id == SPEC_ID)
@@ -127,7 +190,7 @@ async def ledger(tmp_path, request):
                 "implementation_plan": {"contributions": [{"card_id": "task", "scope": "whole_requirement"}]},
             }],
             acceptance_criteria=ACCEPTANCE_CRITERIA,
-            test_scenarios=[{**SCENARIO, "status": "passed", "evidence": evidence}],
+            test_scenarios=[{**SCENARIO, "status": "ready"}],
         )
     )
     await session.execute(
@@ -217,12 +280,15 @@ async def ledger(tmp_path, request):
         )
     )
     await session.commit()
+    evidence, _ = await issue_runner_verification(session, tmp_path, source_ref=receipt.source_ref,
+        revision='a' * 40, executed_at=observation_time)
     try:
         yield session, CommunityDeliveryEvidenceStore(session), evidence
     finally:
         await session.close()
         await engine.dispose()
         reset_test_evidence_write_verifier_for_tests()
+        reset_verification_currentness_store_factory_for_tests()
 
 
 def command(kind="implementation", **kwargs):
