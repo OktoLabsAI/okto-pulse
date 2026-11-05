@@ -63,8 +63,9 @@ class PairedAcceptance(unittest.TestCase):
     def _pytest(self, role, *selectors):
         report = self.root / f'{role}-pytest.xml'
         report.unlink(missing_ok=True)
-        options = ['--noconftest'] if role == 'core' else []
-        self._run([str(self.python), '-m', 'pytest', *selectors, *options,
+        # Both repositories' conftest fixtures configure the paired source roots
+        # and isolated persistence. Integration selectors depend on those fixtures.
+        self._run([str(self.python), '-m', 'pytest', *selectors,
                    '-q', '--tb=short', f'--junitxml={report}'], self.repos[role])
         suites = ET.parse(report).getroot()
         cases = list(suites.iter('testcase'))
