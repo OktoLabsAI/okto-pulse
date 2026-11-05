@@ -35,6 +35,8 @@ async def test_progress_recomputes_exact_sets_candidates_and_pre_done_gate(compo
     session, uow, use_case, actor = composed
     store = uow.services.delivery_evidence
     await seed_scope(session)
+    from okto_pulse.community.adapters.sqlalchemy_models import Spec
+    seeded_spec_version = (await session.get(Spec, "s")).version
     saved = await use_case.execute(composite_batch(), actor=actor, uow=uow)
     complete_id = saved["entries"][2]["id"]
     data = checkpoint().model_dump()
@@ -64,7 +66,7 @@ async def test_progress_recomputes_exact_sets_candidates_and_pre_done_gate(compo
     assert metrics["verification"]["percent"] == 0
     # No lifecycle/version/history mutation is hidden inside the projection.
     assert card.status == "in_progress" and card.policy_version == 1
-    assert spec.version == 1
+    assert spec.version == seeded_spec_version
     assert dict((await session.execute(select(Target.id, Target.revision))).all()) == {
         "target": 1, "target-two": 1,
     }

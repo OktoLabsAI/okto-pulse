@@ -105,6 +105,7 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
       const status = failure instanceof AuthenticatedFetchError ? failure.status : null;
       setError(status === 403 ? 'You do not have permission to read this coverage scope.'
         : status === 409 ? 'The source or graph changed. Reload to start a new observation.'
+        : status === 504 ? 'Coverage took too long to load. Reload coverage to try again. You can still open Implementation to review the available delivery information.'
         : status === 404 ? 'Spec not found or unavailable.' : 'Coverage could not be loaded. Reload to try again.');
     } finally {
       if (!controller.signal.aborted && sequence.current === id) setLoading(false);
@@ -151,6 +152,9 @@ export function SpecCoveragePanel({ boardId, specId, revision, canCorrect = [], 
     {activeView !== 'implementation' && error && <p role="alert">{error}</p>}
     {canReadSummary && data && activeView !== 'implementation' && <>
       <p className="text-xs text-gray-500 dark:text-gray-400">Edition {data.edition} · Informational view — this does not approve a gate.</p>
+      {data.structure.graph.state === 'unavailable' && <p role="status" className="text-xs text-amber-700 dark:text-amber-300">
+        Graph details are temporarily unavailable. Available planning and delivery information is shown below. Reload coverage to retry graph details.
+      </p>}
       <AccessibleTabPanel idBase={tabId} tabId="overview" value={activeView} className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           <Meter label="Planning coverage" value={planningValue} description="Applicable link dimensions fully covered. Empty dimensions are excluded." />

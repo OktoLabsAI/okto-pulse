@@ -45,6 +45,29 @@ beforeEach(() => {
   api.getPersistedReadinessProjection.mockImplementation((boardId: string, specId: string) => Promise.resolve(proof(0, 0, 2, boardId, specId)));
 });
 
+it('keeps planning and independent proof visible when graph details are unavailable', async () => {
+  api.getSpecCoverage.mockResolvedValue({ ...base, data_source: 'relational',
+    structure: { ...base.structure, graph: { state: 'unavailable', complete_for_scope: false,
+      expected_nodes: null, observed_nodes: null, missing_nodes: null, missing_relations: null } },
+  });
+  render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" onOpenSection={vi.fn()} />);
+  expect(await screen.findByText(/Graph details are temporarily unavailable/)).toBeVisible();
+  expect(screen.getByText('67%')).toBeVisible();
+  expect(screen.getAllByText('0%')).toHaveLength(2);
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('tab', { name: 'Planning' }));
+  expect(screen.getByRole('progressbar', { name: 'Scenarios → Test Cards' })).toBeVisible();
+  expect(api.getSpecCoverage).toHaveBeenCalledTimes(1);
+});
+
+it('explains a coverage timeout and retains access to Implementation', async () => {
+  api.getSpecCoverage.mockRejectedValue(new AuthenticatedFetchError({ status: 504, message: 'timeout' }));
+  render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" onOpenSection={vi.fn()} />);
+  expect(await screen.findByRole('alert')).toHaveTextContent('Coverage took too long to load.');
+  fireEvent.click(screen.getByRole('tab', { name: 'Implementation' }));
+  expect(screen.getByText('Unified implementation checks')).toBeVisible();
+});
+
 it('opens the native implementation subtab for an exact exception and retains read authority', async () => {
   const view = render(<SpecCoveragePanel boardId="board" specId="spec" revision="1" focusExceptionId="waiver" onOpenSection={vi.fn()} />);
   await waitFor(() => expect(screen.getByRole('tab', { name: 'Implementation' })).toHaveAttribute('aria-selected', 'true'));
