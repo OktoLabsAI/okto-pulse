@@ -1,12 +1,16 @@
 """Human handoff reuses qualified agent proof and the real lifecycle writer."""
+from dataclasses import replace
+from datetime import UTC, datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from datetime import datetime, timezone
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from test_delivery_inline_execution import composed as composed, db as db, command as inline_command
+from test_code_traceability_persistence import _attestation_bundle
+from test_delivery_inline_execution import command as inline_command
 from test_delivery_report import setup
 from test_delivery_execution_sets import native_verifier as native_verifier
 from okto_pulse.community.adapters.sqlalchemy_models import Board, Card, Spec, CardDeliveryEvidenceRecordRow as Record
@@ -17,6 +21,152 @@ from okto_pulse.core.models.human_task_submission import HumanTaskSubmissionComm
 from okto_pulse.core.models.schemas import CardMove
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures('native_verifier')]
+
+
+@pytest_asyncio.fixture
+async def db(tmp_path):
+    """Exercise human delivery with the installed format's native state writers."""
+    from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
+    from okto_pulse.core.domain.delivery_inventory import COLLECTIONS
+    from okto_pulse.core.domain.execution_contract import new_execution_contract
+    from okto_pulse.core.ports.verification_currentness import (
+        register_verification_currentness_store_factory,
+        reset_verification_currentness_store_factory_for_tests,
+    )
+
+    from okto_pulse.community.adapters.current_relational_schema import (
+        current_schema_contract,
+        initialize_current_schema,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_database import (
+        build_community_engine,
+        build_community_session_factory,
+        install_community_sqlite_pragmas,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_delivery_evidence import (
+        CommunityDeliveryEvidenceStore,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_verification_currentness import (
+        CommunityVerificationCurrentnessStore,
+    )
+
+    engine = build_community_engine(f"sqlite+aiosqlite:///{tmp_path / 'human-delivery.sqlite'}")
+    install_community_sqlite_pragmas(engine)
+    register_verification_currentness_store_factory(CommunityVerificationCurrentnessStore)
+    try:
+        await initialize_current_schema(engine, current_schema_contract())
+        async with build_community_session_factory(engine)() as session:
+            session.add(Board(id='b', name='Board', owner_id='owner', realm_id='local'))
+            await session.flush()
+            spec = Spec(id='s', board_id='b', title='Spec', status='in_progress', version=1,
+                created_by='owner', architecture_adoption=ArchitectureAdoptionScope(
+                    board_id='b', spec_id='s', adopted_in_edition=1, actor_id='owner',
+                    inherited_resource_ids=()).model_dump(mode='json'),
+                execution_contract=new_execution_contract(board_id='b', spec_id='s', edition=1,
+                    actor_id='owner', origin='new_spec'), test_scenarios=[])
+            for _, field in COLLECTIONS:
+                setattr(spec, field, [])
+            spec.functional_requirements = [{
+                'id': 'fr', 'text': 'Parse the current input', 'linked_task_ids': ['c'],
+                'verification': {'mode': 'explicit', 'required_profiles': ['functional']},
+                'implementation_plan': {'contributions': [{
+                    'card_id': 'c', 'scope': 'selected_criteria', 'criterion_ids': ['ac'],
+                    'summary': 'Parser implementation',
+                }]},
+            }]
+            spec.acceptance_criteria = [{
+                'id': 'ac', 'text': 'Valid input is parsed', 'verification_profile': 'functional',
+                'linked_task_ids': ['c'],
+                'requirement_links': [{'requirement_type': 'functional_requirement', 'requirement_id': 'fr'}],
+            }]
+            session.add(spec)
+            await session.flush()
+            session.add(Card(id='c', board_id='b', spec_id='s', title='Card', status='in_progress',
+                position=0, created_by='owner', card_type='normal'))
+            await session.commit()
+            yield engine, session, CommunityDeliveryEvidenceStore(session)
+    finally:
+        reset_verification_currentness_store_factory_for_tests()
+        await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def composed(db):
+    """Admit source proof through the native writer, including its SQL guards."""
+    from okto_pulse.core.application.use_cases.code_traceability import (
+        SubmitImplementationTargetExecutionUseCase,
+    )
+    from okto_pulse.core.application.use_cases.delivery_evidence import (
+        RecordCardDeliveryEvidenceUseCase,
+    )
+    from okto_pulse.core.domain.code_traceability import (
+        code_investigation_observation_sha256_v2,
+    )
+    from okto_pulse.core.services.code_investigation import (
+        CodeInvestigationService,
+        selector_scope_digest_for_card_targets,
+    )
+    from okto_pulse.core.services.implementation_targets import (
+        ImplementationTargetService,
+    )
+
+    from okto_pulse.community.adapters.sqlalchemy_code_traceability import (
+        CommunitySqlAlchemyCodeInvestigationStore,
+        CommunitySqlAlchemyCodeTraceabilityStore,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_domain_event_delivery import (
+        CommunitySqlAlchemyDomainEventPublisher,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_models import ImplementationTargetRow
+
+    _, session, store = db
+    now = datetime.now(UTC)
+    opened, consumed, receipt, head, workspace = _attestation_bundle(now, subject_id='c')
+    workspace = replace(workspace, declared_revision='a' * 40)
+    digest = selector_scope_digest_for_card_targets(
+        board_id='b', card_id='c', card_version=1, targets=(('target', 1),))
+    opened = replace(opened, board_id='b', selector_scope_digest=digest)
+    consumed = replace(consumed, board_id='b', selector_scope_digest=digest)
+    receipt = replace(receipt, board_id='b', selector_scope_digest=digest,
+        workspace_state=workspace, declared_revision=workspace.declared_revision,
+        observation_sha256=code_investigation_observation_sha256_v2(
+            source_ref=receipt.source_ref, selector_scope_digest=digest,
+            delivery_context=receipt.delivery_context, outcome=receipt.contextual_outcome,
+            capabilities=receipt.capabilities, source_identity_digest=receipt.source_identity_digest,
+            declared_revision=workspace.declared_revision, workspace_state=workspace,
+            omission_manifest=()))
+    investigations = CommunitySqlAlchemyCodeInvestigationStore(session)
+    await investigations.create_request(opened)
+    await investigations.consume_request_append_receipt_and_advance_head(
+        request=consumed, receipt=receipt, head=replace(head, board_id='b'),
+        expected_head_revision=None)
+    session.add(ImplementationTargetRow(id='target', board_id='b', card_id='c',
+        source_ref=receipt.source_ref, selector_kind='file', relative_path_hint='src/file.py',
+        role='modify', intent='Deliver', required=True, source_spec_version=1,
+        lifecycle_status='active', revision=1, created_by='agent-1', created_at=now, updated_at=now))
+    await session.commit()
+
+    async def publish(event):
+        await CommunitySqlAlchemyDomainEventPublisher().publish(
+            session, event=event, handler_names=('test_observer',))
+
+    async def board(identity):
+        return await session.get(Board, identity)
+
+    async def card(identity):
+        return await session.get(Card, identity)
+
+    services = SimpleNamespace(delivery_evidence=store, code_investigations=investigations,
+        code_traceability=CommunitySqlAlchemyCodeTraceabilityStore(session),
+        boards=SimpleNamespace(get_board=board), cards=SimpleNamespace(get_card=card),
+        publish_domain_event=publish,
+        agents=SimpleNamespace(agent_has_board_access=AsyncMock(return_value=True)))
+    uow = SimpleNamespace(services=services, commit=AsyncMock(side_effect=session.commit))
+    origin = SubmitImplementationTargetExecutionUseCase(
+        CodeInvestigationService(), ImplementationTargetService())
+    actor = ActorContext(actor_id='agent-1', actor_kind='agent', source='mcp', board_id='b',
+        permissions=['code_traceability.target.execution_submit', 'card.conclusion.write'])
+    yield session, uow, RecordCardDeliveryEvidenceUseCase(origin), actor
 
 
 @pytest.mark.parametrize('requested_status', ['validation', 'done'])
@@ -81,6 +231,7 @@ async def test_human_report_reuses_existing_assessment_without_new_technical_cla
         from okto_pulse.core.domain.effective_delivery_coverage import EvaluatedDeliverySnapshot
         from okto_pulse.core.domain.delivery_assessment import aggregate_delivery_metrics
         snapshot = await uow.services.delivery_evidence.load_card_snapshot(CardDeliveryScope('b', 'c', 's', 1))
+        assert snapshot.effective_context.native_verification.complete
         assessed = EvaluatedDeliverySnapshot(snapshot).obligations(card_id='c', card_type='normal')
         assert aggregate_delivery_metrics(assessed).implementation.unresolved == 0, (before, assessed, snapshot.rejected_records)
         uow.begin_write = AsyncMock()
