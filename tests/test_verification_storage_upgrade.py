@@ -27,7 +27,9 @@ from okto_pulse.community.adapters.sqlalchemy_verification_currentness import (
 from okto_pulse.community.adapters.test_evidence import (
     CommunityEvidenceLedger, CommunityTestEvidenceWriteVerifier, CommunityTestVerificationReportIssuer,
 )
-from okto_pulse.core.domain.verification_currentness import VerificationScope, VerificationCurrentnessError
+from okto_pulse.core.domain.verification_currentness import (
+    VerificationScope, VerificationCurrentnessError, VerificationHistoryQuery,
+)
 from okto_pulse.core.ports.test_evidence import TestVerificationReportRequest as ReportRequest
 from okto_pulse.core.ports.verification_currentness import VerificationReservationRequest
 from okto_pulse.core.services.test_scenario_lifecycle import compute_test_scenario_semantic_sha256
@@ -282,6 +284,34 @@ async def test_migrated_failed_fact_has_exact_replay_without_falling_back_to_old
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["none", "reset", "edition"])
+async def test_migrated_history_authenticates_only_seeded_facts_without_reviving_old_pass(authority, change):
+    if change != "none":
+        async with authority.factory.begin() as db:
+            spec = await db.get(Spec, "spec")
+            scenarios = deepcopy(spec.test_scenarios)
+            for scenario in scenarios:
+                scenario["status"] = "ready"
+            await db.execute(update(Spec).where(Spec.id == "spec").values(
+                **({"edition": 3} if change == "edition" else {"test_scenarios": scenarios})))
+    before = await replay_rows(authority)
+    receipts = ledger_snapshot(authority.ledger.evidence_root)
+    async with authority.factory() as db:
+        for scenario_id, outcome in [("ts", "passed"), ("tf", "failed")]:
+            page = await Store(db, verifier=authority.verifier).read_history(VerificationHistoryQuery(
+                scope=SCOPE.model_copy(update={"scenario_id": scenario_id}), limit=5))
+            assert page.complete and page.has_more is False and page.next_cursor is None
+            assert len(page.results) == 1
+            accepted = page.results[0]
+            assert accepted.origin == "legacy_seed" and accepted.result.outcome == outcome
+            assert accepted.current is (change == "none")
+            assert accepted.evidence == authority.source.evidence[scenario_id]
+            assert accepted.result.receipt_id not in authority.source.historical
+    assert await replay_rows(authority) == before
+    assert ledger_snapshot(authority.ledger.evidence_root) == receipts
+
+
+@pytest.mark.asyncio
 async def test_valid_legacy_signature_issued_after_conversion_cannot_mint_authority(authority, native_owner):
     envelope = deepcopy(authority.source.evidence["ts"])
     envelope.pop("execution_receipt")
@@ -300,6 +330,10 @@ async def test_migrated_read_reauthenticates_original_receipt_and_fails_closed(a
     path.write_bytes(b"{}")
     result = await read(authority)
     assert not result.complete and "verification_receipt_invalid" in result.reason_codes
+    async with authority.factory() as db:
+        history = await Store(db, verifier=authority.verifier).read_history(VerificationHistoryQuery(scope=SCOPE))
+        assert not history.complete and history.has_more is None
+        assert history.reason_codes == ("verification_receipt_invalid",)
 
 
 @pytest.mark.asyncio
@@ -355,3 +389,154 @@ async def test_new_publication_supersedes_only_matching_seed_basis(authority, na
         assert response["replayed"] and response["new_status"] == "failed"
     facts = await read(authority)
     assert facts.complete and len([r for r in facts.results if r.result.context.scenario_id == "ts"]) == (1 if same_basis else 2)
+
+
+@pytest_asyncio.fixture
+async def legacy_surfaces(authority, monkeypatch):
+    """Actual REST/MCP handlers and UoWs on an explicitly converted database."""
+    from fastapi import FastAPI
+    from okto_pulse.community.adapters.relational_application import CommunityRelationalApplicationAdapter
+    from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWork, CommunityUnitOfWorkFactory
+    from okto_pulse.community.api.auth_deps import require_user
+    from okto_pulse.community.api.deps import get_unit_of_work
+    from okto_pulse.community.api.specs import router
+    from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
+    from okto_pulse.core.application.use_cases.base import ActorContext
+    from okto_pulse.core.domain.permissions import PermissionSet
+    from okto_pulse.core.mcp import server
+    from okto_pulse.core.ports.relational_application import register_relational_application_adapter
+    from okto_pulse.core.ports.test_evidence import register_test_evidence_write_verifier, reset_test_evidence_write_verifier_for_tests
+    from okto_pulse.core.ports.verification_currentness import (
+        register_verification_currentness_store_factory, reset_verification_currentness_store_factory_for_tests,
+    )
+
+    state = SimpleNamespace(actor_id="actor", board_id="board", permitted=True)
+
+    def actor():
+        return ActorContext(state.actor_id, "rest", actor_kind="human", board_id=state.board_id,
+            realm_id="local", permissions=PermissionSet({
+                "spec": {"tests": {"execute": state.permitted, "update_status": state.permitted}},
+                "test_scenario": {"interact_in": {"ready": True, "passed": True, "failed": True}},
+            }))
+
+    register_relational_application_adapter(CommunityRelationalApplicationAdapter())
+    register_test_evidence_write_verifier(authority.verifier)
+    register_verification_currentness_store_factory(Store)
+    app = FastAPI()
+    app.include_router(router, prefix="/api/v1")
+    app.dependency_overrides[require_user] = lambda: state.actor_id
+
+    async def unit_of_work():
+        async with CommunityUnitOfWork(authority.factory(), actor=actor()) as uow:
+            yield uow
+
+    app.dependency_overrides[get_unit_of_work] = unit_of_work
+    monkeypatch.setattr(RESTAdapterContract, "actor", staticmethod(lambda *args, **kwargs: actor()))
+
+    async def authenticated_agent(board_id):
+        return SimpleNamespace(agent_id=state.actor_id, agent_name="Isolated actor",
+            realm_id="local", permissions=actor().permissions)
+
+    monkeypatch.setattr(server, "_get_agent_ctx", authenticated_agent)
+    monkeypatch.setattr(server, "get_unit_of_work_factory_for_mcp", lambda: CommunityUnitOfWorkFactory(authority.factory))
+    yield SimpleNamespace(app=app, state=state, server=server)
+    reset_test_evidence_write_verifier_for_tests()
+    reset_verification_currentness_store_factory_for_tests()
+
+
+async def replay_rows(authority):
+    from sqlalchemy import select
+    from okto_pulse.community.adapters.sqlalchemy_models import (
+        ActivityLog, SpecHistory, VerificationAcceptanceRow, VerificationBasisHeadRow,
+        VerificationReservationRow, VerificationScenarioStateRow,
+    )
+
+    async with authority.factory() as db:
+        result = {}
+        for model in (Spec, ActivityLog, SpecHistory, VerificationAcceptanceRow,
+                      VerificationBasisHeadRow, VerificationReservationRow, VerificationScenarioStateRow):
+            result[model.__tablename__] = [dict(row) for row in (await db.execute(
+                select(model.__table__).order_by(*model.__table__.primary_key.columns))).mappings()]
+        return result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", ["rest", "mcp"])
+@pytest.mark.parametrize("case", ["exact", "wrong_actor", "denied", "foreign_board", "missing_spec",
+                                  "reset", "edition", "unsupported_legacy"])
+async def test_converted_seed_public_transport_replay_and_denials(authority, legacy_surfaces, surface, case):
+    import httpx
+    from okto_pulse.community.adapters.sqlalchemy_models import BoardShare
+
+    native = legacy_surfaces
+    evidence = deepcopy(authority.source.evidence["ts"])
+    spec_id = "spec"
+    if case == "wrong_actor":
+        native.state.actor_id = "other"
+        if surface == "rest":
+            # A real editor can access the Spec, but cannot replay another
+            # actor's authenticated receipt as their own publication.
+            async with authority.factory.begin() as db:
+                db.add(BoardShare(board_id="board", user_id="other", realm_id="local",
+                    permission="editor", shared_by="actor"))
+    elif case == "denied":
+        native.state.permitted = False
+    elif case == "foreign_board":
+        native.state.board_id = "private"
+    elif case == "missing_spec":
+        spec_id = "missing"
+    elif case in {"reset", "edition"}:
+        async with authority.factory.begin() as db:
+            spec = await db.get(Spec, "spec")
+            scenarios = deepcopy(spec.test_scenarios)
+            scenarios[0]["status"] = "ready"
+            await db.execute(update(Spec).where(Spec.id == "spec").values(
+                **({"edition": 3} if case == "edition" else {"test_scenarios": scenarios})))
+    elif case == "unsupported_legacy":
+        evidence.pop("execution_receipt")
+        evidence["execution_receipt"] = authority.ledger.issue_verification_report(
+            board_id="board", spec_id="spec", scenario_id="ts", scenario_sha256=evidence["scenario_sha256"],
+            status="passed", actor_id="actor", evidence=evidence)
+    before = await replay_rows(authority)
+    files_before = ledger_snapshot(authority.ledger.evidence_root)
+
+    if surface == "rest":
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=native.app), base_url="http://test") as client:
+            response = await client.patch(f"/api/v1/specs/{spec_id}/scenarios/ts/status",
+                json={"status": "passed", "evidence": evidence})
+            expected = 200 if case == "exact" else 403 if case == "denied" else 404 if case in {"foreign_board", "missing_spec"} else 422
+            assert response.status_code == expected, response.text
+            result = response.json()
+            if case == "exact":
+                result = result["result"]
+            elif case == "denied":
+                denial = json.loads(result["detail"])
+                assert denial["error"] == "Permission denied"
+                assert denial["required_permission"] == "spec.tests.update_status"
+            if case == "foreign_board":
+                missing = await client.patch("/api/v1/specs/missing/scenarios/ts/status",
+                    json={"status": "passed", "evidence": evidence})
+                assert missing.status_code == 404 and missing.json() == result
+    else:
+        arguments = dict(board_id=native.state.board_id, spec_id=spec_id, scenario_id="ts",
+            status="passed", evidence=json.dumps(evidence))
+        result = json.loads(await native.server.okto_pulse_update_test_scenario_status.fn(**arguments))
+        if case == "denied":
+            denial = json.loads(result["error"])
+            assert denial["error"] == "Permission denied"
+            assert denial["required_permission"] == "spec.tests.update_status"
+        else:
+            if case == "exact":
+                assert result.get("success") is True, result
+            elif case in {"foreign_board", "missing_spec"}:
+                assert result == {"error": "Spec not found"}
+            elif case in {"reset", "edition", "unsupported_legacy"}:
+                assert result.get("error") == "verification_legacy_seed_not_current", result
+            else:
+                assert result.get("error", "").startswith("evidence_unverified:"), result
+    if case == "exact":
+        assert result["replayed"] and result["verification_current"] and not result["operational_summary_updated"]
+        current = next(row for row in (await read(authority)).results if row.result.context.scenario_id == "ts")
+        assert result["accepted_result_id"] == current.accepted_result_id
+    assert await replay_rows(authority) == before
+    assert ledger_snapshot(authority.ledger.evidence_root) == files_before

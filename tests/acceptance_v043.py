@@ -244,3 +244,37 @@ class ValidationAcceptance(PairedAcceptance):
             'tests/test_spec_planning_critical_context_parity.py', 'tests/test_spec_planning_dependency_parity.py',
             'tests/test_spec_planning_lint_parity.py', 'tests/test_spec_planning_resource_parity.py',
             'tests/test_spec_planning_policy_parity.py', 'tests/test_spec_planning_manifest.py')
+
+
+class VerificationAuthorityAcceptance(PairedAcceptance):
+    """R5 scenario entry points; actual Core/Community sources are paired by the host."""
+
+    def test_reserved_context_and_native_issuance(self):
+        self._pytest('core', 'tests/test_evidence_v2_contract.py',
+            'tests/test_scenario_verification_method.py', 'tests/test_verification_report.py')
+        self._pytest('community', 'tests/test_verification_currentness_integration.py',
+            'tests/test_external_test_runner.py', 'tests/test_verification_report_admission.py')
+
+    def test_independent_bases_ordering_and_atomic_publication(self):
+        self._pytest('core', 'tests/test_verification_currentness.py')
+        self._pytest('community', 'tests/test_verification_currentness_store.py', '-k',
+            'independent_bases or delayed or same_basis or concurrent or owner_rollback '
+            'or audit_failure or shared_owner_new_failure or owner_commits')
+
+    def test_reset_semantics_tombstones_and_no_resurrection(self):
+        self._pytest('community', 'tests/test_verification_currentness_invalidation.py')
+
+    def test_verified_copy_preservation_and_format_admission(self):
+        self._pytest('community', 'tests/test_verification_storage_upgrade.py',
+            'tests/test_storage_upgrade_v043.py', 'tests/test_readiness_schema_upgrade.py')
+
+    def test_real_capacity_history_and_rollback_resilience(self):
+        self._pytest('community', 'tests/test_verification_currentness_store.py', '-k',
+            'history or real_5000 or real_20000 or bounds_and_missing or counter_exhaustion '
+            'or audit_failure or missing_generation or rechecks_actual_storage or tampering '
+            'or current_heads_and_revision')
+
+    def test_legacy_seed_replay_and_transport_authorization(self):
+        self._pytest('community', 'tests/test_verification_storage_upgrade.py',
+            'tests/test_verification_report_admission.py',
+            'tests/test_verification_currentness_store.py::test_result_publication_retains_state_permissions_authentication_and_locked_spec_guard')

@@ -2295,6 +2295,8 @@ async def update_test_scenario_status(
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except StatusNotMutableError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     except PolicyTransitionRejected as exc:
