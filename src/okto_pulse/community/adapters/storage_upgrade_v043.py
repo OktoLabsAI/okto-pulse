@@ -12,10 +12,17 @@ import sqlite3
 import tempfile
 
 from .current_relational_schema import (
-    APPLICATION_ID, SCHEMA_VERSION, RelationalSchemaContract, StorageFormatError,
-    _SCHEMA_QUERY, _read_without_side_effects, current_schema_contract, inspect_current_schema,
+    APPLICATION_ID, RelationalSchemaContract, StorageFormatError,
+    _SCHEMA_QUERY, _read_without_side_effects,
 )
-from .sqlalchemy_models import GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION
+from .historical_relational_schema import (
+    historical_schema_contract as current_schema_contract,
+    inspect_historical_schema as inspect_current_schema,
+)
+
+# This operation retains its historical destination after the runtime advances.
+SCHEMA_VERSION = 406
+GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v10"
 
 # Captured from the two pinned pre-initiative 0.4.2 source snapshots. This is
 # admission for one concrete source format, never a best-effort legacy reader.

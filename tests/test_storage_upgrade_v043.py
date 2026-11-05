@@ -10,8 +10,9 @@ import pytest
 
 from okto_pulse.community.adapters.current_relational_schema import (
     APPLICATION_ID, SCHEMA_VERSION, RelationalSchemaContract, StorageFormatError,
-    current_schema_contract, inspect_current_schema, require_current_database_file,
+    current_schema_contract, require_current_database_file,
 )
+from okto_pulse.community.adapters.historical_relational_schema import historical_schema_contract, inspect_historical_schema
 from okto_pulse.community.adapters import storage_upgrade_v043 as upgrade
 from okto_pulse.core.domain.architecture_adoption import ArchitectureAdoptionScope
 
@@ -54,15 +55,17 @@ def test_verified_copy_preserves_all_business_rows_and_never_opens_old_database_
     result = upgrade.upgrade_copy_v043(source, output)
     assert result['source_database_unchanged'] and not result['installation_switched']
     assert source.read_bytes() == before
-    assert result['source_schema_version'] == 405 and result['target_schema_version'] == SCHEMA_VERSION == 406
+    assert result['source_schema_version'] == 405 and result['target_schema_version'] == 406 and SCHEMA_VERSION == 407
     assert result['freshness_fence']['revision'] == result['freshness_fence']['previous_revision'] + 1
     assert result['freshness_fence']['manifest'] == 'gdsr-trigger-manifest-v10'
     with closing(sqlite3.connect(output)) as connection:
-        assert not inspect_current_schema(connection.cursor(), contract)
+        assert not inspect_historical_schema(connection.cursor(), historical_schema_contract())
         assert connection.execute("SELECT status,version,context FROM specs WHERE id='s'").fetchone() == ('done',7,'Original context: ação ✓\nKeep every receipt.')
         assert connection.execute("SELECT status,details FROM cards WHERE id='c'").fetchone() == ('done','Existing history\u0000and exact text')
         assert all(connection.execute('SELECT count(*) FROM '+upgrade._quoted(table)).fetchone()[0] == 0 for table in upgrade.NEW_TABLES)
-    require_current_database_file('sqlite:///' + output.as_posix(), contract)
+    # The historical step remains 405->406; a separate explicit copy admits 407.
+    with pytest.raises(StorageFormatError, match='version'):
+        require_current_database_file('sqlite:///' + output.as_posix(), contract)
     assert result['preserved_tables']['specs']['rows'] == 1
     assert not list(tmp_path.glob('.pulse-v043-upgrade-*'))
 

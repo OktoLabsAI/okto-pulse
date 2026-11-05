@@ -1301,9 +1301,11 @@ def main():
 
     sub_storage = subparsers.add_parser('storage', help='Explicit storage operations; startup never converts data')
     storage_commands = sub_storage.add_subparsers(dest='storage_command', required=True)
-    storage_upgrade = storage_commands.add_parser('upgrade-copy', help='Convert an exact 0.4.2 database to a new verified 0.4.3 copy')
+    storage_upgrade = storage_commands.add_parser('upgrade-copy', help='Create a verified copy: format 405 to 406, or 406 to 407')
     storage_upgrade.add_argument('--source-db', type=Path, required=True)
     storage_upgrade.add_argument('--output-db', type=Path, required=True, help='New file; existing files are never replaced')
+    storage_upgrade.add_argument('--evidence-root', type=Path,
+        help='Existing receipt directory for format 406 conversion; defaults to the configured data directory/evidence')
     storage_upgrade.add_argument('--json', action='store_true', help='Print the preservation receipt as JSON')
     storage_upgrade.set_defaults(func=cmd_storage_upgrade)
 
@@ -1585,7 +1587,18 @@ def cmd_storage_upgrade(args):
     import sqlite3
     from okto_pulse.community.adapters.storage_upgrade_v043 import upgrade_copy_v043, StorageUpgradeError
     try:
-        result = upgrade_copy_v043(args.source_db, args.output_db)
+        from okto_pulse.community.adapters.current_relational_schema import _read_without_side_effects
+        with _read_without_side_effects(args.source_db.expanduser().resolve()) as source:
+            version = source.execute('PRAGMA main.user_version').fetchone()[0]
+        if version == 406:
+            from okto_pulse.community.adapters.verification_storage_upgrade import upgrade_verification_copy
+            evidence_root = getattr(args, 'evidence_root', None)
+            if evidence_root is None:
+                from okto_pulse.community.config import CommunitySettings
+                evidence_root = Path(CommunitySettings().data_dir) / 'evidence'
+            result = upgrade_verification_copy(args.source_db, args.output_db, evidence_root=evidence_root)
+        else:
+            result = upgrade_copy_v043(args.source_db, args.output_db)
     except (StorageUpgradeError, OSError, sqlite3.DatabaseError) as exc:
         print(f'Cannot create upgraded storage copy: {exc}', file=sys.stderr)
         raise SystemExit(2) from exc
@@ -1594,6 +1607,7 @@ def cmd_storage_upgrade(args):
     else:
         print(f"Verified 0.4.3 database copy: {result['output_database']}")
         print(f"Preserved {len(result['preserved_tables'])} source tables. Source database unchanged.")
+        print(f"Storage format: {result['source_schema_version']} -> {result['target_schema_version']}.")
         print('The active installation was not switched. Keep the original database and its associated data directories.')
 
 

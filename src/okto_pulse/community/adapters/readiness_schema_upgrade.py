@@ -20,10 +20,10 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 
 from .current_relational_schema import (
     APPLICATION_ID, RelationalSchemaContract, StorageFormatError, _SCHEMA_QUERY,
-    current_schema_contract,
 )
+from .historical_relational_schema import historical_schema_contract
 from .storage_upgrade_v043 import (
-    NEW_TABLES, SOURCE_SCHEMA_SHA256, SOURCE_SCHEMA_VERSION, StorageUpgradeError, _require_source,
+    SOURCE_SCHEMA_SHA256, SOURCE_SCHEMA_VERSION, StorageUpgradeError, _require_source,
 )
 from .sqlalchemy_models import (
     ReadinessGenerationRow, ReadinessJobRow, ReadinessScopeRow, ReadinessSourceDeltaRow,
@@ -46,8 +46,7 @@ def readiness_schema_contract() -> RelationalSchemaContract:
     tables. Never let rolling model changes silently redefine a predecessor
     or the legacy destination: any further drift refuses before source DDL.
     """
-    contract = RelationalSchemaContract(tuple(row for row in current_schema_contract().objects
-        if row[2] not in NEW_TABLES))
+    contract = historical_schema_contract(405)
     if contract.sha256 != SOURCE_SCHEMA_SHA256:
         raise StorageFormatError('readiness_target_contract')
     return contract

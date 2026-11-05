@@ -108,7 +108,7 @@ def test_legacy_target_cannot_silently_follow_new_model_changes(tmp_path, monkey
     target = current_schema_contract()
     altered = RelationalSchemaContract((*target.objects,
         ('table','unexpected','unexpected','CREATE TABLE unexpected (id TEXT)')))
-    monkeypatch.setattr(upgrade, 'current_schema_contract', lambda: altered)
+    monkeypatch.setattr(upgrade, 'historical_schema_contract', lambda _version: altered)
     with pytest.raises(StorageFormatError, match='readiness_target_contract'):
         upgrade_readiness_schema(path)
     with closing(sqlite3.connect(path)) as unchanged:
@@ -122,6 +122,8 @@ def test_legacy_upgrade_retains405_and_runtime043_requires_explicit_copy(tmp_pat
         current_schema_contract as runtime_contract, inspect_current_schema as inspect_runtime,
     )
     from okto_pulse.community.adapters.storage_upgrade_v043 import upgrade_copy_v043
+    from okto_pulse.community.adapters.historical_relational_schema import inspect_historical_schema
+    from okto_pulse.community.adapters.verification_storage_upgrade import upgrade_verification_copy
     path, output = tmp_path/'legacy.sqlite3', tmp_path/'runtime.sqlite3'
     _v401_predecessor(path)
     backup = upgrade_readiness_schema(path)
@@ -135,12 +137,19 @@ def test_legacy_upgrade_retains405_and_runtime043_requires_explicit_copy(tmp_pat
     with closing(sqlite3.connect(path)) as legacy, closing(sqlite3.connect(output)) as runtime:
         assert legacy.execute('PRAGMA user_version').fetchone()[0] == 405
         assert source_inventory(legacy) == original
-        assert inspect_runtime(runtime.cursor(),runtime_contract()) is False
+        assert inspect_historical_schema(runtime.cursor()) is False
+        with pytest.raises(StorageFormatError, match='version'):
+            inspect_runtime(runtime.cursor(), runtime_contract())
         converted = source_inventory(runtime)
         for table, signature in original.items():
             if table != 'global_discovery_source_revision':
                 assert converted[table] == signature
         assert runtime.execute('SELECT count(*) FROM task_requirement_decisions').fetchone() == (0,)
+    newest = tmp_path / 'format407.sqlite3'
+    conversion407 = upgrade_verification_copy(output, newest, evidence_root=tmp_path / 'no-receipts')
+    assert conversion407['target_schema_version'] == 407
+    with closing(sqlite3.connect(newest)) as current:
+        assert inspect_runtime(current.cursor(), runtime_contract()) is False
     assert assess_readiness_rollback(path,backup)['restore_allowed_without_preservation_plan']
     # The legacy preflight never claims that restoring405 over406 is safe.
     with pytest.raises(StorageFormatError):

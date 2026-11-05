@@ -15,6 +15,7 @@ from okto_pulse.core.domain.verification_currentness import (
     VerificationReservation, VerificationScope, canonical_scenario_sha256,
     next_verification_counter, plan_verification_publication,
     require_current_verification_context, result_from_authenticated_evidence,
+    result_from_authenticated_legacy_evidence,
 )
 from okto_pulse.core.domain.verification_report import (
     parse_verification_report, require_verification_report_context,
@@ -129,7 +130,7 @@ class CommunityVerificationCurrentnessStore:
         self._check_state(spec, scenario, state)
         return spec, scenario, state
 
-    def _authenticate(self, evidence, status, reserved):
+    def _authenticate(self, evidence, status, reserved, *, legacy=False):
         verifier = self.verifier or resolve_test_evidence_write_verifier()
         context = reserved.context
         if verifier is None:
@@ -139,21 +140,33 @@ class CommunityVerificationCurrentnessStore:
             status=status, actor_id=reserved.actor_id, evidence=evidence)
         if not verdict.verified:
             raise VerificationCurrentnessError("verification_receipt_invalid")
-        result = result_from_authenticated_evidence(evidence, actor_id=reserved.actor_id, actor_kind=reserved.actor_kind)
+        if legacy:
+            if reserved.actor_kind != "unknown":
+                raise VerificationCurrentnessError("verification_legacy_seed_invalid")
+            result = result_from_authenticated_legacy_evidence(evidence, context=context, actor_id=reserved.actor_id)
+        else:
+            result = result_from_authenticated_evidence(evidence, actor_id=reserved.actor_id, actor_kind=reserved.actor_kind)
         if result.context != context:
             raise VerificationCurrentnessError("verification_reservation_invalid")
         return result
 
     def _accepted(self, row, reservation_row, *, current):
         reserved = _reservation(reservation_row)
-        authenticated = self._authenticate(row.evidence, row.evidence_status, reserved)
+        legacy = row.origin == "legacy_seed"
+        if (row.origin not in {"native", "legacy_seed"}
+            or (not legacy and row.migration_source_sha256 is not None)
+            or (legacy and (not isinstance(row.migration_source_sha256, str)
+                or len(row.migration_source_sha256) != 64
+                or any(char not in "0123456789abcdef" for char in row.migration_source_sha256)))):
+            raise VerificationCurrentnessError("verification_currentness_unavailable")
+        authenticated = self._authenticate(row.evidence, row.evidence_status, reserved, legacy=legacy)
         if (authenticated != AuthenticatedVerificationResult.model_validate(row.result)
             or row.reservation_id != reserved.context.reservation_id
             or row.basis_digest != authenticated.basis.digest or row.receipt_id != authenticated.receipt_id
             or row.generation != authenticated.context.generation or row.ordinal != authenticated.context.ordinal
             or any(getattr(row, key) != getattr(authenticated.context, key) for key in _SCOPE_KEYS)):
             raise VerificationCurrentnessError("verification_currentness_unavailable")
-        return AcceptedVerificationResult(row.id, authenticated, current, deepcopy(row.evidence), row.evidence_status)
+        return AcceptedVerificationResult(row.id, authenticated, current, deepcopy(row.evidence), row.evidence_status, row.origin)
 
     @staticmethod
     def _require_head(head, accepted):
@@ -163,6 +176,39 @@ class CommunityVerificationCurrentnessStore:
             or head.basis_digest != result.basis.digest
             or any(getattr(head, key) != getattr(result.context, key) for key in _SCOPE_KEYS)):
             raise VerificationCurrentnessError("verification_currentness_unavailable")
+
+    async def replay_legacy(self, *, scope, evidence, evidence_status, actor_id, expected_spec_version):
+        """A historical signature cannot create new authority after conversion."""
+        if evidence.get("verification_context") is not None:
+            raise VerificationCurrentnessError("verification_legacy_seed_invalid")
+        try:
+            with self.session.no_autoflush:
+                fence = await self.session.execute(update(State).where(*_where(State, scope),
+                    State.deleted.is_(False), exists(select(Spec.id).where(Spec.id == scope.spec_id,
+                        Spec.board_id == scope.board_id, Spec.edition == scope.spec_edition,
+                        Spec.version == expected_spec_version))).values(generation=State.generation))
+                _, _, state = await self._facts(scope, expected_spec_version)
+                if fence.rowcount != 1:
+                    raise VerificationCurrentnessError("verification_currentness_conflict")
+                row = (await self.session.execute(select(Acceptance, Reservation, Head)
+                    .select_from(Head).join(Acceptance, Acceptance.id == Head.accepted_result_id)
+                    .join(Reservation, Reservation.id == Acceptance.reservation_id)
+                    .where(*_where(Head, scope), Head.generation == state.generation,
+                        Acceptance.origin == "legacy_seed", Acceptance.receipt_id == evidence.get("execution_receipt"))
+                    .execution_options(populate_existing=True))).one_or_none()
+                if row is None:
+                    raise VerificationCurrentnessError("verification_legacy_seed_not_current")
+                accepted = self._accepted(*row[:2], current=True)
+                self._require_head(row[2], accepted)
+                require_current_verification_context(accepted.result.context, scope=scope,
+                    generation=state.generation, scenario_sha256=state.scenario_sha256,
+                    verification_method=state.verification_method)
+                if (accepted.evidence != evidence or accepted.evidence_status != evidence_status
+                    or accepted.result.actor_id != actor_id):
+                    raise VerificationCurrentnessError("verification_legacy_seed_invalid")
+                return VerificationPublicationResult(accepted, True, False)
+        except DBAPIError as exc:
+            raise VerificationCurrentnessError("verification_currentness_conflict") from exc
 
     async def publish(self, result, *, evidence, evidence_status, expected_spec_version):
         context, scope = result.context, result.context.scope

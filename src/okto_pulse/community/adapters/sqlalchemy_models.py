@@ -1499,6 +1499,11 @@ class VerificationAcceptanceRow(_VerificationScopeColumns, Base):
         Index("ix_verification_acceptance_scope", "board_id", "spec_id", "spec_edition", "scenario_id", "generation", "ordinal"),
         CheckConstraint("spec_edition > 0 AND generation > 0 AND ordinal > 0",
                         name="ck_verification_acceptance_counters"),
+        CheckConstraint("(origin='native' AND migration_source_sha256 IS NULL) OR "
+                        "(origin='legacy_seed' AND migration_source_sha256 IS NOT NULL "
+                        "AND length(migration_source_sha256)=64 "
+                        "AND migration_source_sha256 NOT GLOB '*[^0-9a-f]*')",
+                        name="ck_verification_acceptance_origin"),
     )
     id: Mapped[str] = mapped_column(String(255), primary_key=True)
     reservation_id: Mapped[str] = mapped_column(String(255), ForeignKey("verification_reservations.id"), nullable=False)
@@ -1509,6 +1514,8 @@ class VerificationAcceptanceRow(_VerificationScopeColumns, Base):
     result: Mapped[dict] = mapped_column(JSON, nullable=False)
     evidence: Mapped[dict] = mapped_column(JSON, nullable=False)
     evidence_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    origin: Mapped[str] = mapped_column(String(32), nullable=False, default="native", server_default="native")
+    migration_source_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

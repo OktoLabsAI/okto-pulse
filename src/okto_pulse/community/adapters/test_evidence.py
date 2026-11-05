@@ -1228,6 +1228,29 @@ class CommunityEvidenceLedger:
             return f"ev2r.{receipt_id}.{signature}"
         raise CommunityTestEvidenceError("evidence_v2.receipt_id_collision")
 
+    def authenticated_actor_id(self, *, board_id, spec_id, scenario_id, scenario_sha256, status, evidence):
+        """Read a legacy actor claim, then bind it through native authentication.
+
+        Conversion cannot infer a human/agent kind that old receipts never
+        signed. No key, directory or receipt is created by this read.
+        """
+        receipt = evidence.get("execution_receipt")
+        match = _RECEIPT_RE.fullmatch(receipt) if isinstance(receipt, str) else None
+        if match is None:
+            raise CommunityTestEvidenceError("evidence_v2.execution_receipt_invalid")
+        record = _decode_receipt_json(_read_regular_file_secure(
+            self.receipt_root / (match.group(1) + ".json"), max_bytes=64 * 1024,
+            missing_code="evidence_v2.receipt_not_registered", invalid_code="evidence_v2.receipt_ledger_corrupt",
+            require_single_link=True))
+        actor = record.get("actor_id") if isinstance(record, dict) else None
+        if not isinstance(actor, str) or not actor.strip():
+            raise CommunityTestEvidenceError("evidence_v2.receipt_actor_id_binding_mismatch")
+        reasons = self.verify(board_id=board_id, spec_id=spec_id, scenario_id=scenario_id,
+            scenario_sha256=scenario_sha256, status=status, actor_id=actor, evidence=evidence)
+        if reasons:
+            raise CommunityTestEvidenceError(reasons[0])
+        return actor
+
     def verify(
         self,
         *,
