@@ -161,6 +161,7 @@ class PollingRunner:
         self._wake_event: asyncio.Event | None = None
         self._notify_loop: asyncio.AbstractEventLoop | None = None
         self._running = False
+        self._stop_deadline: float | None = None
 
     @property
     def is_running(self) -> bool:
@@ -184,10 +185,13 @@ class PollingRunner:
     async def start(self) -> "PollingRunner":
         if self.is_running:
             return self
+        if self._task is not None and not self._task.done():
+            raise RuntimeError("Cannot restart a worker before its previous task has drained.")
         if self._recover is not None:
             await self._recover()
         self._notify_loop = asyncio.get_running_loop()
         self._wake_event = asyncio.Event()
+        self._stop_deadline = None
         self._running = True
         self._task = asyncio.create_task(self.run_forever(), name=self.name)
         return self
@@ -220,27 +224,36 @@ class PollingRunner:
                     pass
                 wake.clear()
         except asyncio.CancelledError:
-            final_iteration_allowed = (
-                self._final_iteration_guard is None or self._final_iteration_guard()
-            )
-            if self._final_iteration and final_iteration_allowed:
-                try:
-                    await self.process_once()
-                except Exception:
-                    logger.exception(
-                        "worker final iteration failed family=%s", self.name
+            if self._final_iteration:
+                # Cancellation-safe native work can settle after stop() has
+                # exhausted its budget. It remains owned, but its completion
+                # must not authorize a fresh batch. Outer Runner cancellation
+                # is likewise not an explicit request for a final iteration.
+                reason: str | None = None
+                if self._stop_deadline is None:
+                    reason = "no_owned_shutdown_request"
+                elif asyncio.get_running_loop().time() >= self._stop_deadline:
+                    reason = "shutdown_deadline_expired"
+                elif self._final_iteration_guard is not None and not self._final_iteration_guard():
+                    reason = "upstream_native_drain_incomplete"
+                if reason is None:
+                    try:
+                        await self.process_once()
+                    except Exception:
+                        logger.exception(
+                            "worker final iteration failed family=%s", self.name
+                        )
+                else:
+                    logger.critical(
+                        "worker final iteration skipped family=%s reason=%s",
+                        self.name,
+                        reason,
+                        extra={
+                            "event": "community.worker.final_iteration_skipped",
+                            "family": self.name,
+                            "reason": reason,
+                        },
                     )
-            elif self._final_iteration:
-                logger.critical(
-                    "worker final iteration skipped family=%s "
-                    "reason=upstream_native_drain_incomplete",
-                    self.name,
-                    extra={
-                        "event": "community.worker.final_iteration_skipped",
-                        "family": self.name,
-                        "reason": "upstream_native_drain_incomplete",
-                    },
-                )
             raise
 
     async def stop(self, timeout: float = POLLING_SHUTDOWN_TIMEOUT_SECONDS) -> None:
@@ -249,6 +262,9 @@ class PollingRunner:
         loop = asyncio.get_running_loop()
         effective_timeout = max(0.0, float(timeout))
         deadline = loop.time() + effective_timeout
+        if self._stop_deadline is not None:
+            deadline = min(deadline, self._stop_deadline)
+        self._stop_deadline = deadline
         task = self._task
         pending_tasks: set[asyncio.Task[None]] = set()
         task_error: Exception | None = None
