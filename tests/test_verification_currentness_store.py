@@ -27,6 +27,7 @@ from okto_pulse.core.domain.enums import SpecStatus
 from okto_pulse.core.domain.realm import RealmScope
 from okto_pulse.core.domain.verification_currentness import (
     MAX_VERIFICATION_COUNTER, VerificationCurrentnessError, VerificationScope,
+    VerificationHistoryCursor, VerificationHistoryQuery,
     canonical_scenario_sha256, result_from_authenticated_evidence,
 )
 from okto_pulse.core.ports.test_evidence import TestVerificationReportRequest as ReportRequest
@@ -68,7 +69,7 @@ async def authority(tmp_path):
     verifier = CommunityTestEvidenceWriteVerifier(ledger=ledger)
     provider = ReservationPort(factory)
 
-    async def issue(revision="revision-a", outcome="passed", *, actor_id="actor", actor_kind="human", companions=()):
+    async def issue(revision="revision-a", outcome="passed", *, actor_id="actor", actor_kind="human", companions=(), observations=1):
         async with factory() as session:
             version = await session.scalar(select(Spec.version).where(Spec.id == "spec"))
         reserved = await provider.reserve(VerificationReservationRequest(SCOPE, digest, "inspection",
@@ -78,6 +79,9 @@ async def authority(tmp_path):
         value["inspection_procedure"]["revision"] = revision
         value["sources"].extend({"reference": source, "revision": rev, "sha256": "b" * 64} for source, rev in companions)
         value["result"] = value["observations"][0]["outcome"] = outcome
+        if observations != 1:
+            value["observations"] = [{**value["observations"][0], "observation_id": f"o-{index}"}
+                                     for index in range(observations)]
         issued = await CommunityTestVerificationReportIssuer(ledger=ledger).admit(ReportRequest(
             board_id="board", spec_id="spec", scenario_id="ts", scenario_sha256="sha256:" + digest,
             actor_id=actor_id, report=value, verification_context=reserved.context))
@@ -103,6 +107,255 @@ async def authority(tmp_path):
     yield SimpleNamespace(engine=engine, factory=factory, ledger=ledger, verifier=verifier,
         provider=provider, digest=digest, issue=issue, publish=publish, read=read)
     await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def history_authority(authority):
+    from okto_pulse.community.adapters.sqlite_verification_currentness import (
+        install_verification_currentness_functions, install_verification_currentness_triggers,
+    )
+
+    @event.listens_for(authority.engine.sync_engine, "connect")
+    def functions(connection, _):
+        install_verification_currentness_functions(connection)
+
+    async with authority.engine.begin() as connection:
+        def install(sync):
+            install_verification_currentness_functions(sync.connection)
+            install_verification_currentness_triggers(sync)
+        await connection.run_sync(install)
+    return authority
+
+
+async def history(authority, *, scope=SCOPE, limit=2, cursor=None):
+    async with authority.factory() as session:
+        return await Store(session, verifier=authority.verifier).read_history(
+            VerificationHistoryQuery(scope=scope, limit=limit, cursor=cursor))
+
+
+@pytest.mark.asyncio
+async def test_history_pages_every_acceptance_without_selecting_old_passing_credit(authority):
+    accepted = []
+    for revision, outcome in [("a", "passed"), ("b", "passed"), ("b", "failed"),
+                              ("c", "inconclusive"), ("a", "passed")]:
+        accepted.append((await authority.publish(await authority.issue(revision, outcome))).acceptance)
+    pages, cursor = [], None
+    while True:
+        page = await history(authority, cursor=cursor)
+        assert page.complete and len(page.results) <= 2 and not page.reason_codes
+        pages.append(page)
+        if not page.has_more:
+            break
+        cursor = page.next_cursor
+    rows = [row for page in pages for row in page.results]
+    assert [row.accepted_result_id for row in rows] == [row.accepted_result_id for row in reversed(accepted)]
+    assert [row.result.context.ordinal for row in rows] == [5, 4, 3, 2, 1]
+    assert [row.current for row in rows] == [True, True, True, False, False]
+    assert [row.result.outcome for row in rows] == ["passed", "inconclusive", "failed", "passed", "passed"]
+    assert {page.source_revision for page in pages} == {6}
+    assert all(page.spec_edition_at_read == 2 for page in pages)
+    assert pages[-1].next_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_history_empty_scope_is_distinct_from_missing_native_authority(authority):
+    empty = await history(authority)
+    assert empty.complete and not empty.results and empty.has_more is False
+    async with authority.factory.begin() as session:
+        await session.execute(delete(State))
+    missing = await history(authority)
+    assert not missing.complete and missing.has_more is None and not missing.results
+    assert missing.reason_codes == ("verification_currentness_unavailable",)
+
+
+@pytest.mark.asyncio
+async def test_history_keyset_uses_scope_index_and_only_authenticates_requested_page(authority):
+    from sqlalchemy import text
+
+    for ordinal in range(6):
+        await authority.publish(await authority.issue(str(ordinal)))
+    observed = []
+
+    @event.listens_for(authority.engine.sync_engine, "before_cursor_execute")
+    def capture(connection, cursor, statement, parameters, context, many):
+        if statement.lstrip().startswith("SELECT"):
+            observed.append((statement, parameters))
+
+    calls = []
+    original = authority.verifier.verify
+    authority.verifier.verify = lambda **kwargs: (calls.append(kwargs["evidence"]), original(**kwargs))[1]
+    try:
+        first = await history(authority)
+        second = await history(authority, cursor=first.next_cursor)
+        assert first.complete and second.complete and len(calls) == 4
+    finally:
+        authority.verifier.verify = original
+        event.remove(authority.engine.sync_engine, "before_cursor_execute", capture)
+    statements = [(sql, params) for sql, params in observed if "LEFT OUTER JOIN verification_reservations" in sql]
+    assert len(statements) == 2
+    assert "(verification_acceptances.generation, verification_acceptances.ordinal) <" in statements[1][0]
+    async with authority.engine.connect() as connection:
+        for sql, params in statements:
+            plan = " ".join(str(row) for row in await connection.exec_driver_sql("EXPLAIN QUERY PLAN " + sql, params))
+            assert "ix_verification_acceptance_scope" in plan
+            assert "SCAN verification_acceptances" not in plan and "USE TEMP B-TREE" not in plan
+            assert params[-2:] == (3, 0)  # LIMIT page+1; never a growing OFFSET.
+        assert await connection.scalar(text("SELECT count(*) FROM verification_acceptances")) == 6
+
+
+@pytest.mark.asyncio
+async def test_history_unused_reservation_and_replay_keep_cursor_valid_but_publication_stales_it(authority):
+    first = await authority.issue("a")
+    await authority.publish(first)
+    second = await authority.issue("b")
+    await authority.publish(second)
+    page = await history(authority, limit=1)
+    pending = await authority.issue("c")
+    assert (await authority.publish(second)).replayed
+    assert (await history(authority, limit=1, cursor=page.next_cursor)).complete
+    await authority.publish(pending)
+    stale = await history(authority, limit=1, cursor=page.next_cursor)
+    assert not stale.complete and stale.has_more is None and stale.next_cursor is None
+    assert stale.reason_codes == ("verification_history_cursor_stale",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["reset", "delete", "edition"])
+async def test_history_survives_native_reset_deletion_and_edition_as_noncurrent(history_authority, native_owner, mutation):
+    authority = history_authority
+    await native_owner.publish(await authority.issue("a"))
+    accepted = await native_owner.publish(await authority.issue("b"))
+    page = await history(authority, limit=1)
+    assert page.complete and page.results[0].accepted_result_id == accepted["accepted_result_id"]
+    async with authority.factory.begin() as session:
+        spec = await session.get(Spec, "spec")
+        scenario = {**spec.test_scenarios[0], "status": "ready"}
+        scenario.pop("evidence", None)
+        values = {"edition": 3} if mutation == "edition" else {"test_scenarios": [] if mutation == "delete" else [scenario]}
+        await session.execute(update(Spec).where(Spec.id == "spec").values(**values))
+    stale = await history(authority, limit=1, cursor=page.next_cursor)
+    assert not stale.complete and stale.reason_codes == ("verification_history_cursor_stale",)
+    read = await history(authority, limit=100)
+    assert read.complete and len(read.results) == 2 and not any(row.current for row in read.results)
+
+
+@pytest.mark.asyncio
+async def test_history_pins_one_wal_snapshot_while_a_new_result_commits(authority, monkeypatch):
+    old = await authority.issue()
+    old_accepted = await authority.publish(old)
+    newer = await authority.issue(outcome="failed")
+    published = False
+    async with authority.factory() as session:
+        execute = session.execute
+
+        async def concurrent_publish(statement, *args, **kwargs):
+            nonlocal published
+            result = await execute(statement, *args, **kwargs)
+            if not published and "FROM verification_scenario_states" in str(statement):
+                published = True
+                await authority.publish(newer)
+            return result
+
+        monkeypatch.setattr(session, "execute", concurrent_publish)
+        old_page = await Store(session, verifier=authority.verifier).read_history(VerificationHistoryQuery(scope=SCOPE))
+        assert published and old_page.complete
+        assert [row.accepted_result_id for row in old_page.results] == [old_accepted.acceptance.accepted_result_id]
+        assert old_page.results[0].current and old_page.results[0].result.outcome == "passed"
+        assert session.in_transaction()  # The read neither commits nor ends its caller's transaction.
+    latest = await history(authority)
+    assert latest.complete and latest.results[0].result.outcome == "failed" and latest.results[0].current
+    assert not latest.results[1].current
+
+
+@pytest.mark.asyncio
+async def test_current_heads_and_revision_share_one_wal_snapshot(authority, monkeypatch):
+    old = await authority.issue()
+    accepted = await authority.publish(old)
+    newer = await authority.issue(outcome="failed")
+    published = False
+    async with authority.factory() as session:
+        execute = session.execute
+
+        async def concurrent_publish(statement, *args, **kwargs):
+            nonlocal published
+            result = await execute(statement, *args, **kwargs)
+            if not published and "FROM verification_scenario_states" in str(statement):
+                published = True
+                await authority.publish(newer)
+            return result
+
+        monkeypatch.setattr(session, "execute", concurrent_publish)
+        read = await Store(session, verifier=authority.verifier).read_current(board_id="board",
+            spec_id="spec", spec_edition=2, scenario_ids=("ts",))
+        assert published and read.complete and read.source_revision == 2
+        assert len(read.results) == 1 and read.results[0].accepted_result_id == accepted.acceptance.accepted_result_id
+    latest = await authority.read()
+    assert latest.complete and latest.source_revision == 3 and latest.results[0].result.outcome == "failed"
+
+
+@pytest.mark.asyncio
+async def test_history_cannot_commit_caller_writes_or_repair_persistent_state(authority):
+    await authority.publish(await authority.issue())
+    async with authority.factory() as session:
+        await session.execute(update(Board).where(Board.id == "board").values(name="Uncommitted"))
+        page = await Store(session, verifier=authority.verifier).read_history(VerificationHistoryQuery(scope=SCOPE))
+        assert page.complete and session.in_transaction()
+        await session.rollback()
+    async with authority.factory() as session:
+        assert (await session.get(Board, "board")).name == "Isolated"
+
+
+@pytest.mark.asyncio
+async def test_history_reauthenticates_persisted_payload_and_fails_explicitly(authority):
+    accepted = (await authority.publish(await authority.issue())).acceptance
+    async with authority.factory.begin() as session:
+        bad = deepcopy(accepted.evidence)
+        bad["verification_report"]["conclusion"] = "Forged"
+        await session.execute(update(Acceptance).values(evidence=bad))
+    page = await history(authority)
+    assert not page.complete and page.has_more is None and not page.results
+    assert page.reason_codes == ("verification_receipt_invalid",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bound", ["MAX_FACTS", "MAX_SCENARIOS"])
+async def test_history_capacity_never_becomes_empty_success(authority, monkeypatch, bound):
+    import okto_pulse.community.adapters.sqlalchemy_verification_currentness as adapter
+
+    await authority.publish(await authority.issue())
+    monkeypatch.setattr(adapter, bound, 0)
+    page = await history(authority)
+    assert not page.complete and page.has_more is None and not page.results
+    assert page.reason_codes == ("verification_resolution_limit",)
+
+
+@pytest.mark.asyncio
+async def test_history_rejects_missing_anchor_and_wrong_scope(authority):
+    await authority.publish(await authority.issue("a"))
+    await authority.publish(await authority.issue("b"))
+    first = await history(authority, limit=1)
+    cursor = VerificationHistoryCursor.model_validate({**first.next_cursor.model_dump(), "before_acceptance_id": "missing"})
+    invalid = await history(authority, limit=1, cursor=cursor)
+    assert not invalid.complete and invalid.reason_codes == ("verification_history_cursor_invalid",)
+    foreign = VerificationScope(**{**SCOPE.model_dump(), "board_id": "private"})
+    with pytest.raises(ValueError, match="verification_history_cursor_invalid"):
+        VerificationHistoryQuery(scope=foreign, limit=1, cursor=first.next_cursor)
+    assert not (await history(authority, scope=foreign)).complete
+
+
+@pytest.mark.parametrize("limit", [0, -1, 101, True, 1.5, "2"])
+def test_history_query_rejects_invalid_page_bounds(limit):
+    with pytest.raises(ValueError):
+        VerificationHistoryQuery(scope=SCOPE, limit=limit)
+
+
+@pytest.mark.parametrize("field,value", [("before_ordinal", 0), ("source_revision", True),
+    ("before_generation", -1), ("spec_edition_at_read", 1), ("before_acceptance_id", ""), ("page_size", 101)])
+def test_history_cursor_rejects_invalid_internal_keyset(field, value):
+    with pytest.raises(ValueError):
+        VerificationHistoryCursor.model_validate({"scope": SCOPE, "spec_edition_at_read": 2,
+            "source_revision": 1, "page_size": 2, "before_generation": 1,
+            "before_ordinal": 1, "before_acceptance_id": "accepted", field: value})
 
 
 @pytest.mark.asyncio
@@ -260,6 +513,54 @@ async def test_bounds_and_missing_requested_history_are_explicitly_incomplete(au
 
 
 @pytest.mark.asyncio
+async def test_real_5000_scenario_boundary_and_overflow_use_native_generation_states(history_authority):
+    authority = history_authority
+    async with authority.factory.begin() as session:
+        spec = await session.get(Spec, "spec")
+        original = deepcopy(spec.test_scenarios[0])
+        scenarios = [original] + [{**original, "id": f"scenario-{index}"} for index in range(1, 5000)]
+        await session.execute(update(Spec).where(Spec.id == "spec").values(test_scenarios=scenarios))
+        assert await session.scalar(select(func.count()).select_from(State)) == 5000
+    accepted = (await authority.publish(await authority.issue())).acceptance
+    async with authority.factory() as session:
+        read = await Store(session, verifier=authority.verifier).read_current(board_id="board",
+            spec_id="spec", spec_edition=2, scenario_ids=())
+        assert read.complete and len(read.results) == 1 and read.source_revision == 5001
+        assert read.results[0].accepted_result_id == accepted.accepted_result_id
+    async with authority.factory.begin() as session:
+        await session.execute(update(Spec).where(Spec.id == "spec").values(
+            test_scenarios=[*scenarios, {**original, "id": "scenario-5000"}]))
+        assert await session.scalar(select(func.count()).select_from(State)) == 5001
+    async with authority.factory() as session:
+        overflow = await Store(session, verifier=authority.verifier).read_current(board_id="board",
+            spec_id="spec", spec_edition=2, scenario_ids=())
+    assert not overflow.complete and overflow.reason_codes == ("verification_resolution_limit",)
+    assert not overflow.results  # No zero-success projection for an over-limit population.
+
+
+@pytest.mark.asyncio
+async def test_real_20000_expanded_fact_boundary_authenticates_every_retained_basis(authority):
+    companions = tuple((f"source-{index}", "revision") for index in range(19))
+    for index in range(165):
+        await authority.publish(await authority.issue(f"basis-{index}", companions=companions, observations=100))
+    await authority.publish(await authority.issue("last-supported", companions=companions, observations=14))
+    # 165 * (1 acceptance + 20 sources + 100 observations) + (1 + 20 + 14).
+    assert 165 * 121 + 35 == 20000
+    supported = await authority.read()
+    assert supported.complete and len(supported.results) == 166
+    assert sum(1 + len(row.result.basis.sources) + len(row.evidence["verification_report"]["observations"])
+               for row in supported.results) == 20000
+    assert all(row.current for row in supported.results)
+    await authority.publish(await authority.issue("overflow"))
+    overflow = await authority.read()
+    assert not overflow.complete and overflow.reason_codes == ("verification_resolution_limit",)
+    async with authority.factory() as session:
+        # Storage remains append-only and unbounded by the read limit.
+        assert await session.scalar(select(func.count()).select_from(Acceptance)) == 167
+        assert await session.scalar(select(func.count()).select_from(Head)) == 167
+
+
+@pytest.mark.asyncio
 async def test_replay_after_reset_is_rejected_even_when_semantics_are_restored(authority):
     issued = await authority.issue()
     await authority.publish(issued)
@@ -334,14 +635,15 @@ async def test_shared_owner_commits_authority_status_and_actual_actor_audit(auth
 
 
 @pytest.mark.asyncio
-async def test_shared_owner_audit_failure_rolls_back_every_publication_write(authority, native_owner, monkeypatch):
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+async def test_shared_owner_audit_failure_rolls_back_every_publication_write(authority, native_owner, monkeypatch, failure):
     issued = await authority.issue()
 
     async def fail_audit(*args, **kwargs):
-        raise RuntimeError("audit unavailable")
+        raise failure("audit unavailable")
 
     monkeypatch.setattr(native_owner.module, "_application_add", fail_audit)
-    with pytest.raises(RuntimeError, match="audit unavailable"):
+    with pytest.raises(failure, match="audit unavailable"):
         await native_owner.publish(issued)
     async with authority.factory() as session:
         assert await session.scalar(select(func.count()).select_from(Acceptance)) == 0
