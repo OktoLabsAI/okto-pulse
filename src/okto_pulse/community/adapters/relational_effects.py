@@ -563,6 +563,17 @@ def register_community_relational_effects(
     register_kg_governance_store(CommunitySqlAlchemyKGGovernanceStore())
     from okto_pulse.community.adapters.sqlalchemy_database import get_session_factory
 
+    from okto_pulse.core.ports.verification_currentness import (
+        register_verification_reservation_port,
+        register_verification_currentness_store_factory,
+    )
+    from okto_pulse.community.adapters.sqlalchemy_verification_currentness import (
+        CommunityVerificationReservationPort, CommunityVerificationCurrentnessStore,
+    )
+
+    register_verification_reservation_port(CommunityVerificationReservationPort(lambda: get_session_factory()()))
+    register_verification_currentness_store_factory(CommunityVerificationCurrentnessStore)
+
     knowledge_propagation_store = CommunitySqlAlchemyKnowledgePropagationStore(
         lambda: get_session_factory()()
     )

@@ -17,6 +17,7 @@ from sqlalchemy import (
     Index,
     Integer,
     LargeBinary,
+    PrimaryKeyConstraint,
     String,
     Text,
     TypeDecorator,
@@ -1442,6 +1443,90 @@ class Spec(Base):
     architecture_designs: Mapped[list["ArchitectureDesign"]] = relationship(
         "ArchitectureDesign", back_populates="spec", cascade="all, delete-orphan"
     )
+
+
+class _VerificationScopeColumns:
+    """Historical scope survives deletion; native readers still require its Spec."""
+
+    board_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    spec_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    spec_edition: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    scenario_id: Mapped[str] = mapped_column(String(255), nullable=False)
+
+
+class VerificationScenarioStateRow(_VerificationScopeColumns, Base):
+    __tablename__ = "verification_scenario_states"
+    __table_args__ = (
+        PrimaryKeyConstraint("board_id", "spec_id", "spec_edition", "scenario_id"),
+        CheckConstraint("spec_edition > 0 AND generation > 0 AND last_ordinal >= 0 "
+                        "AND summary_ordinal >= 0 AND summary_ordinal <= last_ordinal AND revision > 0",
+                        name="ck_verification_state_counters"),
+    )
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_ordinal: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    summary_ordinal: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
+    scenario_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    verification_method: Mapped[str] = mapped_column(String(32), nullable=False)
+    deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class VerificationReservationRow(_VerificationScopeColumns, Base):
+    __tablename__ = "verification_reservations"
+    __table_args__ = (
+        ForeignKeyConstraint(["board_id", "spec_id", "spec_edition", "scenario_id"],
+            ["verification_scenario_states.board_id", "verification_scenario_states.spec_id",
+             "verification_scenario_states.spec_edition", "verification_scenario_states.scenario_id"]),
+        UniqueConstraint("board_id", "spec_id", "spec_edition", "scenario_id", "generation", "ordinal",
+                         name="uq_verification_reservation_order"),
+        CheckConstraint("spec_edition > 0 AND generation > 0 AND ordinal > 0",
+                        name="ck_verification_reservation_counters"),
+    )
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    ordinal: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    context: Mapped[dict] = mapped_column(JSON, nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    actor_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class VerificationAcceptanceRow(_VerificationScopeColumns, Base):
+    __tablename__ = "verification_acceptances"
+    __table_args__ = (
+        UniqueConstraint("reservation_id", name="uq_verification_acceptance_reservation"),
+        UniqueConstraint("receipt_id", name="uq_verification_acceptance_receipt"),
+        Index("ix_verification_acceptance_scope", "board_id", "spec_id", "spec_edition", "scenario_id", "generation", "ordinal"),
+        CheckConstraint("spec_edition > 0 AND generation > 0 AND ordinal > 0",
+                        name="ck_verification_acceptance_counters"),
+    )
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    reservation_id: Mapped[str] = mapped_column(String(255), ForeignKey("verification_reservations.id"), nullable=False)
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    ordinal: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    basis_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    receipt_id: Mapped[str] = mapped_column(String(2048), nullable=False)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False)
+    evidence: Mapped[dict] = mapped_column(JSON, nullable=False)
+    evidence_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class VerificationBasisHeadRow(_VerificationScopeColumns, Base):
+    __tablename__ = "verification_basis_heads"
+    __table_args__ = (
+        PrimaryKeyConstraint("board_id", "spec_id", "spec_edition", "scenario_id", "generation", "basis_digest"),
+        ForeignKeyConstraint(["board_id", "spec_id", "spec_edition", "scenario_id"],
+            ["verification_scenario_states.board_id", "verification_scenario_states.spec_id",
+             "verification_scenario_states.spec_edition", "verification_scenario_states.scenario_id"]),
+        UniqueConstraint("accepted_result_id", name="uq_verification_head_acceptance"),
+        CheckConstraint("spec_edition > 0 AND generation > 0 AND ordinal > 0",
+                        name="ck_verification_head_counters"),
+    )
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    basis_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    ordinal: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    accepted_result_id: Mapped[str] = mapped_column(String(255), ForeignKey("verification_acceptances.id"), nullable=False)
 
 
 class SpecHistory(Base):

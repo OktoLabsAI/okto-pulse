@@ -35,6 +35,12 @@ from typing import Any, Awaitable, Callable, Mapping
 from urllib.parse import urlsplit
 
 from okto_pulse.community import __version__ as community_code_version
+from okto_pulse.core.domain.verification_currentness import (
+    VerificationContext,
+    VerificationScope,
+    canonical_scenario_sha256,
+    require_current_verification_context,
+)
 from okto_pulse.core.ports.test_evidence import (
     TestEvidenceExecutionRequest,
     TestEvidenceExecutionResult,
@@ -1510,6 +1516,7 @@ async def run_manifest_and_build_evidence_v2(
     executor: RuntimeExecutor,
     ledger: CommunityEvidenceLedger,
     environment: str = "local",
+    verification_context: VerificationContext | None = None,
 ) -> dict[str, Any]:
     """Execute a valid real-runtime manifest, then durably issue its receipt."""
 
@@ -1537,6 +1544,7 @@ async def run_manifest_and_build_evidence_v2(
         executor=executor,
         ledger=ledger,
         environment=environment,
+        verification_context=verification_context,
     )
 
 
@@ -1552,6 +1560,7 @@ async def run_inline_replay_and_build_evidence_v2(
     executor: RuntimeExecutor,
     ledger: CommunityEvidenceLedger,
     environment: str = "local",
+    verification_context: VerificationContext | None = None,
 ) -> dict[str, Any]:
     """Materialize, execute and receipt an MCP-only replay description."""
 
@@ -1579,7 +1588,8 @@ async def run_inline_replay_and_build_evidence_v2(
         return await execute_external_request(dict(decoded), ledger=ledger,
             scope=dict(board_id=board_id, spec_id=spec_id, scenario_id=scenario_id,
                        scenario_sha256=scenario_sha256),
-            status=status, actor_id=actor_id, environment=environment)
+            status=status, actor_id=actor_id, environment=environment,
+            verification_context=verification_context)
     normalized_manifest = build_inline_replay_manifest(
         decoded,
         board_id=board_id,
@@ -1603,6 +1613,7 @@ async def run_inline_replay_and_build_evidence_v2(
         executor=executor,
         ledger=ledger,
         environment=environment,
+        verification_context=verification_context,
     )
 
 
@@ -1621,9 +1632,17 @@ async def _execute_validated_manifest_and_build_evidence_v2(
     ledger: CommunityEvidenceLedger,
     environment: str,
     execution_basis: Mapping[str, Any] | None = None,
+    verification_context: VerificationContext | None = None,
 ) -> dict[str, Any]:
     """Execute already-validated bytes and append an authenticated receipt."""
 
+    context_payload = None
+    if verification_context is not None:
+        context_payload = _verification_context_payload(
+            verification_context, board_id=board_id, spec_id=spec_id,
+            scenario_id=scenario_id, scenario_sha256=scenario_sha256,
+            verification_method="automated_test",
+        )
     try:
         observed = executor(normalized_manifest, canonical_ref)
         if inspect.isawaitable(observed):
@@ -1646,6 +1665,8 @@ async def _execute_validated_manifest_and_build_evidence_v2(
         observation=observed,
         environment=environment,
     )
+    if context_payload is not None:
+        evidence["verification_context"] = context_payload
     if execution_basis is not None:
         evidence["execution_attestation"]["execution_basis"] = dict(execution_basis)
         evidence["execution_attestation"]["attestation_sha256"] = compute_execution_attestation_sha256(
@@ -1807,6 +1828,32 @@ class CommunityTestEvidenceWriteVerifier:
         )
 
 
+def _verification_context_payload(
+    context, *, board_id, spec_id, scenario_id, scenario_sha256, verification_method,
+):
+    """Bind a typed server reservation to issuance; never assert DB currentness.
+
+    The reservation owner has already authorized and persisted it. A reset while
+    execution is running is enforced again at native acceptance; signing old
+    context cannot resurrect its authority. Low-level legacy history helpers may
+    omit a context, but the two production issuers cannot.
+    """
+    if not isinstance(context, VerificationContext):
+        raise CommunityTestEvidenceError("verification_reservation_invalid")
+    try:
+        require_current_verification_context(
+            context,
+            scope=VerificationScope(board_id=board_id, spec_id=spec_id,
+                                    spec_edition=context.spec_edition, scenario_id=scenario_id),
+            generation=context.generation,
+            scenario_sha256=canonical_scenario_sha256(scenario_sha256),
+            verification_method=verification_method,
+        )
+    except ValueError as exc:
+        raise CommunityTestEvidenceError("verification_reservation_invalid") from exc
+    return context.model_dump(mode="json")
+
+
 class CommunityTestVerificationReportIssuer:
     """Sign an external submission using the same installation's evidence ledger.
 
@@ -1819,11 +1866,17 @@ class CommunityTestVerificationReportIssuer:
     async def admit(self, request):
         from okto_pulse.core.domain.verification_report import parse_verification_report, VerificationReportEvidence, verification_report_scenario_status
         report = parse_verification_report(request.report)
+        context_payload = _verification_context_payload(
+            request.verification_context, board_id=request.board_id, spec_id=request.spec_id,
+            scenario_id=request.scenario_id, scenario_sha256=request.scenario_sha256,
+            verification_method=report.method,
+        )
         evidence = {
             "evidence_class": "verification_report",
             "verification_report": report.model_dump(mode="json"),
             "report_author_id": request.actor_id,
             "scenario_sha256": request.scenario_sha256,
+            "verification_context": context_payload,
         }
         # Validate the complete envelope before touching the key or ledger.
         VerificationReportEvidence.model_validate({**evidence, "execution_receipt": "ev2r." + "0" * 32 + "." + "0" * 64})
@@ -1850,6 +1903,11 @@ class CommunityTestEvidenceExecutionIssuer:
     async def execute(
         self, request: TestEvidenceExecutionRequest
     ) -> TestEvidenceExecutionResult:
+        _verification_context_payload(
+            request.verification_context, board_id=request.board_id, spec_id=request.spec_id,
+            scenario_id=request.scenario_id, scenario_sha256=request.scenario_sha256,
+            verification_method="automated_test",
+        )
         has_manifest_ref = bool(request.manifest_ref and request.manifest_ref.strip())
         has_inline_replay = request.inline_replay is not None and not (
             isinstance(request.inline_replay, str) and not request.inline_replay.strip()
@@ -1868,6 +1926,7 @@ class CommunityTestEvidenceExecutionIssuer:
             "executor": self._executor,
             "ledger": self._ledger,
             "environment": self._environment,
+            "verification_context": request.verification_context,
         }
         if has_inline_replay:
             evidence = await run_inline_replay_and_build_evidence_v2(
