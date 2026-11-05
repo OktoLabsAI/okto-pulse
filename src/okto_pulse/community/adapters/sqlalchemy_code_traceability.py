@@ -3593,6 +3593,45 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
     ) -> tuple[domain.TargetOverlap, ...]:
         """Derive current cross-Card overlaps from persisted attestations only."""
 
+        owned_target = ImplementationTargetRow.__table__.alias("owned_overlap_target")
+        owned_resolution = ImplementationTargetResolutionRow.__table__.alias("owned_overlap_resolution")
+        owned_receipt = CodeInvestigationReceiptRow.__table__.alias("owned_overlap_receipt")
+        path = ImplementationTargetResolutionRow.resolved_relative_path
+        symbol = ImplementationTargetResolutionRow.resolved_qualified_symbol
+        same_path = and_(path.is_not(None), owned_resolution.c.resolved_relative_path == path)
+        same_symbol_without_path = and_(
+            symbol.is_not(None), owned_resolution.c.resolved_qualified_symbol == symbol,
+            or_(path.is_(None), owned_resolution.c.resolved_relative_path.is_(None)),
+        )
+        mutating_roles = tuple(role.value for role in domain.MUTATING_IMPLEMENTATION_TARGET_ROLES)
+        owned_mutates = owned_target.c.role.in_(mutating_roles)
+        other_mutates = ImplementationTargetRow.role.in_(mutating_roles)
+        # Apply the Core classifier's necessary coordinate/role conditions in
+        # SQL before the existing projection cap. Unrelated Board history must
+        # not exhaust a Card's overlap budget. Do not filter by receipt age,
+        # code revision or Card status: those do not define coordinate overlap.
+        relevant_peer = exists(
+            select(1).select_from(
+                owned_target.join(owned_resolution, and_(
+                    owned_resolution.c.id == owned_target.c.current_resolution_id,
+                    owned_resolution.c.target_id == owned_target.c.id,
+                    owned_resolution.c.board_id == owned_target.c.board_id,
+                    owned_resolution.c.target_revision == owned_target.c.revision,
+                )).join(owned_receipt, and_(
+                    owned_receipt.c.id == owned_resolution.c.investigation_receipt_id,
+                    owned_receipt.c.board_id == owned_resolution.c.board_id,
+                    owned_receipt.c.source_ref == owned_resolution.c.source_ref,
+                ))
+            ).where(
+                owned_target.c.board_id == query.board_id,
+                owned_target.c.card_id == query.card_id,
+                owned_target.c.lifecycle_status == domain.CodeTraceabilityLifecycleStatus.ACTIVE.value,
+                owned_target.c.source_ref == ImplementationTargetRow.source_ref,
+                or_(same_path, same_symbol_without_path),
+                or_(owned_mutates, other_mutates) if query.include_informational
+                else and_(owned_mutates, other_mutates),
+            ).correlate(ImplementationTargetRow, ImplementationTargetResolutionRow)
+        )
         current_rows = await self._bounded_context_rows(
             select(
                 ImplementationTargetRow,
@@ -3627,6 +3666,7 @@ class CommunitySqlAlchemyCodeTraceabilityStore:
                 ImplementationTargetRow.board_id == query.board_id,
                 ImplementationTargetRow.lifecycle_status
                 == domain.CodeTraceabilityLifecycleStatus.ACTIVE.value,
+                or_(ImplementationTargetRow.card_id == query.card_id, relevant_peer),
             )
             .order_by(
                 case(

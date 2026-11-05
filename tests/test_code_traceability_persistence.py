@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, insert, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -53,6 +53,7 @@ from okto_pulse.core.ports.code_investigation import (
 from okto_pulse.core.ports.code_traceability import (
     CodeTraceabilityImmutableConflict,
     CodeTraceabilityPersistenceConflict,
+    CodeTraceabilityPersistenceError,
     CodeTraceabilityProjectionQuery,
     CodeTraceabilityReadPort,
     CodeTraceabilityRevisionConflict,
@@ -457,6 +458,149 @@ def test_gate_projection_caps_targets_before_overlap_and_discloses_omission(
         await engine.dispose()
 
     asyncio.run(exercise())
+
+
+@pytest.fixture
+async def overlap_scope(tmp_path):
+    from okto_pulse.community.adapters.sqlalchemy_code_traceability import CommunitySqlAlchemyCodeTraceabilityStore
+    from test_code_traceability_kg_rebuild_e2e import seed_complete_traceability_source
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{(tmp_path / 'overlap-scope.sqlite3').as_posix()}")
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        tables = Base.metadata.tables
+        async with sessions() as session:
+            await seed_complete_traceability_source(session)
+
+            async def one(name):
+                return dict((await session.execute(select(tables[name]))).mappings().one())
+
+            card = await one('cards')
+            await session.execute(insert(tables['cards']).values({**card, 'id': 'card-peer', 'status': 'done'}))
+            request = await one('code_investigation_requests')
+            receipt = await one('code_investigation_receipts')
+            await session.execute(insert(tables['code_investigation_requests']).values({
+                **request, 'id': 'request-peer', 'subject_id': 'card-peer',
+                'idempotency_key': 'request-peer', 'challenge_token_hash': 'd' * 64}))
+            await session.execute(insert(tables['code_investigation_receipts']).values({
+                **receipt, 'id': 'receipt-peer', 'request_id': 'request-peer',
+                'subject_id': 'card-peer', 'generation': 2, 'predecessor_receipt_id': receipt['id'],
+                'idempotency_key': 'receipt-peer'}))
+            target = await one('implementation_targets')
+            resolution = await one('implementation_target_resolutions')
+
+            async def add_peer(identity, path, *, role='modify'):
+                await session.execute(insert(tables['implementation_targets']).values({
+                    **target, 'id': identity, 'card_id': 'card-peer', 'role': role,
+                    'baseline_evidence_id': None, 'relative_path_hint': path,
+                    'current_resolution_id': 'resolution-' + identity}))
+                await session.execute(insert(tables['implementation_target_resolutions']).values({
+                    **resolution, 'id': 'resolution-' + identity, 'target_id': identity,
+                    'investigation_receipt_id': 'receipt-peer', 'receipt_generation': 2,
+                    'resolved_relative_path': path, 'idempotency_key': 'resolution-' + identity}))
+
+            yield session, CommunitySqlAlchemyCodeTraceabilityStore(session), tables, add_peer
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('role,informational,expected', [
+    ('modify', False, 'high'), ('modify', True, 'high'),
+    ('read', False, None), ('read', True, 'informational'),
+])
+async def test_overlap_budget_excludes_unrelated_board_history(overlap_scope, role, informational, expected):
+    session, store, tables, add_peer = overlap_scope
+    for index in range(domain.CODE_TRACEABILITY_CONTEXT_COLLECTION_LIMITS['targets'] + 1):
+        await add_peer(f'unrelated-{index}', f'src/unrelated/{index}.py')
+    await add_peer('relevant', 'src/module.py', role=role)
+    await session.commit()
+    before = tuple((await session.execute(select(tables['implementation_targets']))).mappings())
+    statements = []
+    listener = lambda conn, cursor, statement, *args: statements.append(statement)
+    event.listen(session.bind.sync_engine, 'before_cursor_execute', listener)
+    try:
+        overlaps = await store.overlap_report(TargetOverlapQuery(
+            board_id='board-1', card_id='card-1', include_informational=informational))
+    finally:
+        event.remove(session.bind.sync_engine, 'before_cursor_execute', listener)
+    assert len(statements) == 2  # One bounded candidate query and one acknowledgement query.
+    assert all(sql.lstrip().upper().startswith('SELECT') for sql in statements)
+    if expected is None:
+        assert overlaps == ()
+    else:
+        assert len(overlaps) == 1
+        assert overlaps[0].severity.value == expected
+        assert {overlaps[0].target_a_id, overlaps[0].target_b_id} == {'target-1', 'relevant'}
+    assert tuple((await session.execute(select(tables['implementation_targets']))).mappings()) == before
+
+
+@pytest.mark.asyncio
+async def test_overlap_relevant_population_still_fails_closed_at_existing_cap(overlap_scope):
+    session, store, _, add_peer = overlap_scope
+    for index in range(domain.CODE_TRACEABILITY_CONTEXT_COLLECTION_LIMITS['targets']):
+        await add_peer(f'relevant-{index}', 'src/module.py')
+    await session.commit()
+    query = TargetOverlapQuery(board_id='board-1', card_id='card-1', include_informational=True)
+    with pytest.raises(CodeTraceabilityPersistenceError, match='projection_budget_exceeded') as rejected:
+        await store.overlap_report(query)
+    assert rejected.value.details == {'collection': 'targets', 'hard_limit': 200}
+    omitted = set()
+    await store.overlap_report(query, omitted_collections=omitted)
+    assert omitted == {'targets'}  # Gate callers must disclose truncation, never an empty success.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('changed', ['owner_revision', 'peer_revision', 'owner_lifecycle', 'peer_lifecycle'])
+async def test_overlap_candidates_require_both_current_active_target_revisions(overlap_scope, changed):
+    session, store, tables, add_peer = overlap_scope
+    await add_peer('relevant', 'src/module.py')
+    target_id = 'target-1' if changed.startswith('owner') else 'relevant'
+    values = {'revision': 2} if changed.endswith('revision') else {'lifecycle_status': 'revoked'}
+    await session.execute(update(tables['implementation_targets'])
+        .where(tables['implementation_targets'].c.id == target_id).values(**values))
+    await session.commit()
+    assert await store.overlap_report(TargetOverlapQuery(
+        board_id='board-1', card_id='card-1', include_informational=True)) == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('peer_path,peer_symbol,expected', [
+    ('src/module.py', 'Service.one', 'high'),
+    ('src/module.py', 'Service.two', 'medium'),
+    ('src/other.py', 'Service.one', None),
+])
+async def test_overlap_sql_candidates_preserve_symbol_classification(overlap_scope, peer_path, peer_symbol, expected):
+    session, store, tables, add_peer = overlap_scope
+    await add_peer('relevant', peer_path)
+    for identity, symbol in [('target-1', 'Service.one'), ('relevant', peer_symbol)]:
+        await session.execute(update(tables['implementation_targets'])
+            .where(tables['implementation_targets'].c.id == identity)
+            .values(selector_kind='symbol', qualified_symbol=symbol, symbol_kind='method'))
+        await session.execute(update(tables['implementation_target_resolutions'])
+            .where(tables['implementation_target_resolutions'].c.target_id == identity)
+            .values(resolved_qualified_symbol=symbol, resolved_symbol_kind='method'))
+    overlaps = await store.overlap_report(TargetOverlapQuery(
+        board_id='board-1', card_id='card-1', include_informational=True))
+    assert [row.severity.value for row in overlaps] == ([] if expected is None else [expected])
+
+
+@pytest.mark.asyncio
+async def test_overlap_same_path_in_another_source_does_not_consume_budget(overlap_scope):
+    session, store, tables, add_peer = overlap_scope
+    for index in range(domain.CODE_TRACEABILITY_CONTEXT_COLLECTION_LIMITS['targets'] + 1):
+        await add_peer(f'foreign-source-{index}', 'src/module.py')
+    await session.execute(update(tables['implementation_targets'])
+        .where(tables['implementation_targets'].c.card_id == 'card-peer').values(source_ref='source-other'))
+    await session.execute(update(tables['implementation_target_resolutions'])
+        .where(tables['implementation_target_resolutions'].c.investigation_receipt_id == 'receipt-peer')
+        .values(source_ref='source-other'))
+    await session.execute(update(tables['code_investigation_receipts'])
+        .where(tables['code_investigation_receipts'].c.id == 'receipt-peer').values(source_ref='source-other'))
+    assert await store.overlap_report(TargetOverlapQuery(
+        board_id='board-1', card_id='card-1', include_informational=True)) == ()
 
 
 def _attestation_bundle(
