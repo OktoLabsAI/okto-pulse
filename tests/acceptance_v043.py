@@ -314,8 +314,14 @@ class RequirementVerificationAcceptance(PairedAcceptance):
     def test_english_requirement_diagnosis_and_help(self):
         self._react('src/components/code-traceability/__tests__/DeliveryReadiness.test.tsx',
             'src/components/code-traceability/__tests__/DeliveryEvidencePanel.test.tsx',
+            'src/components/code-traceability/__tests__/CardDeliveryDoDPanel.test.tsx',
+            'src/components/code-traceability/__tests__/TaskDeliveryDiagnosis.test.tsx',
+            'src/components/code-traceability/__tests__/TaskRequirementControl.test.tsx',
+            'src/components/kanban/__tests__/CardModal.test.tsx',
             'src/components/specs/SpecCoveragePanel.test.tsx',
             'src/components/specs/__tests__/SpecCoveragePanel.persisted.test.tsx',
+            'src/components/help/__tests__/HelpPanel.deliveryStatus.test.tsx',
+            'src/components/help/__tests__/HelpPanel.taskRequirements.test.tsx',
             'src/components/help/__tests__/HelpPanel.taskProgress.test.tsx')
 
     def test_human_submission_and_copy_upgrade_preconditions(self):
