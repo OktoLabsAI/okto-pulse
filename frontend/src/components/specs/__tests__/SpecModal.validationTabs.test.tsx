@@ -359,7 +359,7 @@ describe('SpecModal validation navigation', () => {
     apiMock.getSpecCoverage.mockResolvedValue(nextCoverage);
     apiMock.getPersistedReadinessProjection.mockResolvedValue(nextProjection);
     const previousSpecReads = apiMock.getSpec.mock.calls.length;
-    fireEvent.click(screen.getByRole('button', { name: 'Refresh', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     await screen.findByText('50%');
     await waitFor(() => expect(apiMock.getSpecCoverage).toHaveBeenCalledTimes(3));
     expect(apiMock.getSpec.mock.calls.length).toBeGreaterThan(previousSpecReads);
@@ -388,7 +388,7 @@ describe('SpecModal validation navigation', () => {
 
     const applicationHeader = screen.getByRole('button', { name: 'Refresh board' }).closest('header')!;
     fireEvent.click(within(applicationHeader).getAllByRole('button')[1]);
-    fireEvent.click(screen.getByRole('button', { name: 'Help', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: 'Help' }));
     const centralHelp = await screen.findByRole('dialog', { name: 'Help Guide' });
     fireEvent.change(within(centralHelp).getByLabelText('Help topic'), { target: { value: 'spec-coverage' } });
     expect(within(centralHelp).getByRole('heading', { name: 'Spec coverage', level: 1 }).parentElement!.textContent).toBe(helpText);
