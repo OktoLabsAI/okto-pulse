@@ -7,9 +7,14 @@ import {
   within,
 } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ComponentProps } from 'react';
 
 import type { ProjectStructureNode, Spec, SpecStatus } from '@/types';
 import { workspacePage } from '@/testFixtures/effectiveResources';
+import { Header } from '@/components/layout/Header';
+import { persistedProjection } from '@/components/code-traceability/__tests__/readinessFixture';
+import { deliverySummary } from '@/components/code-traceability/__tests__/deliverySummaryFixture';
+import type { SpecCoverageResponse } from '../specCoverageTypes';
 
 import { SpecModal } from '../SpecModal';
 
@@ -25,6 +30,9 @@ vi.mock('@/hooks/useWorkspaceRevisions', () => ({
 
 const apiMock = vi.hoisted(() => ({
   getSpec: vi.fn(),
+  getSpecCoverage: vi.fn(),
+  getPersistedReadinessProjection: vi.fn(),
+  getDeliverySummary: vi.fn(),
   getIdeation: vi.fn(),
   getRefinement: vi.fn(),
   getProjectStructure: vi.fn(),
@@ -57,6 +65,19 @@ const permissionMock = vi.hoisted(() => ({
 }));
 const boardSettingsMock = vi.hoisted(() => ({
   requireSpecValidation: true,
+}));
+const coverageMock = vi.hoisted(() => ({ renderReal: false }));
+
+vi.mock('@/adapters', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/adapters')>();
+  return {
+    ...actual,
+    authAdapter: { ...actual.authAdapter, useAuth: () => ({ isSignedIn: false, isLoaded: true }), UserButton: null },
+  };
+});
+
+vi.mock('@/hooks/useTheme', () => ({
+  useTheme: () => ({ theme: 'light', toggle: vi.fn() }),
 }));
 
 vi.mock('@/services/api', () => ({
@@ -196,13 +217,16 @@ vi.mock('../SpecValidationHistoryPanel', () => ({
   ),
 }));
 
-vi.mock('../SpecCoveragePanel', () => ({
-  SpecCoveragePanel: ({ revision, onSkipDeliveryEvidenceChange }: { revision: string; onSkipDeliveryEvidenceChange?: (value: boolean) => void }) => (
-    <div data-testid="coverage-panel" data-revision={revision}>
-      {onSkipDeliveryEvidenceChange && <button onClick={() => onSkipDeliveryEvidenceChange(true)}>Skip delivery gate</button>}
-    </div>
-  ),
-}));
+vi.mock('../SpecCoveragePanel', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../SpecCoveragePanel')>();
+  return {
+    SpecCoveragePanel: (props: ComponentProps<typeof actual.SpecCoveragePanel>) => coverageMock.renderReal
+      ? <actual.SpecCoveragePanel {...props} />
+      : <div data-testid="coverage-panel" data-revision={props.revision}>
+        {props.onSkipDeliveryEvidenceChange && <button onClick={() => props.onSkipDeliveryEvidenceChange!(true)}>Skip delivery gate</button>}
+      </div>,
+  };
+});
 
 vi.mock('react-hot-toast', () => ({
   default: { error: vi.fn(), success: vi.fn() },
@@ -285,6 +309,93 @@ async function openCriteria() {
 }
 
 describe('SpecModal validation navigation', () => {
+  it('refreshes real Coverage in the Spec modal and opens the shared English Help through the application Header', async () => {
+    coverageMock.renderReal = true;
+    apiMock.getSpec.mockResolvedValue(baseSpec);
+    const coverage: SpecCoverageResponse = {
+      view: 'coverage', subject_ref: `spec:${baseSpec.id}`, edition: baseSpec.edition,
+      authority: 'informational', data_source: 'relational',
+      projection_freshness: { state: 'unavailable', graph_generation: null, source_checkpoint: 'source-1',
+        projection_checkpoint: null, checked_at: '2026-11-06T00:00:00Z' },
+      completeness: { complete_for_scope: false, truncated: false, limitations: [] },
+      structure: { authority: 'spec_coverage_summary', interpretation: 'planning_links_not_delivery_proof', complete_for_scope: true,
+        summary: { ac_covered: 1, ac_total: 1, fr_covered: 0, fr_total: 1, scenarios_linked: 1, scenarios_total: 1,
+          brs_linked: 0, brs_total: 0, contracts_linked: 0, contracts_total: 0, trs_linked: 0, trs_total: 0,
+          decisions_planned: 0, decisions_total: 0, irs_linked: 0, irs_total: 0, ors_linked: 0, ors_total: 0 },
+        graph: { state: 'unavailable', complete_for_scope: false, expected_nodes: null,
+          observed_nodes: null, missing_nodes: null, missing_relations: null } },
+      delivery: { state: 'available', authority: 'evaluate_delivery_coverage', complete_for_scope: true,
+        counts: { obligations: 8, implementation_proven: 0, verification_proven: 0, observed_obligations: 8,
+          decisions: 0, decisions_verified: 0 }, blockers: [], rejected_record_refs: [], interpretation: 'informational' },
+      items: [], next_cursor: null,
+    };
+    const projection = persistedProjection();
+    projection.scope = { ...projection.scope, board_id: baseSpec.board_id, spec_id: baseSpec.id,
+      spec_edition: baseSpec.edition, spec_version: baseSpec.version };
+    const summary = deliverySummary();
+    summary.scope = { board_id: baseSpec.board_id, spec_id: baseSpec.id,
+      spec_edition: baseSpec.edition, spec_version: baseSpec.version };
+    apiMock.getSpecCoverage.mockResolvedValue(coverage);
+    apiMock.getPersistedReadinessProjection.mockResolvedValue(projection);
+    apiMock.getDeliverySummary.mockResolvedValue(summary);
+    render(<><Header /><SpecModal specId={baseSpec.id} boardId={baseSpec.board_id}
+      onClose={vi.fn()} onChanged={vi.fn()} /></>);
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Coverage' }));
+    await screen.findByText('67%');
+    expect(screen.getByText('75%')).toBeVisible();
+    expect(apiMock.getSpecCoverage).toHaveBeenCalledTimes(1);
+    expect(apiMock.getSpecCoverage.mock.calls[0]).toEqual([baseSpec.board_id, baseSpec.id,
+      { graph_mode: 'summary', limit: 200, cursor: undefined }, expect.any(AbortSignal)]);
+    fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+    await waitFor(() => expect(apiMock.getSpecCoverage).toHaveBeenCalledTimes(2));
+    expect(apiMock.getSpecCoverage.mock.calls[1][2].graph_mode).toBe('detail');
+
+    const nextCoverage = { ...coverage, structure: { ...coverage.structure,
+      summary: { ...coverage.structure.summary!, fr_covered: 1 } } };
+    const nextProjection = structuredClone(projection);
+    nextProjection.summaries[0].verification.percent = 50;
+    nextProjection.summaries[0].verification.satisfied = 4;
+    apiMock.getSpecCoverage.mockResolvedValue(nextCoverage);
+    apiMock.getPersistedReadinessProjection.mockResolvedValue(nextProjection);
+    const previousSpecReads = apiMock.getSpec.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh', exact: true }));
+    await screen.findByText('50%');
+    await waitFor(() => expect(apiMock.getSpecCoverage).toHaveBeenCalledTimes(3));
+    expect(apiMock.getSpec.mock.calls.length).toBeGreaterThan(previousSpecReads);
+    expect(apiMock.getSpecCoverage.mock.calls[2][2]).toEqual({ graph_mode: 'detail', limit: 200, cursor: undefined });
+    expect(apiMock.getPersistedReadinessProjection).toHaveBeenCalledTimes(2);
+    expect(apiMock.getDeliverySummary).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText('67%')).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Coverage' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('button', { name: 'Hide details' })).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Hide details' }));
+    expect(apiMock.getSpecCoverage).toHaveBeenCalledTimes(3);
+
+    const contextualLink = screen.getByRole('button', { name: 'How Coverage works' });
+    contextualLink.focus();
+    fireEvent.click(contextualLink);
+    const contextualHelp = await screen.findByRole('dialog', { name: 'Help Guide' });
+    expect(within(contextualHelp).getByLabelText('Help topic')).toHaveValue('spec-coverage');
+    const contextualContent = within(contextualHelp).getByRole('heading', { name: 'Spec coverage', level: 1 }).parentElement!;
+    for (const text of ['Coverage separates planning from delivery.', 'Show details', 'Hide details',
+      'The Refresh button in the Spec modal', 'pages from different modes, sources or assessment generations are never combined.',
+      'The application creates the submission receipt automatically.']) expect(contextualContent).toHaveTextContent(text);
+    const helpText = contextualContent.textContent;
+    fireEvent.click(within(contextualHelp).getByRole('button', { name: 'Close help' }));
+    expect(screen.queryByRole('dialog', { name: 'Help Guide' })).not.toBeInTheDocument();
+    expect(contextualLink).toHaveFocus();
+
+    const applicationHeader = screen.getByRole('button', { name: 'Refresh board' }).closest('header')!;
+    fireEvent.click(within(applicationHeader).getAllByRole('button')[1]);
+    fireEvent.click(screen.getByRole('button', { name: 'Help', exact: true }));
+    const centralHelp = await screen.findByRole('dialog', { name: 'Help Guide' });
+    fireEvent.change(within(centralHelp).getByLabelText('Help topic'), { target: { value: 'spec-coverage' } });
+    expect(within(centralHelp).getByRole('heading', { name: 'Spec coverage', level: 1 }).parentElement!.textContent).toBe(helpText);
+    expect(apiMock.getSpecCoverage).toHaveBeenCalledTimes(3);
+    expect(apiMock.updateSpec).not.toHaveBeenCalled();
+  }, 15000);
+
   it('refreshes Resources without replacing hidden drafts and saves mockups on the reviewed snapshot', async () => {
     apiMock.getSpec.mockResolvedValue(baseSpec);
     render(<SpecModal specId={baseSpec.id} boardId={baseSpec.board_id} onClose={vi.fn()} onChanged={vi.fn()} />);
@@ -767,6 +878,7 @@ describe('SpecModal validation navigation', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    coverageMock.renderReal = false;
     apiMock.getEffectiveResources.mockImplementation((board, type, id, options) => Promise.resolve(workspacePage(board, type, id, options.resource_type, [], options.profile)));
     apiMock.getCodeTraceabilityProjection.mockResolvedValue({ evidence: [] });
     permissionMock.refresh.mockReset();

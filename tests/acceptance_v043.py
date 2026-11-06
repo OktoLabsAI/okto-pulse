@@ -337,3 +337,52 @@ class RequirementVerificationAcceptance(PairedAcceptance):
             'tests/test_external_test_delivery_binding.py',
             'tests/test_delivery_readiness_batch.py::test_query_count_does_not_grow_per_card',
             'tests/test_delivery_readiness_batch.py::test_near_native_card_limit_has_fixed_query_count')
+
+
+class CoverageAcceptance(PairedAcceptance):
+    """R7 correctness checks; installed UI and latency acceptance stay separate."""
+
+    def test_transport_permissions_cursor_and_source_fences(self):
+        self._pytest('core',
+            'tests/test_spec_coverage_query.py',
+            'tests/test_spec_coverage_authorization.py',
+            'tests/test_spec_coverage_mcp.py',
+            'tests/test_spec_coverage_graph.py',
+            'tests/test_spec_coverage_degraded_graph.py')
+        self._pytest('community',
+            'tests/test_spec_coverage_transport.py',
+            'tests/test_spec_coverage_read.py::test_restricted_proof_is_not_even_read_or_counted',
+            'tests/test_spec_coverage_read.py::test_card_change_without_spec_version_changes_source_identity',
+            'tests/test_spec_coverage_read.py::test_mandatory_final_fence_detects_source_change_and_drains_timeout',
+            'tests/test_spec_coverage_graph.py::test_persisted_native_generation_change_invalidates_next_page',
+            timeout=600)
+
+    def test_reader_admission_cancellation_and_lifecycle(self):
+        self._pytest('community',
+            'tests/test_coverage_responsiveness_acceptance.py',
+            'tests/test_grafx_query_execution_scope.py::test_nested_scope_cannot_extend_or_change_board_and_restores_context',
+            'tests/test_grafx_query_execution_scope.py::test_native_shared_deadline_ends_read_and_releases_writer',
+            'tests/test_grafx_query_execution_scope.py::test_absolute_deadline_and_existing_policy_cannot_be_relaxed',
+            'tests/test_grafx_database_pool.py::test_existing_lease_deadline_refuses_before_pin_or_open',
+            'tests/test_grafx_database_pool.py::test_existing_lease_lock_contention_is_bounded_without_late_acquisition',
+            'tests/test_grafx_database_pool.py::test_observation_acquire_never_opens_or_finalizes_a_terminal_handle',
+            'tests/test_grafx_database_pool.py::test_observation_acquire_pins_existing_identity_without_another_open',
+            'tests/test_grafx_database_pool.py::test_observation_acquire_refuses_geometry_mismatch_without_pinning',
+            'tests/test_grafx_database_pool.py::test_read_only_pool_remains_available_while_writer_participant_is_busy',
+            'tests/test_grafx_database_pool.py::TestReleaseIsExactlyOnceUnderContention',
+            'tests/test_routed_board_graph_composition.py::test_coverage_cold_readers_never_open_checkpoint_or_prepare',
+            'tests/test_routed_board_graph_composition.py::test_prepared_readers_pin_exact_generation_and_release_on_failure',
+            'tests/test_routed_board_graph_composition.py::test_lifecycle_prepares_after_durability_without_removing_any_step',
+            'tests/test_routed_board_graph_composition.py::test_optional_reader_preparation_failure_does_not_rewrite_durability',
+            'tests/test_grafx_read_lanes.py::test_scope_covers_query_and_cleanup_and_releases_before_retry',
+            'tests/test_grafx_query_deadline.py::test_native_deadline_finishes_and_releases_read_resources',
+            'tests/test_spec_coverage_read.py::test_expired_absolute_deadline_never_reads_or_starts_savepoint',
+            'tests/test_spec_coverage_read.py::test_timeout_drains_read_scope_before_returning',
+            'tests/test_spec_coverage_graph.py::test_closing_graph_preserves_coverage_and_source_fence',
+            'tests/test_spec_coverage_graph.py::test_close_fallback_still_obeys_graph_read_deadline',
+            timeout=600)
+
+    def test_coverage_modal_refresh_scope_and_help(self):
+        self._react('src/components/specs/SpecCoveragePanel.test.tsx',
+            'src/components/specs/__tests__/SpecCoveragePanel.persisted.test.tsx',
+            'src/components/specs/__tests__/SpecModal.validationTabs.test.tsx')
