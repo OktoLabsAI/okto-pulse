@@ -27,7 +27,7 @@ import unittest
 import xml.etree.ElementTree as ET
 
 import pytest
-from okto_grafx import VectorValue, connect
+from okto_grafx import Database, VectorValue, connect
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -74,6 +74,8 @@ BASELINE = ('MATCH (:Board)-[r:CONTAINS_DECISION]->(d:DecisionDigest) '
 CANDIDATE = ('MATCH (d:DecisionDigest) WHERE d.board_id = $bid '
              'OPTIONAL MATCH (d)<-[r:CONTAINS_DECISION]-(:Board) RETURN d.id, count(r)')
 EVENT = ContextVar('r8_acceptance_event', default=None)
+COUNT_READ = ContextVar('r8_native_count_read', default=None)
+VERIFYING = ContextVar('r8_native_verification', default=False)
 
 
 def _digest(board, source):
@@ -174,6 +176,10 @@ class NativeHarness:
         self.event_effects = []
         self.event_expectations = {}
         self.ack_observations = []
+        self.sql_observations = []
+        self.durability_operations = []
+        self.count_reads = defaultdict(list)
+        self.event_windows = []
         self.oracle = {board: {r['source']: ('canonical', r['revoked']) for r in _seed_rows() if r['board'] == board}
                        for board in BOARDS}
         self.runtime = CommunityGrafxGlobalDiscoveryRuntime(
@@ -198,6 +204,34 @@ class NativeHarness:
                 raise OSError('r8_injected_native_fsync_failure')
             return real_fsync(fd)
         monkeypatch.setattr(os, 'fsync', fsync)
+        for operation in ('flush', 'checkpoint'):
+            original = getattr(Database, operation)
+            def observed(database, *args, _operation=operation, _original=original, **kwargs):
+                if (database is not self.databases.get('global') or not self.phases
+                        or self.phases[-1]['phase'] != _operation):
+                    return _original(database, *args, **kwargs)
+                observation = {'operation': _operation, 'started': time.perf_counter(), 'completed': False}
+                self.durability_operations.append(observation)
+                try:
+                    if self.fault == _operation and not self.fault_fired:
+                        self.fault_fired = True
+                        raise OSError('r8_injected_native_' + _operation + '_failure')
+                    result = _original(database, *args, **kwargs)
+                    observation['completed'] = True
+                    return result
+                finally:
+                    observation['finished'] = time.perf_counter()
+            monkeypatch.setattr(Database, operation, observed)
+        real_execute = self.runtime.execute
+        def execute(*args, **kwargs):
+            observation = COUNT_READ.get()
+            started = time.perf_counter()
+            result = real_execute(*args, **kwargs)
+            if observation is not None:
+                observation['queries'].append({'started': started, 'finished': time.perf_counter(),
+                                               'rows': list(result.rows)})
+            return result
+        monkeypatch.setattr(self.runtime, 'execute', execute)
 
     def database(self, scope):
         if scope not in self.databases:
@@ -284,13 +318,16 @@ class NativeHarness:
         real_persist = self.processor._persist_batch_outcomes
         async def persist(context, events, attempts):
             lose_owner_at('owner_loss_before_ack')
+            await self.observe_sql('before_persist')
             return await real_persist(context, events, attempts)
         self.monkeypatch.setattr(self.processor, '_persist_batch_outcomes', persist)
         real_save = self.store.save_events
         async def save(context, events):
             lose_owner_at('owner_loss_at_ack')
+            await self.observe_sql('before_save')
             self.ack_observations.extend({'event_id': event.event_id, 'delivered_claim': event.processed_at is not None,
-                                          'post_flush_verified': bool(self.verifications['post_flush']),
+                                          'board': event.board_id, 'at': time.perf_counter(),
+                                          'post_flush_verified_boards': sorted({v['board'] for v in self.verifications['post_flush']}),
                                           'fault_fired': self.fault_fired} for event in events)
             result = await real_save(context, events)
             lose_owner_at('owner_loss_after_save')
@@ -310,11 +347,29 @@ class NativeHarness:
         real_commit = self.store.commit
         async def commit(context):
             lose_owner_at('owner_loss_at_commit')
-            return await real_commit(context)
+            await self.observe_sql('before_commit')
+            result = await real_commit(context)
+            await self.observe_sql('after_commit')
+            return result
         self.monkeypatch.setattr(self.store, 'commit', commit)
         real_apply = self.processor._apply_event
         real_inventory = self.processor._read_board_digestable_node_types
         real_verify = self.processor._verify_reconciled_digest_layers
+        real_counts = self.processor._read_digest_inbound_edge_counts
+        def counts(runtime, board, identities):
+            observation = {'board': board, 'identities': sorted(identities),
+                           'stage': 'verification' if VERIFYING.get() else 'reconciliation',
+                           'started': time.perf_counter(), 'queries': []}
+            self.count_reads[EVENT.get() or 'post_flush'].append(observation)
+            token = COUNT_READ.set(observation)
+            try:
+                result = real_counts(runtime, board, identities)
+                observation['result'] = dict(result)
+                return result
+            finally:
+                observation['finished'] = time.perf_counter()
+                COUNT_READ.reset(token)
+        self.monkeypatch.setattr(self.processor, '_read_digest_inbound_edge_counts', counts)
         def inventory(board):
             value = real_inventory(board)
             if EVENT.get():
@@ -336,13 +391,21 @@ class NativeHarness:
                     with self.database('global').begin('write') as tx:
                         tx.execute('MATCH (b:Board {board_id:$owner}),(d:DecisionDigest {id:$id}) '
                                    'CREATE (b)-[:CONTAINS_DECISION]->(d)', {'owner': owner, 'id': _digest(board, 'source-0000')})
-            real_verify(runtime, board, expected)
-            self.verifications[event or 'post_flush'].append({'board': board, 'identities': sorted(expected)})
+            token = VERIFYING.set(True)
+            try:
+                real_verify(runtime, board, expected)
+            finally:
+                VERIFYING.reset(token)
+            self.verifications[event or 'post_flush'].append({'board': board, 'identities': sorted(expected),
+                                                             'finished': time.perf_counter()})
         async def apply(event, session):
             token = EVENT.set(event.event_id)
+            window = {'event_id': event.event_id, 'started': time.perf_counter()}
+            self.event_windows.append(window)
             try:
                 index = self.envelopes.index(next(e for e in self.envelopes if e.attempt_event_key == event.event_id))
-                if len(self.envelopes) == 50 and index % 5 == 0:
+                source_changed = len(self.envelopes) == 50 and index % 5 == 0
+                if source_changed:
                     await asyncio.to_thread(self.source_change, event.board_id, index)
                 expected = {source: (layer, 'Decision') for source, (layer, revoked) in self.oracle[event.board_id].items()
                             if not revoked}
@@ -351,11 +414,13 @@ class NativeHarness:
                 assert result == expected
                 digest = await asyncio.to_thread(self.assert_effects, event.board_id)
                 self.event_effects.append({'event_id': event.event_id, 'board': event.board_id, 'effects_sha256': digest,
-                                           'expected_sources': sorted(result)})
+                                           'source_changed': source_changed, 'expected_sources': sorted(result)})
+                await self.observe_sql('event_applied')
                 if len(self.event_effects) % 5 == 0:
                     print(json.dumps({'r8_stage': 'events_applied', 'count': len(self.event_effects)}), flush=True)
                 return result
             finally:
+                window['finished'] = time.perf_counter()
                 EVENT.reset(token)
         # The source fence calls the class staticmethod, while initial reads use
         # the instance. Observe both paths without replacing the actual query.
@@ -370,6 +435,89 @@ class NativeHarness:
             by_key = {row.attempt_event_key: row.state for row in ledger}
             return [{'event_id': r.event_id, 'acked': r.processed_at is not None, 'retries': r.retry_count,
                      'error': r.last_error, 'ledger': by_key[r.event_id]} for r in rows]
+
+    async def observe_sql(self, stage):
+        # A separate connection observes committed authority, not staged ORM values.
+        rows = await self.outcomes()
+        self.sql_observations.append({'stage': stage, 'event_id': EVENT.get(),
+                                      'at': time.perf_counter(), 'outcomes': rows})
+
+    def assert_ack_order(self):
+        expected_ids = [envelope.attempt_event_key for envelope in self.envelopes]
+        assert self.sql_observations
+        for observation in self.sql_observations:
+            assert [row['event_id'] for row in observation['outcomes']] == expected_ids, observation
+            if observation['stage'] != 'after_commit':
+                assert all(not row['acked'] and row['ledger'] == 'outbox_persisted'
+                           for row in observation['outcomes']), observation
+        for acknowledgement in self.ack_observations:
+            if not acknowledgement['delivered_claim']:
+                continue
+            required_boards = {effect['board'] for effect in self.event_effects}
+            assert set(acknowledgement['post_flush_verified_boards']) == required_boards
+            assert acknowledgement['board'] in required_boards
+            flushes = [operation for operation in self.durability_operations
+                       if operation['operation'] == 'flush' and operation['completed']]
+            checkpoints = [operation for operation in self.durability_operations
+                           if operation['operation'] == 'checkpoint' and operation['completed']]
+            assert flushes and checkpoints
+            flush, checkpoint = flushes[-1], checkpoints[-1]
+            assert flush['finished'] <= checkpoint['started'] < checkpoint['finished']
+            probes = [phase['at'] for phase in self.phases if phase['phase'] == 'reopen_probe'
+                      and checkpoint['finished'] <= phase['at'] < acknowledgement['at']]
+            assert probes
+            for board in required_boards:
+                proofs = [proof for proof in self.verifications['post_flush'] if proof['board'] == board]
+                assert proofs and probes[-1] < proofs[-1]['finished'] < acknowledgement['at']
+
+    def assert_fresh_event_counts(self):
+        expected_ids = [envelope.attempt_event_key for envelope in self.envelopes]
+        assert [window['event_id'] for window in self.event_windows] == expected_ids
+        assert set(self.count_reads) == {*expected_ids, 'post_flush'}
+        for envelope, window in zip(self.envelopes, self.event_windows, strict=True):
+            reads = self.count_reads[envelope.attempt_event_key]
+            assert {read['stage'] for read in reads} == {'reconciliation', 'verification'}
+            identities = {_digest(envelope.board_id, source) for source in self.oracle[envelope.board_id]}
+            expected = {_digest(envelope.board_id, source): 1
+                        for source in self.event_expectations[envelope.attempt_event_key]}
+            for read in reads:
+                assert window['started'] <= read['started'] <= read['finished'] <= window['finished']
+                assert read['board'] == envelope.board_id and set(read['identities']) == identities
+                # Each call must execute a native query. Returning a memoized map
+                # (even an equal one for a no-op event) cannot satisfy this check.
+                assert read['queries']
+                for query in read['queries']:
+                    assert read['started'] <= query['started'] <= query['finished'] <= read['finished']
+                    rows = query['rows']
+                    assert len(rows) == len(identities) and {row[0] for row in rows} == identities
+                if read['stage'] == 'verification':
+                    assert read['result'] == expected
+            assert all(window['started'] <= proof['finished'] <= window['finished']
+                       for proof in self.verifications[envelope.attempt_event_key])
+        # The native batch contract verifies each affected Board after reopening,
+        # using its final state rather than repeating every intermediate event.
+        post_flush = self.count_reads['post_flush']
+        assert {read['board'] for read in post_flush} == {envelope.board_id for envelope in self.envelopes}
+        last_event = max(window['finished'] for window in self.event_windows)
+        first_ack = min(ack['at'] for ack in self.ack_observations)
+        for read in post_flush:
+            identities = {_digest(read['board'], source) for source in self.oracle[read['board']]}
+            expected = {_digest(read['board'], source): 1
+                        for source, (_layer, revoked) in self.oracle[read['board']].items() if not revoked}
+            assert read['stage'] == 'verification' and set(read['identities']) == identities
+            assert last_event < read['started'] <= read['finished'] < first_ack
+            assert read['queries'] and read['result'] == expected
+            for query in read['queries']:
+                assert read['started'] <= query['started'] <= query['finished'] <= read['finished']
+                assert len(query['rows']) == len(identities) and {row[0] for row in query['rows']} == identities
+                assert {identity: count for identity, count in query['rows'] if count} == expected
+
+    def observations(self):
+        return dict(event_effects=self.event_effects, source_reads=dict(self.source_reads),
+                    verifications=dict(self.verifications), ack_observations=self.ack_observations,
+                    sql_observations=self.sql_observations, count_reads=dict(self.count_reads),
+                    event_windows=self.event_windows, durability_operations=self.durability_operations,
+                    phases=self.phases, fsync_observations=self.fsync_observations)
 
 
 def test_native_counts_and_fifty_alternating_benchmark_pairs(native_template, tmp_path, monkeypatch):
@@ -407,26 +555,79 @@ def test_native_counts_and_fifty_alternating_benchmark_pairs(native_template, tm
                              for name, values in report['times_ms'].items()}
         report['median_ratio'] = report['summary']['candidate']['median_ms'] / report['summary']['baseline']['median_ms']
         assert report['median_ratio'] <= 0.8
-        assert GlobalOutboxProcessor._read_digest_inbound_edge_counts(h.runtime, 'absent', ()) == {}
-        # Actual population boundaries on the same disposable database after
-        # the read-only benchmark; never send an oversized native collection.
-        for chunk in _chunks(rows[1024:]):
-            with db.begin('write') as tx:
-                tx.executemany('MATCH (d:DecisionDigest {id:$id}) DETACH DELETE d', chunk)
-        expected = {key: value for key, value in oracle.items() if key in identities[:1024]}
-        assert GlobalOutboxProcessor._read_digest_inbound_edge_counts(h.runtime, BOARDS[0], identities[:1024]) == expected
-        with db.begin('write') as tx:
-            tx.execute("CREATE (:DecisionDigest {id:$id,board_id:$board,original_node_id:$source,node_type:'Decision',graph_layer:'canonical'})", rows[1024])
-            tx.execute('MATCH (b:Board {board_id:$board}),(d:DecisionDigest {id:$id}) CREATE (b)-[:CONTAINS_DECISION]->(d)', rows[1024])
-        expected[identities[1024]] = 1
-        assert GlobalOutboxProcessor._read_digest_inbound_edge_counts(h.runtime, BOARDS[0], identities[:1025]) == expected
-        with pytest.raises(RuntimeError, match='population_changed'):
-            GlobalOutboxProcessor._read_digest_inbound_edge_counts(h.runtime, BOARDS[0], identities[:1024])
-        report['boundary_populations'] = [0, 1024, 1025, 1200]
         report['completed'] = True
     finally:
         h.close_all()
         _save_report('r8-benchmark', report, tmp_path)
+
+
+def test_native_count_populations_match_oracle_without_timing_gate(native_template, tmp_path, monkeypatch):
+    h = NativeHarness(native_template, tmp_path, monkeypatch)
+    report = {'identity': _identity(), 'completed': False, 'populations': [], 'read_windows': []}
+    try:
+        db = h.database('global')
+        def logical_snapshot():
+            # Preserve multiplicity and ownership, including deliberately invalid
+            # links, using the same factual fields as the per-event effect oracle.
+            return [sorted(db.execute(query).rows, key=repr) for query in (
+                'MATCH (b:Board) RETURN b.board_id',
+                'MATCH (d:DecisionDigest) RETURN d.id,d.board_id,d.original_node_id,d.node_type,d.graph_layer,d.source_revoked',
+                'MATCH (b:Board)-[:CONTAINS_DECISION]->(d:DecisionDigest) RETURN b.board_id,d.id',
+            )]
+        def read_counts(board, identities):
+            before = logical_snapshot()
+            before_lsn = db.transactions.published_lsn()
+            try:
+                return GlobalOutboxProcessor._read_digest_inbound_edge_counts(h.runtime, board, identities)
+            finally:
+                after = logical_snapshot()
+                after_lsn = db.transactions.published_lsn()
+                report['read_windows'].append({'board': board, 'identities': list(identities),
+                    'published_lsn_before': before_lsn, 'published_lsn_after': after_lsn,
+                    'logical_sha256_before': hashlib.sha256(json.dumps(before).encode()).hexdigest(),
+                    'logical_sha256_after': hashlib.sha256(json.dumps(after).encode()).hexdigest()})
+                assert after == before and after_lsn == before_lsn
+        seeded = _seed_rows()
+        assert len(seeded) == 2500 and len({row['board'] for row in seeded}) == 3
+        for board, size in zip(BOARDS, SIZES, strict=True):
+            rows = [row for row in seeded if row['board'] == board]
+            identities = tuple(row['id'] for row in rows)
+            oracle = {row['id']: 1 for row in rows if not row['revoked']}
+            if board == BOARDS[0]:
+                oracle[rows[0]['id']] = 3  # One proper, one duplicate and one foreign owner.
+            actual = read_counts(board, identities)
+            assert len(identities) == size and actual == oracle
+            report['populations'].append({'board': board, 'identities': list(identities), 'counts': actual})
+        rows = [row for row in seeded if row['board'] == BOARDS[0]]
+        identities = tuple(row['id'] for row in rows)
+        oracle = {row['id']: 1 for row in rows if not row['revoked']}
+        oracle[rows[0]['id']] = 3
+        assert len(identities) >= 1025
+        assert read_counts('absent', ()) == {}
+        with pytest.raises(RuntimeError, match='duplicate_identity'):
+            read_counts(BOARDS[0], (*identities, identities[0]))
+        with pytest.raises(RuntimeError, match='population_changed'):
+            read_counts(BOARDS[0], (*identities[:-1], _digest(BOARDS[1], 'source-0000')))
+        # Actual native populations, independently executable without timing gates.
+        for chunk in _chunks(rows[1024:]):
+            with db.begin('write') as tx:
+                tx.executemany('MATCH (d:DecisionDigest {id:$id}) DETACH DELETE d', chunk)
+        expected = {key: value for key, value in oracle.items() if key in identities[:1024]}
+        assert read_counts(BOARDS[0], identities[:1024]) == expected
+        report['populations'].append({'board': BOARDS[0], 'identities': list(identities[:1024]), 'counts': dict(expected)})
+        with db.begin('write') as tx:
+            tx.execute("CREATE (:DecisionDigest {id:$id,board_id:$board,original_node_id:$source,node_type:'Decision',graph_layer:'canonical'})", rows[1024])
+            tx.execute('MATCH (b:Board {board_id:$board}),(d:DecisionDigest {id:$id}) CREATE (b)-[:CONTAINS_DECISION]->(d)', rows[1024])
+        expected[identities[1024]] = 1
+        assert read_counts(BOARDS[0], identities[:1025]) == expected
+        report['populations'].append({'board': BOARDS[0], 'identities': list(identities[:1025]), 'counts': expected})
+        with pytest.raises(RuntimeError, match='population_changed'):
+            read_counts(BOARDS[0], identities[:1024])
+        report['boundary_populations'] = [0, 1024, 1025, 1200]
+        report['completed'] = True
+    finally:
+        h.close_all()
+        _save_report('r8-native-populations', report, tmp_path)
 
 
 @pytest.mark.asyncio
@@ -443,23 +644,35 @@ async def test_fifty_real_events_preserve_each_inventory_effect_and_durable_ack(
         expected_ids = [e.attempt_event_key for e in h.envelopes]
         assert [r['event_id'] for r in report['outcomes']] == expected_ids
         assert [r['event_id'] for r in h.event_effects] == expected_ids
+        assert Counter(effect['source_changed'] for effect in h.event_effects) == {False: 40, True: 10}
+        previous_effects = {}
+        for effect in h.event_effects:
+            previous = previous_effects.get(effect['board'])
+            if previous is not None:
+                assert (effect['effects_sha256'] != previous) == effect['source_changed']
+            previous_effects[effect['board']] = effect['effects_sha256']
         assert all(r['acked'] and r['retries'] == 0 and r['ledger'] == 'delivered' for r in report['outcomes'])
         assert set(h.source_reads) == set(expected_ids)
         assert all(len(h.source_reads[event]) >= 2 and h.verifications[event] for event in expected_ids)
         assert all(all(read == {source: value[1] for source, value in h.event_expectations[event].items()}
                        for read in h.source_reads[event]) for event in expected_ids)
+        h.assert_fresh_event_counts()
+        h.assert_ack_order()
+        assert [ack['event_id'] for ack in h.ack_observations] == expected_ids
+        assert all(ack['delivered_claim'] for ack in h.ack_observations)
+        committed = [observation for observation in h.sql_observations if observation['stage'] == 'after_commit']
+        assert len(committed) == 1 and all(row['acked'] and row['ledger'] == 'delivered'
+                                           for row in committed[0]['outcomes'])
+        assert max(ack['at'] for ack in h.ack_observations) < committed[0]['at']
         assert {v['board'] for v in h.verifications['post_flush']} == set(BOARDS)
         assert any(item['phase'] in ('flush', 'checkpoint') for item in h.fsync_observations)
         assert {'flush', 'checkpoint', 'post_write_verification', 'reopen_probe'} <= {p['phase'] for p in h.phases}
         for board in BOARDS:
             h.assert_effects(board)
         assert KGSingleWriterLock().inspect(board_id=GLOBAL_DISCOVERY_WRITER_SCOPE) is None
-        report.update(completed=True, event_effects=h.event_effects, source_reads=dict(h.source_reads),
-                      verifications=dict(h.verifications), phases=h.phases, fsync_observations=h.fsync_observations)
+        report['completed'] = True
     finally:
-        report.update(event_effects=h.event_effects, source_reads=dict(h.source_reads),
-                      verifications=dict(h.verifications), ack_observations=h.ack_observations,
-                      phases=h.phases, fsync_observations=h.fsync_observations)
+        report.update(h.observations())
         h.close_all()
         if hasattr(h, 'engine'):
             await h.engine.dispose()
@@ -470,7 +683,7 @@ async def test_fifty_real_events_preserve_each_inventory_effect_and_durable_ack(
     'duplicate', 'foreign_owner', 'revoked', 'source_change', 'owner_loss',
     'owner_loss_before_ack', 'owner_loss_at_ack', 'owner_loss_after_save',
     'owner_loss_after_ledger', 'owner_loss_at_commit', 'ledger_failure', 'ledger_cancel',
-    'fsync', 'terminal_fsync',
+    'flush', 'checkpoint', 'fsync', 'terminal_fsync',
 ])
 @pytest.mark.asyncio
 async def test_native_faults_never_ack_matching_counts_without_full_proof(native_template, tmp_path, monkeypatch, fault):
@@ -490,6 +703,16 @@ async def test_native_faults_never_ack_matching_counts_without_full_proof(native
         report['outcomes'] = await h.outcomes()
         row, = report['outcomes']
         assert row['event_id'] == h.envelopes[0].attempt_event_key and not row['acked']
+        h.assert_ack_order()
+        if fault in ('flush', 'checkpoint'):
+            refused = [operation for operation in h.durability_operations
+                       if operation['operation'] == fault and not operation['completed']]
+            assert len(refused) == 1 and not h.verifications['post_flush']
+            assert all(not ack['delivered_claim'] for ack in h.ack_observations)
+            if fault == 'checkpoint':
+                assert any(operation['operation'] == 'flush' and operation['completed']
+                           and operation['finished'] <= refused[0]['started']
+                           for operation in h.durability_operations)
         if fault == 'terminal_fsync':
             assert row['retries'] == -1 and row['ledger'] == 'delivery_debt'
         else:
@@ -498,13 +721,43 @@ async def test_native_faults_never_ack_matching_counts_without_full_proof(native
             assert row['retries'] == (0 if unchanged else 1)
         report.update(completed=True, phases=h.phases, fsync_calls=h.fsync_calls)
     finally:
-        report.update(event_effects=h.event_effects, source_reads=dict(h.source_reads),
-                      verifications=dict(h.verifications), ack_observations=h.ack_observations,
-                      phases=h.phases, fsync_observations=h.fsync_observations)
+        report.update(h.observations())
         h.close_all()
         if hasattr(h, 'engine'):
             await h.engine.dispose()
         _save_report(f'r8-fault-{fault}', report, tmp_path)
+
+
+class R8PopulationAcceptance(unittest.TestCase):
+    """Independent native-runner entry for exact populations and read invariance."""
+
+    __test__ = False  # Native unittest entry only; avoid duplicate pytest runs.
+
+    def test_real_population_boundaries_and_invariance(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory(prefix='pulse-r8-populations-') as temp:
+            reports = Path(os.environ.get('OKTO_PULSE_R8_REPORT_DIR', temp))
+            reports.mkdir(parents=True, exist_ok=True)
+            junit = reports / 'results.xml'
+            environment = os.environ.copy()
+            environment['OKTO_PULSE_R8_REPORT_DIR'] = str(reports)
+            result = subprocess.run(
+                ['rtk', 'proxy', sys.executable, '-B', '-m', 'pytest',
+                 str(Path(__file__)) + '::test_native_count_populations_match_oracle_without_timing_gate',
+                 '-q', '-s', '--tb=long', '-p', 'no:cacheprovider',
+                 '--junitxml=' + str(junit)],
+                cwd=root, env=environment, capture_output=True, text=True,
+                encoding='utf-8', errors='replace', timeout=900,
+            )
+            (reports / 'pytest-output.log').write_text(result.stdout + result.stderr, encoding='utf-8')
+            self.assertEqual(result.returncode, 0, (result.stdout + result.stderr)[-12000:])
+            cases = ET.parse(junit).getroot().findall('.//testcase')
+            self.assertEqual(len(cases), 1)
+            self.assertTrue(all(not any(case.find(tag) is not None for tag in
+                                       ('failure', 'error', 'skipped')) for case in cases))
+            observations = list(reports.glob('r8-*.json'))
+            self.assertEqual([path.name for path in observations], ['r8-native-populations.json'])
+            self.assertTrue(json.loads(observations[0].read_text(encoding='utf-8'))['completed'])
 
 
 class R9AcknowledgementAcceptance(unittest.TestCase):
@@ -535,10 +788,10 @@ class R9AcknowledgementAcceptance(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, (result.stdout + result.stderr)[-12000:])
             cases = ET.parse(junit).getroot().findall('.//testcase')
-            self.assertEqual(len(cases), 23)
+            self.assertEqual(len(cases), 25)
             self.assertTrue(all(not any(c.find(tag) is not None for tag in
                                         ('failure', 'error', 'skipped')) for c in cases))
             observations = [json.loads(p.read_text(encoding='utf-8'))
                             for p in reports.glob('r8-*.json')]
-            self.assertEqual(len(observations), 15)
+            self.assertEqual(len(observations), 17)
             self.assertTrue(all(item['completed'] for item in observations))
