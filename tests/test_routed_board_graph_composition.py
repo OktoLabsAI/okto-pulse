@@ -164,6 +164,7 @@ class _GrafxConnector:
         self.calls: list[tuple[Path, int]] = []
         self.descriptor_revalidation_calls: list[str] = []
         self.read_only_calls: list[bool] = []
+        self.constructor_options_calls: list[dict[str, Any]] = []
         self.databases: list[_FakeGrafxDatabase] = []
 
     def __call__(
@@ -173,11 +174,13 @@ class _GrafxConnector:
         page_size: int,
         descriptor_revalidation: str = "strict",
         read_only: bool = False,
+        **constructor_options: Any,
     ) -> _FakeGrafxDatabase:
         path = Path(path)
         self.calls.append((path, page_size))
         self.descriptor_revalidation_calls.append(descriptor_revalidation)
         self.read_only_calls.append(read_only)
+        self.constructor_options_calls.append(constructor_options)
         if (
             self.persisted_page_size is not None
             and path.exists()
@@ -686,7 +689,7 @@ async def test_routed_grafx_open_validates_without_schema_initialization(
 ) -> None:
     connector = _GrafxConnector()
     bundle = _build(tmp_path / "kg", connector)
-    bundle.initialize_board_route("board-open")
+    snapshot = bundle.initialize_board_route("board-open")
     validations: list[str] = []
 
     async def creating_open_must_not_run(*_args: Any, **_kwargs: Any):
@@ -712,6 +715,49 @@ async def test_routed_grafx_open_validates_without_schema_initialization(
 
     assert handle.opened is True
     assert validations == ["schema", "board-meta"]
+    # Production routed open must make the exact generation available to
+    # existing-only Coverage reads, without relying on a later writer commit.
+    opened_count = len(connector.calls)
+    assert sum(connector.read_only_calls) == len(bundle.grafx_query_pools)
+    assert bundle.grafx_query_pools
+    from okto_pulse.community.adapters.grafx_foreground_query_limits import (
+        FOREGROUND_QUERY_LIMITS, FOREGROUND_READER_BUFFER_MB,
+    )
+    for options, read_only in zip(connector.constructor_options_calls, connector.read_only_calls):
+        if read_only:
+            assert options == dict(FOREGROUND_QUERY_LIMITS, buffer_budget_bytes=FOREGROUND_READER_BUFFER_MB * 1024 * 1024)
+    for pool in bundle.grafx_query_pools:
+        with pool.acquire_existing(snapshot.active_path, page_size=PAGE_SIZE) as lease:
+            assert lease.database.path == str(snapshot.active_path)
+            assert pool.pin_count(snapshot.active_path) == 1
+        assert pool.pin_count(snapshot.active_path) == 0
+    assert len(connector.calls) == opened_count
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_phase", ["prepare_query_readers", "prepare_query_reader"])
+async def test_routed_open_refuses_lost_ownership_before_preparing_readers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_phase: str,
+) -> None:
+    from okto_pulse.core.kg.guarded_write import GuardedWriteError
+
+    connector = _GrafxConnector()
+    bundle = _build(tmp_path / "kg", connector)
+    snapshot = bundle.initialize_board_route("board-open-lost")
+    monkeypatch.setattr(composition, "validate_current_grafx_schema", lambda _: "fingerprint")
+    monkeypatch.setattr(composition, "read_current_grafx_schema_version", lambda _: "1")
+
+    def lost_owner(board_id: str, *, failure_phase: str) -> None:
+        assert board_id == snapshot.scope_id
+        if failure_phase == refused_phase:
+            raise GuardedWriteError("writer_lease_lost", "ownership lost", retryable=False)
+
+    refused_phase = failure_phase
+    monkeypatch.setattr(composition, "revalidate_board_graph_write_lease", lost_owner)
+    with pytest.raises(GuardedWriteError, match="ownership lost"):
+        await bundle.graph_lifecycle.open(snapshot.scope_id)
+    assert not any(connector.read_only_calls)
+    assert all(pool.pin_count(snapshot.active_path) == 0 for pool in bundle.grafx_query_pools)
 
 
 @pytest.mark.asyncio

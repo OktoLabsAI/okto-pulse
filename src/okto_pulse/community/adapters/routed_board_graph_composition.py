@@ -1121,6 +1121,10 @@ def build_community_routed_board_graph_composition(
                 },
             )
         opened = not bool(getattr(database, "closed", False))
+        if opened:
+            # Keep reader preparation in the routed lifecycle's protected
+            # session. Coverage itself may only borrow existing participants.
+            access.prepare_query_readers(snapshot.scope_id)
         return GraphHandle(
             board_id=snapshot.scope_id,
             storage_ref=grafx_board_storage_ref(snapshot.scope_id),
