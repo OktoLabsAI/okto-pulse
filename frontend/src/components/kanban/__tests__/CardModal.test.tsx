@@ -1546,6 +1546,80 @@ describe('CardModal', () => {
     expect(apiMock.moveCard).not.toHaveBeenCalled();
   });
 
+  it.each(['card switch', 'header refresh', 'external revision'] as const)(
+    'clears foreign Spec context during a pending or failed %s', async (trigger) => {
+      const initialCard = cardForType('normal');
+      const nextCard = {
+        ...initialCard,
+        id: trigger === 'card switch' ? 'normal-2' : initialCard.id,
+        title: 'Card with a different Spec',
+        spec_id: 'spec-2',
+      };
+      const item = { id: 'old-item', title: 'Old Spec item', text: 'Old Spec item', linked_task_ids: [] };
+      const initialSpec = {
+        id: 'spec-1', title: 'Original Spec',
+        test_scenarios: [{ ...item, linked_criteria: [], status: 'not_run', scenario_type: 'integration' }],
+        business_rules: [item], api_contracts: [item], integration_requirements: [item],
+        observability_requirements: [item], technical_requirements: [item], knowledge_bases: [],
+      };
+      const pendingSpec = deferred<Spec>();
+      storeMock.selectedCardId = initialCard.id;
+      apiMock.getCard.mockResolvedValue(initialCard);
+      apiMock.getSpec.mockResolvedValue(initialSpec);
+      const view = render(<CardModal boardId="board-1" />);
+      await screen.findByRole('button', { name: 'Original Spec' });
+      fireEvent.click(screen.getByRole('tab', { name: /^References/ }));
+      fireEvent.click(screen.getByRole('tab', { name: /^Requirements/ }));
+      const sectionNames = ['Test Scenarios', 'Business Rules', 'API Contracts',
+        'Integration Requirements', 'Observability Requirements', 'Technical Requirements'];
+      for (const name of sectionNames) {
+        expect(screen.getByRole('heading', { name: new RegExp(`^${name}`) })).toBeInTheDocument();
+      }
+      let draft: HTMLElement | undefined;
+      if (trigger !== 'card switch') {
+        fireEvent.click(screen.getByText(initialCard.title));
+        draft = screen.getByPlaceholderText('Card title');
+        fireEvent.change(draft, { target: { value: 'Keep my unsaved title' } });
+      }
+      apiMock.getCard.mockResolvedValue(nextCard);
+      apiMock.getSpec.mockReturnValue(pendingSpec.promise);
+      if (trigger === 'card switch') {
+        storeMock.selectedCardId = nextCard.id;
+        view.rerender(<CardModal boardId="board-1" />);
+      } else if (trigger === 'header refresh') {
+        fireEvent.click(screen.getByRole('button', { name: 'Refresh card' }));
+      } else {
+        await externalRevision();
+      }
+      await waitFor(() => expect(apiMock.getSpec).toHaveBeenLastCalledWith('spec-2'));
+      const expectNoForeignContext = () => {
+        expect(screen.queryByTitle('View linked spec')).not.toBeInTheDocument();
+        for (const name of sectionNames) {
+          expect(screen.queryByRole('heading', { name: new RegExp(`^${name}`) })).not.toBeInTheDocument();
+        }
+        expect(screen.queryByRole('button', { name: /^\+ Link/ })).not.toBeInTheDocument();
+        if (draft) {
+          expect(screen.getByPlaceholderText('Card title')).toBe(draft);
+          expect(draft).toHaveValue('Keep my unsaved title');
+        } else {
+          expect(screen.getByText(nextCard.title)).toBeInTheDocument();
+        }
+      };
+      expectNoForeignContext();
+      await act(async () => pendingSpec.reject(new Error('Spec unavailable')));
+      expectNoForeignContext();
+      expect(apiMock.updateCard).not.toHaveBeenCalled();
+
+      apiMock.getSpec.mockResolvedValue({ ...initialSpec, id: 'spec-2', title: 'Current Spec' });
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh card' }));
+      await screen.findByRole('button', { name: 'Current Spec' });
+      for (const name of sectionNames) {
+        expect(screen.getByRole('heading', { name: new RegExp(`^${name}`) })).toBeInTheDocument();
+      }
+      if (draft) expect(draft).toHaveValue('Keep my unsaved title');
+    },
+  );
+
   it('does not leak knowledge roots from a previous card after switching to an orphan card', async () => {
     const sourceCard: Card = {
       ...cardForType('normal'),
@@ -2960,6 +3034,8 @@ describe('human delivery from Card status', () => {
     const card = await prepareHumanReport();
     const input = screen.getByLabelText('What was delivered or changed?');
     fireEvent.change(input, { target: { value: 'Draft survives modal refresh' } });
+    const pendingSpec = deferred<Spec>();
+    apiMock.getSpec.mockReturnValueOnce(pendingSpec.promise);
     const next = persistedProjection();
     next.scope = { ...next.scope, board_id: 'board-1', spec_id: 'spec-1', card_id: card.id };
     next.task_delivery = { ...taskDeliverySummary(card.id), board_id: 'board-1', spec_id: 'spec-1', reason: 'Assessment refreshed from the modal' };
@@ -2974,6 +3050,10 @@ describe('human delivery from Card status', () => {
     expect(screen.getByRole('button', { name: 'Hide details' })).toHaveAttribute('aria-expanded', 'true');
     expect(screen.queryByRole('button', { name: /^Refresh$/ })).not.toBeInTheDocument();
     expect(apiMock.submitHumanTask).not.toHaveBeenCalled();
+    await act(async () => pendingSpec.resolve({ id: 'spec-1', title: 'Stories spec' } as Spec));
+    expect(screen.getByLabelText('What was delivered or changed?')).toBe(input);
+    expect(input).toHaveValue('Draft survives modal refresh');
+    expect(screen.getByRole('button', { name: 'Hide details' })).toHaveAttribute('aria-expanded', 'true');
   });
 
   it('keeps the draft after a rejected delivery and does not silently save progress', async () => {

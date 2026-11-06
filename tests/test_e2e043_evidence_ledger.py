@@ -204,8 +204,17 @@ async def test_observation_retry_is_bounded_and_never_reexecutes_test(
 
 @pytest.mark.asyncio
 async def test_rest_busy_failure_matches_core_execution_contract(monkeypatch):
+    from contextlib import nullcontext
     from fastapi import HTTPException
     from okto_pulse.community.api import specs
+    from okto_pulse.core.domain.realm import RealmScope
+
+    class IssuanceFactory:
+        def resolve_realm_scope(self):
+            return RealmScope.local()
+
+        def __call__(self, **kwargs):
+            return nullcontext(object())
 
     calls = []
 
@@ -216,7 +225,7 @@ async def test_rest_busy_failure_matches_core_execution_contract(monkeypatch):
     monkeypatch.setattr(specs.ExecuteTestScenarioEvidenceUseCase, "execute", execute)
     with pytest.raises(HTTPException) as error:
         await specs.execute_test_scenario_evidence(
-            spec_id="spec", scenario_id="scenario", user_id="local-user", uow=object(),
+            spec_id="spec", scenario_id="scenario", user_id="local-user", factory=IssuanceFactory(),
             body=specs.ScenarioEvidenceExecutionRequest(status="passed", manifest_ref="about.json"))
     assert len(calls) == 1
     assert error.value.status_code == 503

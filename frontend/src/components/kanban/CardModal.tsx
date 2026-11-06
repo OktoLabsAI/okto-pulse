@@ -654,25 +654,29 @@ export function CardModal({
     return ['not_started', 'in_progress', 'on_hold'].includes(card.status);
   };
 
-  const loseCardAccess = () => {
-    syncGeneration.current += 1;
-    cardLoadGenerationRef.current += 1;
-    cardDataGenerationRef.current += 1;
-    setSyncAuthorizing(false);
-    setCard(null);
+  const clearSpecContext = useCallback(() => {
     setFullSpec(null);
     setParentSpec(null);
-    setSpecKBsFull([]);
-    setDependencies([]);
-    setDependents([]);
-    setSeenStatus({});
-    setBoardMembers([]);
     setSpecScenarios([]);
     setSpecRules([]);
     setSpecContracts([]);
     setSpecIRs([]);
     setSpecORs([]);
     setSpecTRs([]);
+    setSpecKBsFull([]);
+  }, []);
+
+  const loseCardAccess = () => {
+    syncGeneration.current += 1;
+    cardLoadGenerationRef.current += 1;
+    cardDataGenerationRef.current += 1;
+    setSyncAuthorizing(false);
+    setCard(null);
+    clearSpecContext();
+    setDependencies([]);
+    setDependents([]);
+    setSeenStatus({});
+    setBoardMembers([]);
     setShowConclusionPrompt(false);
     setShowCancelDialog(false);
     resetConclusionPrompt();
@@ -695,7 +699,7 @@ export function CardModal({
     setIsLoading(card?.id !== cardId);
     setBugRegressionPreview(null);
     setAmendmentRevisions(null);
-    if (card?.id !== cardId) setFullSpec(null);
+    if (card?.id !== cardId) clearSpecContext();
     setSpecKBsFull([]);
     setTaskValidationHierarchy(null);
     setTaskValidationHierarchyLoading(true);
@@ -703,6 +707,9 @@ export function CardModal({
     api.getCard(cardId)
       .then((data) => {
         if (!isCurrentLoad()) return;
+        // A same-card refresh may reassign its Spec. Clear the old context
+        // with the Card update, before the replacement Spec request resolves.
+        if (card?.spec_id !== data.spec_id) clearSpecContext();
         const reconciled = withPreservedOpenQACount(data);
         const projectedStatus = CARD_STATUSES.find((status) =>
           (columns[status] ?? []).some((candidate) => candidate.id === data.id),
@@ -750,15 +757,7 @@ export function CardModal({
             setSpecORs(spec.observability_requirements || []);
             setSpecTRs((spec.technical_requirements || []).map((tr: any, i: number) => typeof tr === 'string' ? { id: `tr_legacy_${i}`, text: tr, linked_task_ids: null } : tr));
           } else {
-            setParentSpec(null);
-            setFullSpec(null);
-            setSpecScenarios([]);
-            setSpecRules([]);
-            setSpecContracts([]);
-            setSpecIRs([]);
-            setSpecORs([]);
-            setSpecTRs([]);
-            setSpecKBsFull([]);
+            clearSpecContext();
           }
           if (spec === undefined || !data.validation_config) {
             setTaskValidationHierarchy(null);
@@ -855,6 +854,7 @@ export function CardModal({
     api.getCard(cardId)
       .then((data) => {
         if (!isCurrentRefresh()) return;
+        if (card?.spec_id !== data.spec_id) clearSpecContext();
         const reconciled = withPreservedOpenQACount(data);
         // Reuse the existing modal refresh cycle for external-agent writes.
         // Verification may change on another Card while this Card stays Done.
@@ -917,14 +917,7 @@ export function CardModal({
             setSpecORs(spec.observability_requirements || []);
             setSpecTRs((spec.technical_requirements || []).map((tr: any, i: number) => typeof tr === 'string' ? { id: `tr_legacy_${i}`, text: tr, linked_task_ids: null } : tr));
           } else {
-            setParentSpec(null);
-            setFullSpec(null);
-            setSpecScenarios([]);
-            setSpecRules([]);
-            setSpecContracts([]);
-            setSpecIRs([]);
-            setSpecORs([]);
-            setSpecTRs([]);
+            clearSpecContext();
           }
           if (spec === undefined || !data.validation_config) {
             setTaskValidationHierarchy(null);
@@ -971,6 +964,8 @@ export function CardModal({
   }, [
     api,
     canReadAmendmentRevisions,
+    card?.spec_id,
+    clearSpecContext,
     isLoading,
     notePolicySubjectChanged,
     onAuthoritativeStatusChange,

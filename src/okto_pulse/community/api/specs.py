@@ -13,7 +13,7 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from okto_pulse.community.api.auth_deps import require_user
-from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.deps import get_unit_of_work, get_unit_of_work_factory
 from okto_pulse.community.api.knowledge_governance import (
     KnowledgeGovernanceInvalidMetadata,
     knowledge_governance_error_response,
@@ -164,7 +164,7 @@ from okto_pulse.core.application.use_cases import (
     UpdateSpecUseCase,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
-from okto_pulse.core.repositories import PulseUnitOfWork
+from okto_pulse.core.repositories import PulseUnitOfWork, UnitOfWorkFactory
 from okto_pulse.core.models.schemas import (
     PageEnvelope,
     LookupResponse,
@@ -2204,23 +2204,28 @@ async def execute_test_scenario_evidence(
     scenario_id: str,
     body: ScenarioEvidenceExecutionRequest,
     user_id: str = Depends(require_user),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+    factory: UnitOfWorkFactory = Depends(get_unit_of_work_factory),
 ):
     """Execute an allowlisted local replay and return signed V2 evidence."""
 
     from okto_pulse.core.ports.test_evidence import TestEvidenceLedgerBusyError
 
     try:
-        result = await ExecuteTestScenarioEvidenceUseCase().execute(
-            ExecuteTestScenarioEvidenceCommand(
-                spec_id,
-                scenario_id,
-                body.status,
-                body.manifest_ref,
-            ),
-            actor=RESTAdapterContract.actor(user_id),
-            uow=uow,
-        )
+        actor = RESTAdapterContract.actor(user_id)
+        # Issuance reads scope/authorization but does not publish scenario state.
+        # Its reservation owns a separate, short writer transaction. Acquiring
+        # the generic POST writer here would block that reservation against us.
+        async with factory(realm_scope=factory.resolve_realm_scope(), actor=actor) as uow:
+            result = await ExecuteTestScenarioEvidenceUseCase().execute(
+                ExecuteTestScenarioEvidenceCommand(
+                    spec_id,
+                    scenario_id,
+                    body.status,
+                    body.manifest_ref,
+                ),
+                actor=actor,
+                uow=uow,
+            )
     except EntityNotFoundError as exc:
         detail = "Spec not found" if exc.entity_type == "spec" else "Scenario not found"
         raise HTTPException(
@@ -2242,14 +2247,19 @@ async def execute_test_scenario_evidence(
 @router.post("/specs/{spec_id}/scenarios/{scenario_id}/evidence/reports", status_code=200)
 async def admit_test_verification_report(
     spec_id: str, scenario_id: str, body: ScenarioVerificationReportRequest,
-    user_id: str = Depends(require_user), uow: PulseUnitOfWork = Depends(get_unit_of_work),
+    user_id: str = Depends(require_user),
+    factory: UnitOfWorkFactory = Depends(get_unit_of_work_factory),
 ):
     """Authenticate a supplied observation; does not execute or change scenario state."""
     from okto_pulse.core.application.use_cases.spec_crud import AdmitTestVerificationReportCommand, AdmitTestVerificationReportUseCase
     try:
-        result = await AdmitTestVerificationReportUseCase().execute(
-            AdmitTestVerificationReportCommand(spec_id, scenario_id, body.report.model_dump(mode="json")),
-            actor=RESTAdapterContract.actor(user_id), uow=uow)
+        actor = RESTAdapterContract.actor(user_id)
+        # As for replay issuance, only the reservation acquires a writer;
+        # publication remains a separate, serialized status mutation.
+        async with factory(realm_scope=factory.resolve_realm_scope(), actor=actor) as uow:
+            result = await AdmitTestVerificationReportUseCase().execute(
+                AdmitTestVerificationReportCommand(spec_id, scenario_id, body.report.model_dump(mode="json")),
+                actor=actor, uow=uow)
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Spec not found" if exc.entity_type == "spec" else "Scenario not found") from exc
     except PermissionDeniedError as exc:

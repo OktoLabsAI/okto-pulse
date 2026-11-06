@@ -1,6 +1,7 @@
 """Real signed external reports share the scoped scenario and delivery trust path."""
 from copy import deepcopy
 import json
+from types import SimpleNamespace
 
 from verification_report_fixtures import bind_report_sources, report
 
@@ -11,6 +12,7 @@ from sqlalchemy import update
 
 from okto_pulse.community.adapters.sqlalchemy_database import build_community_session_factory
 from okto_pulse.community.adapters.sqlalchemy_models import Spec
+from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWorkFactory
 from okto_pulse.community.adapters.sqlalchemy_verification_currentness import (
     CommunityVerificationCurrentnessStore,
     CommunityVerificationReservationPort,
@@ -74,7 +76,8 @@ def reset():
 
 async def setup(db, monkeypatch, tmp_path, method):
     app, scenario = await methods.setup(db, monkeypatch, method=method)
-    compose_verification(db)
+    factory = compose_verification(db)
+    app.state.runtime_composition = SimpleNamespace(uow_factory=CommunityUnitOfWorkFactory(factory))
     scenario['linked_criteria'] = ['ac-1']
     await db.execute(update(Spec).where(Spec.id == 'spec').values(test_scenarios=[scenario], acceptance_criteria=CRITERIA))
     # Criteria and links were changed after the base fixture sealed its heads.
