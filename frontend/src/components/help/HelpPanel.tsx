@@ -35,6 +35,7 @@ import pulseIcon from '@/assets/pulse-icon.svg';
 import { useEscapeToClose } from '@/hooks/useEscapeToClose';
 import type { HelpSectionId } from './contextualHelp';
 import { specValidationHelp } from '@/components/specs/validationHelp';
+import { coverageHelp } from '@/components/specs/coverageHelp';
 import { deliveryProgressHelp } from '@/components/code-traceability/deliveryProgressHelp';
 import { deliverySummaryHelp } from '@/components/code-traceability/deliverySummaryHelp';
 import { taskRequirementHelp } from '@/components/code-traceability/taskRequirementHelp';
@@ -845,6 +846,12 @@ Specs can be exported as **Markdown** for external documentation or sharing.
       title: 'Spec validation',
       icon: <CheckCircle size={16} />,
       content: specValidationHelp,
+    },
+    {
+      id: 'spec-coverage',
+      title: 'Spec coverage',
+      icon: <GitBranch size={16} />,
+      content: coverageHelp,
     },
     {
       id: 'delivery-progress',

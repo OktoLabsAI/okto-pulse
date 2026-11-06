@@ -2260,8 +2260,12 @@ export function SpecModal({
               entityTitle={spec.title}
               disabled={loading}
             />
-            <button onClick={loadSpec} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title="Refresh">
-              <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+            <button onClick={activeTab === 'coverage' ? () => {
+              void reloadWorkspaceSnapshot().then(() => setValidationHistoryRefreshKey(value => value + 1))
+                .catch(() => { /* The workspace error stays visible; preserve the active Coverage mode. */ });
+            } : loadSpec} disabled={activeTab === 'coverage' && workspaceReadPending}
+              className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title="Refresh">
+              <RefreshCw size={16} className={loading || activeTab === 'coverage' && workspaceReadPending ? 'animate-spin' : ''} />
             </button>
             <button onClick={() => setExpanded(!expanded)} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title={expanded ? 'Collapse' : 'Expand'}>
               {expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
@@ -2513,6 +2517,10 @@ export function SpecModal({
           )}
           {activeTab === 'coverage' && spec.id === specId && (canReadCoverage || canReadCodeTraceability) && (
             <SpecCoveragePanel boardId={spec.board_id} specId={spec.id} revision={`${spec.edition}:${spec.version}:${spec.updated_at}:${validationHistoryRefreshKey}`}
+              edition={spec.edition} requirementTitles={{ ...specAnchorTexts,
+                ...Object.fromEntries((spec.cards || []).map(card => [card.id, card.title])) }}
+              accessPending={permissionCheckPending || perms.isLoading || Boolean(perms.error)}
+              initialReadPending={syncState === 'connecting' || workspaceReadPending}
               focusExceptionId={readinessReference?.startsWith('exception:') ? readinessReference.slice('exception:'.length) : null}
               canReadSummary={canReadCoverage} canReadImplementation={canReadCodeTraceability}
               canManageTaskRequirements={!permissionCheckPending && !workspaceReadPending && !workspaceSyncError && syncState === 'current'

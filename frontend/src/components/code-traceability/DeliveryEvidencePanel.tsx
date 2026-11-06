@@ -104,9 +104,12 @@ function ObligationEvidenceDetails({ data, row, currentRow }: {
 // (mockup sm_5ebd7063). Read-only by design: recording is card-scoped
 // (task DoD) and waivers are rollup-level, human-only — this surface only
 // presents the aggregated verdict, never mutates it.
-export function DeliveryEvidenceDetails({ boardId, specId, revision, skipDeliveryEvidence = false, onSkipDeliveryEvidenceChange, onOpenDecisions, onOpenReadinessSpec, focusExceptionId, canManageTaskRequirements = false, active = true, showRequirementControl = true }: DeliveryEvidencePanelProps & { active?: boolean; showRequirementControl?: boolean }) {
+export function DeliveryEvidenceDetails({ boardId, specId, revision, skipDeliveryEvidence = false, onSkipDeliveryEvidenceChange, onOpenDecisions, onOpenReadinessSpec, focusExceptionId, canManageTaskRequirements = false, active = true, showRequirementControl = true, externalRead }: DeliveryEvidencePanelProps & {
+  active?: boolean; showRequirementControl?: boolean;
+  externalRead?: { projection?: PersistedReadinessProjection; loading: boolean; error?: string; onChanged: () => void };
+}) {
   const api = useDashboardApi();
-  const legacyMode = readinessReadMode() === 'legacy';
+  const legacyMode = externalRead === undefined && readinessReadMode() === 'legacy';
   const [storedData, setData] = useState<DeliveryEvidenceProjection | null>(null);
   const [dataOwner, setDataOwner] = useState<{ api: typeof api; key: string }>();
   const [gateMode, setGateMode] = useState<'advisory' | 'blocking' | null>(null);
@@ -123,10 +126,14 @@ export function DeliveryEvidenceDetails({ boardId, specId, revision, skipDeliver
   const scopeKey = JSON.stringify([boardId, specId, revision, reload]);
   const projectionScopeKey = JSON.stringify([boardId, specId, legacyMode]);
   const data = dataOwner?.api === api && dataOwner.key === scopeKey ? storedData : null;
-  const projection = projectionOwner?.api === api && projectionOwner.key === projectionScopeKey ? storedProjection : null;
+  const externallyRefreshed = externalRead !== undefined;
+  const projection = externallyRefreshed
+    ? externalRead.projection?.scope.board_id === boardId && externalRead.projection.scope.spec_id === specId
+      && externalRead.projection.scope.card_id === null ? externalRead.projection : null
+    : projectionOwner?.api === api && projectionOwner.key === projectionScopeKey ? storedProjection : null;
 
   useEffect(() => {
-    if (legacyMode || !active) return;
+    if (externallyRefreshed || legacyMode || !active) return;
     const refresh = () => setReload(value => value + 1);
     const visible = () => { if (document.visibilityState === 'visible') refresh(); };
     window.addEventListener('pulse:delivery-evidence-changed', refresh);
@@ -137,14 +144,14 @@ export function DeliveryEvidenceDetails({ boardId, specId, revision, skipDeliver
       window.removeEventListener('focus', refresh);
       document.removeEventListener('visibilitychange', visible);
     };
-  }, [legacyMode, active]);
+  }, [legacyMode, active, externallyRefreshed]);
 
   useEffect(() => {
-    if (!active) return;
+    if (!active || externallyRefreshed) return;
     const controller = new AbortController();
     if (acceptedProjection.current?.api !== api || acceptedProjection.current.key !== projectionScopeKey)
       acceptedProjection.current = undefined;
-    setProjection(current => projectionOwner?.api === api && projectionOwner.key === projectionScopeKey
+    setProjection(current => acceptedProjection.current?.api === api && acceptedProjection.current.key === projectionScopeKey
       && current?.projection.generation_id
       ? { ...current, projection: { ...current.projection, freshness: 'updating' } } : null);
     setProjectionError('');
@@ -227,12 +234,12 @@ export function DeliveryEvidenceDetails({ boardId, specId, revision, skipDeliver
       }
     })();
     return () => controller.abort();
-  }, [api, boardId, specId, revision, reload, projectionScopeKey, legacyMode, active]);
+  }, [api, boardId, specId, revision, reload, projectionScopeKey, legacyMode, active, externallyRefreshed]);
 
   useEffect(() => {
     if (!active) return;
     const controller = new AbortController();
-    setData(null); setGateMode(null); setError('');
+    setData(null); setError('');
     if (showDetails || focusExceptionId || showTaskRequirements) api.getDeliveryEvidence(boardId, specId, controller.signal).then(value => {
       if (value.board_id !== boardId || value.spec_id !== specId) throw new Error('Delivery evidence scope changed. Refresh the Spec.');
       if (!controller.signal.aborted) {
@@ -246,11 +253,18 @@ export function DeliveryEvidenceDetails({ boardId, specId, revision, skipDeliver
         if (err instanceof AuthenticatedFetchError && [401, 403, 404].includes(err.status)) setTaskCards(undefined);
       }
     });
+    return () => controller.abort();
+  }, [api, boardId, specId, revision, reload, focusExceptionId, showDetails, showTaskRequirements, scopeKey, taskOwner, active]);
+
+  useEffect(() => {
+    if (!active) return;
+    const controller = new AbortController();
+    setGateMode(null);
     api.getBoard(boardId).then(board => {
       if (!controller.signal.aborted) setGateMode(resolveDeliveryGateMode(board.settings?.delivery_evidence_gate));
     }).catch(() => { if (!controller.signal.aborted) setGateMode(null); });
     return () => controller.abort();
-  }, [api, boardId, specId, revision, reload, focusExceptionId, showDetails, showTaskRequirements, scopeKey, taskOwner, active]);
+  }, [api, boardId, revision, reload, active]);
 
   const missingImplementation = data?.rows.filter(row => !row.not_required && !row.implementation_satisfied).length ?? 0;
   const currentProofRows = new Map((data?.current_proof_rows ?? []).map(row =>
@@ -274,15 +288,17 @@ export function DeliveryEvidenceDetails({ boardId, specId, revision, skipDeliver
       key={`${boardId}:${specId}`} boardId={boardId} specId={specId}
       cards={taskCards.cards}
       initiallyOpen active={active} canEdit={canManageTaskRequirements} revision={revision}
-      onChanged={() => setReload(value => value + 1)} /> : <p>No tasks in this Spec.</p>)}
+      onChanged={() => { setReload(value => value + 1); externalRead?.onChanged(); }} /> : <p>No tasks in this Spec.</p>)}
     {focusExceptionId && data?.board_id === boardId && data.spec_id === specId
       && <DeliveryExceptionDetails data={data} recordId={focusExceptionId} />}
     {projection && <DeliveryReadinessPanel active={active} boardId={boardId} specId={specId} revision={`${revision ?? ''}:${reload}`}
-      persistedValue={projection} onGenerationMismatch={() => setReload(value => value + 1)}
+      persistedValue={projection} manualRefresh={externallyRefreshed} onGenerationMismatch={() => setReload(value => value + 1)}
       onOpenReadinessSpec={onOpenReadinessSpec} />}
-    {legacyMode && <DeliveryReadinessPanel active={active} boardId={boardId} specId={specId}
+    {legacyMode && !externallyRefreshed && <DeliveryReadinessPanel active={active} boardId={boardId} specId={specId}
       revision={`${revision ?? ''}:${reload}`} onOpenReadinessSpec={onOpenReadinessSpec} />}
-    {!legacyMode && !projection && !projectionError && <PulseLoader label="Loading readiness projection…" size="sm" className="py-4" />}
+    {!legacyMode && !projection && !projectionError && (!externallyRefreshed || externalRead.loading) && <PulseLoader label="Loading readiness projection…" size="sm" className="py-4" />}
+    {externalRead?.error && <p role="alert">{externalRead.error}</p>}
+    {externallyRefreshed && !projection && !externalRead.loading && !externalRead.error && <p>Delivery assessment unavailable. Use Refresh in the Spec modal.</p>}
     {projectionError && <p role="alert" className="text-xs text-amber-700">{projectionError}</p>}
     <p className="text-sm text-gray-500 dark:text-gray-400">Track implementation and verification for each obligation. Expand an item to inspect its evidence.</p>
     <div className="flex flex-wrap items-center justify-between gap-4">
@@ -298,10 +314,10 @@ export function DeliveryEvidenceDetails({ boardId, specId, revision, skipDeliver
         <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-gray-600 dark:bg-gray-800 dark:text-gray-300" data-testid="delivery-gate-mode">
           Gate: {gateMode === null ? 'Unknown' : gateMode === 'advisory' ? 'Advisory' : 'Blocking'} (Board)
         </span>
-        <button type="button" onClick={() => setReload(v => v + 1)} aria-label="Refresh delivery rollup"
+        {!externallyRefreshed && <button type="button" onClick={() => setReload(v => v + 1)} aria-label="Refresh delivery rollup"
           className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-xs font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700">
           <RefreshCw size={14} /> Refresh
-        </button>
+        </button>}
       </div>
     </div>
 

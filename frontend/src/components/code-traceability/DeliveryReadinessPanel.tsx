@@ -8,10 +8,11 @@ import { useNativeReadinessNavigation } from './useNativeReadinessNavigation';
 import { useDeliveryReadiness } from './useDeliveryReadiness';
 import { readinessReadMode } from '@/lib/readinessMode';
 
-export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, active = true, focusDiagnosis = false, persistedValue, onGenerationMismatch, onNavigate, onOpenReadinessSpec, onOpenReadinessCard }: {
+export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, active = true, focusDiagnosis = false, persistedValue, onGenerationMismatch, onNavigate, onOpenReadinessSpec, onOpenReadinessCard, manualRefresh = false }: {
   boardId: string; specId: string; cardId?: string; revision?: string | number;
   focusDiagnosis?: boolean; onNavigate?: ReadinessNavigator;
   active?: boolean;
+  manualRefresh?: boolean;
   persistedValue?: PersistedReadinessProjection | null;
   onGenerationMismatch?: () => void;
   onOpenReadinessSpec?: (location: ReadinessSpecLocation) => void;
@@ -27,18 +28,18 @@ export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, acti
     generationId: persistedValue.projection.generation_id,
     errorCode: persistedValue.projection.error_code } : undefined;
   const state = useDeliveryReadiness(boardId, specId, cardId, JSON.stringify([revision, refresh]),
-    active && (expanded || !persistedValue), expanded || readinessReadMode() === 'legacy' ? 'diagnostic' : 'projection');
+    active && (expanded || !persistedValue), expanded || readinessReadMode() === 'legacy' ? 'diagnostic' : 'projection', manualRefresh);
   const initial = isReadinessResponse(state.value) ? state.value : undefined;
   const generationMismatch = !!(persistedValue?.projection.generation_id && initial?.projection?.generation_id
     && persistedValue.projection.generation_id !== initial.projection.generation_id);
   const mismatchNotified = useRef<string | null>(null);
   useEffect(() => {
-    if (!generationMismatch) return;
+    if (!generationMismatch || manualRefresh) return;
     const pair = `${persistedValue?.projection.generation_id}:${initial?.projection?.generation_id}`;
     if (mismatchNotified.current === pair) return;
     mismatchNotified.current = pair;
     onGenerationMismatch?.();
-  }, [generationMismatch, initial?.projection?.generation_id, persistedValue?.projection.generation_id, onGenerationMismatch]);
+  }, [generationMismatch, initial?.projection?.generation_id, persistedValue?.projection.generation_id, onGenerationMismatch, manualRefresh]);
   const key = JSON.stringify([boardId, specId, cardId, initial?.snapshot_id, revision, refresh, state.loading]);
   const [extra, setExtra] = useState<{ key: string; value: ReadinessResponse }>();
   const [failure, setFailure] = useState<{ key: string; message: string }>();
@@ -59,7 +60,7 @@ export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, acti
   }, [key, active]);
   const value = generationMismatch ? undefined : extra?.key === key ? extra.value : initial;
   const error = failure?.key === key ? failure.message : state.error;
-  const unavailable = generationMismatch ? 'Readiness generation changed. Refreshing the assessment.'
+  const unavailable = generationMismatch ? (manualRefresh ? 'The assessment changed. Use Refresh in the Spec modal.' : 'Readiness generation changed. Refreshing the assessment.')
     : !state.loading && !state.error && state.value && !initial
     ? 'Readiness diagnostic contract unavailable or incompatible.' : undefined;
   const snapshot = value?.snapshot_id;
@@ -103,9 +104,9 @@ export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, acti
     focusedControl.current = element?.dataset.readinessFocus && snapshot
       ? { scope: scopeKey, snapshot, key: element.dataset.readinessFocus } : undefined;
   }}>
-    <DeliveryReadinessView value={error || unavailable ? undefined : value} persisted={state.persisted ?? inheritedProjection}
+    <DeliveryReadinessView value={error || unavailable ? undefined : value} persisted={error || unavailable ? undefined : state.persisted ?? inheritedProjection}
       loading={state.loading} error={error || unavailable}
-      onInspect={inspect} onRefresh={() => setRefresh(v => v + 1)} />
+      onInspect={inspect} onRefresh={manualRefresh ? undefined : () => setRefresh(v => v + 1)} />
     {expanded && !state.loading && !error && !unavailable && value && <section aria-label="Delivery diagnosis" className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 ref={heading} tabIndex={-1} className="rounded text-sm font-semibold outline-offset-4">{value.delivery_state === 'not_applicable' ? 'Scope details' : 'What is missing?'}</h3>

@@ -3,14 +3,16 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { SpecCoveragePanel } from '../SpecCoveragePanel';
 import type { SpecCoverageResponse } from '../specCoverageTypes';
 import { persistedProjection } from '@/components/code-traceability/__tests__/readinessFixture';
+import { deliverySummary } from '@/components/code-traceability/__tests__/deliverySummaryFixture';
 
 const api = vi.hoisted(() => ({
   getSpecCoverage: vi.fn(),
   getPersistedReadinessProjection: vi.fn(),
+  getDeliverySummary: vi.fn(),
 }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 vi.mock('@/components/code-traceability/DeliveryEvidencePanel', () => ({
-  DeliveryEvidencePanel: () => <div>Persisted coverage table</div>,
+  DeliveryEvidenceDetails: () => <div>Persisted coverage table</div>,
 }));
 
 function sourceCoverage(): SpecCoverageResponse {
@@ -35,7 +37,7 @@ function sourceCoverage(): SpecCoverageResponse {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   api.getSpecCoverage.mockResolvedValue(sourceCoverage());
   const value = persistedProjection();
   value.summaries[0].implementation.percent = 88;
@@ -43,6 +45,7 @@ beforeEach(() => {
   value.summaries[0].implementation.applicable = 9;
   value.summaries[0].verification.percent = 50;
   api.getPersistedReadinessProjection.mockResolvedValue(value);
+  api.getDeliverySummary.mockResolvedValue(deliverySummary());
 });
 afterEach(cleanup);
 
@@ -54,7 +57,9 @@ it('uses the persisted Spec generation for Overview proof percentages', async ()
   expect(within(verification.closest('div')!).getByText('50%')).toBeVisible();
   expect(screen.getByText('Delivery data is current')).toBeVisible();
   expect(screen.getByText(/Graph details are temporarily unavailable/)).toBeVisible();
-  const generation = screen.getByText('Delivery generation: generation-1');
+  expect(screen.queryByText('Delivery generation: generation-1')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+  const generation = await screen.findByText('Delivery generation: generation-1');
   expect(generation).not.toBeVisible();
   const diagnostics = screen.getByText('Technical diagnostics');
   expect(generation.closest('details')).not.toHaveAttribute('open');
@@ -62,16 +67,17 @@ it('uses the persisted Spec generation for Overview proof percentages', async ()
   expect(generation).toBeVisible();
   fireEvent.click(diagnostics);
   expect(generation).not.toBeVisible();
-  expect(api.getSpecCoverage).toHaveBeenCalledOnce();
+  expect(api.getSpecCoverage).toHaveBeenCalledTimes(2);
   expect(api.getPersistedReadinessProjection).toHaveBeenCalledOnce();
 });
 
-it('does not invoke the structural coverage query on the Implementation tab', () => {
+it('does not invoke the structural coverage query without planning read authority', async () => {
   render(<SpecCoveragePanel boardId="b" specId="s" revision="1"
     canReadSummary={false} canReadImplementation onOpenSection={() => {}} />);
-  expect(screen.getByText('Persisted coverage table')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+  expect(await screen.findByText('Persisted coverage table')).toBeVisible();
   expect(api.getSpecCoverage).not.toHaveBeenCalled();
-  expect(api.getPersistedReadinessProjection).not.toHaveBeenCalled();
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledOnce();
 });
 
 it('shows waiting without inventing zero before the first generation', async () => {

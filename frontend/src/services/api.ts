@@ -2788,7 +2788,7 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       query: import('@/components/specs/specCoverageTypes').CoverageQuery = {},
       signal?: AbortSignal,
     ): Promise<import('@/components/specs/specCoverageTypes').SpecCoverageResponse> {
-      const params = new URLSearchParams();
+      const params = new URLSearchParams({ graph_mode: query.graph_mode ?? 'summary' });
       Object.entries(query).forEach(([key, value]) => {
         if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
       });

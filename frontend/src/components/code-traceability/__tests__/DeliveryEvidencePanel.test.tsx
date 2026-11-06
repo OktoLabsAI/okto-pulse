@@ -50,7 +50,7 @@ beforeEach(() => {
     contract_version: 'task-requirement-operation/v1', status: 'applied', decision: body.decision,
     affected_cards: body.card_ids, replayed: false }));
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 function renderDetailed(view: React.ReactElement) {
   const result = render(view);
@@ -485,4 +485,55 @@ it('clears the previous gate mode when a different Board cannot be read', async 
   await waitFor(() => expect(api.getBoard).toHaveBeenLastCalledWith('other'));
   expect(await screen.findByText(/Unknown/)).toBeInTheDocument();
   expect(screen.queryByText(/Advisory/)).not.toBeInTheDocument();
+});
+
+it('reuses the Coverage assessment with no duplicate refresh, polling or focus reads', async () => {
+  vi.useFakeTimers();
+  const value = persistedProjection(); value.projection.freshness = 'updating';
+  render(<DeliveryEvidencePanel boardId="b" specId="s" revision="1"
+    externalRead={{ projection: value, loading: false, onChanged: vi.fn() }} />);
+  await act(async () => { await Promise.resolve(); });
+  expect(screen.queryByRole('button', { name: /refresh/i })).not.toBeInTheDocument();
+  await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+  fireEvent(window, new Event('focus')); fireEvent(document, new Event('visibilitychange'));
+  expect(api.getPersistedReadinessProjection).not.toHaveBeenCalled();
+  expect(api.getDeliveryReadiness).not.toHaveBeenCalled();
+  expect(api.getDeliveryEvidence).not.toHaveBeenCalled();
+  expect(api.getBoard).toHaveBeenCalledOnce();
+});
+
+it('keeps explicit evidence available while the modal owns assessment refresh', async () => {
+  const current = persistedProjection();
+  const externalRead = { projection: current, loading: false, onChanged: vi.fn() };
+  const view = render(<DeliveryEvidencePanel boardId="b" specId="s" revision="1" externalRead={externalRead} />);
+  await screen.findByText(/Gate: Blocking/);
+  fireEvent.click(screen.getByRole('button', { name: 'Show detailed evidence' }));
+  await screen.findByTestId('delivery-detailed-coverage-table');
+  expect(api.getDeliveryEvidence).toHaveBeenCalledOnce();
+  expect(api.getBoard).toHaveBeenCalledOnce();
+  expect(api.getPersistedReadinessProjection).not.toHaveBeenCalled();
+  const next = persistedProjection(); next.projection.generation_id = 'new-generation';
+  view.rerender(<DeliveryEvidencePanel boardId="b" specId="s" revision="2"
+    externalRead={{ ...externalRead, projection: next }} />);
+  await waitFor(() => expect(api.getDeliveryEvidence).toHaveBeenCalledTimes(2));
+  expect(api.getPersistedReadinessProjection).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: /refresh/i })).not.toBeInTheDocument();
+});
+
+it('loads diagnostics once on demand and reports a generation conflict without an automatic retry', async () => {
+  vi.useFakeTimers();
+  const detail = readiness(null);
+  detail.projection = { projection_version: 1, generation_id: 'changed-generation', snapshot_id: 'a'.repeat(64) };
+  api.getDeliveryReadiness.mockResolvedValue(detail);
+  render(<DeliveryEvidencePanel boardId="b" specId="s" revision="1"
+    externalRead={{ projection: persistedProjection(), loading: false, onChanged: vi.fn() }} />);
+  await act(async () => { await Promise.resolve(); });
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'What is missing?' })));
+  expect(api.getDeliveryReadiness).toHaveBeenCalledOnce();
+  expect(screen.getByText('The assessment changed. Use Refresh in the Spec modal.')).toBeVisible();
+  await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+  fireEvent(window, new Event('focus'));
+  expect(api.getDeliveryReadiness).toHaveBeenCalledOnce();
+  expect(api.getPersistedReadinessProjection).not.toHaveBeenCalled();
+  expect(api.getDeliveryEvidence).not.toHaveBeenCalled();
 });
