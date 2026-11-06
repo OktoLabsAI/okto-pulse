@@ -5,6 +5,7 @@ provider over a file-backed native schema. No dependency overrides are installed
 """
 from datetime import datetime, timezone
 import json
+import subprocess
 from types import SimpleNamespace
 import traceback
 
@@ -31,6 +32,7 @@ from okto_pulse.community.auth import LocalAuthProvider
 from okto_pulse.community.adapters.current_relational_schema import (
     current_schema_contract, initialize_current_schema,
 )
+from okto_pulse.community.adapters.external_test_runner import profile_root, register_profile
 from okto_pulse.community.adapters.relational_application import CommunityRelationalApplicationAdapter
 from okto_pulse.community.adapters.sqlalchemy_database import (
     build_community_engine, build_community_session_factory, install_community_sqlite_pragmas,
@@ -56,9 +58,53 @@ from test_evidence_v2_adapter import _manifest
 from verification_report_fixtures import report
 
 
+def _registered_git_runner(tmp_path, ledger):
+    """Real host registration and immutable project, confined to this fixture."""
+    project = tmp_path / "project"
+    project.mkdir()
+    marker = tmp_path / "executions.txt"
+    (project / "labels.py").write_text(
+        "def normalize_labels(values):\n"
+        "    return list(dict.fromkeys(value.strip() for value in values if value.strip()))\n",
+        encoding="utf-8",
+    )
+    (project / "test_labels.py").write_text(
+        "from pathlib import Path\nimport unittest\nfrom labels import normalize_labels\n"
+        "class LabelsTests(unittest.TestCase):\n"
+        "    def test_normalization(self):\n"
+        f"        with Path({str(marker)!r}).open('a', encoding='utf-8') as out:\n"
+        "            out.write('executed\\n')\n"
+        "        self.assertEqual(normalize_labels([' a ', '', 'b', 'a']), ['a', 'b'])\n",
+        encoding="utf-8",
+    )
+
+    def git(*args):
+        return subprocess.check_output(
+            ["git", "-C", str(project), *args], stderr=subprocess.PIPE, timeout=20,
+        ).decode().strip()
+
+    git("init")
+    git("add", ".")
+    git("-c", "user.name=Issuance Test", "-c", "user.email=issuance@example.invalid",
+        "-c", "commit.gpgsign=false", "commit", "-m", "Isolated registered runner fixture")
+    revision = git("rev-parse", "HEAD")
+    source_ref = project.as_uri()
+    test_ids = ["test_labels.py::LabelsTests.test_normalization"]
+    register_profile(root=profile_root(ledger), name="labels", workspace=str(project),
+        source_ref=source_ref, board_id="board", spec_id="spec", scenario_id="ts", test_ids=test_ids)
+    register_profile(root=profile_root(ledger), name="foreign", workspace=str(project),
+        source_ref=source_ref, board_id="another-board", spec_id="spec", scenario_id="ts", test_ids=test_ids)
+    # If the endpoint runs the working tree instead of the selected commit,
+    # the subprocess will fail rather than produce an authenticated pass.
+    (project / "labels.py").write_text("raise RuntimeError('uncommitted code must not run')\n", encoding="utf-8")
+    return {"runner_ref": "labels", "revision": revision}, {
+        "runner_ref": "labels", "revision": revision, "source_ref": source_ref, "test_ids": test_ids,
+    }, marker
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation,reset_during_issuance", [
-    ("execute", False), ("reports", False), ("reports", True),
+    ("execute", False), ("reports", False), ("reports", True), ("runner", False),
 ])
 async def test_real_rest_issuance_releases_writer_before_independent_reservation(
     tmp_path, operation, reset_during_issuance,
@@ -86,12 +132,18 @@ async def test_real_rest_issuance_releases_writer_before_independent_reservation
         await initialize_current_schema(engine, current_schema_contract())
         configure_auth(LocalAuthProvider())
         register_relational_application_adapter(CommunityRelationalApplicationAdapter())
-        method = "automated_test" if operation == "execute" else "inspection"
+        method = "inspection" if operation == "reports" else "automated_test"
         scenario = dict(id="ts", title="Observe isolated runtime", status="ready",
             scenario_type="integration", verification_method=method,
             given="The isolated subject is available", when="Its health is observed",
             then="Version is 0.4.3", linked_criteria=["ac-1"])
         criteria = [dict(id="ac-1", text="Version is 0.4.3")]
+        if operation == "runner":
+            scenario.update(title="Registered immutable label normalizer",
+                given="The registered project contains the label normalizer",
+                when="Its exact committed test is executed",
+                then="Empty and duplicate labels are removed in order")
+            criteria = [dict(id="ac-1", text=scenario["then"])]
         async with sessions() as session:
             session.add(Board(id="board", name="Issuance regression", owner_id="local-user", realm_id="local"))
             await session.flush()
@@ -135,6 +187,9 @@ async def test_real_rest_issuance_releases_writer_before_independent_reservation
             value = report("inspection")
             value["observed_at"] = datetime.now(timezone.utc).isoformat()
             body = {"report": value}
+        if operation == "runner":
+            selector, expected_basis, marker = _registered_git_runner(tmp_path, ledger)
+            body = {"status": "passed", **selector}
         if reset_during_issuance:
             # A ready -> ready PATCH is intentionally a no-op. Establish an
             # actual passed result through public routes before exercising reset.
@@ -153,7 +208,14 @@ async def test_real_rest_issuance_releases_writer_before_independent_reservation
                 return await super().admit(request)
 
         register_test_verification_report_issuer(ObservedReportIssuer(ledger=ledger))
-        register_test_evidence_execution_issuer(CommunityTestEvidenceExecutionIssuer(
+
+        class ObservedExecutionIssuer(CommunityTestEvidenceExecutionIssuer):
+            async def execute(self, request):
+                if operation == "runner" and request.inline_replay == selector:
+                    await observe_external_stage()
+                return await super().execute(request)
+
+        register_test_evidence_execution_issuer(ObservedExecutionIssuer(
             ledger=ledger, executor=CommunityHttpManifestExecutor(base_url="http://127.0.0.1:8100",
                 transport=httpx.ASGITransport(app=app))))
 
@@ -204,7 +266,32 @@ async def test_real_rest_issuance_releases_writer_before_independent_reservation
             phase = "issuance"
 
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
-            response = await client.post(f"/api/v1/specs/spec/scenarios/ts/evidence/{operation}", json=body)
+            if operation == "runner":
+                invalid_selectors = [
+                    {}, {"runner_ref": "labels"}, {"revision": selector["revision"]},
+                    {"manifest_ref": "health.json", **selector},
+                    {"manifest_ref": "health.json", "runner_ref": "labels"},
+                    {"manifest_ref": "health.json", "revision": selector["revision"]},
+                    {"manifest_ref": " "}, {**selector, "runner_ref": "../labels"},
+                    {**selector, "runner_ref": 123}, {**selector, "revision": "HEAD"},
+                    {**selector, "revision": 123}, {**selector, "revision": "A" * 40},
+                    {**selector, "revision": "a" * 41},
+                    *[{**selector, field: value} for field, value in (
+                        ("command", "arbitrary-code"), ("source_ref", "caller-source"),
+                        ("test_ids", ["caller-test"]), ("actor_id", "caller-actor"),
+                        ("execution_basis", expected_basis), ("replay", selector),
+                    )],
+                ]
+                for invalid in invalid_selectors:
+                    denied = await client.post("/api/v1/specs/spec/scenarios/ts/evidence/execute",
+                        json={"status": "passed", **invalid})
+                    assert denied.status_code == 422, (invalid, denied.text)
+                async with sessions() as observer:
+                    assert await observer.scalar(select(func.count()).select_from(VerificationReservationRow)) == 0
+                assert not marker.exists() and external_observations == []
+                assert not list(ledger.receipt_root.glob("*.json"))
+            route_operation = "execute" if operation == "runner" else operation
+            response = await client.post(f"/api/v1/specs/spec/scenarios/ts/evidence/{route_operation}", json=body)
 
         async with sessions() as observer:
             reservations = list(await observer.scalars(select(VerificationReservationRow).order_by(VerificationReservationRow.ordinal)))
@@ -230,6 +317,12 @@ async def test_real_rest_issuance_releases_writer_before_independent_reservation
             assert len(external_observations) == 1
             assert len([item for item in sql if item["phase"] == "issuance"]) == 1
             assert not database_errors
+            if operation == "runner":
+                assert evidence["execution_attestation"]["execution_basis"] == expected_basis
+                observed_run = evidence["execution_attestation"]["assertions"][0]["observed"]
+                assert observed_run == {"tests_run": 1, "failures": 0, "errors": 0,
+                    "skipped": 0, "expected_failures": 0, "unexpected_successes": 0, "exit_code": 0}
+                assert marker.read_text(encoding="utf-8").splitlines() == ["executed"]
 
         if operation == "execute":
             # This regression stops at real replay issuance. Publishing an HTTP
@@ -263,6 +356,26 @@ async def test_real_rest_issuance_releases_writer_before_independent_reservation
                 assert persisted.test_scenarios[0]["status"] == "passed"
                 assert persisted.test_scenarios[0]["evidence"] == evidence
         assert len(external_observations) == 1  # Publication never re-executes issuance.
+        if operation == "runner":
+            assert marker.read_text(encoding="utf-8").splitlines() == ["executed"]
+            # Structurally valid requests still pass through native profile
+            # admission. They may reserve an ordinal, but cannot run or publish.
+            phase = "profile_denial"
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+                for name, reason in [("missing", "runner_not_registered_use_local_cli"), ("foreign", "profile_scope_mismatch")]:
+                    denied = await client.post("/api/v1/specs/spec/scenarios/ts/evidence/execute",
+                        json={"status": "passed", "runner_ref": name, "revision": selector["revision"]})
+                    assert denied.status_code == 422, denied.text
+                    assert reason in denied.text
+            assert marker.read_text(encoding="utf-8").splitlines() == ["executed"]
+            assert len(list(ledger.receipt_root.glob("*.json"))) == 1
+            async with sessions() as observer:
+                assert await observer.scalar(select(func.count()).select_from(VerificationReservationRow)) == 3
+                assert await observer.scalar(select(func.count()).select_from(VerificationAcceptanceRow)) == 1
+                saved = await observer.get(Spec, "spec")
+                assert saved.test_scenarios[0]["evidence"] == evidence
+            diagnostic.update(basis=expected_basis, rejected_selectors=len(invalid_selectors),
+                rejected_profiles=2, actual_test_executions=1, final_reservations=3)
         diagnostic.update(reset_during_issuance=reset_during_issuance,
             publication={"status": published.status_code, "response": published.json()},
             final_acceptances=len(accepted), final_scenario_status=persisted.test_scenarios[0]["status"])

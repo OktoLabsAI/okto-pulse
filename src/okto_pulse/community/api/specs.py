@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.community.api.deps import get_unit_of_work, get_unit_of_work_factory
@@ -765,10 +765,28 @@ async def update_scenario_verification_method(
 
 
 class ScenarioEvidenceExecutionRequest(BaseModel):
-    """Run a server-owned replay; this endpoint does not mutate the scenario."""
+    """Select a manifest or a locally registered runner, never execution code."""
 
+    model_config = ConfigDict(extra="forbid")
     status: Literal["automated", "passed", "failed"]
-    manifest_ref: str = Field(..., min_length=1)
+    manifest_ref: str | None = Field(default=None, min_length=1, strict=True)
+    runner_ref: str | None = Field(
+        default=None, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$", strict=True,
+    )
+    revision: str | None = Field(
+        default=None, pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$", strict=True,
+    )
+
+    @model_validator(mode="after")
+    def require_one_execution_source(self) -> "ScenarioEvidenceExecutionRequest":
+        if self.manifest_ref is not None:
+            if not self.manifest_ref.strip():
+                raise ValueError("manifest_ref must not be blank")
+            if self.runner_ref is not None or self.revision is not None:
+                raise ValueError("manifest_ref and runner selection are mutually exclusive")
+        elif self.runner_ref is None or self.revision is None:
+            raise ValueError("provide manifest_ref or both runner_ref and revision")
+        return self
 
 
 class ScenarioVerificationReportRequest(BaseModel):
@@ -2221,7 +2239,11 @@ async def execute_test_scenario_evidence(
                     spec_id,
                     scenario_id,
                     body.status,
-                    body.manifest_ref,
+                    body.manifest_ref or "",
+                    inline_replay=(
+                        {"runner_ref": body.runner_ref, "revision": body.revision}
+                        if body.runner_ref is not None else None
+                    ),
                 ),
                 actor=actor,
                 uow=uow,
