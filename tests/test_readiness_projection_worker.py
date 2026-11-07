@@ -16,6 +16,7 @@ import threading
 import time
 from types import SimpleNamespace
 import pytest
+from sqlalchemy.exc import OperationalError
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -1850,5 +1851,69 @@ async def test_over_cap_scope_is_unknown_while_healthy_scope_progresses(tmp_path
         assert limited.summaries[0]['verification']['status'] == 'unknown'
         assert limited.units == ()
         assert healthy is not None and healthy.freshness == 'current'
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('error', [
+    OperationalError('DELETE obsolete readiness rows', {}, sqlite3.OperationalError('database is locked')),
+    RuntimeError('retention_unavailable'),
+])
+async def test_gc_failure_preserves_pending_projection_and_retries(tmp_path, monkeypatch, caplog, error):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        original_gc = worker.store.gc_once
+        calls = []
+
+        async def fail_once():
+            calls.append(True)
+            if len(calls) == 1:
+                raise error
+            return await original_gc()
+
+        monkeypatch.setattr(worker.store, 'gc_once', fail_once)
+        with caplog.at_level(logging.WARNING):
+            assert await worker.process_once() == 1
+        result = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert result is not None and result.freshness == 'current'
+        assert 'readiness.gc_deferred' in caplog.text
+        assert len(calls) == 1
+        assert not worker._gc_backlog
+        # Durable cleanup is retried on the normal interval, not discarded
+        # and not retried in a tight loop solely because the last pass failed.
+        worker._last_gc = worker_module.monotonic()
+        assert await worker.process_once() == 0
+        assert len(calls) == 1
+        worker._last_gc -= 6
+        assert await worker.process_once() == 0
+        assert len(calls) == 2
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_gc_cancellation_propagates_before_claim_and_pending_work_survives(tmp_path, monkeypatch):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        original_gc = worker.store.gc_once
+
+        async def cancelled():
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(worker.store, 'gc_once', cancelled)
+        with pytest.raises(asyncio.CancelledError):
+            await worker.process_once()
+        pending = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert pending is not None and pending.generation_id is None
+        assert pending.freshness != 'current'
+        monkeypatch.setattr(worker.store, 'gc_once', original_gc)
+        assert await worker.process_once() == 1
+        result = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert result is not None and result.freshness == 'current'
     finally:
         await engine.dispose()

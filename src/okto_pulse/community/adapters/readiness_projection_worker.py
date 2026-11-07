@@ -404,7 +404,15 @@ class ReadinessProjectionProcessor:
                 self._last_lag_warning = 0.0
         if self._gc_backlog or monotonic() - self._last_gc >= 5:
             phase_started = monotonic()
-            self._gc_backlog = await self.store.gc_once()
+            try:
+                self._gc_backlog = await self.store.gc_once()
+            except Exception as exc:
+                # Retention is optional for publishing current generations.
+                # Its transaction rolls back on failure; retry on the normal
+                # maintenance interval without starving pending projections.
+                # CancelledError must still leave the worker immediately.
+                self._gc_backlog = False
+                logger.warning('readiness.gc_deferred code=%s', _error_code(exc))
             gc_ms = (monotonic() - phase_started) * 1000
             self._last_gc = monotonic()
         if reconcile_ms or queue_ms or gc_ms:
