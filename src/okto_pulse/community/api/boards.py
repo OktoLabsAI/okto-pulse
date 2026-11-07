@@ -238,7 +238,36 @@ async def activate_board_runtime(
         raise HTTPException(status_code=404, detail="Board not found") from None
     except PermissionDeniedError as exc:
         raise permission_denied_http_error(exc) from exc
-    except (GraphError, GuardedWriteError):
+    except (GraphError, GuardedWriteError) as exc:
+        # Keep the typed cause observable without logging native messages,
+        # arbitrary details, storage paths or ownership tokens.
+        codes = {
+            "graph_error", "graph_unavailable", "graph_invalid_query",
+            "graph_query_timeout", "graph_query_resource_limit", "graph_corruption",
+            "graph_lock_contention", "graph_capability_unavailable", "graph_index_unavailable",
+            "graph_memory_pressure", "lock_contention", "writer_lease_lost",
+            "writer_lock_unavailable", "writer_lease_board_mismatch",
+            "safe_lifecycle_unavailable", "safe_lifecycle_failed",
+            "boundary_violation", "invalid_board_id",
+        }
+        phases = {
+            "bootstrap", "checkpoint", "flush", "fsync", "close_reopen_probe",
+            "prepare_query_readers", "prepare_query_reader", "before_lifecycle",
+            "after_lifecycle", "before_runtime_activation_response", "heartbeat",
+            "guard_enter", "guard_exit", "exception_exit", "graph_lifecycle_checkpoint",
+            "graph_lifecycle_flush", "graph_lifecycle_fsync", "graph_lifecycle_close_reopen_probe",
+        }
+        code = exc.code if exc.code in codes else "other"
+        phase = exc.details.get("failure_phase", exc.details.get("phase"))
+        phase = phase if isinstance(phase, str) and phase in phases else None
+        step = exc.details.get("failed_step")
+        step = step if isinstance(step, str) and step in {"checkpoint", "flush", "fsync", "close_reopen_probe"} else None
+        logging.getLogger(__name__).warning(
+            "board_runtime.activation_failed board=%s exception_type=%s code=%s "
+            "retryable=%s failure_phase=%s failed_step=%s",
+            board_id, "GuardedWriteError" if isinstance(exc, GuardedWriteError) else "GraphError",
+            code, exc.retryable is True, phase, step,
+        )
         # Native failures can contain storage paths. Keep the response bounded;
         # the caller may continue using the Board's relational views.
         raise HTTPException(status_code=503, detail={

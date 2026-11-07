@@ -78,6 +78,35 @@ async def test_activation_cancellation_is_not_converted_to_ready_or_unavailable(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(('failure', 'expected'), [
+    (GuardedWriteError('lock_contention', 'private storage path', retryable=True,
+        details={'owner_token': 'secret-token', 'path': 'private storage path'}),
+        ('GuardedWriteError', 'lock_contention', True, None, None)),
+    (GuardedWriteError('safe_lifecycle_failed', 'private storage path', retryable=True,
+        details={'failed_step': 'checkpoint', 'owner_token': 'secret-token'}),
+        ('GuardedWriteError', 'safe_lifecycle_failed', True, None, 'checkpoint')),
+    (GraphCapabilityUnavailable('private storage path', details={
+        'phase': 'prepare_query_reader', 'owner_token': 'secret-token'}),
+        ('GraphError', 'graph_capability_unavailable', False, 'prepare_query_reader', None)),
+    (GuardedWriteError('secret-token', 'private storage path', retryable=False,
+        details={'failure_phase': 'secret-token', 'failed_step': 'private storage path'}),
+        ('GuardedWriteError', 'other', False, None, None)),
+])
+async def test_activation_logs_only_bounded_typed_failure(api, caplog, failure, expected):
+    api.execute.side_effect = failure
+    response = await api.client.post('/boards/board/runtime/activate')
+    assert response.status_code == 503
+    assert response.json()['detail']['code'] == 'board_runtime_unavailable'
+    records = [record for record in caplog.records
+               if record.name == boards.__name__ and record.msg.startswith('board_runtime.activation_failed')]
+    assert len(records) == 1
+    assert records[0].args == ('board', *expected)
+    assert records[0].exc_info is None
+    assert 'private storage path' not in records[0].getMessage() + response.text
+    assert 'secret-token' not in records[0].getMessage() + response.text
+
+
+@pytest.mark.asyncio
 async def test_ordinary_board_read_does_not_activate_runtime(api, monkeypatch):
     board = object()
     read = AsyncMock(return_value=SimpleNamespace(board=board))
