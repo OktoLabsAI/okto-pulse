@@ -285,6 +285,25 @@ class VerificationAuthorityAcceptance(PairedAcceptance):
             timeout=600)
 
 
+class InstalledRequirementVerificationAcceptance(unittest.TestCase):
+    """Opt-in R6.4: actual configured installed My Board REST and human UI."""
+
+    __test__ = False
+
+    def test_installed_my_board_two_basis_lifecycle(self):
+        # The native worker imports selectors by filename, without making tests
+        # a package. Load the sibling helper from this exact immutable snapshot.
+        import importlib.util
+        helper_path = Path(__file__).with_name('installed_acceptance_v043.py')
+        module_spec = importlib.util.spec_from_file_location('r6_installed_acceptance', helper_path)
+        self.assertIsNotNone(module_spec)
+        self.assertIsNotNone(module_spec.loader)
+        helper = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(helper)
+        result = helper.run_installed_acceptance()
+        self.assertEqual(result['state'], 'completed')
+
+
 class RequirementVerificationAcceptance(PairedAcceptance):
     """R6 paired-source checks; installed My Board acceptance remains separate.
 
