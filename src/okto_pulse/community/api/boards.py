@@ -225,7 +225,7 @@ async def activate_board_runtime(
     uow: PulseUnitOfWork = Depends(get_read_unit_of_work),
 ):
     """Activate existing graph readers under Core authorization and ownership."""
-    from okto_pulse.core.kg.guarded_write import GuardedWriteError
+    from okto_pulse.core.application.graph_write_contracts import GuardedWriteError
     from okto_pulse.core.kg.interfaces.graph_errors import GraphError
 
     try:

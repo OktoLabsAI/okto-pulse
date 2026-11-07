@@ -2216,3 +2216,103 @@ def test_adapter_source_has_no_local_code_acquisition_capability() -> None:
         "language_server",
     )
     assert not [token for token in forbidden if token in source]
+
+
+def test_receipt_submission_admits_writer_before_policy_read(tmp_path: Path) -> None:
+    """Real WAL writer contention through the receipt use case and head CAS.
+
+    The narrow service supplies an already validated attestation bundle; this
+    checks transaction ownership, not challenge validation or other gates.
+    No sleep or mocked lock: the contender keeps its actual write transaction
+    open until receipt publication finishes (or fails).
+    """
+    from types import SimpleNamespace
+    from sqlalchemy.exc import OperationalError
+    from okto_pulse.community.adapters.sqlalchemy_database import build_community_session_factory
+    from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWork
+    from okto_pulse.core.application.use_cases.base import ActorContext
+    from okto_pulse.core.application.use_cases.code_traceability import SubmitCodeInvestigationReceiptUseCase
+
+    async def exercise() -> None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'receipt-admission.db'}")
+
+        @event.listens_for(engine.sync_engine, "connect")
+        def pragmas(connection, _):
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA busy_timeout=0")
+
+        request, consumed, receipt, head, _ = _attestation_bundle(
+            datetime.now(timezone.utc).replace(microsecond=0),
+            subject_type=domain.CodeTraceabilitySubjectType.REFINEMENT,
+            subject_id="refinement-1",
+        )
+        sessions = build_community_session_factory(engine)
+        adapter = CommunityRelationalApplicationAdapter()
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+            await connection.exec_driver_sql(
+                "INSERT INTO boards (id, name, owner_id, realm_id) VALUES (?, ?, ?, ?)",
+                ("board-1", "Board", "owner-1", "local"),
+            )
+        async with sessions() as session:
+            await adapter.code_investigations(session).create_request(request)
+            await session.commit()
+
+        competing_codes = []
+        events = []
+        try:
+            async with sessions() as session, sessions() as contender:
+                class Boards:
+                    async def get_board(self, board_id):
+                        # The production use case's first policy read.
+                        row = (await session.execute(text(
+                            "SELECT id FROM boards WHERE id = :id"), {"id": board_id})).one()
+                        try:
+                            await contender.execute(text(
+                                "UPDATE boards SET name = 'Contender' WHERE id = :id"), {"id": board_id})
+                        except OperationalError as exc:
+                            competing_codes.append(exc.orig.sqlite_errorcode)
+                            await contender.rollback()
+                        return SimpleNamespace(id=row.id, settings={})
+
+                class Refinements:
+                    async def get_refinement(self, refinement_id):
+                        return SimpleNamespace(id=refinement_id, board_id="board-1",
+                                               version=1, delivery_context="brownfield")
+
+                class ValidatedInvestigation:
+                    async def submit_receipt(self, command, *, store, **kwargs):
+                        await store.consume_request_append_receipt_and_advance_head(
+                            request=consumed, receipt=receipt, head=head, expected_head_revision=None)
+                        return SimpleNamespace(receipt=receipt, generation=1, head_revision=1, replayed=False)
+
+                async def publish(event):
+                    events.append(event)
+
+                actor = ActorContext("agent-1", "mcp", actor_kind="agent", board_id="board-1",
+                                     permissions=("code_traceability.investigation.receipt_submit",))
+                uow = CommunityUnitOfWork(session, actor=actor)
+                uow.services = SimpleNamespace(boards=Boards(), refinements=Refinements(),
+                    code_investigations=adapter.code_investigations(session), publish_domain_event=publish)
+                try:
+                    result = await SubmitCodeInvestigationReceiptUseCase(ValidatedInvestigation()).execute(
+                        SimpleNamespace(board_id="board-1", request_id=request.id,
+                                        idempotency_key=receipt.idempotency_key), actor=actor, uow=uow)
+                    assert result.generation == 1 and not result.replayed
+                    assert competing_codes == [sqlite3.SQLITE_BUSY]
+                    assert not session.in_transaction()
+                    assert len(events) == 1
+                finally:
+                    await contender.rollback()
+            async with sessions() as session:
+                store = adapter.code_investigations(session)
+                persisted = await store.get_request(board_id="board-1", request_id=request.id)
+                assert persisted.status is domain.CodeInvestigationRequestStatus.CONSUMED
+                assert await store.get_receipt(board_id="board-1", receipt_id=receipt.id) == receipt
+                assert await session.scalar(text("SELECT name FROM boards WHERE id='board-1'")) == "Board"
+                await session.execute(text("UPDATE boards SET name='After commit' WHERE id='board-1'"))
+                await session.commit()
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())

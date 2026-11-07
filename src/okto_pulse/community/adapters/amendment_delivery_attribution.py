@@ -11,9 +11,9 @@ from okto_pulse.core.domain.delivery_evidence import AmendmentDeliveryAttributio
 from okto_pulse.core.domain.delivery_inventory import delivery_digest
 from okto_pulse.core.domain.effective_delivery_coverage import amendment_source_proof
 from okto_pulse.core.domain.enums import CardType
-from okto_pulse.core.services.amendment_coverage import current_coverage_basis, _digest
-from okto_pulse.core.services.bug_regression_scenarios import (
-    AmendmentLineageFact, CoverageConfirmationFact, _evaluate_single_amendment,
+from okto_pulse.core.application.amendment_delivery import (
+    current_coverage_basis,
+    AmendmentLineageFact, CoverageConfirmationFact, evaluate_path_b_for_scenario,
 )
 from .sqlalchemy_models import AmendmentHotfixRevision, Card, Spec
 
@@ -21,7 +21,7 @@ CONTRACT = 'amendment-delivery-attribution/v1'
 
 
 def _amendment_digest(amendment):
-    return _digest({field: getattr(amendment, field, None) for field in (
+    return delivery_digest({field: getattr(amendment, field, None) for field in (
         'id', 'board_id', 'original_spec_id', 'origin_bug_id', 'revision_spec_id',
         'origin_task_ids', 'affected_task_ids', 'regression_scenario_ids',
         'regression_test_task_ids', 'automated_regression_refs', 'status', 'lineage_state')})
@@ -70,8 +70,9 @@ async def _material(store, amendment, confirmation):
         scenario_spec_id=revision.id)
     fact = replace(AmendmentLineageFact.from_row(amendment),
         coverage_confirmation=cc, current_coverage_basis=basis)
-    _, eligibility = _evaluate_single_amendment(fact=fact,
+    eligibility = evaluate_path_b_for_scenario(amendment_facts=[fact],
         scenario_id=cc.regression_scenario_id,
+        bug_id=bug.id, spec_id=original.id, board_id=bug.board_id,
         bug_authoritative_task_ids=frozenset((bug.origin_task_id,)))
     # A changed/reset result may remove verification without deleting already
     # accepted implementation. Ineligible lineage never grants either phase.

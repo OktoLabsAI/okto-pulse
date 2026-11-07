@@ -22,7 +22,7 @@ from okto_pulse.core.ports.global_outbox import (
     GlobalOutboxMutationConflict,
     GlobalOutboxNodeRefFact,
 )
-from okto_pulse.core.kg.global_discovery_writer import (
+from okto_pulse.core.application.graph_write_contracts import (
     assert_global_discovery_writer_fence,
 )
 
