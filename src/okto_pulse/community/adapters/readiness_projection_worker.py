@@ -163,14 +163,19 @@ def _projection_verifier_scope(evidence_root):
         yield
         return
     from okto_pulse.core.composition import isolated_runtime_provider_scope
+    from okto_pulse.core.ports.application_persistence import register_application_persistence_port
     from okto_pulse.core.ports.test_evidence import register_test_evidence_write_verifier
     from okto_pulse.core.ports.verification_currentness import (
         register_verification_currentness_store_factory,
     )
     from .sqlalchemy_verification_currentness import CommunityVerificationCurrentnessStore
+    from .sqlalchemy_application_persistence import CommunitySqlAlchemyApplicationPersistence
     from .test_evidence import CommunityEvidenceLedger, CommunityTestEvidenceWriteVerifier
 
     with isolated_runtime_provider_scope():
+        # Amendment attribution resolves its exact regression basis through the
+        # application port. Spawn has no API composition to supply that reader.
+        register_application_persistence_port(CommunitySqlAlchemyApplicationPersistence())
         register_verification_currentness_store_factory(CommunityVerificationCurrentnessStore)
         register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(
             ledger=CommunityEvidenceLedger(evidence_root=Path(evidence_root))))

@@ -537,13 +537,17 @@ def _seed_migrated_v401_many_specs(database):
         predecessor.commit()
     backup = upgrade_readiness_schema(predecessor_path)
     assert backup.is_file()
-    # Retain every predecessor; the current runtime admits only format 407.
+    # Retain every predecessor through the current runtime's exact format.
     from okto_pulse.community.adapters.verification_storage_upgrade import upgrade_verification_copy
+    from okto_pulse.community.adapters.amendment_storage_upgrade import upgrade_amendment_copy
     intermediate = database.with_name(database.stem + '-legacy406.sqlite3')
     conversion = upgrade_copy_v043(predecessor_path, intermediate)
     assert conversion['source_database_unchanged'] and conversion['target_schema_version'] == 406
-    conversion = upgrade_verification_copy(intermediate, database,
+    published407 = database.with_name(database.stem + '-legacy407.sqlite3')
+    conversion = upgrade_verification_copy(intermediate, published407,
         evidence_root=database.parent / 'migration-evidence')
+    assert conversion['source_database_unchanged'] and conversion['target_schema_version'] == 407
+    conversion = upgrade_amendment_copy(published407, database)
     assert conversion['source_database_unchanged'] and conversion['target_schema_version'] == SCHEMA_VERSION
     return backup
 

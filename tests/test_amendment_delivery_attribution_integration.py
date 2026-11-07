@@ -185,3 +185,61 @@ async def test_internal_snapshot_rejects_unproven_realm(ledger, boundary):
     with pytest.raises(ReadinessReadError, match='readiness_scope_mismatch'):
         await reader._load_transaction(session, delivery.BOARD_ID, delivery.SPEC_ID,
             None, {'queries': 0, 'facts': 0}, defer_facts=True)
+
+
+def _read_attribution_in_spawn(database, evidence_root):
+    """Exercise the production worker scope without inheriting API providers."""
+    import asyncio
+    from sqlalchemy import event
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from okto_pulse.community.adapters.readiness_projection_worker import _projection_verifier_scope
+    from okto_pulse.community.adapters.worker_runners import TrackedBlockingExecution
+    from okto_pulse.core.ports.test_evidence import (
+        resolve_test_evidence_execution_issuer, resolve_test_verification_report_issuer,
+    )
+    from okto_pulse.core.ports.verification_currentness import resolve_verification_reservation_port
+
+    async def read():
+        engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
+
+        @event.listens_for(engine.sync_engine, 'before_cursor_execute')
+        def readonly(_conn, _cursor, statement, _parameters, _context, _many):
+            assert statement.lstrip().upper().startswith(('SELECT', 'PRAGMA', 'BEGIN'))
+
+        try:
+            with _projection_verifier_scope(evidence_root):
+                assert resolve_test_evidence_execution_issuer() is None
+                assert resolve_test_verification_report_issuer() is None
+                assert resolve_verification_reservation_port() is None
+                snapshot, _revision = await CommunityDeliveryReadinessReader(engine,
+                    clock=SimpleNamespace(now=lambda: datetime.now(timezone.utc))).load_for_projection(
+                    board_id=delivery.BOARD_ID, spec_id='original',
+                    blocking_execution=TrackedBlockingExecution())
+                result = assess_obligation_delivery(snapshot.facts,
+                    card_id='origin-bug', card_type='bug')
+                return assess_delivery_gate(result).allowed
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+@pytest.mark.parametrize('ledger', ['native_schema'], indirect=True)
+@pytest.mark.parametrize('ledger_present', [True, False])
+async def test_spawned_projection_captures_confirmed_amendment(ledger, tmp_path, ledger_present):
+    import asyncio
+    from concurrent.futures import ProcessPoolExecutor
+    from multiprocessing import get_context
+
+    session, store, service, amendment, confirmation, _ = await prepare(ledger)
+    confirmation['delivery_attribution'] = await store.amendment_delivery_attribution(amendment, confirmation)
+    assert confirmation['delivery_attribution'] is not None
+    await service.set_coverage_confirmation(amendment.id, confirmation=confirmation, actor='reviewer')
+    await session.commit()
+    evidence_root = tmp_path / ('evidence' if ledger_present else 'absent-evidence')
+    with ProcessPoolExecutor(max_workers=1, mp_context=get_context('spawn')) as executor:
+        allowed = await asyncio.get_running_loop().run_in_executor(
+            executor, _read_attribution_in_spawn, session.bind.url.database, evidence_root)
+    assert allowed is ledger_present
+    if not ledger_present:
+        assert not evidence_root.exists()
