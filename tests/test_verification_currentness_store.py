@@ -294,6 +294,89 @@ async def test_current_heads_and_revision_share_one_wal_snapshot(authority, monk
 
 
 @pytest.mark.asyncio
+async def test_current_snapshot_cannot_upgrade_after_concurrent_commit(authority):
+    """The Delivery read must stay repeatable; mutation admission owns the fix."""
+    import sqlite3
+    from sqlalchemy.exc import OperationalError
+    from okto_pulse.community.adapters.sqlalchemy_spec_dependency import CommunitySqlAlchemySpecDependency
+
+    await authority.publish(await authority.issue())
+    async with authority.factory() as session:
+        read = await Store(session, verifier=authority.verifier).read_current(
+            board_id="board", spec_id="spec", spec_edition=2, scenario_ids=("ts",))
+        assert read.complete and read.results[0].result.outcome == "passed"
+        async with authority.factory.begin() as concurrent:
+            await concurrent.execute(update(Board).where(Board.id == "board").values(name="Concurrent"))
+        with pytest.raises(OperationalError) as captured:
+            await CommunitySqlAlchemySpecDependency(session).acquire_board_graph_lock("board")
+        assert captured.value.orig.sqlite_errorcode == sqlite3.SQLITE_BUSY_SNAPSHOT
+        await session.rollback()
+    async with authority.factory() as session:
+        assert (await session.get(Spec, "spec")).status == SpecStatus.IN_PROGRESS
+
+
+@pytest.mark.asyncio
+async def test_mcp_spec_move_admits_writer_before_currentness_read(authority):
+    """Exercise MCP admission with real currentness, writer contention and fence.
+
+    The small service isolates the production read-current -> lifecycle-fence
+    sequence. It uses the real SQLite adapters; it does not qualify other gates.
+    A zero-wait competing write makes both schedules deterministic without sleeps.
+    """
+    import sqlite3
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
+    from okto_pulse.community.adapters.sqlalchemy_database import build_community_session_factory
+    from okto_pulse.community.adapters.sqlalchemy_spec_dependency import CommunitySqlAlchemySpecDependency
+    from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWork
+    from okto_pulse.core.application.use_cases.base import ActorContext
+    from okto_pulse.core.application.use_cases.mcp_spec_crud import McpMoveSpecCommand, McpMoveSpecUseCase
+
+    await authority.publish(await authority.issue())
+    competing_write_codes = []
+    # The shared read fixture uses plain sessions; lifecycle ORM writes require
+    # the same semantic session composition as the application.
+    lifecycle_sessions = build_community_session_factory(authority.engine)
+    async with lifecycle_sessions() as session:
+        class Specs:
+            async def get_spec(self, spec_id):
+                return await session.get(Spec, spec_id)
+
+            async def move_spec(self, spec_id, _actor_id, data, **_kwargs):
+                read = await Store(session, verifier=authority.verifier).read_current(
+                    board_id="board", spec_id=spec_id, spec_edition=2, scenario_ids=("ts",))
+                assert read.complete and read.results[0].result.outcome == "passed"
+                async with authority.factory() as concurrent:
+                    await concurrent.execute(text("PRAGMA busy_timeout=0"))
+                    try:
+                        await concurrent.execute(update(Board).where(Board.id == "board").values(name="Contender"))
+                        await concurrent.commit()
+                    except OperationalError as exc:
+                        competing_write_codes.append(exc.orig.sqlite_errorcode)
+                        await concurrent.rollback()
+                await CommunitySqlAlchemySpecDependency(session).acquire_board_graph_lock("board")
+                spec = await self.get_spec(spec_id)
+                spec.status = data.status
+                return spec
+
+        actor = ActorContext("actor", "mcp", board_id="board", permissions=["spec.move.in_progress_to_done"])
+        uow = CommunityUnitOfWork(session, actor=actor)
+        uow.services = SimpleNamespace(specs=Specs())
+        result = await McpMoveSpecUseCase().execute(
+            McpMoveSpecCommand("spec", "board", SimpleNamespace(status=SpecStatus.DONE)), actor=actor, uow=uow)
+        assert result.old_status == "in_progress" and result.spec.status == SpecStatus.DONE
+        assert competing_write_codes == [sqlite3.SQLITE_BUSY]
+        assert not session.in_transaction()
+    # Commit released admission, and the unsuccessful contender changed no data.
+    async with authority.factory.begin() as session:
+        assert (await session.get(Board, "board")).name == "Isolated"
+        assert (await session.get(Spec, "spec")).status == SpecStatus.DONE
+        await session.execute(update(Board).where(Board.id == "board").values(name="After commit"))
+    async with authority.factory() as session:
+        assert (await session.get(Board, "board")).name == "After commit"
+
+
+@pytest.mark.asyncio
 async def test_history_cannot_commit_caller_writes_or_repair_persistent_state(authority):
     await authority.publish(await authority.issue())
     async with authority.factory() as session:
