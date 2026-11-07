@@ -67,6 +67,61 @@ def test_coverage_cold_readers_never_open_checkpoint_or_prepare(tmp_path, monkey
     assert connector.calls == [] and fences == []
 
 
+def test_activation_observation_never_cold_opens_or_acquires_writer(tmp_path, monkeypatch):
+    connector = _GrafxConnector()
+    bundle = _build(tmp_path / 'kg', connector)
+    snapshot = bundle.initialize_board_route('prepared-activation')
+    count = len(connector.calls)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('observation must not mutate or acquire writer')
+    monkeypatch.setattr(composition, 'revalidate_board_graph_write_lease', forbidden)
+    assert bundle.graph_lifecycle.observe_prepared_reader('prepared-activation') is None
+    assert len(connector.calls) == count
+    for pool in bundle.grafx_query_pools:
+        pool.get(snapshot.active_path, page_size=PAGE_SIZE)
+    count = len(connector.calls)
+    handle = bundle.graph_lifecycle.observe_prepared_reader('prepared-activation')
+    assert handle.board_id == 'prepared-activation' and handle.readers_prepared
+    assert len(connector.calls) == count
+    assert all(pool.pin_count(snapshot.active_path) == 0 for pool in bundle.grafx_query_pools)
+
+
+def test_activation_observation_revalidates_route_while_pinned_and_releases_on_failure(tmp_path, monkeypatch):
+    from okto_pulse.core.kg.interfaces.graph_errors import GraphCorruption
+    connector = _GrafxConnector()
+    bundle = _build(tmp_path / 'kg', connector)
+    snapshot = bundle.initialize_board_route('prepared-route')
+    for pool in bundle.grafx_query_pools:
+        pool.get(snapshot.active_path, page_size=PAGE_SIZE)
+    original = bundle.resolver.revalidate_snapshot
+    def changed(value, **kwargs):
+        if sum(pool.pin_count(snapshot.active_path) for pool in bundle.grafx_query_pools):
+            assert value == snapshot
+            raise GraphCorruption('route changed')
+        return original(value, **kwargs)
+    monkeypatch.setattr(bundle.resolver, 'revalidate_snapshot', changed)
+    with pytest.raises(GraphCorruption, match='route changed'):
+        bundle.graph_lifecycle.observe_prepared_reader('prepared-route')
+    assert all(pool.pin_count(snapshot.active_path) == 0 for pool in bundle.grafx_query_pools)
+
+
+def test_activation_observation_refuses_close_without_touching_reader(tmp_path):
+    from okto_pulse.community.adapters.graph_operation_guards import _get_close_guard
+    from okto_pulse.core.kg.interfaces.graph_errors import GraphQueryTimeout
+    connector = _GrafxConnector()
+    bundle = _build(tmp_path / 'kg', connector)
+    snapshot = bundle.initialize_board_route('prepared-closing')
+    for pool in bundle.grafx_query_pools:
+        pool.get(snapshot.active_path, page_size=PAGE_SIZE)
+    count = len(connector.calls)
+    with _get_close_guard('prepared-closing').closing() as (drained, _):
+        assert drained
+        with pytest.raises(GraphQueryTimeout):
+            bundle.graph_lifecycle.observe_prepared_reader('prepared-closing')
+    assert len(connector.calls) == count
+    assert all(pool.pin_count(snapshot.active_path) == 0 for pool in bundle.grafx_query_pools)
+
+
 def test_coverage_unconfigured_readers_report_configuration_without_opening(tmp_path, monkeypatch):
     access, snapshot, _, connector, fences, _ = _coverage_access(tmp_path, monkeypatch)
     access.query_pools = ()

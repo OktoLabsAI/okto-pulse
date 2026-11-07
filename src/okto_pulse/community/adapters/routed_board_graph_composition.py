@@ -1220,6 +1220,26 @@ def build_community_routed_board_graph_composition(
         # thread-neutral physical close guard for their full lifetime.
         operation_window=kg_runtime.board_graph_operation_window,
     )
+    def observe_prepared_reader(board_id: str) -> GraphHandle | None:
+        # Reuse the existing-only participant policy. The shared operation
+        # window pins the native handle and immutable route through inspection.
+        with access.query_execution.scope(board_id, timeout_ms=1000, existing_only=True):
+            with operation_window(board_id):
+                snapshot = resolver.acquire_board_route(board_id)
+                try:
+                    with access.read_database_scope(board_id) as database:
+                        resolver.revalidate_snapshot(snapshot, require_physical=True)
+                        access.query_timeout(board_id)
+                        if bool(getattr(database, "closed", True)):
+                            raise GraphCapabilityUnavailable("Prepared board reader is closed.")
+                        return GraphHandle(board_id, grafx_board_storage_ref(board_id),
+                            True, "opened", False, False, readers_prepared=True)
+                except GraphCapabilityUnavailable as failure:
+                    if failure.details.get("reason") in {
+                            "prepared_reader_unavailable", "query_readers_not_configured"}:
+                        return None
+                    raise
+
     graph_lifecycle = CommunityRoutedGraphLifecycle(
         resolver,
         operation_window=operation_window,
@@ -1231,6 +1251,7 @@ def build_community_routed_board_graph_composition(
         grafx_purge_unguarded=grafx_purge,
         grafx_apply_step_unguarded=grafx_step,
         grafx_close_all_unguarded=grafx_close_all,
+        prepared_reader_observer=observe_prepared_reader,
     )
     graph_runtime_store = CommunityRoutedGraphRuntimeStore(
         resolver,
