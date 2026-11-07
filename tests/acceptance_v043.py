@@ -328,7 +328,10 @@ class RequirementVerificationAcceptance(PairedAcceptance):
         self._pytest('community',
             'tests/test_delivery_readiness_acceptance.py::test_R6_reset_never_revives_old_bases_and_fresh_bindings_restore_each_requirement',
             'tests/test_delivery_readiness_batch.py',
-            'tests/test_spec_coverage_read.py', 'tests/test_spec_coverage_transport.py')
+            'tests/test_spec_coverage_read.py', 'tests/test_spec_coverage_transport.py',
+            'tests/test_readiness_projection_worker.py::test_gc_failure_preserves_pending_projection_and_retries',
+            'tests/test_readiness_projection_worker.py::test_gc_cancellation_propagates_before_claim_and_pending_work_survives',
+            timeout=600)
         self._pytest('core', 'tests/test_persisted_delivery_readiness.py')
 
     def test_english_requirement_diagnosis_and_help(self):
