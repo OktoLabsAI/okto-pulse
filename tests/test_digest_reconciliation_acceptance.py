@@ -577,12 +577,26 @@ def test_native_count_populations_match_oracle_without_timing_gate(native_templa
         def read_counts(board, identities):
             before = logical_snapshot()
             before_lsn = db.transactions.published_lsn()
+            baseline = None
+            actual = None
+            refused = None
             try:
-                return GlobalOutboxProcessor._read_digest_inbound_edge_counts(h.runtime, board, identities)
+                baseline_rows = h.runtime.execute(BASELINE, {'bid': board}).rows
+                baseline = dict(baseline_rows)
+                assert len(baseline) == len(baseline_rows), 'duplicate baseline identity'
+                actual = GlobalOutboxProcessor._read_digest_inbound_edge_counts(h.runtime, board, identities)
+                # One correctness comparison per population, with no timing gate.
+                # The caller also compares against the independently seeded oracle.
+                assert actual == baseline
+                return actual
+            except RuntimeError as exc:
+                refused = str(exc)
+                raise
             finally:
                 after = logical_snapshot()
                 after_lsn = db.transactions.published_lsn()
                 report['read_windows'].append({'board': board, 'identities': list(identities),
+                    'baseline_counts': baseline, 'candidate_counts': actual, 'refusal': refused,
                     'published_lsn_before': before_lsn, 'published_lsn_after': after_lsn,
                     'logical_sha256_before': hashlib.sha256(json.dumps(before).encode()).hexdigest(),
                     'logical_sha256_after': hashlib.sha256(json.dumps(after).encode()).hexdigest()})
@@ -688,7 +702,7 @@ async def test_fifty_real_events_preserve_each_inventory_effect_and_durable_ack(
 @pytest.mark.asyncio
 async def test_native_faults_never_ack_matching_counts_without_full_proof(native_template, tmp_path, monkeypatch, fault):
     h = NativeHarness(native_template, tmp_path, monkeypatch)
-    report = {'fault': fault, 'completed': False}
+    report = {'identity': _identity(), 'fault': fault, 'completed': False}
     try:
         h.clean_initial_links()
         await h.setup_sql(1, retry_count=4 if fault == 'terminal_fsync' else 0)
