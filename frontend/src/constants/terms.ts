@@ -6,9 +6,9 @@
  * forces a re-prompt. Keep TERMS_BODY a single Markdown string so the
  * modal can render it verbatim with `<MarkdownContent>`.
  *
- * Mantenha sincronizado com `LICENSE`, `TRADEMARKS.md` e `CLA.md` na
- * raiz do okto_labs_pulse_community. Quando esses arquivos mudarem,
- * copie as mudanças aqui e bumpe `TERMS_HASH` para forçar re-aceite.
+ * Keep this file in sync with `LICENSE`, `TRADEMARKS.md`, and `CLA.md`
+ * at the repository root. When these files change, copy the changes
+ * here and bump `TERMS_HASH` to require users to accept the terms again.
  */
 
 export const TERMS_VERSION = '0.2.0';
