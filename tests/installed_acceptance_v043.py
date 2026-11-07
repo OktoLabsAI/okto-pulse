@@ -364,7 +364,9 @@ class Browser:
     def board(self):
         self.call('open-my-board', """
 await page.goto(c.base_url);
+await page.getByRole('group',{name:'Board views',exact:true}).waitFor({state:'visible'});
 await page.getByRole('button',{name:'My Board',exact:true}).click();
+await page.getByRole('banner').getByText('/ My Board',{exact:true}).waitFor({state:'visible'});
 await page.getByRole('button',{name:'Tasks',exact:true}).waitFor({state:'visible'});
 return {observed_at:new Date().toISOString(),url:page.url(),board:'My Board'};
 """, {'base_url': self.config['base_url']})
@@ -375,7 +377,9 @@ const closeSpec=page.getByRole('button',{name:'Close spec',exact:true});
 if(await closeSpec.count()) await closeSpec.click();
 // Returning to the known Board avoids guessing an unobserved modal close control.
 await page.goto(c.base_url);
+await page.getByRole('group',{name:'Board views',exact:true}).waitFor({state:'visible'});
 await page.getByRole('button',{name:'My Board',exact:true}).click();
+await page.getByRole('banner').getByText('/ My Board',{exact:true}).waitFor({state:'visible'});
 await page.getByRole('button',{name:'Tasks',exact:true}).click();
 await page.getByRole('textbox',{name:'Search cards…',exact:true}).fill(c.title);
 const card=page.getByRole('button').filter({has:page.getByRole('heading',{name:c.title,level:4,exact:true})});
@@ -407,16 +411,24 @@ await page.waitForFunction(({expected,label})=>{
 },{expected:c.expected,label},{timeout:c.timeout});
 const rows=await table.locator('tbody tr').evaluateAll(rs=>rs.map(r=>({title:r.querySelector('th')?.textContent,cells:[...r.querySelectorAll('td')].map(e=>e.textContent)})));
 if(await delivery.getByRole('button',{name:'Show details',exact:true}).count()) await delivery.getByRole('button',{name:'Show details',exact:true}).click();
-const detail=delivery.getByRole('table',{name:'Requirements and verification',exact:true});
-await detail.waitFor({state:'visible'});
+const diagnosis=delivery.getByRole('region',{name:'Pending work and verification',exact:true});
+await diagnosis.waitFor({state:'visible'});
+await diagnosis.getByRole('status').waitFor({state:'hidden'});
 const pages=[];
 for(let i=0;i<50;i++){
- const text=await detail.innerText();if(pages.includes(text))throw Error('Details pagination did not advance');pages.push(text);
+ if(await diagnosis.getByRole('alert').count())throw Error('Delivery details unavailable');
+ const text=await diagnosis.innerText();
+ if(text.includes('Some checks could not be assessed'))throw Error('Delivery details population unknown');
+ if(!await diagnosis.getByRole('table').count()&&!text.includes('No pending checks were identified'))throw Error('Delivery details have not settled');
+ if(pages.includes(text))throw Error('Details pagination did not advance');pages.push(text);
  const next=delivery.getByRole('button',{name:'Next checks',exact:true});
  if(!await next.count()||!await next.isEnabled())break;
  if(i===49)throw Error('Unbounded details pagination');
- await next.click();await detail.waitFor({state:'visible'});
- await page.waitForFunction(old=>document.querySelector('table[aria-label="Requirements and verification"]')?.innerText!==old,text);
+ await next.click();await diagnosis.getByRole('status').waitFor({state:'hidden'});
+ await page.waitForFunction(old=>document.querySelector('section[aria-label="Pending work and verification"]')?.innerText!==old,text);
+}
+for(const pending of c.expected.filter(e=>e.state!=='satisfied')){
+ if(!pages.some(text=>text.includes(pending.title)))throw Error('Pending requirement missing from human-readable details');
 }
 await delivery.scrollIntoViewIfNeeded();await page.screenshot({path:c.screenshot,animations:'disabled'});
 return {observed_at:new Date().toISOString(),rows,detail_pages:pages,summary:await delivery.innerText(),screenshot:c.screenshot};
@@ -426,7 +438,10 @@ return {observed_at:new Date().toISOString(),rows,detail_pages:pages,summary:awa
         screenshot = str(self.journal.root / (label + '-icon.png'))
         return self.call(label + '-icon', """
 await page.goto(c.base_url);
+await page.getByRole('group',{name:'Board views',exact:true}).waitFor({state:'visible'});
 await page.getByRole('button',{name:'My Board',exact:true}).click();
+await page.getByRole('banner').getByText('/ My Board',{exact:true}).waitFor({state:'visible'});
+await page.getByRole('button',{name:'Specs',exact:true}).click();
 await page.getByRole('heading',{name:c.spec_title,exact:true}).click();
 await page.getByRole('tablist',{name:'Spec sections',exact:true}).getByRole('tab',{name:'Validation',exact:true}).click();
 const region=page.getByRole('region',{name:'Validation result',exact:true});
