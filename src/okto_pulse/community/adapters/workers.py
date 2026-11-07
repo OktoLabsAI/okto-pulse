@@ -99,9 +99,9 @@ def build_community_worker_registry(
 
     cancel_safe_relational_scope = _cancel_safe_scope_factory(session_factory)
     clock = UtcWorkerClock()
-    # Keep shutdown ownership disjoint. Consolidation must prove its own native
-    # operations quiescent before the outbox performs its final iteration; a
-    # shared task set could otherwise miss late submissions from either family.
+    # Keep shutdown ownership disjoint. Consolidation and outbox each prove
+    # their own native operations quiescent; a shared task set could otherwise
+    # miss late submissions from either family.
     consolidation_blocking_execution = TrackedBlockingExecution()
     outbox_blocking_execution = TrackedBlockingExecution()
     readiness_blocking_execution = TrackedBlockingExecution()
@@ -221,9 +221,10 @@ def build_community_worker_registry(
         name="community.kg.outbox_runner",
         interval_seconds=5.0,
         operation_name="process_once",
-        final_iteration=True,
+        # Durable outbox intents remain queued for the next startup. Shutdown
+        # drains owned work but must not claim another batch after stop.
+        final_iteration=False,
         blocking_execution=outbox_blocking_execution,
-        final_iteration_guard=lambda: consolidation_runner.shutdown_drained,
     )
     registry = RuntimeWorkerRegistry()
     registry.register(
@@ -270,7 +271,7 @@ def build_community_worker_registry(
             stop=stop_runner,
             observe_stopped=observe_runner_stopped,
             # Join every in-flight consolidation/native graph write before
-            # the outbox runner performs its shutdown final iteration.
+            # draining the outbox runner's already-owned work.
             stop_priority=250,
         )
     )

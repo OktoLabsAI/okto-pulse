@@ -16,6 +16,7 @@ import contextlib
 import logging
 import os
 import time
+import threading
 import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, contextmanager
@@ -401,6 +402,48 @@ def build_community_session_factory(
     )
 
 
+def _install_aiosqlite_stop_guard(dbapi_connection: Any) -> None:
+    """Share one terminal stop operation across graceful and forced close.
+
+    aiosqlite 0.22.1 can enqueue a second stop sentinel after its worker exits
+    when SQLAlchemy cancellation overlaps graceful close. Guard only this
+    engine's fresh driver connection, never the global driver class. A waiter
+    cannot cancel the retained completion; None is not terminal proof.
+    """
+    connection = getattr(dbapi_connection, "driver_connection", None)
+    if connection is None or getattr(connection, "_pulse_stop_guard_installed", False):
+        return
+    original_stop = getattr(connection, "stop", None)
+    if not callable(original_stop):
+        # Older supported aiosqlite releases lack forced-stop termination.
+        return
+    requested = False
+    completion = None
+    lock = threading.Lock()
+
+    def stop():
+        nonlocal requested, completion
+        with lock:
+            if not requested:
+                completion = original_stop()
+                requested = True
+            retained = completion
+        if retained is None:
+            return None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Destructor ignores the return. Do not construct a task on a
+            # nonexistent/closed event loop and do not enqueue another stop.
+            return retained
+        if retained.get_loop() is not loop:
+            raise RuntimeError('driver_stop_completion_loop_mismatch')
+        return asyncio.shield(retained)
+
+    connection.stop = stop
+    connection._pulse_stop_guard_installed = True
+
+
 def install_community_sqlite_pragmas(engine: AsyncEngine) -> None:
     """Single-owner SQLite PRAGMA listener.
 
@@ -424,6 +467,7 @@ def install_community_sqlite_pragmas(engine: AsyncEngine) -> None:
 
     @event.listens_for(engine.sync_engine, "connect")
     def _set_community_sqlite_pragmas(dbapi_conn, _conn_record):  # noqa: ANN001
+        _install_aiosqlite_stop_guard(dbapi_conn)
         cursor = dbapi_conn.cursor()
         try:
             # No persistent PRAGMA may precede admission of the current format.
