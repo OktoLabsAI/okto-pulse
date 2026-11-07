@@ -208,6 +208,7 @@ it('paginates on demand, rejects changed snapshots and restarts at the first pag
   second.snapshot_id = 'b'.repeat(64); second.issues[0].detail_query.snapshot_id = second.snapshot_id;
   api.getDeliveryReadinessPage.mockResolvedValueOnce(first).mockResolvedValueOnce(second).mockResolvedValue(first);
   const view = render(<TaskDeliveryDiagnosis {...props} />);
+  expect(await screen.findByText('Showing 1 of 21 checks. More checks are available on the next page.')).toBeVisible();
   fireEvent.click(await screen.findByRole('button', { name: 'Next checks' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('Use Refresh card');
   expect(api.getDeliveryReadinessPage.mock.calls[1][2]).toEqual({ card_id: 'c', limit: 20, cursor: 'next' });
@@ -216,6 +217,19 @@ it('paginates on demand, rejects changed snapshots and restarts at the first pag
   await screen.findByRole('table');
   expect(api.getDeliveryReadinessPage).toHaveBeenCalledTimes(3);
   expect(api.getDeliveryReadinessPage.mock.calls[2][2]).toEqual({ card_id: 'c', limit: 20 });
+});
+
+it('points to technical details when evidence previews are truncated without another checks page', async () => {
+  const value = response([issue('large', { expected: [], expected_count: 10, expected_truncated: true })]);
+  value.page = { ...value.page, response_truncated: true };
+  api.getDeliveryReadinessPage.mockResolvedValue(value);
+  render(<TaskDeliveryDiagnosis {...props} />);
+  expect(await screen.findByText("Showing 1 of 1 checks. Open a check's technical details to see the information omitted from this summary.")).toBeVisible();
+  expect(screen.queryByText(/More checks are available on the next page/)).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Next checks' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByText('Evidence and technical details'));
+  expect(await screen.findByRole('button', { name: 'Open all details and actions' })).toBeVisible();
+  expect(api.getDeliveryReadinessPage).toHaveBeenCalledTimes(1);
 });
 
 it.each([true, false])('does not treat an empty assessment as delivery approval (complete=%s)', async complete => {

@@ -112,7 +112,9 @@ export function TaskDeliveryIssuesTable({ value, spec, onNavigate, onSnapshotInv
       ? 'No pending checks were identified in this assessment. The delivery status above still determines whether the task is complete.'
       : 'Some checks could not be assessed. No conclusion about pending work is available yet.'}</p>}
     {(value.page.has_more || value.page.response_truncated) && <p className="text-xs text-gray-500 dark:text-gray-400">
-      Showing {value.issues.length} of {value.page.total} checks. More checks are available on the next page.
+      Showing {value.page.returned} of {value.page.total} checks. {value.page.has_more
+        ? 'More checks are available on the next page.'
+        : "Open a check's technical details to see the information omitted from this summary."}
     </p>}
   </div>;
 }
