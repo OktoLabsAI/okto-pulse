@@ -481,7 +481,8 @@ class _GrafxBoardAccess:
                 snapshot = self._snapshot(board_id, require_physical=True)
                 self.query_timeout(board_id)
                 if not self.query_pools:
-                    raise GraphCapabilityUnavailable('Prepared graph readers are unavailable.')
+                    raise GraphCapabilityUnavailable('Prepared graph readers are unavailable.',
+                        details={'reason': 'query_readers_not_configured'})
                 for offset in range(len(self.query_pools)):
                     pool = self.query_pools[(lane + offset) % len(self.query_pools)]
                     try:
@@ -499,7 +500,8 @@ class _GrafxBoardAccess:
                         self.query_timeout(board_id)
                         yield lease.database
                     return
-                raise GraphCapabilityUnavailable('Prepared graph readers are unavailable.')
+                raise GraphCapabilityUnavailable('Prepared graph readers are unavailable.',
+                    details={'reason': 'prepared_reader_unavailable'})
             yield self.read_database(board_id, _lane=lane)
 
     def prepare_query_readers(self, board_id: str) -> None:

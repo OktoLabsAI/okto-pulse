@@ -1,5 +1,6 @@
 """Bounded real SQL plus the same authenticated rollup consumed by the gate."""
 import asyncio
+from contextlib import nullcontext
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -9,9 +10,10 @@ from sqlalchemy import event, select, update
 
 from okto_pulse.community.adapters.sqlalchemy_models import Card, Spec
 from okto_pulse.community.adapters.sqlalchemy_spec_coverage import CommunitySpecCoverageReader
+from okto_pulse.community.adapters.graph_operation_guards import BoardCloseInProgressError
 from okto_pulse.core.application.use_cases.base import EntityNotFoundError
 from okto_pulse.core.domain.delivery_evidence import evaluate_delivery_coverage
-from okto_pulse.core.kg.interfaces.graph_errors import GraphQueryTimeout
+from okto_pulse.core.kg.interfaces.graph_errors import GraphQueryTimeout, GraphCapabilityUnavailable, GraphUnavailable
 from okto_pulse.core.ports.spec_coverage_query import SpecCoverageQuery
 from okto_pulse.core.models.spec_coverage_query import SpecCoverageResponse
 from okto_pulse.core.services.spec_coverage_query import project_spec_coverage
@@ -23,6 +25,64 @@ ledger = delivery_fixture.ledger
 BOARD = delivery_fixture.BOARD_ID
 SPEC = delivery_fixture.SPEC_ID
 QUERY = SpecCoverageQuery(BOARD, SPEC, 'authorized-actor')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('failure', 'reason'), [
+    (BoardCloseInProgressError('private board', 1), 'board_close_in_progress'),
+    (GraphCapabilityUnavailable('private path', details={'reason': 'prepared_reader_unavailable'}),
+     'prepared_reader_unavailable'),
+    (GraphCapabilityUnavailable('private path', details={'reason': 'query_readers_not_configured'}),
+     'query_readers_not_configured'),
+    (GraphCapabilityUnavailable('private path', details={'reason': 'secret\nforged-log-entry',
+        'backend_error_type': 'secret', 'query': 'private query'}), 'graph_capability_unavailable'),
+    (GraphUnavailable('private path', details={'secret': 'private query'}), 'graph_unavailable'),
+    (GraphQueryTimeout('private path'), 'graph_query_timeout'),
+])
+async def test_graph_refusal_diagnostics_preserve_behavior_and_hide_native_content(
+        monkeypatch, caplog, failure, reason):
+    def fail(*args):
+        raise failure
+    execution = SimpleNamespace(scope=lambda *args, **kwargs: nullcontext())
+    reader = CommunitySpecCoverageReader(None,
+        graph_reader=SimpleNamespace(read_spec_coverage_graph=fail), query_execution=execution)
+    monkeypatch.setattr(reader, 'verify_source', AsyncMock())
+    if isinstance(failure, GraphQueryTimeout):
+        with pytest.raises(GraphQueryTimeout) as raised:
+            await reader.read_graph(replace(QUERY, read_graph=True), None, 'revision', timeout_ms=15000)
+        assert raised.value is failure
+    else:
+        result = await reader.read_graph(replace(QUERY, read_graph=True), None, 'revision', timeout_ms=15000)
+        assert result.state == 'unavailable'
+    assert f'board={BOARD} spec={SPEC} stage=graph_observation reason={reason}' in caplog.text
+    assert not any(value in caplog.text for value in ('private', 'secret', 'forged-log-entry'))
+
+
+@pytest.mark.asyncio
+async def test_initial_fence_timeout_is_distinguished_and_never_enters_graph(monkeypatch, caplog):
+    reader = CommunitySpecCoverageReader(None)
+    failure = GraphQueryTimeout('private source details')
+    monkeypatch.setattr(reader, 'verify_source', AsyncMock(side_effect=failure))
+    with pytest.raises(GraphQueryTimeout) as raised:
+        await reader.read_graph(replace(QUERY, read_graph=True), None, 'revision', timeout_ms=15000)
+    assert raised.value is failure
+    assert 'stage=initial_source_fence reason=graph_query_timeout' in caplog.text
+    assert 'private' not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_unrelated_graph_failure_propagates_without_unavailable_diagnostic(monkeypatch, caplog):
+    failure = RuntimeError('unexpected implementation failure')
+    def fail(*args):
+        raise failure
+    reader = CommunitySpecCoverageReader(None,
+        graph_reader=SimpleNamespace(read_spec_coverage_graph=fail),
+        query_execution=SimpleNamespace(scope=lambda *args, **kwargs: nullcontext()))
+    monkeypatch.setattr(reader, 'verify_source', AsyncMock())
+    with pytest.raises(RuntimeError) as raised:
+        await reader.read_graph(replace(QUERY, read_graph=True), None, 'revision', timeout_ms=15000)
+    assert raised.value is failure
+    assert 'spec_coverage.graph_observation_unavailable' not in caplog.text
 
 
 @pytest.mark.asyncio

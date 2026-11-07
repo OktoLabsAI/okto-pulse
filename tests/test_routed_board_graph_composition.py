@@ -52,9 +52,10 @@ def test_coverage_cold_readers_never_open_checkpoint_or_prepare(tmp_path, monkey
     access, snapshot, _, connector, fences, _ = _coverage_access(tmp_path, monkeypatch)
     board = snapshot.scope_id
     with access.query_execution.scope(board, timeout_ms=500, existing_only=True):
-        with pytest.raises(GraphCapabilityUnavailable):
+        with pytest.raises(GraphCapabilityUnavailable) as refused:
             with access.read_database_scope(board):
                 pytest.fail('cold reader admitted')
+        assert refused.value.details == {'reason': 'prepared_reader_unavailable'}
         with pytest.raises(GraphCapabilityUnavailable):
             access.read_database(board)
         with pytest.raises(GraphCapabilityUnavailable):
@@ -63,6 +64,17 @@ def test_coverage_cold_readers_never_open_checkpoint_or_prepare(tmp_path, monkey
             access.database(board)
         with pytest.raises(GraphCapabilityUnavailable):
             access.write_fence(board, 'checkpoint')
+    assert connector.calls == [] and fences == []
+
+
+def test_coverage_unconfigured_readers_report_configuration_without_opening(tmp_path, monkeypatch):
+    access, snapshot, _, connector, fences, _ = _coverage_access(tmp_path, monkeypatch)
+    access.query_pools = ()
+    with access.query_execution.scope(snapshot.scope_id, timeout_ms=500, existing_only=True):
+        with pytest.raises(GraphCapabilityUnavailable) as refused:
+            with access.read_database_scope(snapshot.scope_id):
+                pytest.fail('unconfigured reader admitted')
+    assert refused.value.details == {'reason': 'query_readers_not_configured'}
     assert connector.calls == [] and fences == []
 
 

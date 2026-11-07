@@ -3,6 +3,7 @@ import asyncio
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 import time
 import math
 from types import SimpleNamespace
@@ -29,6 +30,24 @@ _SPEC_FIELDS = ('id', 'board_id', 'edition', 'version', 'title', 'status', 'arch
     'test_scenarios', 'skip_test_coverage', 'skip_rules_coverage', 'skip_decisions_coverage',
     'skip_ir_coverage', 'skip_or_coverage', *(name for _, name in COLLECTIONS))
 _CARD_FIELDS = ('id', 'board_id', 'spec_id', 'title', 'card_type', 'status', 'archived', 'policy_version', 'test_scenario_ids')
+
+
+def _log_graph_refusal(query, failure, *, stage):
+    # Only closed diagnostic vocabulary: exception messages/details may contain
+    # native paths, query text or user content and must never reach this log.
+    if isinstance(failure, BoardCloseInProgressError):
+        reason = 'board_close_in_progress'
+    elif isinstance(failure, GraphQueryTimeout):
+        reason = 'graph_query_timeout'
+    elif isinstance(failure, GraphCapabilityUnavailable):
+        reason = failure.details.get('reason')
+        if reason not in ('prepared_reader_unavailable', 'query_readers_not_configured'):
+            reason = 'graph_capability_unavailable'
+    else:
+        reason = 'graph_unavailable'
+    logging.getLogger(__name__).warning(
+        'spec_coverage.graph_observation_unavailable board=%s spec=%s stage=%s reason=%s',
+        query.board_id, query.spec_id, stage, reason)
 
 
 def _json_value(value):
@@ -71,7 +90,11 @@ class CommunitySpecCoverageReader:
         deadline = _deadline(timeout_ms, deadline)
         # Avoid touching the graph when the source is already known to differ.
         # Core owns the separate mandatory final fence after this optional phase.
-        await self.verify_source(query, source_revision, timeout_ms=timeout_ms, deadline=deadline)
+        try:
+            await self.verify_source(query, source_revision, timeout_ms=timeout_ms, deadline=deadline)
+        except GraphQueryTimeout as failure:
+            _log_graph_refusal(query, failure, stage='initial_source_fence')
+            raise
         try:
             reader = self._graph_reader or resolve_spec_coverage_graph_read()
             execution = self._query_execution or resolve_graph_query_execution()
@@ -82,13 +105,21 @@ class CommunitySpecCoverageReader:
                     return reader.read_spec_coverage_graph(query.board_id, scope)
 
             observed = await run_blocking_graph_io(observe, task_name='community.spec_coverage.read')
-        except (GraphCapabilityUnavailable, GraphUnavailable, BoardCloseInProgressError):
+        except GraphQueryTimeout as failure:
+            _log_graph_refusal(query, failure, stage='graph_observation')
+            raise
+        except (GraphCapabilityUnavailable, GraphUnavailable, BoardCloseInProgressError) as failure:
+            _log_graph_refusal(query, failure, stage='graph_observation')
             # A closing graph refuses readers before touching its native handle.
             # This optional observation must not discard relational Coverage.
             # Core still performs the mandatory final source fence. Unrelated graph
             # or programming failures propagate instead of reporting success.
             observed = SpecCoverageGraphFacts(state='unavailable')
-        _remaining(deadline)
+        try:
+            _remaining(deadline)
+        except GraphQueryTimeout as failure:
+            _log_graph_refusal(query, failure, stage='observation_completion')
+            raise
         return observed
 
     async def verify_source(self, query, source_revision, *, timeout_ms, deadline=None):
