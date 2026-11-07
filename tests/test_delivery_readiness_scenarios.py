@@ -3,11 +3,13 @@
 from copy import deepcopy
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 import test_delivery_evidence_integration as delivery
 from test_delivery_readiness_verification import prepare_reports
-from okto_pulse.community.adapters.sqlalchemy_models import Card, CardDeliveryEvidenceRecordRow, Spec
+from okto_pulse.community.adapters.sqlalchemy_models import (
+    Card, CardDeliveryEvidenceRecordRow, Spec, VerificationScenarioStateRow,
+)
 from okto_pulse.core.domain.delivery_assessment import (
     assess_test_delivery, assess_obligation_delivery, aggregate_delivery_metrics,
 )
@@ -64,6 +66,21 @@ async def test_existing_signed_result_binding_advances_card_without_rerun_or_don
     assert all(not row.verification.lifecycle_satisfied for row in result.scenarios)
     assert (await session.get(Spec, delivery.SPEC_ID, populate_existing=True)).test_scenarios == original
     assert (await session.get(Card, 'test')).status == 'in_progress'
+
+
+async def test_readable_scenario_with_missing_native_authority_remains_unknown(ledger, tmp_path):
+    session, store, _, _, scenarios = await prepare_reports(ledger, tmp_path, 'inspection', [None])
+    await session.execute(delete(VerificationScenarioStateRow).where(
+        VerificationScenarioStateRow.board_id == delivery.BOARD_ID,
+        VerificationScenarioStateRow.spec_id == delivery.SPEC_ID,
+        VerificationScenarioStateRow.scenario_id == scenarios[0]['id']))
+    await session.commit()
+    snapshot, result, metrics = await read_metrics(store, session)
+    native = snapshot.effective_context.native_verification
+    assert not native.complete and native.runs == ()
+    assert 'verification_currentness_unavailable' in native.native_reason_codes
+    assert not result.completeness.population_known
+    assert metrics.verification.status == 'unknown' and metrics.verification.percent is None
 
 
 @pytest.mark.parametrize('mismatch', ['source', 'revision'])

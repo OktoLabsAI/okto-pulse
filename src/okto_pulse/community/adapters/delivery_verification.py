@@ -6,7 +6,8 @@ from dataclasses import replace
 from okto_pulse.core.domain.delivery_assessment import ReadinessReason
 from okto_pulse.core.domain.delivery_evidence import DeliveryScope
 from okto_pulse.core.domain.delivery_verification import (
-    NativeVerificationPopulation, NativeVerificationRun, VerificationObservationFact, VerificationSourceFact,
+    NativeVerificationPopulation, NativeVerificationRun, NativeVerificationScenario,
+    VerificationObservationFact, VerificationSourceFact,
 )
 from okto_pulse.core.domain.verification_report import (
     parse_verification_report, require_evidence_method_binding, require_verification_report_context,
@@ -138,6 +139,18 @@ async def native_verification_population(spec, session, *, accepted_result_ids=(
             scenario_ids=tuple(by_id), accepted_result_ids=tuple(accepted_result_ids))
     except VerificationCurrentnessError as exc:
         return NativeVerificationPopulation((), False, (exc.code,))
+    # Subject existence is not execution evidence. Keep the current semantic
+    # identity even when reset has removed every current basis head.
+    scope = DeliveryScope(spec.board_id, spec.id, int(spec.edition))
+    try:
+        subjects = tuple(NativeVerificationScenario(scope, scenario['id'],
+            'sha256:' + canonical_scenario_sha256(compute_test_scenario_semantic_sha256(
+                board_id=spec.board_id, spec_id=spec.id, scenario=scenario,
+                acceptance_criteria=spec.acceptance_criteria or [])),
+            scenario.get('verification_method')) for scenario in scenarios)
+    except (ValueError, TypeError, KeyError):
+        return NativeVerificationPopulation((), False, ('native_verification_population_unavailable',),
+            currentness.source_revision)
     runs = []
     expanded = 0
     complete = currentness.complete
@@ -169,6 +182,7 @@ async def native_verification_population(spec, session, *, accepted_result_ids=(
         expanded += 1 + len(run.sources) + len(run.observations)
         if expanded > 20000:
             return NativeVerificationPopulation(tuple(runs), False, ('native_verification_resolution_limit',),
-                currentness.source_revision)
+                currentness.source_revision, subjects)
         runs.append(run)
-    return NativeVerificationPopulation(tuple(runs), complete, tuple(sorted(reasons)), currentness.source_revision)
+    return NativeVerificationPopulation(tuple(runs), complete, tuple(sorted(reasons)),
+        currentness.source_revision, subjects)

@@ -13,7 +13,9 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     Card, Spec, CardDeliveryEvidenceRecordRow as Record, CodeInvestigationReceiptRow as Receipt,
     VerificationAcceptanceRow as Acceptance, VerificationScenarioStateRow as ScenarioState,
 )
-from okto_pulse.core.domain.delivery_assessment import assess_obligation_delivery, aggregate_delivery_metrics
+from okto_pulse.core.domain.delivery_assessment import (
+    assess_obligation_delivery, assess_test_delivery, aggregate_delivery_metrics,
+)
 from okto_pulse.core.services.delivery_readiness_diagnostics import compose_delivery_diagnostics
 
 ledger = delivery.ledger
@@ -287,13 +289,22 @@ async def test_R6_reset_never_revives_old_bases_and_fresh_bindings_restore_each_
         changed[0]['then'] = 'A new business condition must be observed'
     await session.execute(update(Spec).where(Spec.id == delivery.SPEC_ID).values(test_scenarios=changed))
     await session.commit()
-    _, runs = await current_shared_runs(session)
+    batch, runs = await current_shared_runs(session)
     assert runs == ()
+    reset_test = assess_test_delivery(batch.facts, card_id='test', scenario_ids=('ts-shared',))
+    reset_metric = aggregate_delivery_metrics(reset_test).verification
+    assert reset_test.completeness.population_known and reset_test.completeness.scope_resolved
+    assert reset_metric.status == 'known' and reset_metric.total == 1 and reset_metric.percent == 0
+    assert {reason.code for row in reset_test.scenarios for reason in row.verification.reasons} == {
+        'verification_not_run'}
     assert await proof_by_requirement(store) == expected_two_basis_proof(ui=False, auth=False)
     await session.execute(update(Spec).where(Spec.id == delivery.SPEC_ID).values(test_scenarios=original))
     await session.commit()
-    _, runs = await current_shared_runs(session)
+    batch, runs = await current_shared_runs(session)
     assert runs == (), 'Restoring identical semantics or a signed summary must not revive accepted history'
+    restored_metric = aggregate_delivery_metrics(assess_test_delivery(
+        batch.facts, card_id='test', scenario_ids=('ts-shared',))).verification
+    assert restored_metric.status == 'known' and restored_metric.total == 1 and restored_metric.percent == 0
     assert await proof_by_requirement(store) == expected_two_basis_proof(ui=False, auth=False)
     await run_and_bind_basis(session, store, tmp_path, bases['ui'], 'ui-after-reset')
     observed = {'first_basis_restored': await proof_by_requirement(store)}
