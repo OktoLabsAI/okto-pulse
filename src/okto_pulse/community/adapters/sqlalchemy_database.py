@@ -214,6 +214,15 @@ class CommunityDatabaseRuntime:
                 )
                 return
 
+    async def observe_retained_cleanup(self) -> None:
+        """Wait final SQL cleanup only after all producer handles are terminal."""
+        from okto_pulse.community.adapters.sqlalchemy_unit_of_work import pending_uow_cleanup_tasks
+        from okto_pulse.community.shutdown_ownership import observe_cleanup_until_empty
+
+        await observe_cleanup_until_empty(
+            lambda: set(self._pending_session_closes) | set(pending_uow_cleanup_tasks())
+        )
+
     async def _session_scope_teardown(
         self,
         session: Any,
@@ -661,6 +670,12 @@ def resolve_community_database_runtime() -> CommunityDatabaseRuntime:
     if not isinstance(runtime, CommunityDatabaseRuntime):
         raise RuntimeError("active relational runtime is not Community-owned")
     return runtime
+
+
+async def observe_community_retained_cleanup() -> None:
+    # No unsupported-runtime success: absence of an owned cleanup observer
+    # leaves the enclosing shutdown continuation explicitly failed and live.
+    await resolve_community_database_runtime().observe_retained_cleanup()
 
 
 def get_engine() -> AsyncEngine:

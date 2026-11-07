@@ -17,6 +17,20 @@ logger = logging.getLogger("okto_pulse.community.workers")
 POLLING_SHUTDOWN_TIMEOUT_SECONDS = 10.0
 
 
+async def _observe_blocking_execution_idle(execution: BlockingExecutionPort) -> None:
+    """Use Community's explicit observation capability or prove no work remains.
+
+    The generic Core port promises only bounded join; do not silently require
+    a Community-only method from every edition or test implementation.
+    """
+    observer = getattr(execution, "observe_idle", None)
+    if callable(observer):
+        await observer()
+        return
+    if await execution.join(0.0) != 0:
+        raise RuntimeError("worker_blocking_shutdown_observer_unavailable")
+
+
 class UtcWorkerClock:
     def now(self) -> datetime:
         return datetime.now(timezone.utc)
@@ -98,6 +112,12 @@ class TrackedBlockingExecution(BlockingExecutionPort):
         else:
             self._parent_observed_tasks.add(task)
             return result
+
+    async def observe_idle(self) -> None:
+        """Observe retained native calls after admission/producer shutdown."""
+        from okto_pulse.community.shutdown_ownership import observe_cleanup_until_empty
+
+        await observe_cleanup_until_empty(lambda: self._tasks)
 
     @property
     def pending_count(self) -> int:
@@ -318,6 +338,18 @@ class PollingRunner:
         if task_error is not None:
             raise task_error
 
+    async def observe_stopped(self) -> None:
+        if self._running:
+            raise RuntimeError("worker_stop_not_requested")
+        from okto_pulse.community.shutdown_ownership import observe_existing_tasks
+
+        await observe_existing_tasks((self._task,) if self._task is not None else ())
+        if self._blocking_execution is not None:
+            await _observe_blocking_execution_idle(self._blocking_execution)
+        self._task = None
+        self._wake_event = None
+        self._notify_loop = None
+
     def snapshot(self, **_: Any) -> dict[str, Any]:
         return {"running": self.is_running}
 
@@ -484,6 +516,20 @@ class ConsolidationRunner:
                     logger.exception("consolidation stale-claim recovery failed")
         except asyncio.CancelledError:
             raise
+
+    async def observe_stopped(self) -> None:
+        if self._running:
+            raise RuntimeError("worker_stop_not_requested")
+        from okto_pulse.community.shutdown_ownership import observe_existing_tasks
+
+        await observe_existing_tasks(tuple(self._tasks))
+        await _observe_blocking_execution_idle(self._blocking_execution)
+        self._tasks.clear()
+        self._processing_task = None
+        self._recovery_task = None
+        self._wake_event = None
+        self._notify_loop = None
+        self._shutdown_drained = True
 
     async def stop(self, timeout: float | None = None) -> None:
         self._shutdown_drained = False

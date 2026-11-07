@@ -153,6 +153,16 @@ def build_community_worker_registry(
             await asyncio.to_thread(readiness_pool.shutdown, wait=True,
                 cancel_futures=True)
 
+    async def observe_readiness_stopped(_runner):
+        for runner in readiness_runners:
+            await runner.observe_stopped()
+        if readiness_pool is not None:
+            await asyncio.to_thread(readiness_pool.shutdown, wait=True,
+                                    cancel_futures=True)
+
+    async def observe_runner_stopped(runner):
+        await runner.observe_stopped()
+
     event_processor = DomainEventDeliveryProcessor(
         CommunitySqlAlchemyDomainEventDeliveryStore(
             session_factory,
@@ -221,6 +231,7 @@ def build_community_worker_registry(
             family="readiness_projection_worker",
             start=start_readiness,
             stop=stop_readiness,
+            observe_stopped=observe_readiness_stopped,
             stop_priority=225,
         )
     )
@@ -229,6 +240,7 @@ def build_community_worker_registry(
             family="event_dispatcher",
             start=lambda: start_runner(event_runner),
             stop=stop_runner,
+            observe_stopped=observe_runner_stopped,
             stop_priority=300,
         )
     )
@@ -237,6 +249,7 @@ def build_community_worker_registry(
             family="board_erasure_worker",
             start=lambda: start_runner(board_erasure_runner),
             stop=stop_runner,
+            observe_stopped=observe_runner_stopped,
             stop_priority=275,
         )
     )
@@ -246,6 +259,7 @@ def build_community_worker_registry(
                 family="cleanup_worker",
                 start=lambda: start_runner(cleanup_runner),
                 stop=stop_runner,
+            observe_stopped=observe_runner_stopped,
                 stop_priority=100,
             )
         )
@@ -254,6 +268,7 @@ def build_community_worker_registry(
             family="consolidation_worker",
             start=lambda: start_runner(consolidation_runner),
             stop=stop_runner,
+            observe_stopped=observe_runner_stopped,
             # Join every in-flight consolidation/native graph write before
             # the outbox runner performs its shutdown final iteration.
             stop_priority=250,
@@ -264,6 +279,7 @@ def build_community_worker_registry(
             family="outbox_worker",
             start=lambda: start_runner(outbox_runner),
             stop=stop_runner,
+            observe_stopped=observe_runner_stopped,
             stop_priority=200,
         )
     )

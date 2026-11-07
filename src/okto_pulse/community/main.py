@@ -1026,6 +1026,33 @@ def create_community_app():
         blocked_families.sort()
         native_drain_incomplete = bool(blocked_families)
         if native_drain_incomplete:
+            from okto_pulse.community.shutdown_ownership import ShutdownOwnership
+
+            ownership = ShutdownOwnership(tuple(blocked_families))
+            app_instance.state.shutdown_ownership = ownership
+
+            async def observe_producers():
+                if not recovery_drained:
+                    # No known completion observer for that separate native
+                    # runtime: preserve the host rather than claim quiescence.
+                    raise RuntimeError("recovery_shutdown_observer_unavailable")
+                if worker_registry is not None:
+                    await worker_registry.observe_stopped(blocked_families)
+
+            async def close_graph_after_failed_deadline():
+                from okto_pulse.community.adapters.kg_shutdown import close_all_graphs_on_shutdown
+
+                # The original deadline is already failed. Observe the actual
+                # native teardown to terminal before database disposal; do not
+                # use the helper which can return with its close thread live.
+                await asyncio.to_thread(close_all_graphs_on_shutdown)
+
+            ownership.start(
+                observe_producers=observe_producers,
+                drain_cleanup=database_runtime.observe_retained_cleanup,
+                close_graph=close_graph_after_failed_deadline,
+                close_database=close_db,
+            )
             _STARTUP_LOGGER.critical(
                 "community.shutdown.native_drain_incomplete "
                 "families=%s graph_close_skipped=true db_close_skipped=true",
@@ -1507,26 +1534,26 @@ async def _shutdown_launched_server_tasks(
 def _install_shutdown_signal_handlers(
     request_shutdown: Callable[[int], None],
 ) -> list[Callable[[], None]]:
-    """KGD-01 (FR2): shutdown ORDENADO também para SIGTERM/SIGBREAK.
+    """Own graceful INT/TERM/BREAK until application shutdown settles.
 
-    A captura de sinais do uvicorn está desabilitada nos dois servidores
-    (dois ``Server`` no mesmo loop — o último sobrescreveria o handler); o
-    SIGINT chega pelo KeyboardInterrupt do ``asyncio.Runner``. Sem este
-    instalador, SIGTERM (POSIX) e CTRL_BREAK_EVENT (Windows) terminavam o
-    processo SEM teardown — nenhum checkpoint/close dos grafos.
+    Uvicorn signal capture is disabled for the two shared-loop servers.
+    Community routes repeated graceful signals to the same shutdown request;
+    Runner's second-SIGINT shortcut must not cancel retained native producers
+    or SQL cleanup. The host restores prior handlers only after ownership has
+    settled and its heartbeat can stop.
 
-    POSIX: ``loop.add_signal_handler(SIGTERM, …)`` dispara o MESMO caminho
-    ordenado do Ctrl+C. Windows: ``add_signal_handler`` não é suportado —
-    usa ``signal.signal(SIGBREAK, …)`` + ``call_soon_threadsafe`` (que
-    acorda o selector bloqueado). Limitações Windows (por design do SO):
-    ``os.kill(pid, SIGTERM)`` vira TerminateProcess e NUNCA é interceptável;
-    o console-close (CTRL_CLOSE) dá ~5s de budget antes do TerminateProcess
-    do console host — o teardown de grafos precisa ser best-effort nesse
-    canal. Retorna callbacks de cleanup que restauram a disposição anterior.
+    POSIX uses loop signal handlers; Windows uses signal.signal with a
+    thread-safe loop callback. Windows TerminateProcess is an explicit abnormal
+    termination and cannot provide this graceful ownership guarantee.
     """
     loop = asyncio.get_running_loop()
     cleanups: list[Callable[[], None]] = []
     candidates: list[signal.Signals] = []
+    # Own graceful Ctrl+C as well as TERM/BREAK until the last producer and
+    # cleanup are terminal. Runner's second-SIGINT shortcut would otherwise
+    # directly cancel every task, including cancellation-protected children.
+    if hasattr(signal, "SIGINT"):
+        candidates.append(signal.SIGINT)
     if hasattr(signal, "SIGTERM"):
         candidates.append(signal.SIGTERM)
     if hasattr(signal, "SIGBREAK"):  # Windows: entregue pelo CTRL_BREAK_EVENT
@@ -1627,8 +1654,8 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
         api_server = uvicorn.Server(api_config)
         # Disable uvicorn's per-server signal capture — with two Servers in the
         # same loop the last one wins the process signal handler, which can leave
-        # the other listener waiting forever. asyncio.Runner cancels _serve_dual on
-        # Ctrl+C; we coordinate both listeners in the except block below.
+        # the other listener waiting forever. Community installs one graceful
+        # signal owner; the except block also handles caller cancellation.
         api_server.capture_signals = contextlib.nullcontext  # type: ignore[method-assign]
 
         mcp_config = uvicorn.Config(
@@ -1752,6 +1779,11 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
             transaction.rollback()
         raise
     finally:
+        # Keep the heartbeat/serve lock and event loop owned while a failed
+        # shutdown still has live producers or the cleanup they emit late.
+        ownership = getattr(module_app.state, "shutdown_ownership", None)
+        if ownership is not None:
+            await ownership.wait_before_runner_exit()
         for _cleanup in signal_cleanups:
             with contextlib.suppress(Exception):
                 _cleanup()
@@ -1763,6 +1795,10 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
                 # Heartbeat failures are already logged inside the loop; we
                 # never let them block shutdown.
                 pass
+        if ownership is not None and ownership.deadline_failed:
+            from okto_pulse.community.shutdown_ownership import ShutdownDeadlineFailed
+
+            raise ShutdownDeadlineFailed("shutdown settled after its deadline failed")
 
 
 async def _lock_heartbeat_loop() -> None:
@@ -1840,9 +1876,14 @@ def run() -> int:
     except ServeAlreadyRunningError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    from okto_pulse.community.shutdown_ownership import ShutdownDeadlineFailed
+
     with serve_lock:
         try:
             run_async_server(_serve_dual(api_port, mcp_port))
+        except ShutdownDeadlineFailed:
+            print("Shutdown deadline failed; retained work subsequently settled.", file=sys.stderr)
+            return 1
         except KeyboardInterrupt:
             # Ctrl+C / SIGINT — shutdown is graceful from here; suppress the
             # default Python traceback for a clean CLI exit.
