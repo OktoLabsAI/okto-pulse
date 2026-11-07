@@ -117,7 +117,7 @@ def test_current_only_passed_and_failed_seeds_preserve_every_old_row_and_receipt
     assert result["seed_summary"] == {"scenarios": 5, "seeded_passed": 1, "seeded_failed": 1,
                                        "unqualified_current_fact": 2, "no_current_terminal_fact": 1}
     with closing(sqlite3.connect(output)) as db:
-        inspect_current_schema(db.cursor(), current_schema_contract())
+        inspect_historical_schema(db.cursor(), version=407)
         rows = db.execute("SELECT scenario_id,receipt_id,evidence,result,origin,migration_source_sha256 FROM verification_acceptances").fetchall()
         assert {row[0] for row in rows} == {"ts", "tf"}
         assert not set(source.historical) & {row[1] for row in rows}
@@ -245,6 +245,10 @@ def test_source_change_after_seeding_is_detected_before_exclusive_publication(so
 @pytest_asyncio.fixture
 async def authority(source, tmp_path):
     output, receipt = convert(source, tmp_path)
+    from okto_pulse.community.adapters.amendment_storage_upgrade import upgrade_amendment_copy
+    current = tmp_path / 'current408.db'
+    upgrade_amendment_copy(output, current)
+    output = current
     engine = create_async_engine("sqlite+aiosqlite:///" + str(output))
     install_community_sqlite_pragmas(engine)
     factory = build_community_session_factory(engine)

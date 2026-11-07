@@ -1301,7 +1301,7 @@ def main():
 
     sub_storage = subparsers.add_parser('storage', help='Explicit storage operations; startup never converts data')
     storage_commands = sub_storage.add_subparsers(dest='storage_command', required=True)
-    storage_upgrade = storage_commands.add_parser('upgrade-copy', help='Create a verified copy: format 405 to 406, or 406 to 407')
+    storage_upgrade = storage_commands.add_parser('upgrade-copy', help='Create a verified copy: format 405 to 406, 406 to 407, or 407 to 408')
     storage_upgrade.add_argument('--source-db', type=Path, required=True)
     storage_upgrade.add_argument('--output-db', type=Path, required=True, help='New file; existing files are never replaced')
     storage_upgrade.add_argument('--evidence-root', type=Path,
@@ -1590,7 +1590,10 @@ def cmd_storage_upgrade(args):
         from okto_pulse.community.adapters.current_relational_schema import _read_without_side_effects
         with _read_without_side_effects(args.source_db.expanduser().resolve()) as source:
             version = source.execute('PRAGMA main.user_version').fetchone()[0]
-        if version == 406:
+        if version == 407:
+            from okto_pulse.community.adapters.amendment_storage_upgrade import upgrade_amendment_copy
+            result = upgrade_amendment_copy(args.source_db, args.output_db)
+        elif version == 406:
             from okto_pulse.community.adapters.verification_storage_upgrade import upgrade_verification_copy
             evidence_root = getattr(args, 'evidence_root', None)
             if evidence_root is None:

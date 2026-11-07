@@ -8,10 +8,17 @@ from .current_relational_schema import APPLICATION_ID, RelationalSchemaContract,
 
 FORMAT406_SHA256 = "945cadedcd28c3f8fd196f13eb82037b5f3e2b8f19d3da5e43f4ab6bb6f5a9c0"
 FORMAT405_SHA256 = "9f69fa459c17edd0f0ff2537445fe4d8dc6ed61ff610ccd819b2aa55fb0c4929"
+FORMAT407_SHA256 = "0d30bff9f25fa2135290bd7bfb79dea0fb8ee125a61704fb099b2ffee2bae25e"
 FORMAT406_NEW_TABLES = frozenset({"task_requirement_decisions", "task_requirement_decision_operations"})
 
 
 def historical_schema_contract(version=406):
+    if version == 407:
+        payload = json.loads(gzip.decompress(files(__package__).joinpath('format407_schema.json.gz').read_bytes()))
+        contract = RelationalSchemaContract(tuple(tuple(row) for row in payload['objects']))
+        if payload['schema_version'] != 407 or payload['schema_sha256'] != FORMAT407_SHA256 or contract.sha256 != FORMAT407_SHA256:
+            raise StorageFormatError('historical_contract')
+        return contract
     payload = json.loads(gzip.decompress(files(__package__).joinpath("format406_schema.json.gz").read_bytes()))
     contract = RelationalSchemaContract(tuple(tuple(row) for row in payload["objects"]))
     if payload["schema_version"] != 406 or payload["schema_sha256"] != FORMAT406_SHA256 or contract.sha256 != FORMAT406_SHA256:

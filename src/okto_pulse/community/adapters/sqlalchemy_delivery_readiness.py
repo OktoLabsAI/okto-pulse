@@ -180,6 +180,7 @@ def _resolve_persisted_policy(*, actor, board_id, realm_id, owner_id, share,
 class _ReadinessRows(dict):
     """ORM rows plus immutable authority captured in the same read transaction."""
     native_verification = None
+    amendment_attributions = ()
 
 
 class _BatchFacts(CommunityDeliveryEvidenceStore):
@@ -360,7 +361,7 @@ class _BatchFacts(CommunityDeliveryEvidenceStore):
                 'readiness_materialize_facts_decisions_ms':
                     (perf_counter() - phase_started) * 1000,
             })
-        return result
+        return replace(result, amendment_attributions=self.rows.amendment_attributions)
 
 
 class CommunityDeliveryReadinessReader:
@@ -614,6 +615,19 @@ class CommunityDeliveryReadinessReader:
         rows[Board] = await self._rows(session, select(Board).where(Board.id == board_id), 1, counts)
         if not rows[Spec] or not rows[Board]:
             raise ReadinessReadError('readiness_scope_mismatch')
+        # Internal projection loads have no actor, but still need an explicit
+        # tenant boundary for native amendment proof reads. Derive it only from
+        # this transaction's proven Board; never default an absent realm to
+        # local or replace an existing caller scope. Public reads still pass
+        # through _access before reaching this method.
+        realm_id = rows[Board][0].realm_id
+        if not isinstance(realm_id, str) or not realm_id.strip():
+            raise ReadinessReadError('readiness_scope_mismatch')
+        realm = RealmScope.local() if realm_id == LOCAL_REALM_ID else RealmScope.tenant(realm_id)
+        supplied = session.info.get('realm_scope')
+        if supplied is not None and (not isinstance(supplied, RealmScope) or supplied != realm):
+            raise ReadinessReadError('readiness_scope_mismatch')
+        session.info['realm_scope'] = realm
         spec = rows[Spec][0]
         if isinstance(spec.test_scenarios, list) and len(spec.test_scenarios) > 5000:
             raise ReadinessReadError('readiness_limit_exceeded', native_code='native_verification_population_unavailable')
@@ -658,6 +672,9 @@ class CommunityDeliveryReadinessReader:
             .order_by(Revocation.id), MAX_FACTS, counts)
         rows.native_verification = (cached_verification if cached_verification is not None
             else await native_verification_population(spec, session))
+        from .amendment_delivery_attribution import load_attributions
+        rows.amendment_attributions = await load_attributions(
+            CommunityDeliveryEvidenceStore(session, inventory=self.inventory), board_id, spec_id)
         if defer_facts:
             return rows
         return await self._snapshot_from_rows(rows)

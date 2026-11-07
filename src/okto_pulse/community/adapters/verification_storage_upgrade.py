@@ -16,7 +16,7 @@ from okto_pulse.core.domain.verification_report import parse_verification_report
 from okto_pulse.core.services.test_scenario_lifecycle import compute_test_scenario_semantic_sha256
 
 from .current_relational_schema import (
-    SCHEMA_VERSION, StorageFormatError, _read_without_side_effects, current_schema_contract, inspect_current_schema,
+    StorageFormatError, _read_without_side_effects,
 )
 from .historical_relational_schema import FORMAT406_SHA256, historical_schema_contract, inspect_historical_schema
 from .sqlite_verification_currentness import install_verification_currentness_functions, scenario_facts
@@ -25,6 +25,17 @@ from .test_evidence import CommunityEvidenceLedger, CommunityTestEvidenceWriteVe
 
 NEW_TABLES = frozenset({"verification_scenario_states", "verification_reservations",
                        "verification_acceptances", "verification_basis_heads"})
+
+# This operation always produces the exact historical407 destination.
+SCHEMA_VERSION = 407
+
+
+def current_schema_contract():
+    return historical_schema_contract(407)
+
+
+def inspect_current_schema(cursor, contract):
+    return inspect_historical_schema(cursor, contract, version=407)
 
 
 def _json(value):

@@ -1560,7 +1560,12 @@ class CommunityDeliveryEvidenceStore:
                 )
         return waivers
 
+    async def amendment_delivery_attribution(self, amendment, confirmation):
+        from .amendment_delivery_attribution import freeze_attribution
+        return await freeze_attribution(self, amendment, confirmation)
+
     async def load_rollup_snapshot(self, board_id, spec_id, *, include_reviews=True,
+                                   include_attributions=True,
                                    include_card_summaries=True,
                                    prospective_card_id=None, prospective_report=None, native_verification=None):
         """Aggregate the card-ledger snapshots of a spec into one snapshot.
@@ -1663,4 +1668,7 @@ class CommunityDeliveryEvidenceStore:
             for row in per_card:
                 if row["card_type"] == CardType.NORMAL.value:
                     row["delivery_completeness"] = asdict(calculate_delivery_completeness(snapshot, row["card_id"]))
+        if include_attributions:
+            from .amendment_delivery_attribution import load_attributions
+            snapshot = replace(snapshot, amendment_attributions=await load_attributions(self, board_id, spec_id))
         return snapshot, per_card
