@@ -809,3 +809,46 @@ class R9AcknowledgementAcceptance(unittest.TestCase):
                             for p in reports.glob('r8-*.json')]
             self.assertEqual(len(observations), 17)
             self.assertTrue(all(item['completed'] for item in observations))
+
+
+class R8ReproducibilityAcceptance(unittest.TestCase):
+    """Combine native correctness with the existing paired Core log contract."""
+
+    __test__ = False
+
+    def test_complete_results_and_bounded_operational_logs(self):
+        suite = unittest.TestSuite([
+            R8PopulationAcceptance('test_real_population_boundaries_and_invariance'),
+            R9AcknowledgementAcceptance('test_real_provider_acknowledgement_boundaries'),
+        ])
+        result = unittest.TestResult()
+        suite.run(result)
+        self.assertEqual(result.testsRun, 2)
+        self.assertFalse(result.skipped)
+        self.assertFalse(result.expectedFailures)
+        self.assertFalse(result.unexpectedSuccesses)
+        self.assertTrue(result.wasSuccessful(), repr(result.errors + result.failures))
+
+        # The registered companion is an immutable checkout, not the installed
+        # package or an arbitrary workspace supplied by the scenario caller.
+        core = Path(os.environ['OKTO_PULSE_CORE_REPO']).resolve(strict=True)
+        with tempfile.TemporaryDirectory(prefix='pulse-r8-log-contract-') as temp:
+            junit = Path(temp) / 'results.xml'
+            observed = subprocess.run(
+                ['rtk', 'proxy', sys.executable, '-B', '-m', 'pytest',
+                 str(core / 'tests/test_e2e043_outbox_observability.py'),
+                 '-q', '--tb=short', '-p', 'no:cacheprovider',
+                 '--junitxml=' + str(junit)],
+                cwd=core, env=os.environ.copy(), capture_output=True, text=True,
+                encoding='utf-8', errors='replace', timeout=120,
+            )
+            self.assertEqual(observed.returncode, 0, (observed.stdout + observed.stderr)[-12000:])
+            cases = ET.parse(junit).getroot().findall('.//testcase')
+            names = {case.attrib['name'].split('[')[0] for case in cases}
+            self.assertTrue({
+                'test_observations_correlate_phases_only_ack_after_commit',
+                'test_failed_or_cancelled_ack_never_logs_delivered',
+                'test_graph_failure_records_pending_not_delivery_and_redacts',
+            } <= names)
+            self.assertTrue(all(not any(case.find(tag) is not None for tag in
+                                       ('failure', 'error', 'skipped')) for case in cases))
