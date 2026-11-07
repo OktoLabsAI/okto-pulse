@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -258,9 +259,28 @@ def verify_provenance(config, rest, journal):
     process = psutil.Process(runtime['pid'])
     require(abs(process.create_time() - runtime['created_at']) < 0.01
             and Path(process.exe()).resolve() == absolute(runtime['executable']).resolve(), 'Installed process identity changed')
-    port = urllib.parse.urlsplit(config['base_url']).port or 80
-    require(any(c.status == psutil.CONN_LISTEN and c.laddr.port == port
-                for c in process.net_connections(kind='tcp')), 'Configured runtime does not own the HTTP listener')
+    address = urllib.parse.urlsplit(config['base_url'])
+    port = address.port or 80
+    # Windows can expose an owned listening socket with status NONE. Prove
+    # ownership through the exact live health connection instead of inferring
+    # that the absence of CONN_LISTEN means a foreign server owns this port.
+    connection = http.client.HTTPConnection(address.hostname, port, timeout=10)
+    try:
+        connection.connect()
+        client_endpoint = tuple(connection.sock.getsockname()[:2])
+        connection.request('GET', '/health')
+        response = connection.getresponse()
+        health = json.loads(response.read())
+        require(response.status == 200 and health.get('status') == 'healthy'
+                and health.get('version') == plan['version'], 'Installed health request failed')
+        require(any(c.status == psutil.CONN_ESTABLISHED and c.laddr.port == port
+                    and tuple(c.raddr) == client_endpoint
+                    for c in process.net_connections(kind='tcp')),
+                'Configured runtime does not own the verified health connection')
+        ownership = {'method': 'established_health_connection', 'pid': process.pid,
+                     'server_port': port, 'client_endpoint': client_endpoint, 'health': health}
+    finally:
+        connection.close()
     site = absolute(runtime['site_packages'])
     wheel_frontend = {}
     for name, wheel in plan['wheels'].items():
@@ -289,13 +309,18 @@ def verify_provenance(config, rest, journal):
             require(digest(raw) == expected, f'Served asset differs: {relative}')
             served['/' + relative] = expected
     html = rest.request('served-index', '/', binary=True).decode('utf-8')
-    module_scripts = re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', html)
+    expected_html = (source_dir / 'index.html').read_text(encoding='utf-8').replace(
+        '</head>', '  <script src="/config.js"></script>\n</head>')
+    require(html == expected_html, 'Served index differs from the exact build and native config injection')
+    module_scripts = re.findall(r'<script[^>]+type="module"[^>]+src="([^"]+)"', html)
     require(module_scripts and all(path in served for path in module_scripts), 'Served index selects an unverified script')
-    observation = {'observed_at': now(), 'runtime': runtime, 'package_plan_sha256': digest(plan_raw),
+    observation = {'observed_at': now(), 'runtime': runtime, 'connection_ownership': ownership,
+        'package_plan_sha256': digest(plan_raw),
         'frontend_origin_revision': A_REV, 'fixture_B_revision': B_REV,
         'installed_community_revision': installed_revision,
         'installed_core_revision': plan['core_revision'], 'frontend_file_count': 79,
         'served_assets': served, 'module_scripts': module_scripts,
+        'served_index_matches_native_config_injection': True,
         'claim': 'Exact frontend artifact A is served by the separately identified installed backend. Neither historical backend A nor B is claimed executed.'}
     journal.save(journal.stem('provenance') + '.json', observation)
     return observation
