@@ -30,6 +30,11 @@ readable. Missing graph observations do not mean missing implementation. A chang
 source needs a new observation; a permission failure removes the affected data.
 Changing the Board, Spec, edition or access scope clears old observations.
 
+Selecting a Board prepares its existing graph for reading. If graph information
+is unavailable, you can still use the Board's planning and delivery views.
+Use **Refresh board** to try preparation again. The Spec modal's **Refresh**
+reads the current facts; it does not initialize or repair graph storage.
+
 ## Details and refresh
 
 Use **Show details** for the existing planning and implementation views, graph

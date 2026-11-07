@@ -813,6 +813,15 @@ function createDashboardApi(apiClient: ReturnType<typeof useApiClient>) {
       return apiClient.fetchJson<Board>(`/boards/${boardId}`);
     },
 
+    async activateBoardRuntime(boardId: string): Promise<void> {
+      const result = await apiClient.fetchJson<{ board_id: string; state: string }>(
+        `/boards/${encodeURIComponent(boardId)}/runtime/activate`, { method: 'POST' },
+      );
+      if (result?.board_id !== boardId || result.state !== 'ready') {
+        throw new Error('Board graph activation could not be confirmed.');
+      }
+    },
+
     async updateBoard(boardId: string, data: UpdateBoardRequest): Promise<Board> {
       return apiClient.fetchJson<Board>(`/boards/${boardId}`, {
         method: 'PATCH',
