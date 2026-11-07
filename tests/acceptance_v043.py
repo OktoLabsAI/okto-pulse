@@ -329,6 +329,10 @@ class RequirementVerificationAcceptance(PairedAcceptance):
             'tests/test_delivery_readiness_acceptance.py::test_R6_reset_never_revives_old_bases_and_fresh_bindings_restore_each_requirement',
             'tests/test_delivery_readiness_batch.py',
             'tests/test_spec_coverage_read.py', 'tests/test_spec_coverage_transport.py',
+            'tests/test_spec_coverage_graph.py::test_closing_graph_preserves_coverage_and_source_fence',
+            'tests/test_spec_coverage_graph.py::test_graph_corruption_is_not_hidden_as_temporary_unavailability',
+            'tests/test_spec_coverage_graph.py::test_close_fallback_still_obeys_graph_read_deadline',
+            'tests/test_spec_coverage_graph.py::test_rest_real_close_preserves_delivery_and_recovers',
             'tests/test_readiness_projection_worker.py::test_gc_failure_preserves_pending_projection_and_retries',
             'tests/test_readiness_projection_worker.py::test_gc_cancellation_propagates_before_claim_and_pending_work_survives',
             timeout=600)

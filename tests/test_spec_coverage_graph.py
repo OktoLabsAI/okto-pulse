@@ -208,6 +208,88 @@ async def test_graph_corruption_is_not_hidden_as_temporary_unavailability(ledger
 
 
 @pytest.mark.asyncio
+async def test_rest_real_close_preserves_delivery_and_recovers(ledger, real_store, monkeypatch):
+    from unittest.mock import AsyncMock
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from okto_pulse.community.api import analytics
+    from okto_pulse.community.api.auth_deps import require_user
+    from okto_pulse.community.api.deps import get_unit_of_work
+    from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
+    from okto_pulse.core.application.service_catalog import CoreAnalyticsOperations
+    from okto_pulse.core.application.use_cases.base import ActorContext
+    from okto_pulse.core.ports import relational_application
+
+    session, delivery, _ = ledger
+    _, database, fence, _ = real_store
+    implementation = await relational.delivery_fixture.record(delivery, relational.delivery_fixture.command())
+    await relational.delivery_fixture.record(delivery, relational.delivery_fixture.command(
+        'test', implementation_ids=[implementation['id']]))
+    await session.commit()
+    board_id, spec_id = relational.BOARD, relational.SPEC
+    execution = CommunityGraphQueryExecution()
+    graph = CommunityGrafxGraphStore(lambda board: {board_id: database}[board], fence,
+        query_timeout=execution.remaining)
+    route_calls = []
+
+    class Resolver:
+        def acquire_board_route(self, board):
+            route_calls.append(board)
+            return SimpleNamespace(scope='board', scope_id=board, backend='grafx', generation='close-recovery')
+
+    guard = guards._BoardCloseGuard(board_id)
+    monkeypatch.setitem(guards._board_close_guards, board_id, guard)
+    monkeypatch.setattr(guards, '_READER_ENTER_TIMEOUT_S', 0.001)
+    routed = CommunityRoutedSemanticGraphStore(Resolver(), grafx=graph,
+        operation_window=guards.board_graph_operation_window)
+    reader = CommunitySpecCoverageReader(session, delivery_store=delivery,
+        graph_reader=routed, query_execution=execution)
+    # Replace composition only: the route, Core service, SQL and Grafx remain real.
+    monkeypatch.setattr(relational_application, 'require_relational_application_adapter',
+        lambda: SimpleNamespace(spec_coverage_read=lambda context: reader))
+    flags = ['board.read', 'spec.entity.read', 'card.entity.read', 'spec.tests.read',
+        'spec.integration_requirements.read', 'spec.observability_requirements.read',
+        'code_traceability.evidence.read', 'kg.query.related_context']
+    actor = ActorContext('agent', 'mcp', actor_kind='agent', realm_id='local',
+        board_id=board_id, permissions=flags)
+    monkeypatch.setattr(RESTAdapterContract, 'actor', lambda *args, **kwargs: actor)
+    board = SimpleNamespace(id=board_id, owner_id='owner', realm_id='local',
+        settings={'kg_query_timeout_ms': 15000})
+    uow = SimpleNamespace(boards=SimpleNamespace(get=AsyncMock(return_value=board)),
+        services=SimpleNamespace(analytics=CoreAnalyticsOperations(session)))
+    app = FastAPI()
+    app.include_router(analytics.router)
+    app.dependency_overrides[require_user] = lambda: 'user'
+    app.dependency_overrides[get_unit_of_work] = lambda: uow
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+        async def observe():
+            response = await client.get(f'/boards/{board_id}/specs/{spec_id}/coverage',
+                params={'graph_mode': 'detail', 'timeout_ms': 15000})
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        baseline = await observe()
+        calls_before = len(route_calls)
+        with guard.closing() as (drained, stuck):
+            assert drained and stuck == 0
+            unavailable = await observe()
+            assert len(route_calls) == calls_before
+            assert guard.readers == 0
+            assert unavailable['projection_freshness']['state'] == 'unavailable'
+            assert unavailable['structure']['graph']['observed_nodes'] is None
+            assert unavailable['structure']['summary'] == baseline['structure']['summary']
+            assert unavailable['delivery'] == baseline['delivery']
+        recovered = await observe()
+        assert len(route_calls) > calls_before
+        assert recovered['projection_freshness']['state'] != 'unavailable'
+        assert recovered['structure']['graph']['observed_nodes'] is not None
+        assert recovered['structure']['graph'] == baseline['structure']['graph']
+        assert recovered['delivery'] == baseline['delivery']
+        assert recovered['delivery']['counts']['verification_proven'] == 2
+        assert guard.readers == 0
+
+
+@pytest.mark.asyncio
 async def test_close_fallback_still_obeys_graph_read_deadline(ledger, monkeypatch):
     from okto_pulse.community.adapters import sqlalchemy_spec_coverage as coverage
 
