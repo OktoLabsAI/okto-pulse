@@ -65,6 +65,8 @@ from okto_pulse.core.application.use_cases import (
     PermissionDeniedError,
 )
 from okto_pulse.core.application.use_cases.boards_crud import (
+    ActivateBoardRuntimeCommand,
+    ActivateBoardRuntimeUseCase,
     ArchiveTreeCommand,
     ArchiveTreeUseCase,
     CreateCardInBoardCommand,
@@ -213,6 +215,35 @@ async def get_board(
     except PermissionDeniedError as exc:
         raise permission_denied_http_error(exc) from exc
     return result.board
+
+
+@router.post("/{board_id}/runtime/activate", response_model=dict[str, str])
+async def activate_board_runtime(
+    board_id: str,
+    principal: Principal = Depends(require_principal),
+    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Activate existing graph readers under Core authorization and ownership."""
+    from okto_pulse.core.kg.guarded_write import GuardedWriteError
+    from okto_pulse.core.kg.interfaces.graph_errors import GraphError
+
+    try:
+        return await ActivateBoardRuntimeUseCase().execute(
+            ActivateBoardRuntimeCommand(board_id),
+            actor=RESTAdapterContract.actor_from_principal(principal, board_id=board_id),
+            uow=uow,
+        )
+    except EntityNotFoundError:
+        raise HTTPException(status_code=404, detail="Board not found") from None
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
+    except (GraphError, GuardedWriteError):
+        # Native failures can contain storage paths. Keep the response bounded;
+        # the caller may continue using the Board's relational views.
+        raise HTTPException(status_code=503, detail={
+            "code": "board_runtime_unavailable",
+            "message": "Graph information is unavailable. Refresh the board to try again.",
+        }) from None
 
 
 @router.patch("/{board_id}", response_model=BoardResponse)
