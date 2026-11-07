@@ -74,7 +74,7 @@ class PairedAcceptance(unittest.TestCase):
             for rejected in ('failure', 'error', 'skipped'):
                 self.assertIsNone(case.find(rejected), f'{case.attrib} contains {rejected}')
 
-    def _react(self, *selectors):
+    def _react(self, *selectors, suite_timeout=300, case_timeout_ms=5000):
         frontend = self.repos['community'] / 'frontend'
         if not self.frontend_ready:
             self._run(['npm', 'ci', '--ignore-scripts', '--no-audit', '--no-fund'], frontend)
@@ -82,7 +82,8 @@ class PairedAcceptance(unittest.TestCase):
         report = self.root / 'react-results.json'
         report.unlink(missing_ok=True)
         self._run(['node', 'node_modules/vitest/vitest.mjs', 'run', *selectors,
-                   '--maxWorkers=1', '--reporter=json', f'--outputFile={report}'], frontend)
+                   '--maxWorkers=1', f'--testTimeout={case_timeout_ms}', '--reporter=json',
+                   f'--outputFile={report}'], frontend, timeout=suite_timeout)
         results = json.loads(report.read_text(encoding='utf-8'))
         self.assertTrue(results['success'])
         self.assertGreater(results['numTotalTests'], 0)
@@ -341,7 +342,10 @@ class RequirementVerificationAcceptance(PairedAcceptance):
             'src/components/specs/__tests__/SpecCoveragePanel.persisted.test.tsx',
             'src/components/help/__tests__/HelpPanel.deliveryStatus.test.tsx',
             'src/components/help/__tests__/HelpPanel.taskRequirements.test.tsx',
-            'src/components/help/__tests__/HelpPanel.taskProgress.test.tsx')
+            'src/components/help/__tests__/HelpPanel.taskProgress.test.tsx',
+            # Functional acceptance: 246 cases took 415s on the Windows host.
+            # Keep every assertion; these budgets are not a UI latency SLO.
+            suite_timeout=600, case_timeout_ms=10000)
 
     def test_human_submission_and_copy_upgrade_preconditions(self):
         # This method deliberately does not claim installed My Board acceptance.
