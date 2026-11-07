@@ -105,7 +105,7 @@ class CommunityGrafxGraphLifecycle:
         *,
         admission: AdmissionValidator | None = None,
         recover_latched_checkpoint: RecoveryCallback | None = None,
-        prepare_query_readers: Callable[[str], None] | None = None,
+        prepare_query_readers: Callable[[str], bool] | None = None,
     ) -> None:
         self._database_resolver = database_resolver
         self._path_resolver = path_resolver
@@ -214,8 +214,9 @@ class CommunityGrafxGraphLifecycle:
                 bootstrapped_at=current_grafx_timestamp(),
                 revalidate_fence=lambda phase: self._revalidate_fence(board_id, phase),
             )
-            if self._prepare_query_readers is not None:
-                self._prepare_query_readers(board_id)
+            readers_prepared = False
+            if self._prepare_query_readers is not None and not database.closed:
+                readers_prepared = self._prepare_query_readers(board_id) is True
             return GraphHandle(
                 board_id=board_id,
                 storage_ref=grafx_board_storage_ref(board_id),
@@ -223,6 +224,7 @@ class CommunityGrafxGraphLifecycle:
                 status="opened" if not database.closed else "absent",
                 locked=False,
                 quarantined=False,
+                readers_prepared=readers_prepared,
             )
         except GraphError:
             raise

@@ -81,7 +81,7 @@ def test_coverage_unconfigured_readers_report_configuration_without_opening(tmp_
 def test_prepared_readers_pin_exact_generation_and_release_on_failure(tmp_path, monkeypatch):
     access, snapshot, pools, connector, fences, admissions = _coverage_access(tmp_path, monkeypatch)
     board = snapshot.scope_id
-    access.prepare_query_readers(board)
+    assert access.prepare_query_readers(board) is True
     assert len(connector.calls) == 2 and len(fences) == 3
     with pytest.raises(RuntimeError, match='native failure'):
         with access.query_execution.scope(board, timeout_ms=500, existing_only=True):
@@ -130,7 +130,7 @@ def test_optional_reader_preparation_failure_does_not_rewrite_durability(tmp_pat
         raise GrafxDatabasePoolError('busy reader', reason='pool_open_failed')
     for pool in pools:
         monkeypatch.setattr(pool, 'get', busy)
-    access.prepare_query_readers(snapshot.scope_id)
+    assert access.prepare_query_readers(snapshot.scope_id) is False
     assert connector.calls == [] and len(fences) == 3
     with access.query_execution.scope(snapshot.scope_id, timeout_ms=500, existing_only=True):
         with pytest.raises(GraphCapabilityUnavailable):
@@ -726,6 +726,7 @@ async def test_routed_grafx_open_validates_without_schema_initialization(
     handle = await bundle.graph_lifecycle.open("board-open")
 
     assert handle.opened is True
+    assert handle.readers_prepared is True
     assert validations == ["schema", "board-meta"]
     # Production routed open must make the exact generation available to
     # existing-only Coverage reads, without relying on a later writer commit.
@@ -744,6 +745,69 @@ async def test_routed_grafx_open_validates_without_schema_initialization(
             assert pool.pin_count(snapshot.active_path) == 1
         assert pool.pin_count(snapshot.active_path) == 0
     assert len(connector.calls) == opened_count
+
+
+@pytest.mark.parametrize('available_readers', [0, 1, 2])
+def test_reader_preparation_reports_actual_available_participants(tmp_path, monkeypatch, available_readers):
+    access, snapshot, pools, _, _, _ = _coverage_access(tmp_path, monkeypatch)
+
+    def unavailable(*args, **kwargs):
+        raise GrafxDatabasePoolError('reader unavailable', reason='pool_open_failed')
+
+    for pool in pools[available_readers:]:
+        monkeypatch.setattr(pool, 'get', unavailable)
+    assert access.prepare_query_readers(snapshot.scope_id) is (available_readers > 0)
+    with access.query_execution.scope(snapshot.scope_id, timeout_ms=500, existing_only=True):
+        if available_readers:
+            with access.read_database_scope(snapshot.scope_id) as reader:
+                assert reader.path == str(snapshot.active_path)
+        else:
+            with pytest.raises(GraphCapabilityUnavailable):
+                with access.read_database_scope(snapshot.scope_id):
+                    pytest.fail('unavailable reader admitted')
+    assert all(pool.pin_count(snapshot.active_path) == 0 for pool in pools)
+    for pool in pools:
+        pool.close_all()
+
+
+def test_no_configured_readers_cannot_report_prepared(tmp_path, monkeypatch):
+    access, snapshot, _, connector, _, _ = _coverage_access(tmp_path, monkeypatch)
+    access.query_pools = ()
+    assert access.prepare_query_readers(snapshot.scope_id) is False
+    assert connector.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('readiness', [None, False, True])
+async def test_direct_lifecycle_requires_explicit_reader_readiness(tmp_path, monkeypatch, readiness):
+    import okto_pulse.community.adapters.grafx_graph_lifecycle as lifecycle_module
+    database = SimpleNamespace(closed=False, identity=SimpleNamespace(page_size=PAGE_SIZE))
+    monkeypatch.setattr(lifecycle_module, 'ensure_current_grafx_board_schema', lambda *args, **kwargs: None)
+    lifecycle = lifecycle_module.CommunityGrafxGraphLifecycle(
+        lambda _: database, lambda _: tmp_path, lambda _: None, lambda *args: None,
+        prepare_query_readers=lambda _: readiness)
+    handle = await lifecycle.open('board-readiness')
+    assert handle.opened is True
+    assert handle.readers_prepared is (readiness is True)
+
+
+@pytest.mark.asyncio
+async def test_routed_open_writer_success_does_not_imply_reader_success(tmp_path, monkeypatch):
+    connector = _GrafxConnector()
+    bundle = _build(tmp_path / 'kg', connector)
+    snapshot = bundle.initialize_board_route('board-open-readers-unavailable')
+    monkeypatch.setattr(composition, 'validate_current_grafx_schema', lambda _: 'fingerprint')
+    monkeypatch.setattr(composition, 'read_current_grafx_schema_version', lambda _: '1')
+
+    def unavailable(*args, **kwargs):
+        raise GrafxDatabasePoolError('reader unavailable', reason='pool_open_failed')
+
+    for pool in bundle.grafx_query_pools:
+        monkeypatch.setattr(pool, 'get', unavailable)
+    handle = await bundle.graph_lifecycle.open(snapshot.scope_id)
+    assert handle.opened is True
+    assert handle.readers_prepared is False
+    assert not any(connector.read_only_calls)
 
 
 @pytest.mark.asyncio
