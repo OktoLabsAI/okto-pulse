@@ -33,6 +33,7 @@ from okto_pulse.community.api.cards_pagination import (
     validate_card_list_query,
 )
 from okto_pulse.community.api.deps import (
+    get_read_unit_of_work,
     get_unit_of_work,
     get_unit_of_work_factory,
 )
@@ -221,7 +222,7 @@ async def get_board(
 async def activate_board_runtime(
     board_id: str,
     principal: Principal = Depends(require_principal),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+    uow: PulseUnitOfWork = Depends(get_read_unit_of_work),
 ):
     """Activate existing graph readers under Core authorization and ownership."""
     from okto_pulse.core.kg.guarded_write import GuardedWriteError

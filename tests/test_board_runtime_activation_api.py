@@ -10,7 +10,7 @@ from httpx import ASGITransport, AsyncClient
 
 from okto_pulse.community.api import boards
 from okto_pulse.community.api.auth_deps import require_principal
-from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.deps import get_read_unit_of_work, get_unit_of_work
 from okto_pulse.core.application.use_cases.base import ActorContext, EntityNotFoundError, PermissionDeniedError
 from okto_pulse.core.kg.guarded_write import GuardedWriteError
 from okto_pulse.core.kg.interfaces.graph_errors import GraphCapabilityUnavailable, GraphCorruption
@@ -31,6 +31,7 @@ async def api(monkeypatch):
     app.include_router(boards.router, prefix='/boards')
     app.dependency_overrides[require_principal] = lambda: principal
     app.dependency_overrides[get_unit_of_work] = lambda: uow
+    app.dependency_overrides[get_read_unit_of_work] = lambda: uow
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
         yield SimpleNamespace(client=client, actor=actor, principal=principal, uow=uow,
                               actor_calls=actor_calls, execute=execute)
@@ -91,3 +92,93 @@ async def test_unexpected_programming_error_is_not_reported_as_optional_graph_fa
     api.execute.side_effect = ValueError('programming failure')
     with pytest.raises(ValueError, match='programming failure'):
         await boards.activate_board_runtime('board', principal=api.principal, uow=api.uow)
+
+
+@pytest_asyncio.fixture
+async def wal_activation(tmp_path, monkeypatch):
+    """Real REST dependency/WAL, representative read and simulated graph wait."""
+    from sqlalchemy import event
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+    from okto_pulse.community.adapters.sqlalchemy_database import install_community_sqlite_pragmas
+    from okto_pulse.community.adapters.current_relational_schema import current_schema_contract, initialize_current_schema
+    from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import CommunitySemanticSession
+    from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWorkFactory
+    from okto_pulse.core.ports.authentication import Principal
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'activation.db'}")
+    install_community_sqlite_pragmas(engine)
+    statements = []
+
+    @event.listens_for(engine.sync_engine, 'connect')
+    def bounded_contention(connection, _record):
+        # A lock regression fails promptly; this changes no production timeout.
+        cursor = connection.cursor()
+        cursor.execute('PRAGMA busy_timeout=100')
+        cursor.close()
+
+    @event.listens_for(engine.sync_engine, 'before_cursor_execute')
+    def capture(_connection, _cursor, statement, _params, _context, _many):
+        statements.append(statement)
+
+    await initialize_current_schema(engine, current_schema_contract())
+    async with engine.connect() as connection:
+        assert (await connection.exec_driver_sql('PRAGMA journal_mode')).scalar() == 'wal'
+    sessions = async_sessionmaker(engine, class_=AsyncSession,
+        sync_session_class=CommunitySemanticSession, expire_on_commit=False)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def activate(_self, command, *, actor, uow):
+        # Actual SQL read through the public service proves admission, not just
+        # an empty handler that could miss transaction acquisition entirely.
+        assert actor.board_id == command.board_id
+        await uow.services.get_application_record(entity='board', record_id=command.board_id)
+        entered.set()
+        await release.wait()
+        return {'board_id': command.board_id, 'state': 'ready'}
+
+    monkeypatch.setattr(boards.ActivateBoardRuntimeUseCase, 'execute', activate)
+    app = FastAPI()
+    app.state.runtime_composition = SimpleNamespace(uow_factory=CommunityUnitOfWorkFactory(sessions))
+    app.include_router(boards.router, prefix='/boards')
+    app.dependency_overrides[require_principal] = lambda: Principal(subject='activation-user', realm_id='local')
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+            statements.clear()
+            yield SimpleNamespace(client=client, engine=engine, entered=entered,
+                                  release=release, statements=statements)
+    finally:
+        release.set()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_activation_does_not_hold_sqlite_writer_during_native_work(wal_activation):
+    runtime = wal_activation
+    request = asyncio.create_task(runtime.client.post('/boards/board/runtime/activate'))
+    try:
+        await asyncio.wait_for(runtime.entered.wait(), timeout=5)
+        # Simulated graph work remains suspended while an independent transaction
+        # writes and commits. BEGIN IMMEDIATE on the request breaks this.
+        async with runtime.engine.begin() as writer:
+            await writer.exec_driver_sql("INSERT INTO app_settings (key, value) VALUES ('activation_writer_probe', '1')")
+        assert not request.done()
+        assert not any(sql.strip().upper() == 'BEGIN IMMEDIATE' for sql in runtime.statements)
+    finally:
+        runtime.release.set()
+        response = await asyncio.wait_for(request, timeout=5)
+    assert response.status_code == 200
+    async with runtime.engine.connect() as reader:
+        assert (await reader.exec_driver_sql("SELECT value FROM app_settings WHERE key='activation_writer_probe'")).scalar() == '1'
+
+
+@pytest.mark.asyncio
+async def test_activation_reads_while_an_unrelated_sqlite_writer_is_active(wal_activation):
+    runtime = wal_activation
+    runtime.release.set()
+    async with runtime.engine.begin() as writer:
+        await writer.exec_driver_sql("INSERT INTO app_settings (key, value) VALUES ('activation_writer_probe', '1')")
+        response = await asyncio.wait_for(
+            runtime.client.post('/boards/board/runtime/activate'), timeout=5)
+        assert response.status_code == 200
+        assert runtime.entered.is_set()
+        assert not any(sql.strip().upper() == 'BEGIN IMMEDIATE' for sql in runtime.statements)
