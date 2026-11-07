@@ -742,113 +742,184 @@ async def test_native_faults_never_ack_matching_counts_without_full_proof(native
         _save_report(f'r8-fault-{fault}', report, tmp_path)
 
 
+class _R8AcceptanceRun:
+    """Diagnostics for this isolated test run, never an accepted result receipt."""
+
+    def __init__(self):
+        # Keep artifacts after failure: the native observer intentionally returns
+        # only counters and discards the unittest worker's console output.
+        self.root = Path(tempfile.mkdtemp(prefix='pulse-r8-acceptance-artifacts-'))
+        self.deadline = time.monotonic() + 1800
+        self.stages = []
+        self._write_summary('running')
+
+    def _write_summary(self, state, exception_type=None):
+        value = {'schema_version': 'r8-acceptance-diagnostics/v1',
+                 'state': state, 'exception_type': exception_type,
+                 'native_result_accepted': False, 'stages': self.stages}
+        pending = self.root / 'summary.pending'
+        pending.write_text(json.dumps(value, indent=2), encoding='utf-8')
+        pending.replace(self.root / 'summary.json')
+
+    def stage(self, name, selectors, cwd, *, timeout=900, expected_count=None, required_names=()):
+        directory = self.root / name
+        directory.mkdir()
+        junit = directory / 'results.xml'
+        environment = os.environ.copy()
+        environment['OKTO_PULSE_R8_REPORT_DIR'] = str(directory)
+        observation = {'name': name, 'state': 'running', 'expected_count': expected_count,
+                       'case_count': None, 'failures': None, 'errors': None, 'skipped': None,
+                       'exception_type': None, 'exit_code': None}
+        self.stages.append(observation)
+        self._write_summary('running')
+        process = None
+        try:
+            remaining = self.deadline - time.monotonic()
+            # Reserve cleanup time inside the existing aggregate budget.
+            if remaining <= 10:
+                raise TimeoutError('aggregate deadline reached')
+            arguments = ['rtk', 'proxy', sys.executable, '-B', '-m', 'pytest',
+                         *map(str, selectors), '-q', '--tb=short', '-p', 'no:cacheprovider',
+                         '--junitxml=' + str(junit)]
+            process = subprocess.Popen(arguments, cwd=cwd, env=environment,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       text=True, encoding='utf-8', errors='replace',
+                                       start_new_session=os.name != 'nt')
+            try:
+                process.communicate(timeout=min(timeout, remaining - 10))
+            except subprocess.TimeoutExpired:
+                # The timeout covers rtk and its pytest child; do not leave a
+                # live child writing into a directory the caller will remove.
+                try:
+                    if os.name == 'nt':
+                        subprocess.run(['rtk', 'proxy', 'taskkill', '/PID', str(process.pid), '/T', '/F'],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                       timeout=max(0.1, min(5, self.deadline - time.monotonic())))
+                    else:
+                        import signal
+                        os.killpg(process.pid, signal.SIGKILL)
+                    process.communicate(timeout=max(0.1, min(5, self.deadline - time.monotonic())))
+                except (OSError, subprocess.TimeoutExpired) as cleanup_error:
+                    observation['cleanup_exception_type'] = type(cleanup_error).__name__
+                raise
+            observation['exit_code'] = process.returncode
+            assert process.returncode == 0, 'pytest did not complete successfully'
+            assert junit.is_file(), 'missing junit result'
+            cases = ET.parse(junit).getroot().findall('.//testcase')
+            assert cases and all(case.attrib.get('name') for case in cases), 'incomplete testcase inventory'
+            if expected_count is not None:
+                assert len(cases) == expected_count, 'incomplete testcase count'
+            names = {case.attrib['name'].split('[')[0] for case in cases}
+            assert set(required_names) <= names, 'required test absent'
+            assert not any(case.find(tag) is not None for case in cases
+                           for tag in ('failure', 'error', 'skipped')), 'nonpassing testcase'
+            observation['state'] = 'passed'
+            return directory
+        except BaseException as error:
+            observation['state'] = 'failed'
+            observation['exception_type'] = type(error).__name__
+            # Never serialize arbitrary exception messages, commands or captured
+            # console output. Fixture artifacts contain isolated synthetic data.
+            raise
+        finally:
+            if process is not None:
+                observation['exit_code'] = process.poll()
+                observation['process_state'] = 'exited' if process.returncode is not None else 'unconfirmed'
+            if junit.is_file():
+                try:
+                    cases = ET.parse(junit).getroot().findall('.//testcase')
+                    observation.update(case_count=len(cases),
+                        failures=sum(case.find('failure') is not None for case in cases),
+                        errors=sum(case.find('error') is not None for case in cases),
+                        skipped=sum(case.find('skipped') is not None for case in cases),
+                        anonymous_cases=sum(not case.attrib.get('name') for case in cases))
+                except (OSError, ET.ParseError) as error:
+                    observation['result_read_exception'] = type(error).__name__
+            self._write_summary('failed' if observation['state'] != 'passed' else 'running',
+                                observation['exception_type'])
+
+    def finish(self):
+        assert self.stages and all(stage['state'] == 'passed' for stage in self.stages)
+        self._write_summary('passed')
+
+    def fail(self, error):
+        self._write_summary('failed', type(error).__name__)
+
+
 class R8PopulationAcceptance(unittest.TestCase):
     """Independent native-runner entry for exact populations and read invariance."""
 
-    __test__ = False  # Native unittest entry only; avoid duplicate pytest runs.
+    __test__ = False
 
     def test_real_population_boundaries_and_invariance(self):
-        root = Path(__file__).resolve().parents[1]
-        with tempfile.TemporaryDirectory(prefix='pulse-r8-populations-') as temp:
-            reports = Path(os.environ.get('OKTO_PULSE_R8_REPORT_DIR', temp))
-            reports.mkdir(parents=True, exist_ok=True)
-            junit = reports / 'results.xml'
-            environment = os.environ.copy()
-            environment['OKTO_PULSE_R8_REPORT_DIR'] = str(reports)
-            result = subprocess.run(
-                ['rtk', 'proxy', sys.executable, '-B', '-m', 'pytest',
-                 str(Path(__file__)) + '::test_native_count_populations_match_oracle_without_timing_gate',
-                 '-q', '-s', '--tb=long', '-p', 'no:cacheprovider',
-                 '--junitxml=' + str(junit)],
-                cwd=root, env=environment, capture_output=True, text=True,
-                encoding='utf-8', errors='replace', timeout=900,
-            )
-            (reports / 'pytest-output.log').write_text(result.stdout + result.stderr, encoding='utf-8')
-            self.assertEqual(result.returncode, 0, (result.stdout + result.stderr)[-12000:])
-            cases = ET.parse(junit).getroot().findall('.//testcase')
-            self.assertEqual(len(cases), 1)
-            self.assertTrue(all(not any(case.find(tag) is not None for tag in
-                                       ('failure', 'error', 'skipped')) for case in cases))
+        run = getattr(self, '_acceptance_run', None) or _R8AcceptanceRun()
+        try:
+            reports = run.stage('population',
+                [str(Path(__file__)) + '::test_native_count_populations_match_oracle_without_timing_gate'],
+                Path(__file__).resolve().parents[1], expected_count=1)
             observations = list(reports.glob('r8-*.json'))
             self.assertEqual([path.name for path in observations], ['r8-native-populations.json'])
             self.assertTrue(json.loads(observations[0].read_text(encoding='utf-8'))['completed'])
+            if not hasattr(self, '_acceptance_run'):
+                run.finish()
+        except BaseException as error:
+            run.fail(error)
+            raise
 
 
 class R9AcknowledgementAcceptance(unittest.TestCase):
-    """Exact native-runner entry for the already specified R9 regression.
+    """All existing 25 cases, split only at independent fixture boundaries."""
 
-    The server supplies immutable Core/Community snapshots. The selected pytest
-    cases retain their real providers and fixtures. No benchmark is selected.
-    """
-
-    __test__ = False  # Native unittest entry only; avoid duplicate pytest runs.
+    __test__ = False
 
     def test_real_provider_acknowledgement_boundaries(self):
+        run = getattr(self, '_acceptance_run', None) or _R8AcceptanceRun()
         root = Path(__file__).resolve().parents[1]
-        with tempfile.TemporaryDirectory(prefix='pulse-r9-acceptance-') as temp:
-            reports = Path(temp)
-            junit = reports / 'results.xml'
-            environment = os.environ.copy()
-            environment['OKTO_PULSE_R8_REPORT_DIR'] = str(reports)
-            result = subprocess.run(
-                ['rtk', 'proxy', sys.executable, '-B', '-m', 'pytest',
-                 str(Path(__file__)) + '::test_fifty_real_events_preserve_each_inventory_effect_and_durable_ack',
-                 str(Path(__file__)) + '::test_native_faults_never_ack_matching_counts_without_full_proof',
-                 str(root / 'tests/test_global_outbox_commit_fence.py'),
-                 '-q', '--tb=short', '-p', 'no:cacheprovider',
-                 '--junitxml=' + str(junit)],
-                cwd=root, env=environment, capture_output=True, text=True,
-                encoding='utf-8', errors='replace', timeout=900,
-            )
-            self.assertEqual(result.returncode, 0, (result.stdout + result.stderr)[-12000:])
-            cases = ET.parse(junit).getroot().findall('.//testcase')
-            self.assertEqual(len(cases), 25)
-            self.assertTrue(all(not any(c.find(tag) is not None for tag in
-                                        ('failure', 'error', 'skipped')) for c in cases))
-            observations = [json.loads(p.read_text(encoding='utf-8'))
-                            for p in reports.glob('r8-*.json')]
-            self.assertEqual(len(observations), 17)
-            self.assertTrue(all(item['completed'] for item in observations))
+        groups = (
+            ('events', [str(Path(__file__)) + '::test_fifty_real_events_preserve_each_inventory_effect_and_durable_ack'], 1, 1),
+            ('faults', [str(Path(__file__)) + '::test_native_faults_never_ack_matching_counts_without_full_proof'], 16, 16),
+            ('commit-fence', [str(root / 'tests/test_global_outbox_commit_fence.py')], 8, 0),
+        )
+        try:
+            observed_cases = 0
+            for name, selectors, expected_count, expected_artifacts in groups:
+                reports = run.stage(name, selectors, root, expected_count=expected_count)
+                observations = [json.loads(path.read_text(encoding='utf-8'))
+                                for path in reports.glob('r8-*.json')]
+                self.assertEqual(len(observations), expected_artifacts)
+                self.assertTrue(all(item['completed'] for item in observations))
+                observed_cases += run.stages[-1]['case_count']
+            self.assertEqual(observed_cases, 25)
+            if not hasattr(self, '_acceptance_run'):
+                run.finish()
+        except BaseException as error:
+            run.fail(error)
+            raise
 
 
 class R8ReproducibilityAcceptance(unittest.TestCase):
-    """Combine native correctness with the existing paired Core log contract."""
+    """Share one 1800s budget across population, event/fault and log checks."""
 
     __test__ = False
 
     def test_complete_results_and_bounded_operational_logs(self):
-        suite = unittest.TestSuite([
-            R8PopulationAcceptance('test_real_population_boundaries_and_invariance'),
-            R9AcknowledgementAcceptance('test_real_provider_acknowledgement_boundaries'),
-        ])
-        result = unittest.TestResult()
-        suite.run(result)
-        self.assertEqual(result.testsRun, 2)
-        self.assertFalse(result.skipped)
-        self.assertFalse(result.expectedFailures)
-        self.assertFalse(result.unexpectedSuccesses)
-        self.assertTrue(result.wasSuccessful(), repr(result.errors + result.failures))
-
-        # The registered companion is an immutable checkout, not the installed
-        # package or an arbitrary workspace supplied by the scenario caller.
-        core = Path(os.environ['OKTO_PULSE_CORE_REPO']).resolve(strict=True)
-        with tempfile.TemporaryDirectory(prefix='pulse-r8-log-contract-') as temp:
-            junit = Path(temp) / 'results.xml'
-            observed = subprocess.run(
-                ['rtk', 'proxy', sys.executable, '-B', '-m', 'pytest',
-                 str(core / 'tests/test_e2e043_outbox_observability.py'),
-                 '-q', '--tb=short', '-p', 'no:cacheprovider',
-                 '--junitxml=' + str(junit)],
-                cwd=core, env=os.environ.copy(), capture_output=True, text=True,
-                encoding='utf-8', errors='replace', timeout=120,
-            )
-            self.assertEqual(observed.returncode, 0, (observed.stdout + observed.stderr)[-12000:])
-            cases = ET.parse(junit).getroot().findall('.//testcase')
-            names = {case.attrib['name'].split('[')[0] for case in cases}
-            self.assertTrue({
-                'test_observations_correlate_phases_only_ack_after_commit',
-                'test_failed_or_cancelled_ack_never_logs_delivered',
-                'test_graph_failure_records_pending_not_delivery_and_redacts',
-            } <= names)
-            self.assertTrue(all(not any(case.find(tag) is not None for tag in
-                                       ('failure', 'error', 'skipped')) for case in cases))
+        run = _R8AcceptanceRun()
+        try:
+            for case_type, method in (
+                (R8PopulationAcceptance, 'test_real_population_boundaries_and_invariance'),
+                (R9AcknowledgementAcceptance, 'test_real_provider_acknowledgement_boundaries'),
+            ):
+                case = case_type(method)
+                case._acceptance_run = run
+                getattr(case, method)()
+            core = Path(os.environ['OKTO_PULSE_CORE_REPO']).resolve(strict=True)
+            run.stage('logs', [str(core / 'tests/test_e2e043_outbox_observability.py')], core,
+                timeout=120, required_names=(
+                    'test_observations_correlate_phases_only_ack_after_commit',
+                    'test_failed_or_cancelled_ack_never_logs_delivered',
+                    'test_graph_failure_records_pending_not_delivery_and_redacts',
+                ))
+            run.finish()
+        except BaseException as error:
+            run.fail(error)
+            raise
