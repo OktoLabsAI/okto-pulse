@@ -47,6 +47,7 @@ def test_coverage_source_lookup_uses_existing_index_without_table_scan(real_stor
     assert len(results) == 2
     assert all(result.statistics.get('rows_scanned', 0) == 0 for result in results)
     assert all(any(node.label == 'IndexSeek' for node in result.plan.walk()) for result in results)
+    assert all(not any(node.label == 'SortRows' for node in result.plan.walk()) for result in results)
 
 
 def test_native_read_is_scoped_bounded_and_read_only(real_store):

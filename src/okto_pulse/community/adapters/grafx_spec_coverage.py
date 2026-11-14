@@ -29,7 +29,9 @@ def read_spec_coverage_graph(reader, scope):
             rows = _rows(reader.execute(f'MATCH (n:{kind}) WHERE n.source_artifact_ref = $ref '
                 "AND (n.superseded_by IS NULL OR n.superseded_by = '') "
                 f'AND {tpl.active_read_filter_clause("n")} '
-                'RETURN n.id, n.source_artifact_ref ORDER BY n.id LIMIT 2',
+                # Any two matches reject ambiguity; ordering them is unnecessary
+                # and makes the native reader open a spill file per lookup.
+                'RETURN n.id, n.source_artifact_ref LIMIT 2',
                 {'ref': ref}))
             for identity, observed_ref in rows:
                 key = (kind, observed_ref)
