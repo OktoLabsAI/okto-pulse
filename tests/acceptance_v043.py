@@ -388,7 +388,9 @@ class CoverageAcceptance(PairedAcceptance):
             timeout=600)
 
     def test_reader_admission_cancellation_and_lifecycle(self):
+        self._pytest('core', 'tests/test_board_runtime_activation.py')
         self._pytest('community',
+            'tests/test_board_runtime_activation_api.py',
             'tests/test_coverage_responsiveness_acceptance.py',
             'tests/test_grafx_query_execution_scope.py::test_nested_scope_cannot_extend_or_change_board_and_restores_context',
             'tests/test_grafx_query_execution_scope.py::test_native_shared_deadline_ends_read_and_releases_writer',
@@ -404,6 +406,8 @@ class CoverageAcceptance(PairedAcceptance):
             'tests/test_routed_board_graph_composition.py::test_prepared_readers_pin_exact_generation_and_release_on_failure',
             'tests/test_routed_board_graph_composition.py::test_lifecycle_prepares_after_durability_without_removing_any_step',
             'tests/test_routed_board_graph_composition.py::test_optional_reader_preparation_failure_does_not_rewrite_durability',
+            'tests/test_routed_board_graph_composition.py::test_first_reader_join_checkpoints_transparently_when_wal_is_ahead',
+            'tests/test_routed_board_graph_composition.py::test_core_activation_recovers_after_real_admission_contention',
             'tests/test_grafx_read_lanes.py::test_scope_covers_query_and_cleanup_and_releases_before_retry',
             'tests/test_grafx_query_deadline.py::test_native_deadline_finishes_and_releases_read_resources',
             'tests/test_spec_coverage_read.py::test_expired_absolute_deadline_never_reads_or_starts_savepoint',
@@ -415,4 +419,6 @@ class CoverageAcceptance(PairedAcceptance):
     def test_coverage_modal_refresh_scope_and_help(self):
         self._react('src/components/specs/SpecCoveragePanel.test.tsx',
             'src/components/specs/__tests__/SpecCoveragePanel.persisted.test.tsx',
-            'src/components/specs/__tests__/SpecModal.validationTabs.test.tsx')
+            'src/components/specs/__tests__/SpecModal.validationTabs.test.tsx',
+            'src/hooks/useBoardRuntimeActivation.test.tsx',
+            'src/components/help/__tests__/HelpPanel.deliveryStatus.test.tsx')
