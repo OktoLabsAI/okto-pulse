@@ -50,7 +50,7 @@ def test_coverage_source_lookup_uses_existing_index_without_table_scan(real_stor
     assert all(not any(node.label == 'SortRows' for node in result.plan.walk()) for result in results)
 
 
-def test_native_read_is_scoped_bounded_and_read_only(real_store):
+def test_native_read_is_scoped_bounded_and_read_only(real_store, monkeypatch):
     store, database, _, _ = real_store
     board = native.BOARD_ID
     root = ('Entity', 'spec:coverage')
@@ -65,6 +65,21 @@ def test_native_read_is_scoped_bounded_and_read_only(real_store):
         store.create_edge(board, 'belongs_to', identity, 'coverage-root', {
             'confidence': 1.0, 'rule_id': edge[5], 'layer': edge[6], 'created_by': edge[7],
         }, from_type='Requirement', to_type='Entity')
+    relation_plans = []
+    read = store._read
+
+    def observed_read(board_id, *, operation, callback):
+        def observe(reader):
+            class Reader:
+                def execute(self, query, params):
+                    result = reader.execute(query, params)
+                    if 'targets' in params:
+                        relation_plans.append(result.plan)
+                    return result
+            return callback(Reader())
+        return read(board_id, operation=operation, callback=observe)
+
+    monkeypatch.setattr(store, '_read', observed_read)
     before = database.transactions
     result = store.read_spec_coverage_graph(board, scope)
     assert set(result.nodes) == {root, child}
@@ -73,6 +88,60 @@ def test_native_read_is_scoped_bounded_and_read_only(real_store):
     without_link = store.read_spec_coverage_graph(board, replace(scope, relations=()))
     assert without_link.relations == (edge,)
     assert database.transactions == before
+    assert relation_plans
+    for plan in relation_plans:
+        nodes = tuple(plan.walk())
+        assert any(node.label == 'IndexSeek' and node.variable == 's'
+                   and node.key_columns == ('id',) for node in nodes)
+        assert not any(node.label == 'NodeScan' for node in nodes)
+
+
+@pytest.mark.parametrize('cap,first_rows,last_rows,expected_count,truncated', [
+    (0, 1, 0, 0, True),
+    (1, 1, 0, 1, False),
+    (1, 1, 1, 1, True),
+    (1, 2, 0, 1, True),
+    (2, 1, 1, 2, False),
+])
+def test_relationship_anchor_reads_preserve_global_prefix_and_exact_cap(
+        monkeypatch, cap, first_rows, last_rows, expected_count, truncated):
+    from okto_pulse.community.adapters import grafx_spec_coverage as coverage
+
+    # Source-reference order deliberately differs from native id order.
+    identities = {'spec:bounded:fr:first': ('z', 'Requirement'),
+                  'spec:bounded:fr:last': ('a', 'Requirement'),
+                  'spec:bounded': ('root', 'Entity')}
+    scope = SpecCoverageGraphScope(tuple((kind, ref) for ref, (_, kind) in identities.items()), ())
+    monkeypatch.setattr(coverage, 'MAX_SPEC_COVERAGE_FACTS', cap)
+    monkeypatch.setattr(coverage, 'PULSE_RELATIONSHIP_LAYOUT', SimpleNamespace(entries=(
+        SimpleNamespace(from_type='Requirement', logical_type='belongs_to', to_type='Entity'),)))
+    calls = []
+    edge_rows = [(identity, 'root', f'rule-{i}', 'deterministic', 'worker_layer1')
+                 for identity, count in [('a', first_rows), ('z', last_rows)]
+                 for i in range(count)]
+
+    class Reader:
+        def execute(self, query, params):
+            if 'ref' in params:
+                return SimpleNamespace(rows=((identities[params['ref']][0], params['ref']),))
+            calls.append(params)
+            return SimpleNamespace(rows=tuple(row for row in edge_rows
+                if row[0] == params['source'])[:params['bound']])
+
+    result = coverage.read_spec_coverage_graph(Reader(), scope)
+    refs = {identity: (kind, ref) for ref, (identity, kind) in identities.items()}
+    expected = tuple(sorted((*refs[row[0]], 'belongs_to', *refs[row[1]], *row[2:])
+                            for row in edge_rows[:cap]))
+    assert result.relations == expected
+    assert len(result.relations) == expected_count
+    assert result.truncated is truncated
+    assert all(call['bound'] >= 1 for call in calls)
+    if cap == 0:
+        assert calls == []
+    elif first_rows == cap:
+        # The empty or overflowing last anchor is still observed with LIMIT 1.
+        assert [call['source'] for call in calls] == ['a', 'z']
+        assert calls[-1]['bound'] == 1
 
 
 def test_duplicate_current_identity_fails_instead_of_selecting_an_arbitrary_node(real_store):

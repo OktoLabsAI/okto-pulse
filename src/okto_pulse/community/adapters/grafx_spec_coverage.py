@@ -51,7 +51,7 @@ def read_spec_coverage_graph(reader, scope):
     for source_type, relation, target_type in sorted(layouts):
         if source_type not in NODE_TYPES or target_type not in NODE_TYPES or relation not in RELATIONS:
             raise ValueError('spec_coverage_graph_layout_invalid')
-        source_ids = [identity for kind, identity in by_id if kind == source_type]
+        source_ids = sorted(identity for kind, identity in by_id if kind == source_type)
         target_ids = [identity for kind, identity in by_id if kind == target_type]
         if not source_ids or not target_ids:
             continue
@@ -59,18 +59,26 @@ def read_spec_coverage_graph(reader, scope):
             truncated = True
             break
         physical = resolve_relationship_table(relation, source_type, target_type)
-        rows = _rows(reader.execute(
-            f'MATCH (s:{source_type})-[r:{physical}]->(t:{target_type}) '
-            'WHERE s.id IN $sources AND t.id IN $targets '
-            f'AND {tpl.active_read_filter_clause("s")} AND {tpl.active_read_filter_clause("t")} '
-            'RETURN s.id, t.id, r.rule_id, r.layer, r.created_by '
-            'ORDER BY s.id, t.id, r.rule_id LIMIT $bound',
-            {'sources': source_ids, 'targets': target_ids, 'bound': remaining + 1}))
-        if len(rows) > remaining:
-            rows = rows[:remaining]
-            truncated = True
-        remaining -= len(rows)
-        for source_id, target_id, rule, layer, author in rows:
-            edges.add((*by_id[source_type, source_id], relation, *by_id[target_type, target_id],
-                str(rule or 'unclassified'), str(layer or 'unknown'), str(author or 'unknown')))
+        # The connected IN/IN predicate falls back to a whole source-node scan.
+        # Scalar primary-key anchors use the existing index. Sorted anchors and
+        # the unchanged per-anchor ordering preserve the layout's global prefix.
+        for source_id in source_ids:
+            rows = _rows(reader.execute(
+                f'MATCH (s:{source_type})-[r:{physical}]->(t:{target_type}) '
+                'WHERE s.id = $source AND t.id IN $targets '
+                f'AND {tpl.active_read_filter_clause("s")} AND {tpl.active_read_filter_clause("t")} '
+                'RETURN s.id, t.id, r.rule_id, r.layer, r.created_by '
+                'ORDER BY s.id, t.id, r.rule_id LIMIT $bound',
+                {'source': source_id, 'targets': target_ids, 'bound': remaining + 1}))
+            if len(rows) > remaining:
+                rows = rows[:remaining]
+                truncated = True
+            remaining -= len(rows)
+            for observed_source, target_id, rule, layer, author in rows:
+                edges.add((*by_id[source_type, observed_source], relation, *by_id[target_type, target_id],
+                    str(rule or 'unclassified'), str(layer or 'unknown'), str(author or 'unknown')))
+            if truncated:
+                break
+            # At exactly zero, later anchors still get LIMIT 1: only an actual
+            # extra row proves this layout was truncated, not an empty anchor.
     return SpecCoverageGraphFacts(tuple(sorted(observed)), tuple(sorted(edges)), truncated=truncated)
