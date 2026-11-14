@@ -21,20 +21,22 @@ def read_spec_coverage_graph(reader, scope):
     observed = set()
     for kind in sorted({kind for kind, _ in expected}):
         refs = sorted(ref for typ, ref in expected if typ == kind)
-        rows = _rows(reader.execute(f'MATCH (n:{kind}) WHERE n.source_artifact_ref IN $refs '
-            # Supersession preserves historical nodes with the same source ref.
-            # Only the current head participates in this coverage observation;
-            # two current heads still fail the identity check below.
-            "AND (n.superseded_by IS NULL OR n.superseded_by = '') "
-            f'AND {tpl.active_read_filter_clause("n")} '
-            'RETURN n.id, n.source_artifact_ref ORDER BY n.id LIMIT $bound',
-            {'refs': refs, 'bound': len(refs) + 1}))
-        for identity, ref in rows:
-            key = (kind, ref)
-            if key not in expected or key in observed:
-                raise ValueError('spec_coverage_ambiguous_projection')
-            observed.add(key)
-            by_id[kind, identity] = key
+        for ref in refs:
+            # Grafx resolves scalar equality through the existing source index;
+            # IN on this secondary property instead scans the whole node table.
+            # Two current matches are sufficient to refuse an ambiguous source.
+            # Keep every lookup in the caller's same read transaction/deadline.
+            rows = _rows(reader.execute(f'MATCH (n:{kind}) WHERE n.source_artifact_ref = $ref '
+                "AND (n.superseded_by IS NULL OR n.superseded_by = '') "
+                f'AND {tpl.active_read_filter_clause("n")} '
+                'RETURN n.id, n.source_artifact_ref ORDER BY n.id LIMIT 2',
+                {'ref': ref}))
+            for identity, observed_ref in rows:
+                key = (kind, observed_ref)
+                if key != (kind, ref) or key in observed:
+                    raise ValueError('spec_coverage_ambiguous_projection')
+                observed.add(key)
+                by_id[kind, identity] = key
     # Every native label comes from a closed vocabulary/layout resolver.
     # Include closed layouts even when the last source link has disappeared;
     # deriving branches only from expected edges would conceal stale relations.

@@ -22,6 +22,33 @@ real_store = native.real_store
 ledger = relational.ledger
 
 
+def test_coverage_source_lookup_uses_existing_index_without_table_scan(real_store):
+    from okto_pulse.community.adapters.grafx_spec_coverage import read_spec_coverage_graph
+    from okto_pulse.community.adapters.grafx_source_indexes import pulse_source_index_name
+
+    store, database, _, _ = real_store
+    key = ('Requirement', 'spec:indexed-coverage:fr:one')
+    for identity, ref in [('indexed-wanted', key[1]), ('indexed-foreign', 'spec:indexed-other:fr:one')]:
+        store.create_node(native.BOARD_ID, key[0], identity, native._attrs(identity, ref, 'coverage'))
+    assert database.indexes.index(pulse_source_index_name('Requirement')) is not None
+    results = []
+    with database.begin('read') as transaction:
+        class Reader:
+            def execute(self, query, params):
+                result = transaction.execute(query, params)
+                if 'ref' in params:
+                    results.append(result)
+                return result
+
+        observed = read_spec_coverage_graph(Reader(), SpecCoverageGraphScope(
+            (key, ('Requirement', 'spec:indexed-coverage:fr:missing')), ()))
+    assert observed.nodes == (key,)
+    assert observed.relations == ()
+    assert len(results) == 2
+    assert all(result.statistics.get('rows_scanned', 0) == 0 for result in results)
+    assert all(any(node.label == 'IndexSeek' for node in result.plan.walk()) for result in results)
+
+
 def test_native_read_is_scoped_bounded_and_read_only(real_store):
     store, database, _, _ = real_store
     board = native.BOARD_ID
