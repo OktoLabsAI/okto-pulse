@@ -204,6 +204,32 @@ async def test_linked_test_card_without_ledger_proof_stays_missing(ledger):
 
 
 @pytest.mark.asyncio
+async def test_coverage_preserves_signed_snapshot_without_unused_card_summaries(ledger, monkeypatch):
+    session, store, _ = ledger
+    implementation = await delivery_fixture.record(store, delivery_fixture.command())
+    await delivery_fixture.record(store, delivery_fixture.command(
+        'test', implementation_ids=[implementation['id']]))
+    await session.commit()
+    expected, per_card = await store.load_rollup_snapshot(BOARD, SPEC)
+    assert per_card
+    assert evaluate_delivery_coverage(expected).allowed
+    # These presentation-only reads must not make required Coverage proof
+    # unavailable. The real authenticated rollup and its fences still execute.
+    for name in ('_selection_summary', '_accumulated_impact',
+                 'report_impact_status', '_progress_summary'):
+        monkeypatch.setattr(store, name, AsyncMock(
+            side_effect=AssertionError('Coverage must not load discarded card summaries')))
+    rollup = AsyncMock(wraps=store.load_rollup_snapshot)
+    monkeypatch.setattr(store, 'load_rollup_snapshot', rollup)
+    observed = await CommunitySpecCoverageReader(session, delivery_store=store).read(
+        QUERY, timeout_ms=15000)
+    rollup.assert_awaited_once_with(BOARD, SPEC, include_card_summaries=False)
+    assert observed.delivery == expected
+    assert evaluate_delivery_coverage(observed.delivery) == evaluate_delivery_coverage(expected)
+    assert not session.in_nested_transaction()
+
+
+@pytest.mark.asyncio
 async def test_signed_proof_matches_gate_rollup_without_write_or_hidden_paths(ledger):
     session, store, _ = ledger
     implementation = await delivery_fixture.record(store, delivery_fixture.command())
@@ -276,7 +302,7 @@ async def test_timeout_drains_read_scope_before_returning(ledger):
     session, _, _ = ledger
     cleaned = False
 
-    async def slow(*args):
+    async def slow(*args, **kwargs):
         nonlocal cleaned
         try:
             await asyncio.sleep(5)

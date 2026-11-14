@@ -180,7 +180,8 @@ class CommunitySpecCoverageReader:
                             # Same rollup as require_spec_delivery, including the
                             # legacy/adopted dispatch and authenticated proof heads.
                             stage = 'proof_load'
-                            proof, _ = await self._delivery.load_rollup_snapshot(query.board_id, query.spec_id)
+                            proof, _ = await self._delivery.load_rollup_snapshot(
+                                query.board_id, query.spec_id, include_card_summaries=False)
                         stage = 'source_recheck'
                         if (await self._source(query)) != (source, cards):
                             raise ValueError('spec_coverage_source_changed')
