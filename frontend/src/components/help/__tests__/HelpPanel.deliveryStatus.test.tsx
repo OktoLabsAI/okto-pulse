@@ -35,6 +35,8 @@ it('shares the delivered-version rules between central and contextual Help', () 
   }
   expect(central).not.toHaveTextContent('accepted_result_id');
   expect(central).not.toHaveTextContent('ordinal');
+  expect(central).toHaveTextContent('Refresh in the Spec modal');
+  expect(central).not.toHaveTextContent('Reload coverage');
   view.unmount();
   render(<HelpPanel initialSectionId="delivery-status" onClose={vi.fn()} />);
   expect(screen.getByRole('heading', { name: 'Delivery status — See what has been delivered' }).parentElement!.textContent).toBe(centralText);

@@ -99,7 +99,7 @@ An accepted save confirms the decision; it does not approve delivery.
 
 While status is **updating** or **being prepared**, completion and counts may not yet be confirmed.
 Unknown counts are not zero. The screen makes a few automatic refresh attempts; use **Refresh delivery status** to check again.
-On the Coverage overview, **Delivery data is current** refers to the delivery assessment only. **Graph details are temporarily unavailable** means the relationship graph could not be read; it does not erase available planning or delivery information. Use **Reload coverage** to retry. Technical calculation identifiers are available under **Technical diagnostics**.
+On the Coverage overview, **Delivery data is current** refers to the delivery assessment only. **Graph details are temporarily unavailable** means the relationship graph could not be read; it does not erase available planning or delivery information. Use **Refresh** in the Spec modal to read the current Coverage mode again, or **Show details** to open the detailed view. Technical calculation identifiers are available under **Technical diagnostics**.
 An access error or unavailable calculation is not an empty Spec. Review your access with the Board owner, or refresh after the service recovers.
 **No tasks in this Spec** appears only when the complete current task list is known to be empty.
 
