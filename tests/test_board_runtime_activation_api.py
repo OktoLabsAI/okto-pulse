@@ -78,6 +78,36 @@ async def test_activation_cancellation_is_not_converted_to_ready_or_unavailable(
 
 
 @pytest.mark.asyncio
+async def test_observation_busy_has_explicit_retry_contract_and_then_recovers(api):
+    from okto_pulse.core.kg.interfaces.graph_errors import GraphActivationBusy
+    api.execute.side_effect = [
+        GraphActivationBusy('private storage path', details={'owner_token': 'secret-token'}),
+        {'board_id': 'board', 'state': 'ready'},
+    ]
+    response = await api.client.post('/boards/board/runtime/activate')
+    assert response.status_code == 503
+    assert response.headers['retry-after'] == '1'
+    assert response.json()['detail'] == {
+        'code': 'board_runtime_busy',
+        'message': 'Graph information is being updated. Please try again shortly.',
+        'retryable': True,
+    }
+    assert 'private storage path' not in response.text and 'secret-token' not in response.text
+    recovered = await api.client.post('/boards/board/runtime/activate')
+    assert recovered.status_code == 200 and recovered.json()['state'] == 'ready'
+
+
+@pytest.mark.asyncio
+async def test_arbitrary_timeout_has_no_automatic_retry_contract(api):
+    from okto_pulse.core.kg.interfaces.graph_errors import GraphQueryTimeout
+    api.execute.side_effect = GraphQueryTimeout('unknown phase')
+    response = await api.client.post('/boards/board/runtime/activate')
+    assert response.status_code == 503
+    assert response.json()['detail']['code'] == 'board_runtime_unavailable'
+    assert 'retry-after' not in response.headers
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(('failure', 'expected'), [
     (GuardedWriteError('lock_contention', 'private storage path', retryable=True,
         details={'owner_token': 'secret-token', 'path': 'private storage path'}),

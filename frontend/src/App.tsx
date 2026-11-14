@@ -194,7 +194,14 @@ function App() {
   const activateBoardRuntime = useBoardRuntimeActivation(
     api.activateBoardRuntime,
     (boardId) => useDashboardStore.getState().currentBoard?.id === boardId,
-    () => toast.error('Graph information is unavailable. You can still use this board. Refresh the board to try again.'),
+    (reason) => toast.error(reason === 'busy'
+      ? 'Graph information is still being updated. You can still use this board. Refresh the board to try again.'
+      : 'Graph information is unavailable. You can still use this board. Refresh the board to try again.'),
+    (boardId, busy) => {
+      const id = `board-runtime-${boardId}`;
+      if (busy) toast.loading('Graph information is being updated. Retrying shortly…', { id });
+      else toast.dismiss(id);
+    },
   );
 
   const [sidebarOpen, setSidebarOpen] = useState(true);

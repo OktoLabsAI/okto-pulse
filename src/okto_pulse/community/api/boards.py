@@ -226,7 +226,7 @@ async def activate_board_runtime(
 ):
     """Activate existing graph readers under Core authorization and ownership."""
     from okto_pulse.core.application.graph_write_contracts import GuardedWriteError
-    from okto_pulse.core.kg.interfaces.graph_errors import GraphError
+    from okto_pulse.core.kg.interfaces.graph_errors import GraphActivationBusy, GraphError
 
     try:
         return await ActivateBoardRuntimeUseCase().execute(
@@ -238,6 +238,17 @@ async def activate_board_runtime(
         raise HTTPException(status_code=404, detail="Board not found") from None
     except PermissionDeniedError as exc:
         raise permission_denied_http_error(exc) from exc
+    except GraphActivationBusy:
+        # Only the read-only observation is replayable. Do not retry arbitrary
+        # lifecycle failures, timeouts after mutation or lost ownership.
+        logging.getLogger(__name__).info(
+            "board_runtime.activation_busy board=%s phase=observe_prepared_reader", board_id,
+        )
+        raise HTTPException(status_code=503, headers={"Retry-After": "1"}, detail={
+            "code": "board_runtime_busy",
+            "message": "Graph information is being updated. Please try again shortly.",
+            "retryable": True,
+        }) from None
     except (GraphError, GuardedWriteError) as exc:
         # Keep the typed cause observable without logging native messages,
         # arbitrary details, storage paths or ownership tokens.

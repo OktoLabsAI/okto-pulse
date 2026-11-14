@@ -118,7 +118,43 @@ def test_activation_observation_refuses_close_without_touching_reader(tmp_path):
         assert drained
         with pytest.raises(GraphQueryTimeout):
             bundle.graph_lifecycle.observe_prepared_reader('prepared-closing')
+    # Contention does not invalidate the participant. A subsequent activation
+    # must recover without reopening, repairing or replacing the database.
+    recovered = bundle.graph_lifecycle.observe_prepared_reader('prepared-closing')
+    assert recovered.readers_prepared
     assert len(connector.calls) == count
+    assert all(pool.pin_count(snapshot.active_path) == 0 for pool in bundle.grafx_query_pools)
+
+
+@pytest.mark.asyncio
+async def test_core_activation_recovers_after_real_admission_contention(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+    from okto_pulse.core.application import kg_runtime_access
+    from okto_pulse.core.application.use_cases import boards_crud, authorization
+    from okto_pulse.core.kg import guarded_write
+    from okto_pulse.core.kg.interfaces.graph_errors import GraphActivationBusy
+    from okto_pulse.community.adapters.graph_operation_guards import _get_close_guard
+    board = 'prepared-contention-recovery'
+    bundle = _build(tmp_path / 'kg', _GrafxConnector())
+    snapshot = bundle.initialize_board_route(board)
+    for pool in bundle.grafx_query_pools:
+        pool.get(snapshot.active_path, page_size=PAGE_SIZE)
+    monkeypatch.setattr(boards_crud, 'load_accessible_board', AsyncMock(return_value=object()))
+    monkeypatch.setattr(authorization, 'require_all', AsyncMock())
+    monkeypatch.setattr(kg_runtime_access, 'resolve_graph_lifecycle', lambda: bundle.graph_lifecycle)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Observation contention must not acquire a writer or replay durability')
+    monkeypatch.setattr(guarded_write, 'guarded_board_write', forbidden)
+    command = boards_crud.ActivateBoardRuntimeCommand(board)
+    actor = SimpleNamespace(actor_id='authorized')
+    async def activate():
+        return await boards_crud.ActivateBoardRuntimeUseCase().execute(command, actor=actor, uow=object())
+    with _get_close_guard(board).closing() as (drained, _):
+        assert drained
+        with pytest.raises(GraphActivationBusy) as failure:
+            await activate()
+        assert failure.value.details['phase'] == 'observe_prepared_reader'
+    assert await activate() == {'board_id': board, 'state': 'ready'}
     assert all(pool.pin_count(snapshot.active_path) == 0 for pool in bundle.grafx_query_pools)
 
 
