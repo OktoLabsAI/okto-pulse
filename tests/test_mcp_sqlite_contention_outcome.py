@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 from fastmcp import Client
@@ -15,19 +16,85 @@ from okto_pulse.community.adapters.mcp_host import (
     _transport_tool,
 )
 from okto_pulse.community.adapters.sqlalchemy_models import (
-    ActivityLog, Base, Board, Card, Comment,
+    ActivityLog, Base, Board, Card, Comment, CardDeliveryEvidenceRecordRow,
 )
 from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWork
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import CommunitySemanticSession
+from okto_pulse.community.adapters.relational_application import CommunityRelationalApplicationAdapter
 from okto_pulse.core.application.use_cases.base import ActorContext
 from okto_pulse.core.application.use_cases.mcp_collaboration import (
     McpAddCommentCommand, McpAddCommentUseCase,
 )
 from okto_pulse.core.domain.permissions import PermissionSet
 from okto_pulse.core.mcp.catalog import CoreMcpCatalog
+from okto_pulse.core.mcp.code_traceability_tools import register_code_traceability_tools
 from okto_pulse.core.ports.mcp_resources import (
     StaticMcpResourceCatalog, freeze_mcp_resource_catalog,
 )
+from okto_pulse.core.ports.relational_application import (
+    register_relational_application_adapter, reset_relational_application_adapter_for_tests,
+)
+from test_delivery_progress import db as _delivery_db, command as progress_command
+
+delivery_db = _delivery_db
+
+
+@pytest.mark.asyncio
+async def test_registered_delivery_tool_preserves_sqlite_busy_then_records_exactly_once(delivery_db):
+    engine, seed_session, _ = delivery_db
+    await seed_session.close()
+    write_engine = create_async_engine(engine.url, connect_args={'timeout': 0.02})
+    sessions = async_sessionmaker(write_engine, expire_on_commit=False,
+                                 sync_session_class=CommunitySemanticSession)
+    permissions = PermissionSet({'board': {'read': True}, 'card': {'conclusion': {'write': True}}})
+
+    async def agent(_board_id):
+        return SimpleNamespace(agent_id='agent', agent_name='Test agent', permissions=permissions)
+
+    catalog = CoreMcpCatalog(name='delivery-contention-test', version='0.4.3')
+    register_code_traceability_tools(catalog, get_board_agent=agent,
+        get_uow=lambda: lambda *, actor: CommunityUnitOfWork(sessions(), actor=actor),
+        get_settings=SimpleNamespace)
+    registered = await catalog.get_tool('okto_pulse_record_delivery_evidence')
+    host_catalog = CoreMcpCatalog(name='delivery-contention-host', version='0.4.3')
+    host_catalog.tool()(registered.fn)
+    resources = freeze_mcp_resource_catalog(
+        StaticMcpResourceCatalog('delivery-contention-test', (), precedence=1))
+    host = CommunityMcpHostProvider().materialize_catalog(
+        host_catalog, resource_catalog=resources, projection_identity=resources.identity)
+    body = progress_command().model_dump(mode='json')
+    args = {key: body.pop(key) for key in ('board_id', 'card_id', 'spec_id')}
+    args['evidence'] = body
+    blocker = sqlite3.connect(engine.url.database, timeout=0.02)
+    register_relational_application_adapter(CommunityRelationalApplicationAdapter())
+    try:
+        blocker.execute('BEGIN IMMEDIATE')
+        async with Client(host) as client:
+            failed = await client.call_tool('okto_pulse_record_delivery_evidence', args, raise_on_error=False)
+            assert failed.is_error
+            assert failed.structured_content is not None
+            assert failed.structured_content['error_code'] == 'persistence_busy'
+            assert failed.structured_content['retryable'] is False
+            assert failed.structured_content['next_action']['rel'] == 'verify_current_state_before_retry'
+            rendered = json.dumps(failed.structured_content) + ''.join(c.text for c in failed.content)
+            assert not any(secret in rendered for secret in ('UPDATE', 'parameters', str(engine.url.database),
+                                                             body['justification'], 'OperationalError'))
+            assert (await host._okto_pulse_admission_controller.snapshot())['active'] == 0
+            async with sessions() as session:
+                assert await session.scalar(select(func.count()).select_from(CardDeliveryEvidenceRecordRow)) == 0
+            blocker.rollback()
+            recovered = await client.call_tool('okto_pulse_record_delivery_evidence', args)
+            assert recovered.structured_content['outcome'] == 'success'
+            replayed = await client.call_tool('okto_pulse_record_delivery_evidence', args)
+            assert replayed.structured_content['data']['replayed'] is True
+            assert recovered.structured_content['data']['id'] == replayed.structured_content['data']['id']
+            async with sessions() as session:
+                assert await session.scalar(select(func.count()).select_from(CardDeliveryEvidenceRecordRow)) == 1
+    finally:
+        blocker.rollback()
+        blocker.close()
+        await write_engine.dispose()
+        reset_relational_application_adapter_for_tests()
 
 
 @pytest.mark.asyncio

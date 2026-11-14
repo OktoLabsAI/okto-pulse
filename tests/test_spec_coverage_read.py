@@ -28,6 +28,66 @@ QUERY = SpecCoverageQuery(BOARD, SPEC, 'authorized-actor')
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('phase', ['source_read', 'proof_bound', 'proof_load',
+                                  'source_recheck', 'savepoint_cleanup'])
+@pytest.mark.parametrize('failure_type', [TimeoutError, GraphQueryTimeout])
+async def test_required_timeout_logs_only_sanitized_phase(monkeypatch, caplog, phase, failure_type):
+    failure = failure_type('SELECT private_secret FROM /private/path')
+
+    class Savepoint:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            if phase == 'savepoint_cleanup':
+                raise failure
+
+    store = SimpleNamespace(load_rollup_snapshot=AsyncMock(return_value=(None, None)))
+    reader = CommunitySpecCoverageReader(SimpleNamespace(begin_nested=Savepoint), delivery_store=store)
+    source = {'edition': 1}
+    calls = 0
+
+    async def read_source(_):
+        nonlocal calls
+        calls += 1
+        if (phase == 'source_read' and calls == 1) or (phase == 'source_recheck' and calls == 2):
+            raise failure
+        return source, []
+
+    monkeypatch.setattr(reader, '_source', read_source)
+    monkeypatch.setattr(reader, '_proof_bound', AsyncMock(
+        side_effect=failure if phase == 'proof_bound' else None))
+    if phase == 'proof_load':
+        store.load_rollup_snapshot.side_effect = failure
+    with pytest.raises(GraphQueryTimeout) as caught:
+        await reader.read(replace(QUERY, read_delivery=True), timeout_ms=15000)
+    if failure_type is GraphQueryTimeout:
+        assert caught.value is failure
+    else:
+        assert caught.value.__cause__ is failure
+    messages = [r.getMessage() for r in caplog.records if 'spec_coverage.read_timeout' in r.getMessage()]
+    assert len(messages) == 1 and f'stage={phase}' in messages[0]
+    assert 'private' not in caplog.text and 'SELECT' not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_caller_cancel_is_not_logged_as_required_timeout(monkeypatch, caplog):
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def savepoint():
+        yield
+
+    reader = CommunitySpecCoverageReader(SimpleNamespace(begin_nested=savepoint), delivery_store=object())
+    failure = asyncio.CancelledError()
+    monkeypatch.setattr(reader, '_source', AsyncMock(side_effect=failure))
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await reader.read(QUERY, timeout_ms=15000)
+    assert caught.value is failure
+    assert 'spec_coverage.read_timeout' not in caplog.text
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(('failure', 'reason'), [
     (BoardCloseInProgressError('private board', 1), 'board_close_in_progress'),
     (GraphCapabilityUnavailable('private path', details={'reason': 'prepared_reader_unavailable'}),

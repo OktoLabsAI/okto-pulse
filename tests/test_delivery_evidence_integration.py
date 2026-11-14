@@ -669,7 +669,7 @@ async def test_core_use_case_denies_before_persistence_and_agents_cannot_waive(
     from okto_pulse.core.application.use_cases.base import PermissionDeniedError
 
     store = SimpleNamespace(record=AsyncMock(), record_card=AsyncMock())
-    uow = SimpleNamespace(services=SimpleNamespace(delivery_evidence=store))
+    uow = SimpleNamespace(services=SimpleNamespace(delivery_evidence=store), begin_write=AsyncMock())
     actor = SimpleNamespace(actor_id="agent", actor_kind="agent")
     monkeypatch.setattr(
         app,
@@ -748,15 +748,19 @@ async def test_old_signed_test_cannot_be_associated_with_newer_source_observatio
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ledger", [None, "native_schema"], indirect=True)
 async def test_rest_roundtrip_closed_schema_and_domain_errors(ledger, monkeypatch):
+    from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWork
     from test_code_traceability_rest import _projection_rest_app
     from okto_pulse.core.application.use_cases import delivery_evidence as app
     from okto_pulse.community.api import code_traceability as api
     from okto_pulse.core.ports.authentication import Principal
 
     session, store, _ = ledger
+    transaction = CommunityUnitOfWork(session)
     uow = SimpleNamespace(
         services=SimpleNamespace(delivery_evidence=store),
-        commit=AsyncMock(side_effect=session.commit),
+        begin_write=transaction.begin_write,
+        commit=AsyncMock(side_effect=transaction.commit),
+        rollback=AsyncMock(side_effect=transaction.rollback),
     )
     # Transport principal is supplied by the existing authenticated REST fixture;
     # separate tests assert that denied authorization never reaches this store.
@@ -888,6 +892,7 @@ async def test_direct_legacy_writer_cannot_bypass_closed_transport(ledger, monke
 async def test_mcp_runs_same_store_closed_inputs_permissions_and_explicit_errors(
     ledger, monkeypatch
 ):
+    from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWork
     from okto_pulse.core.application.use_cases import delivery_evidence as app
     from okto_pulse.core.mcp.catalog import CoreMcpCatalog
     from okto_pulse.core.mcp.code_traceability_tools import (
@@ -895,11 +900,14 @@ async def test_mcp_runs_same_store_closed_inputs_permissions_and_explicit_errors
     )
 
     session, store, _ = ledger
+    transaction = CommunityUnitOfWork(session)
     auth = AsyncMock()
     monkeypatch.setattr(app, "require_authorization", auth)
     uow = SimpleNamespace(
         services=SimpleNamespace(delivery_evidence=store),
-        commit=AsyncMock(side_effect=session.commit),
+        begin_write=transaction.begin_write,
+        commit=AsyncMock(side_effect=transaction.commit),
+        rollback=AsyncMock(side_effect=transaction.rollback),
     )
 
     @asynccontextmanager

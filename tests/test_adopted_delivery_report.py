@@ -76,12 +76,15 @@ async def setup(ledger, tmp_path, monkeypatch, *, adopted=True):
 
 
 def unit_of_work(session):
+    from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWork
+    transaction = CommunityUnitOfWork(session)
     async def board(identity):
         return await session.get(Board, identity)
 
     return SimpleNamespace(services=SimpleNamespace(delivery_evidence=CommunityDeliveryEvidenceStore(session), cards=CardService(session),
         boards=SimpleNamespace(get_board=board), agents=SimpleNamespace(agent_has_board_access=AsyncMock(return_value=True))),
-        commit=AsyncMock(side_effect=session.commit), rollback=AsyncMock(side_effect=session.rollback))
+        begin_write=transaction.begin_write,
+        commit=AsyncMock(side_effect=transaction.commit), rollback=AsyncMock(side_effect=transaction.rollback))
 
 
 def request(contribution, **extra):

@@ -13,6 +13,7 @@ from test_delivery_progress import db as _db
 from test_delivery_inline_execution import composed as _composed, command as inline_command
 from test_delivery_reused_impact import register_report_adapters
 from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import CommunitySemanticSession
+from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWork
 from okto_pulse.community.adapters.sqlalchemy_delivery_evidence import CommunityDeliveryEvidenceStore
 from okto_pulse.community.adapters.sqlalchemy_models import Board, Card, CardDeliveryEvidenceRecordRow as Record, DomainEventRow
 from okto_pulse.core.domain.realm import RealmScope
@@ -53,7 +54,9 @@ async def setup(db, *, require_impact=False):
     services = SimpleNamespace(delivery_evidence=store, cards=CardService(session),
         boards=SimpleNamespace(get_board=board),
         agents=SimpleNamespace(agent_has_board_access=AsyncMock(return_value=True)))
-    uow = SimpleNamespace(services=services, commit=AsyncMock(side_effect=session.commit), rollback=AsyncMock(side_effect=session.rollback))
+    transaction = CommunityUnitOfWork(session)
+    uow = SimpleNamespace(services=services, begin_write=transaction.begin_write,
+        commit=AsyncMock(side_effect=transaction.commit), rollback=AsyncMock(side_effect=transaction.rollback))
     operation = transition_permission_requirement("card", "in_progress", "validation").operation
     actor = ActorContext(actor_id="owner", actor_kind="agent", source="mcp", board_id="b",
         permissions=["card.conclusion.write", operation])
@@ -280,20 +283,20 @@ async def test_report_and_new_evidence_serialize_without_mixing_snapshots(db, mo
     winner_uow, loser_uow = (left, right) if report_first else (right, left)
     winner_command, loser_command = (report, batch) if report_first else (batch, report)
     acquired, attempted, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    winner_store, loser_store = winner_uow.services.delivery_evidence, loser_uow.services.delivery_evidence
-    winner_lock, loser_lock = winner_store.lock_scope, loser_store.lock_scope
+    winner_store = winner_uow.services.delivery_evidence
+    winner_lock, loser_admission = winner_store.lock_scope, loser_uow.begin_write
 
     async def hold_fence(scope):
         await winner_lock(scope)
         acquired.set()
         await release.wait()
 
-    async def observe_attempt(scope):
+    async def observe_attempt():
         attempted.set()
-        await loser_lock(scope)
+        await loser_admission()
 
     monkeypatch.setattr(winner_store, "lock_scope", hold_fence)
-    monkeypatch.setattr(loser_store, "lock_scope", observe_attempt)
+    monkeypatch.setattr(loser_uow, "begin_write", observe_attempt)
     tasks = []
     try:
         tasks.append(asyncio.create_task(use_case.execute(winner_command, actor=actor, uow=winner_uow)))

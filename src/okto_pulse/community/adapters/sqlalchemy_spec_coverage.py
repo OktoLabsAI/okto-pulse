@@ -160,26 +160,50 @@ class CommunitySpecCoverageReader:
 
     async def read(self, query, *, timeout_ms, deadline=None):
         deadline = _deadline(timeout_ms, deadline)
+        stage = 'before_source'
+        body_failure = None
+        failed_stage = None
         try:
             async with asyncio.timeout(_remaining(deadline)):
                 # A read savepoint pins the SQLite snapshot without a Board
                 # no-op UPDATE, semantic fence or any projection/repair write.
                 # Its cleanup is awaited before a timeout leaves this method.
                 async with self._session.begin_nested():
-                    source, cards = await self._source(query)
-                    scope = DeliveryScope(query.board_id, query.spec_id, source['edition'])
-                    proof = None
-                    if query.read_delivery:
-                        await self._proof_bound(query, scope.edition)
-                        # Same rollup as require_spec_delivery, including the
-                        # legacy/adopted dispatch and authenticated proof heads.
-                        proof, _ = await self._delivery.load_rollup_snapshot(query.board_id, query.spec_id)
-                    if (await self._source(query)) != (source, cards):
-                        raise ValueError('spec_coverage_source_changed')
-                    revision = _revision(source, cards)
-                    _remaining(deadline)
-                    return SpecCoverageSnapshot(scope, query.actor_scope_ref, revision, datetime.now(timezone.utc),
-                        SimpleNamespace(**source), tuple(SimpleNamespace(**row) for row in cards), True,
-                        proof, 'available' if query.read_delivery else 'restricted')
+                    try:
+                        stage = 'source_read'
+                        source, cards = await self._source(query)
+                        scope = DeliveryScope(query.board_id, query.spec_id, source['edition'])
+                        proof = None
+                        if query.read_delivery:
+                            stage = 'proof_bound'
+                            await self._proof_bound(query, scope.edition)
+                            # Same rollup as require_spec_delivery, including the
+                            # legacy/adopted dispatch and authenticated proof heads.
+                            stage = 'proof_load'
+                            proof, _ = await self._delivery.load_rollup_snapshot(query.board_id, query.spec_id)
+                        stage = 'source_recheck'
+                        if (await self._source(query)) != (source, cards):
+                            raise ValueError('spec_coverage_source_changed')
+                        revision = _revision(source, cards)
+                        _remaining(deadline)
+                        return SpecCoverageSnapshot(scope, query.actor_scope_ref, revision, datetime.now(timezone.utc),
+                            SimpleNamespace(**source), tuple(SimpleNamespace(**row) for row in cards), True,
+                            proof, 'available' if query.read_delivery else 'restricted')
+                    except BaseException as exc:
+                        body_failure, failed_stage = exc, stage
+                        raise
+                    finally:
+                        stage = 'savepoint_cleanup'
         except TimeoutError as exc:
+            origin = failed_stage if body_failure is not None and (
+                exc is body_failure or exc.__cause__ is body_failure) else stage
+            logging.getLogger(__name__).warning(
+                'spec_coverage.read_timeout board=%s spec=%s stage=%s',
+                query.board_id, query.spec_id, origin)
             raise GraphQueryTimeout('Spec coverage read deadline exceeded.') from exc
+        except GraphQueryTimeout as exc:
+            origin = failed_stage if exc is body_failure else stage
+            logging.getLogger(__name__).warning(
+                'spec_coverage.read_timeout board=%s spec=%s stage=%s',
+                query.board_id, query.spec_id, origin)
+            raise
