@@ -417,8 +417,11 @@ class CoverageAcceptance(PairedAcceptance):
             timeout=600)
 
     def test_coverage_modal_refresh_scope_and_help(self):
+        # The isolated Windows runner also pays for five serial Vitest file
+        # environments. Keep per-test assertions bounded independently.
         self._react('src/components/specs/SpecCoveragePanel.test.tsx',
             'src/components/specs/__tests__/SpecCoveragePanel.persisted.test.tsx',
             'src/components/specs/__tests__/SpecModal.validationTabs.test.tsx',
             'src/hooks/useBoardRuntimeActivation.test.tsx',
-            'src/components/help/__tests__/HelpPanel.deliveryStatus.test.tsx')
+            'src/components/help/__tests__/HelpPanel.deliveryStatus.test.tsx',
+            suite_timeout=600)
