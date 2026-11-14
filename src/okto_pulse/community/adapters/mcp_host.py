@@ -13,6 +13,7 @@ import functools
 import inspect
 import json
 import logging
+import sqlite3
 import time
 from collections.abc import Mapping
 from types import MappingProxyType
@@ -30,6 +31,7 @@ from mcp.types import (
 )
 from pydantic import ValidationError
 from pydantic_core import ErrorType
+from sqlalchemy.exc import OperationalError
 from starlette.requests import Request
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -347,6 +349,30 @@ def _project_transport_tool_result(
     )
 
 
+def _sqlite_contention_outcome(exc: OperationalError) -> McpToolOutcome | None:
+    """Sanitize known SQLite contention without promising safe mutation replay."""
+    original = exc.orig
+    if not isinstance(original, sqlite3.OperationalError):
+        return None
+    code = getattr(original, "sqlite_errorcode", None)
+    if isinstance(code, int):
+        busy = code & 0xFF in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+    else:
+        busy = str(original).strip().casefold() in {
+            "database is locked", "database table is locked", "sqlite_busy", "sqlite_locked",
+        }
+    if not busy:
+        return None
+    # The handler has unwound, but may have committed an earlier effect. Do not
+    # claim rollback/no mutation, mark it safe to replay, or retry it here.
+    return McpToolOutcome.error(
+        code="persistence_busy",
+        message="Database is busy. Check the current state before retrying this operation.",
+        retryable=False,
+        next_action={"rel": "verify_current_state_before_retry"},
+    )
+
+
 def _transport_tool(fn: Any, *, tool_name: str):
     """Adapt a Core semantic outcome to a concrete MCP ``CallToolResult``.
 
@@ -358,9 +384,15 @@ def _transport_tool(fn: Any, *, tool_name: str):
 
     @functools.wraps(fn)
     async def invoke(*args: Any, **kwargs: Any) -> _OutcomeToolResult:
-        result = fn(*args, **kwargs)
-        if inspect.isawaitable(result):
-            result = await result
+        try:
+            result = fn(*args, **kwargs)
+            if inspect.isawaitable(result):
+                result = await result
+        except OperationalError as exc:
+            result = _sqlite_contention_outcome(exc)
+            if result is None:
+                raise
+            logger.warning("mcp.persistence_busy tool=%s", tool_name)
         return await asyncio.to_thread(
             _project_transport_tool_result,
             result,
