@@ -238,11 +238,16 @@ async def activate_board_runtime(
         raise HTTPException(status_code=404, detail="Board not found") from None
     except PermissionDeniedError as exc:
         raise permission_denied_http_error(exc) from exc
-    except GraphActivationBusy:
-        # Only the read-only observation is replayable. Do not retry arbitrary
-        # lifecycle failures, timeouts after mutation or lost ownership.
+    except GraphActivationBusy as exc:
+        # Core identifies a read-only probe or writer admission refused before
+        # graph work. Do not retry arbitrary lifecycle failures, timeouts after
+        # mutation or lost ownership.
+        phase = exc.details.get("phase")
+        phase = phase if isinstance(phase, str) and phase in {
+            "observe_prepared_reader", "acquire_writer",
+        } else None
         logging.getLogger(__name__).info(
-            "board_runtime.activation_busy board=%s phase=observe_prepared_reader", board_id,
+            "board_runtime.activation_busy board=%s phase=%s", board_id, phase,
         )
         raise HTTPException(status_code=503, headers={"Retry-After": "1"}, detail={
             "code": "board_runtime_busy",

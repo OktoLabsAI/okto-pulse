@@ -78,10 +78,15 @@ async def test_activation_cancellation_is_not_converted_to_ready_or_unavailable(
 
 
 @pytest.mark.asyncio
-async def test_observation_busy_has_explicit_retry_contract_and_then_recovers(api):
+@pytest.mark.parametrize(('phase', 'logged_phase'), [
+    (None, None), ('observe_prepared_reader', 'observe_prepared_reader'),
+    ('acquire_writer', 'acquire_writer'), ('secret-token', None),
+])
+async def test_observation_busy_has_explicit_retry_contract_and_then_recovers(api, caplog, phase, logged_phase):
     from okto_pulse.core.kg.interfaces.graph_errors import GraphActivationBusy
+    caplog.set_level('INFO', logger=boards.__name__)
     api.execute.side_effect = [
-        GraphActivationBusy('private storage path', details={'owner_token': 'secret-token'}),
+        GraphActivationBusy('private storage path', details={'owner_token': 'secret-token', 'phase': phase}),
         {'board_id': 'board', 'state': 'ready'},
     ]
     response = await api.client.post('/boards/board/runtime/activate')
@@ -93,6 +98,11 @@ async def test_observation_busy_has_explicit_retry_contract_and_then_recovers(ap
         'retryable': True,
     }
     assert 'private storage path' not in response.text and 'secret-token' not in response.text
+    records = [record for record in caplog.records
+               if record.name == boards.__name__ and record.msg.startswith('board_runtime.activation_busy')]
+    assert len(records) == 1 and records[0].args == ('board', logged_phase)
+    assert 'private storage path' not in records[0].getMessage()
+    assert 'secret-token' not in records[0].getMessage()
     recovered = await api.client.post('/boards/board/runtime/activate')
     assert recovered.status_code == 200 and recovered.json()['state'] == 'ready'
 
