@@ -87,9 +87,18 @@ async def test_invalid_manifest_propagates_incomplete_to_entire_spec_rollup(comp
 @pytest.mark.asyncio
 @pytest.mark.parametrize("composed", [("target", "target-two")], indirect=True)
 @pytest.mark.parametrize("corrupt", [False, True])
-async def test_reopened_spec_projects_old_done_card_as_zero_current_proof(composed, corrupt):
+async def test_reopened_spec_projects_old_done_card_as_zero_current_proof(composed, corrupt, native_reopen_verification):
     session, uow, use_case, actor = composed
     store = uow.services.delivery_evidence
+    # This metadata-only fixture needs the native edition/scenario triggers:
+    # reopening must initialize an unverified generation for the new edition.
+    from okto_pulse.community.adapters.sqlite_verification_currentness import (
+        install_verification_currentness_functions,
+        install_verification_currentness_triggers,
+    )
+    connection = await session.connection()
+    await connection.run_sync(lambda conn: install_verification_currentness_functions(conn.connection.dbapi_connection))
+    await connection.run_sync(install_verification_currentness_triggers)
     await seed_scope(session)
     saved = await use_case.execute(composite_batch(), actor=actor, uow=uow)
     manifest = await store.seal_selection(
@@ -123,6 +132,18 @@ async def test_reopened_spec_projects_old_done_card_as_zero_current_proof(compos
         assert "delivery_projection_incomplete" in projection["blockers"]
     else:
         assert "delivery_projection_incomplete" not in projection["blockers"]
+
+
+@pytest.fixture
+def native_reopen_verification():
+    from okto_pulse.community.adapters.sqlalchemy_verification_currentness import CommunityVerificationCurrentnessStore
+    from okto_pulse.core.ports.verification_currentness import (
+        register_verification_currentness_store_factory,
+        reset_verification_currentness_store_factory_for_tests,
+    )
+    register_verification_currentness_store_factory(CommunityVerificationCurrentnessStore)
+    yield
+    reset_verification_currentness_store_factory_for_tests()
 
 
 @pytest.mark.asyncio
