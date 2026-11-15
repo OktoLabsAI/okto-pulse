@@ -123,7 +123,7 @@ async def test_atomic_done_rejects_unverified_last_complete_binding(ledger, tmp_
     session, uow, actor = await setup(ledger, tmp_path, monkeypatch)
     try:
         command = request("complete")
-        with pytest.raises(ValueError, match='verification_association_missing'):
+        with pytest.raises(ValueError, match='verification_not_run'):
             await RecordCardDeliveryEvidenceUseCase().execute(command, actor=actor, uow=uow)
         await session.commit()
         card = await session.get(Card, "task")
