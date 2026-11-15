@@ -193,7 +193,7 @@ async def test_seal_rejects_stale_or_foreign_selection_without_writes(composed, 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("composed", [("target", "target-two")], indirect=True)
-async def test_real_card_report_and_delivery_store_share_manifest_and_gate(composed):
+async def test_real_card_report_and_delivery_store_share_manifest_and_gate(composed, monkeypatch):
     from okto_pulse.community.adapters.sqlalchemy_application_persistence import CommunitySqlAlchemyApplicationPersistence
     from okto_pulse.core.ports.application_persistence import register_application_persistence_port
     from okto_pulse.core.domain.realm import RealmScope

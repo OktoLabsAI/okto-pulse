@@ -103,7 +103,7 @@ def schema_contract_sha256(
 # One complete Community-owned schema for fresh v0.4.0 installations.
 # Pin every table, column, constraint and index; no inherited/extension split.
 CURRENT_COMMUNITY_SCHEMA_SHA256 = (
-    "6e8e6c32a7165dfd2fb7c06dd5c23613ff9e2dc5208ae80a7ddf4dc860fea35e"
+    "e85788908e5372dcf78cbfafae1f2f5dcb2884a7ad04010aae3c7f021184505c"
 )
 
 

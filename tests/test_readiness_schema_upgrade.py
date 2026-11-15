@@ -149,6 +149,13 @@ def test_legacy_upgrade_retains405_and_runtime043_requires_explicit_copy(tmp_pat
     conversion407 = upgrade_verification_copy(output, newest, evidence_root=tmp_path / 'no-receipts')
     assert conversion407['target_schema_version'] == 407
     with closing(sqlite3.connect(newest)) as current:
+        with pytest.raises(StorageFormatError, match='version'):
+            inspect_runtime(current.cursor(), runtime_contract())
+    from okto_pulse.community.adapters.amendment_storage_upgrade import upgrade_amendment_copy
+    runtime408 = tmp_path / 'format408.sqlite3'
+    conversion408 = upgrade_amendment_copy(newest, runtime408)
+    assert conversion408['source_database_unchanged'] and conversion408['target_schema_version'] == 408
+    with closing(sqlite3.connect(runtime408)) as current:
         assert inspect_runtime(current.cursor(), runtime_contract()) is False
     assert assess_readiness_rollback(path,backup)['restore_allowed_without_preservation_plan']
     # The legacy preflight never claims that restoring405 over406 is safe.

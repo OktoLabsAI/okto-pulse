@@ -55,6 +55,26 @@ it('keeps the Spec projection during a same-scope refresh, then replaces the who
   expect(view.result.current.persisted?.summary?.verification.percent).toBe(50);
 });
 
+it('shows a terminal projection failure before the first generation in both Spec and Board readers', async () => {
+  const failed = persistedProjection();
+  failed.projection.freshness = 'unavailable';
+  failed.projection.generation_id = null;
+  failed.projection.error_code = 'projection_failed';
+  failed.summaries = [];
+  api.getPersistedReadinessProjection.mockResolvedValue(failed);
+
+  const spec = renderHook(() => useDeliveryReadiness('b', 's', undefined, 0, true, 'projection'));
+  await waitFor(() => expect(spec.result.current.persisted?.freshness).toBe('unavailable'));
+  expect(spec.result.current.persisted?.errorCode).toBe('projection_failed');
+  spec.unmount();
+
+  const board = renderHook(() => useBoardDeliveryReadiness('b', cards, true, '0'));
+  await waitFor(() => expect(board.result.current.c.persisted?.freshness).toBe('unavailable'));
+  expect(board.result.current.c.persisted?.errorCode).toBe('projection_failed');
+  expect(board.result.current.other.persisted?.freshness).toBe('unavailable');
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(2);
+});
+
 it.each(['board', 'card', 'generation', 'duplicate', 'version'])('rejects %s mismatches explicitly', async kind => {
   const data = persistedProjection();
   if (kind === 'board') data.scope.board_id = 'foreign';

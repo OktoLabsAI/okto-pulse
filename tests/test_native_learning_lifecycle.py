@@ -140,7 +140,8 @@ async def test_capture_is_durable_before_actual_review_and_materializes_after_do
         uow.boards = SimpleNamespace(get=uow.services.boards.get_board)
         board = await session.get(Board, BOARD)
         board.settings = {**board.settings, "bug_learning_closeout": "blocking",
-            "skip_cognitive_consolidation": False, "require_task_validation": True}
+            "skip_cognitive_consolidation": False, "require_task_validation": True,
+            "delivery_evidence_gate": "advisory"}
         if same_reviewer:
             board.settings = {**board.settings, "reviewer_separation_mode": "off"}
         await session.commit()

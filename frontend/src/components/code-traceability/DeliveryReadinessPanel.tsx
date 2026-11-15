@@ -8,13 +8,14 @@ import { useNativeReadinessNavigation } from './useNativeReadinessNavigation';
 import { useDeliveryReadiness } from './useDeliveryReadiness';
 import { readinessReadMode } from '@/lib/readinessMode';
 
-export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, active = true, focusDiagnosis = false, persistedValue, onGenerationMismatch, onNavigate, onOpenReadinessSpec, onOpenReadinessCard, manualRefresh = false }: {
+export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, active = true, focusDiagnosis = false, persistedValue, onGenerationMismatch, onRefreshProjection, onNavigate, onOpenReadinessSpec, onOpenReadinessCard, manualRefresh = false }: {
   boardId: string; specId: string; cardId?: string; revision?: string | number;
   focusDiagnosis?: boolean; onNavigate?: ReadinessNavigator;
   active?: boolean;
   manualRefresh?: boolean;
   persistedValue?: PersistedReadinessProjection | null;
   onGenerationMismatch?: () => void;
+  onRefreshProjection?: () => void;
   onOpenReadinessSpec?: (location: ReadinessSpecLocation) => void;
   onOpenReadinessCard?: (id: string, target?: ReadinessCardLocation) => void;
 }) {
@@ -24,7 +25,8 @@ export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, acti
   const [expanded, setExpanded] = useState(focusDiagnosis);
   const persistedSummary = persistedValue?.summaries.find(row => row.card_id === (cardId ?? null));
   const inheritedProjection = persistedValue ? { summary: persistedSummary,
-    freshness: persistedSummary ? persistedValue.projection.freshness : 'pending_initial' as const,
+    freshness: persistedSummary ? persistedValue.projection.freshness
+      : persistedValue.projection.freshness === 'unavailable' ? 'unavailable' as const : 'pending_initial' as const,
     generationId: persistedValue.projection.generation_id,
     errorCode: persistedValue.projection.error_code } : undefined;
   const state = useDeliveryReadiness(boardId, specId, cardId, JSON.stringify([revision, refresh]),
@@ -104,9 +106,12 @@ export function DeliveryReadinessPanel({ boardId, specId, cardId, revision, acti
     focusedControl.current = element?.dataset.readinessFocus && snapshot
       ? { scope: scopeKey, snapshot, key: element.dataset.readinessFocus } : undefined;
   }}>
-    <DeliveryReadinessView value={error || unavailable ? undefined : value} persisted={error || unavailable ? undefined : state.persisted ?? inheritedProjection}
+    <DeliveryReadinessView value={error || unavailable ? undefined : value} persisted={generationMismatch ? undefined : state.persisted ?? inheritedProjection}
       loading={state.loading} error={error || unavailable}
-      onInspect={inspect} onRefresh={manualRefresh ? undefined : () => setRefresh(v => v + 1)} />
+      onInspect={inspect} onRefresh={manualRefresh ? undefined : () => {
+        setRefresh(v => v + 1);
+        if (persistedValue) onRefreshProjection?.();
+      }} />
     {expanded && !state.loading && !error && !unavailable && value && <section aria-label="Delivery diagnosis" className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 ref={heading} tabIndex={-1} className="rounded text-sm font-semibold outline-offset-4">{value.delivery_state === 'not_applicable' ? 'Scope details' : 'What is missing?'}</h3>

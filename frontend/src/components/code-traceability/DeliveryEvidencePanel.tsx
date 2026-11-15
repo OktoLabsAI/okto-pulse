@@ -293,6 +293,7 @@ export function DeliveryEvidenceDetails({ boardId, specId, revision, skipDeliver
       && <DeliveryExceptionDetails data={data} recordId={focusExceptionId} />}
     {projection && <DeliveryReadinessPanel active={active} boardId={boardId} specId={specId} revision={`${revision ?? ''}:${reload}`}
       persistedValue={projection} manualRefresh={externallyRefreshed} onGenerationMismatch={() => setReload(value => value + 1)}
+      onRefreshProjection={() => setReload(value => value + 1)}
       onOpenReadinessSpec={onOpenReadinessSpec} />}
     {legacyMode && !externallyRefreshed && <DeliveryReadinessPanel active={active} boardId={boardId} specId={specId}
       revision={`${revision ?? ''}:${reload}`} onOpenReadinessSpec={onOpenReadinessSpec} />}

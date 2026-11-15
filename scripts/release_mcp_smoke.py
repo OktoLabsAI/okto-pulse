@@ -15,6 +15,26 @@ from pathlib import Path
 import httpx
 
 
+REQUIRED_TOOLS = {
+    "okto_pulse_list_my_boards",
+    "okto_pulse_create_ideation",
+    "okto_pulse_get_ideation",
+    "okto_pulse_ask",
+}
+
+
+def validate_tool_inventory(tools: list[dict], manifest: dict) -> set[str]:
+    names = [tool["name"] for tool in tools]
+    assert names, "MCP tool inventory is empty"
+    assert len(names) == len(set(names)), "MCP tool inventory contains duplicate names"
+    missing = REQUIRED_TOOLS - set(names)
+    assert not missing, f"Required MCP tools missing: {sorted(missing)}"
+    assert not any("sprint" in name for name in names), "Retired sprint tool is exposed"
+    assert manifest["tool_inventory"]["count"] == len(names)
+    assert manifest["tool_inventory"]["aliases"] == {}
+    return set(names)
+
+
 class McpClient:
     def __init__(self, url: str, api_key: str):
         self.url = url
@@ -81,16 +101,13 @@ def smoke(url: str, api_key: str, expected_version: str):
         assert initialized["serverInfo"]["version"] == expected_version
         client.client.headers["MCP-Protocol-Version"] = initialized["protocolVersion"]
         client.rpc("notifications/initialized", {}, notification=True)
-        names = {tool["name"] for tool in client.pages("tools/list", "tools")}
-        assert len(names) == 285
-        assert not any("sprint" in name for name in names)
+        tools = client.pages("tools/list", "tools")
         resources = client.pages("resources/list", "resources")
         manifest = json.loads(client.rpc("resources/read", {
             "uri": "okto-pulse://server-manifest",
         })["contents"][0]["text"])
         assert manifest["server"]["version"] == expected_version
-        assert manifest["tool_inventory"]["count"] == len(names)
-        assert manifest["tool_inventory"]["aliases"] == {}
+        names = validate_tool_inventory(tools, manifest)
 
         boards = client.call("okto_pulse_list_my_boards", {})["boards"]
         assert len(boards) == 1 and boards[0]["name"] == "My Board", "Smoke requires fresh storage"

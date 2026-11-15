@@ -88,7 +88,7 @@ async def test_initial_public_footprint_under_unchanged_budget(
         instructions = client.initialize_result.instructions or ""
 
     assert {tool.name for tool in listed} == {tool.name for tool in server.mcp.iter_tools()}
-    assert len(listed) == 285
+    assert len(listed) == 288
     assert instructions == server.mcp.instructions
     enc = tiktoken.get_encoding("cl100k_base")
     instructions_tokens = len(enc.encode(instructions))

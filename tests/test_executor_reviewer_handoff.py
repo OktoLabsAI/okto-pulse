@@ -82,7 +82,8 @@ async def test_executor_and_reviewer_handoff_preserves_report_and_grant_boundari
     try:
         board = await seed.get(Board, adopted.BOARD)
         board.settings = {**board.settings, 'require_task_validation': True,
-                          'reviewer_separation_mode': 'enforce'}
+                          'reviewer_separation_mode': 'enforce',
+                          'delivery_evidence_gate': 'advisory'}
         spec = await seed.get(Spec, adopted.SPEC)
         spec.require_task_validation = True
         card = await seed.get(Card, 'task')

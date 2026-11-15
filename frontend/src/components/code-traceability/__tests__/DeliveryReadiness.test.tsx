@@ -49,6 +49,21 @@ it('Spec Delivery consumes its own context, without averaging card percentages',
   expect(api.getDeliveryReadiness).not.toHaveBeenCalled();
 });
 
+it('refreshes an inherited terminal projection when no first generation exists', async () => {
+  const failed = persistedProjection();
+  failed.projection.freshness = 'unavailable';
+  failed.projection.generation_id = null;
+  failed.projection.error_code = 'projection_failed';
+  failed.summaries = [];
+  api.getPersistedReadinessProjection.mockResolvedValue(failed);
+  render(<DeliveryEvidencePanel boardId="b" specId="s" />);
+  expect(await screen.findByText(/Calculation unavailable.*projection_failed/)).toBeVisible();
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+  await waitFor(() => expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(2));
+  expect(screen.queryByText('Waiting for the first calculation.')).not.toBeInTheDocument();
+});
+
 it('refreshes the obligation table when diagnosis belongs to a newer generation', async () => {
   let projectionReads = 0;
   api.getPersistedReadinessProjection.mockImplementation(() => {
@@ -156,6 +171,15 @@ it.each(['loading', 'error', 'unknown', 'incompatible'] as const)('U03/U10: %s n
   expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
   expect(screen.queryByText(/100%|75%/)).not.toBeInTheDocument();
   if (state === 'incompatible') expect(screen.getByText(/contract unavailable or incompatible/)).toBeVisible();
+});
+
+it('shows diagnosis failures alongside the last coherent persisted metrics', () => {
+  const summary = persistedProjection().summaries[0];
+  render(<DeliveryReadinessView persisted={{ summary, freshness: 'current', generationId: 'generation-1', errorCode: null }}
+    error="Diagnosis request failed. Refresh to retry." />);
+  expect(screen.getByRole('alert')).toHaveTextContent('Diagnosis request failed. Refresh to retry.');
+  expect(screen.getByRole('progressbar', { name: 'Implementation' })).toHaveAttribute('aria-valuenow', '100');
+  expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');
 });
 
 it('N/A and waiver counts remain visible without adding proof credit', () => {

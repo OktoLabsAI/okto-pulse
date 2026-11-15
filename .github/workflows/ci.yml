@@ -66,16 +66,14 @@ jobs:
           path: okto-pulse-core
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # Pinned to the commit that ships Grafx 0.0.7 (no release tag exists on
-      # okto-grafx yet). release_artifact_gate.py rejects any wheel whose version
-      # is not exactly the pyproject pin, so a moving `main` would break this
-      # job on the next Grafx version bump. Update this ref together with the
-      # `okto-grafx[accel]==X.Y.Z` pin in pyproject.toml.
-      - name: Checkout Okto Grafx @ 0.0.7
+      # Pin the commit targeted by the annotated v0.0.8 tag. The release-artifact
+      # gate requires the source wheel to match the pyproject Grafx version.
+      # Update this ref together with the `okto-grafx[accel]==X.Y.Z` pin.
+      - name: Checkout Okto Grafx @ 0.0.8
         uses: actions/checkout@v7
         with:
           repository: OktoLabsAI/okto-grafx
-          ref: 3a2239a0bda80223c298a68d6d14f3c951f133d2
+          ref: 96bb4c42eb856a872981da9b75a8f98e6360b565
           path: okto-grafx
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -99,7 +97,7 @@ jobs:
         # Stop on the first failure so release blockers have a usable traceback
         # without waiting for the full suite timeout. A passing run still runs
         # every selected test; no marker or test is excluded by this option.
-        run: pytest -v --tb=short -m "not e2e and not stress" okto-pulse/tests
+        run: pytest -x -v --tb=short -m "not e2e and not stress" okto-pulse/tests
 
       - name: Build isolated wheels
         run: |

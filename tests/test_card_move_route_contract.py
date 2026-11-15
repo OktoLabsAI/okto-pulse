@@ -74,20 +74,20 @@ def test_move_rejects_client_forged_selection_manifest(client: TestClient) -> No
 @pytest.mark.parametrize(
     "payload",
     [
-        {"status": "started", "before_id": "a", "after_id": "b"},
-        {"status": "started", "before_id": "a", "position": 2},
-        {"status": "started", "before_id": "a", "position": -1},
-        {"status": "started", "placement": "end", "position": 0},
-        {"status": "started", "position": -2},
-        {"status": "started", "before_id": ""},
-        {"status": "started", "placement": "bogus"},
+        {"status": "in_progress", "before_id": "a", "after_id": "b"},
+        {"status": "in_progress", "before_id": "a", "position": 2},
+        {"status": "in_progress", "before_id": "a", "position": -1},
+        {"status": "in_progress", "placement": "end", "position": 0},
+        {"status": "in_progress", "position": -2},
+        {"status": "in_progress", "before_id": ""},
+        {"status": "in_progress", "placement": "bogus"},
         # C8 round-2 repros (val_288739ce): the router must 422 exactly where
         # the published oneOf matches zero variants — no int coercion of
         # "0"/true, no whitespace anchor slipping past the pattern.
-        {"status": "started", "position": "0"},
-        {"status": "started", "position": True},
-        {"status": "started", "before_id": "   "},
-        {"status": "started", "position": 1.5},
+        {"status": "in_progress", "position": "0"},
+        {"status": "in_progress", "position": True},
+        {"status": "in_progress", "before_id": "   "},
+        {"status": "in_progress", "position": 1.5},
     ],
 )
 def test_invalid_selectors_are_422_before_any_effect(
@@ -110,7 +110,7 @@ def test_integral_floats_pass_the_parse_boundary(
     # that parsing PASSED and the payload reached the endpoint.
     response = client.post(
         "/api/v1/cards/some-card/move",
-        json={"status": "started", "position": position},
+        json={"status": "in_progress", "position": position},
     )
     assert response.status_code != 422, response.text
 

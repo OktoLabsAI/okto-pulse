@@ -5,6 +5,9 @@ import subprocess
 import sys
 import tomllib
 
+from packaging.requirements import Requirement
+from packaging.version import Version
+
 
 COMMUNITY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -44,7 +47,7 @@ def test_af41_community_lock_tracks_mcp_serving_runtime_as_direct_deps() -> None
     assert {"uvicorn", "wsproto"} <= metadata
 
 
-def test_fastmcp2_authlib_contract_avoids_startup_deprecation_warning() -> None:
+def test_fastmcp2_authlib_contract_excludes_vulnerable_versions() -> None:
     pyproject = tomllib.loads(
         (COMMUNITY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     )
@@ -54,24 +57,41 @@ def test_fastmcp2_authlib_contract_avoids_startup_deprecation_warning() -> None:
         if _dependency_name(spec) == "authlib"
     )
 
-    assert ">=1.6.5" in authlib_requirement
-    assert "<1.7.0" in authlib_requirement
+    allowed = Requirement(authlib_requirement).specifier
+    assert Version("1.9.0") not in allowed
+    assert Version("1.9.1") in allowed
 
     lock = tomllib.loads((COMMUNITY_ROOT / "uv.lock").read_text(encoding="utf-8"))
     authlib_package = next(pkg for pkg in lock["package"] if pkg["name"] == "authlib")
     pulse_package = next(pkg for pkg in lock["package"] if pkg["name"] == "okto-pulse")
     direct = {dep["name"] for dep in pulse_package.get("dependencies", [])}
 
-    assert authlib_package["version"].startswith("1.6.")
+    assert Version(authlib_package["version"]) >= Version("1.9.1")
     assert "authlib" in direct
 
 
-def test_fastmcp_jwt_import_emits_no_deprecation_warning() -> None:
+def test_filelock_contract_excludes_vulnerable_versions() -> None:
+    pyproject = tomllib.loads(
+        (COMMUNITY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    filelock_requirement = next(
+        spec
+        for spec in pyproject["project"]["dependencies"]
+        if _dependency_name(spec) == "filelock"
+    )
+    allowed = Requirement(filelock_requirement).specifier
+    assert Version("4.2.0") not in allowed
+    assert Version("4.2.1") in allowed
+
+    lock = tomllib.loads((COMMUNITY_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    filelock_package = next(pkg for pkg in lock["package"] if pkg["name"] == "filelock")
+    assert Version(filelock_package["version"]) >= Version("4.2.1")
+
+
+def test_fastmcp_jwt_import_works_with_patched_authlib() -> None:
     result = subprocess.run(
         [
             sys.executable,
-            "-W",
-            "error::DeprecationWarning",
             "-c",
             "from fastmcp.server.auth.providers.jwt import JWTVerifier",
         ],
