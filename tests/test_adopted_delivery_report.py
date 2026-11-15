@@ -212,6 +212,12 @@ async def test_concurrent_adopted_done_submissions_share_one_report(ledger, tmp_
         expire_on_commit=False, info={"realm_scope": RealmScope.local()})()
     try:
         proof = await contract.delivery.record(left.services.delivery_evidence, contract.implementation())
+        # The adopted contract needs a run reserved against its current basis,
+        # before both concurrent reports select this verified implementation.
+        basis = ledger[2]["execution_attestation"]["execution_basis"]
+        await contract.delivery.issue_runner_verification(first, tmp_path / "concurrent-proof",
+            source_ref=basis["source_ref"], revision=basis["revision"],
+            executed_at=datetime.now(timezone.utc).isoformat())
         await contract.delivery.record(left.services.delivery_evidence, contract.delivery.command(
             'test', obligation_refs=['fr:fr', 'ac:ac-about'], implementation_ids=[proof['id']],
         ))
