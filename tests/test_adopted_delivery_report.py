@@ -143,6 +143,12 @@ async def test_report_cannot_borrow_complete_proof_outside_its_selection(ledger,
         gate_mode="advisory" if select_existing else "blocking")
     try:
         proof = await contract.delivery.record(uow.services.delivery_evidence, contract.implementation())
+        # Adoption changes the verification basis after the ledger's initial run.
+        # Publish a fresh native run before selecting the already verified proof.
+        basis = ledger[2]["execution_attestation"]["execution_basis"]
+        await contract.delivery.issue_runner_verification(session, tmp_path / "selected-proof",
+            source_ref=basis["source_ref"], revision=basis["revision"],
+            executed_at=datetime.now(timezone.utc).isoformat())
         await contract.delivery.record(uow.services.delivery_evidence, contract.delivery.command(
             'test', obligation_refs=['fr:fr', 'ac:ac-about'], implementation_ids=[proof['id']],
         ))
