@@ -1,0 +1,202 @@
+- generic [ref=f13e3]:
+  - banner [ref=f13e4]:
+    - generic [ref=f13e5]:
+      - generic [ref=f13e6]:
+        - button "Hide sidebar" [ref=f13e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f13e12]
+        - generic [ref=f13e31]: / My Board
+      - generic [ref=f13e32]:
+        - button "Refresh board" [ref=f13e33] [cursor=pointer]
+        - button [ref=f13e40] [cursor=pointer]
+  - generic [ref=f13e13]:
+    - complementary [ref=f13e14]:
+      - generic [ref=f13e15]:
+        - generic [ref=f13e17]:
+          - heading "Boards" [level=2] [ref=f13e18]
+          - button "New board" [ref=f13e19] [cursor=pointer]
+        - navigation [ref=f13e21]:
+          - generic [ref=f13e22]:
+            - heading "My Boards" [level=3] [ref=f13e23]
+            - list [ref=f13e44]:
+              - listitem [ref=f13e45]:
+                - button "okto pulse" [ref=f13e46] [cursor=pointer]
+              - listitem [ref=f13e53]:
+                - button "My Board" [ref=f13e54] [cursor=pointer]
+              - listitem [ref=f13e61]:
+                - button "okto-grafx" [ref=f13e62] [cursor=pointer]
+    - main [ref=f13e26]:
+      - group "Board views" [ref=f13e69]:
+        - button "Stories" [ref=f13e70] [cursor=pointer]
+        - button "Ideations" [ref=f13e74] [cursor=pointer]
+        - button "Refinements" [pressed] [ref=f13e77] [cursor=pointer]
+        - button "Specs" [ref=f13e82] [cursor=pointer]
+        - button "Tasks" [ref=f13e87] [cursor=pointer]
+      - generic [ref=f13e2004]:
+        - generic [ref=f13e2005]:
+          - generic [ref=f13e2006]:
+            - heading "Refinements" [level=2] [ref=f13e2007]
+            - generic [ref=f13e2008]: (1 of 1)
+          - generic [ref=f13e2009]:
+            - textbox "Search refinements…" [ref=f13e2011]
+            - group "View mode" [ref=f13e2012]:
+              - button "List view" [pressed] [ref=f13e2013] [cursor=pointer]
+              - button "Grid view" [ref=f13e2015] [cursor=pointer]
+            - button "New Refinement" [ref=f13e2021] [cursor=pointer]
+        - generic [ref=f13e2023]:
+          - button "All" [ref=f13e2024] [cursor=pointer]
+          - button "Draft" [ref=f13e2025] [cursor=pointer]
+          - button "Review" [ref=f13e2026] [cursor=pointer]
+          - button "Approved" [ref=f13e2027] [cursor=pointer]
+          - button "Done" [ref=f13e2028] [cursor=pointer]
+          - button "No derivation" [ref=f13e2029] [cursor=pointer]
+          - button "Show archived" [ref=f13e2034] [cursor=pointer]
+        - generic [ref=f13e2036]:
+          - heading "E2E 0.4.3 — Operational delivery journey" [level=3] [ref=f13e2042]
+          - generic [ref=f13e2045] [cursor=pointer]:
+            - generic [ref=f13e2046]:
+              - generic [ref=f13e2047]:
+                - generic [ref=f13e2048]: Draft
+                - generic [ref=f13e2052]: Edition 1
+              - heading "E2E 0.4.3 — Delivery fixture refinement" [level=3] [ref=f13e2053]
+              - paragraph [ref=f13e2054]: "Isolated executable fixture for the authorized My Board operational audit. No production behavior is changed by this fixture. ## Parent Ideation Context - Title: E2E 0.4.3 — Operational delivery journey - Version: 11 ### Description User-authorized test fixture for exercising the full Pulse workflow on My Board. This creates test artifacts, not new production scope. ### Problem Statement The complete 0.4.3 operational journey needs evidence that planning lineage, native gates, delivery proof, human updates and the simplified UI agree. Success means a fully traced fixture reaches verified delivery, expected invalid operations are rejected without false success, and UI state matches authoritative records. ### Proposed Approach Derive one refinement and one Spec for a small isolated delivery-status reference helper. Implement and test it with real local source and execution evidence. Exercise normal, test and bug lifecycles, human progress and requirement choices, current/previous validation, resource propagation and detailed diagnosis. Inspect every primary UI area; keep a coverage matrix and reproducible defects. Preserve existing My Board artifacts and all operational gates. ### Scope Assessment - Domains: 3/5 - Ambiguity: 1/5 - Dependencies: 2/5 - Complexity: large ### Q&A Decisions **Q:** For this E2E fixture, which execution approach preserves meaningful delivery proof while keeping the production application unchanged? **A:** E2E fixture selection under the authorized audit: use real isolated implementation and execution evidence. Synthetic status values must never count as proof."
+              - 'generic "Ambiguity: no current result · Edition 1; 0 previous results" [ref=f13e2056]':
+                - generic [ref=f13e2057]: Ambiguity
+                - strong [ref=f13e2058]: Not assessed
+              - generic [ref=f13e2059]:
+                - generic [ref=f13e2060]: e2e-043
+                - generic [ref=f13e2061]: operational-audit
+            - generic [ref=f13e2062]:
+              - button "Open lineage graph" [ref=f13e2063]
+              - button "Archive tree" [ref=f13e2068]
+        - generic [ref=f13e2074]:
+          - status [ref=f13e2075]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f13e2076]:
+            - generic [ref=f13e2077]:
+              - generic [ref=f13e2078]: Items per page
+              - combobox "Items per page" [ref=f13e2079]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Refinements pagination" [ref=f13e2080]:
+              - generic [ref=f13e2081]:
+                - button "Previous page" [disabled] [ref=f13e2082]: Previous
+                - button "Page 1" [disabled] [ref=f13e2083]: "1"
+                - button "Next page" [disabled] [ref=f13e2084]: Next
+        - generic [ref=f13e2117]:
+          - generic [ref=f13e2118]:
+            - generic [ref=f13e2119]:
+              - generic [ref=f13e2120]: Done
+              - heading "E2E 0.4.3 — Delivery fixture refinement" [level=2] [ref=f13e2124]
+              - generic [ref=f13e2125]: Edition 1
+            - generic [ref=f13e2126]:
+              - button "Open lineage graph" [ref=f13e2127] [cursor=pointer]
+              - button "Export report" [ref=f13e2132] [cursor=pointer]
+              - button "Refresh" [ref=f13e2136] [cursor=pointer]
+              - button "Expand" [ref=f13e2142] [cursor=pointer]
+              - button [ref=f13e2148] [cursor=pointer]
+          - generic [ref=f13e2152]:
+            - generic [ref=f13e2153]: "Move to:"
+            - button "Draft" [ref=f13e2154] [cursor=pointer]
+          - generic [ref=f13e2157]:
+            - generic [ref=f13e2158]:
+              - generic [ref=f13e2159]: "From:"
+              - button "Open ideation E2E 0.4.3 — Operational delivery journey" [ref=f13e2160] [cursor=pointer]:
+                - generic [ref=f13e2163]: E2E 0.4.3 — Operational delivery journey
+                - generic [ref=f13e2164]: v11
+            - generic [ref=f13e2165]:
+              - generic [ref=f13e2166]: "To:"
+              - button "Open spec E2E 0.4.3 — Delivery fixture refinement" [ref=f13e2167] [cursor=pointer]:
+                - generic [ref=f13e2171]: E2E 0.4.3 — Delivery fixture refinement
+                - generic [ref=f13e2172]: Draft
+                - generic "Edition 1" [ref=f13e2173]
+          - generic [ref=f13e2175]:
+            - tablist "Refinement sections" [ref=f13e2176]:
+              - tab "Details" [selected] [ref=f13e2177] [cursor=pointer]
+              - tab "Research decisions" [ref=f13e2182] [cursor=pointer]
+              - tab "Code Evidence" [ref=f13e2186] [cursor=pointer]
+              - tab "Resources" [ref=f13e2197] [cursor=pointer]
+              - tab "Q&A 1" [ref=f13e2203] [cursor=pointer]:
+                - generic [ref=f13e2207]: Q&A
+                - generic [ref=f13e2208]: "1"
+              - tab "References" [ref=f13e2209] [cursor=pointer]
+              - tab "Validation" [ref=f13e2214] [cursor=pointer]
+              - tab "Versions" [ref=f13e2218] [cursor=pointer]
+              - tab "Activity" [ref=f13e2223] [cursor=pointer]
+            - button "Scroll Refinement sections right" [ref=f13e2229] [cursor=pointer]
+          - tabpanel "Details" [ref=f13e2233]:
+            - generic [ref=f13e2234]:
+              - generic [ref=f13e2235]:
+                - heading "Description" [level=4] [ref=f13e2236]
+                - generic [ref=f13e2238] [cursor=pointer]:
+                  - paragraph [ref=f13e2239]: Isolated executable fixture for the authorized My Board operational audit. No production behavior is changed by this fixture.
+                  - heading "Parent Ideation Context" [level=2] [ref=f13e2240]
+                  - list [ref=f13e2241]:
+                    - listitem [ref=f13e2242]: "Title: E2E 0.4.3 — Operational delivery journey"
+                    - listitem [ref=f13e2243]: "Version: 11"
+                  - heading "Description" [level=3] [ref=f13e2244]
+                  - paragraph [ref=f13e2245]: User-authorized test fixture for exercising the full Pulse workflow on My Board. This creates test artifacts, not new production scope.
+                  - heading "Problem Statement" [level=3] [ref=f13e2246]
+                  - paragraph [ref=f13e2247]: The complete 0.4.3 operational journey needs evidence that planning lineage, native gates, delivery proof, human updates and the simplified UI agree. Success means a fully traced fixture reaches verified delivery, expected invalid operations are rejected without false success, and UI state matches authoritative records.
+                  - heading "Proposed Approach" [level=3] [ref=f13e2248]
+                  - paragraph [ref=f13e2249]: Derive one refinement and one Spec for a small isolated delivery-status reference helper. Implement and test it with real local source and execution evidence. Exercise normal, test and bug lifecycles, human progress and requirement choices, current/previous validation, resource propagation and detailed diagnosis. Inspect every primary UI area; keep a coverage matrix and reproducible defects. Preserve existing My Board artifacts and all operational gates.
+                  - heading "Scope Assessment" [level=3] [ref=f13e2250]
+                  - list [ref=f13e2251]:
+                    - listitem [ref=f13e2252]: "Domains: 3/5"
+                    - listitem [ref=f13e2253]: "Ambiguity: 1/5"
+                    - listitem [ref=f13e2254]: "Dependencies: 2/5"
+                    - listitem [ref=f13e2255]: "Complexity: large"
+                  - heading "Q&A Decisions" [level=3] [ref=f13e2256]
+                  - paragraph [ref=f13e2257]:
+                    - strong [ref=f13e2258]: "Q:"
+                    - text: For this E2E fixture, which execution approach preserves meaningful delivery proof while keeping the production application unchanged?
+                    - strong [ref=f13e2259]: "A:"
+                    - text: "E2E fixture selection under the authorized audit: use real isolated implementation and execution evidence. Synthetic status values must never count as proof."
+              - generic [ref=f13e2263]:
+                - generic [ref=f13e2264]:
+                  - heading "In Scope (3)" [level=4] [ref=f13e2265]:
+                    - text: In Scope
+                    - generic [ref=f13e2266]: (3)
+                  - button "Add" [ref=f13e2267] [cursor=pointer]
+                - list [ref=f13e2269]:
+                  - listitem [ref=f13e2270]:
+                    - generic [ref=f13e2271]: "1."
+                    - generic [ref=f13e2272]: Pure reference function with explicit status precedence
+                    - button [ref=f13e2273] [cursor=pointer]
+                  - listitem [ref=f13e2277]:
+                    - generic [ref=f13e2278]: "2."
+                    - generic [ref=f13e2279]: Real unittest execution and native delivery tracing
+                    - button [ref=f13e2280] [cursor=pointer]
+                  - listitem [ref=f13e2284]:
+                    - generic [ref=f13e2285]: "3."
+                    - generic [ref=f13e2286]: My Board UI, lineage, gates, evidence and failure/recovery audit
+                    - button [ref=f13e2287] [cursor=pointer]
+              - generic [ref=f13e2291]:
+                - generic [ref=f13e2292]:
+                  - heading "Out of Scope (3)" [level=4] [ref=f13e2293]:
+                    - text: Out of Scope
+                    - generic [ref=f13e2294]: (3)
+                  - button "Add" [ref=f13e2295] [cursor=pointer]
+                - list [ref=f13e2297]:
+                  - listitem [ref=f13e2298]:
+                    - generic [ref=f13e2299]: "1."
+                    - generic [ref=f13e2300]: New production capabilities
+                    - button [ref=f13e2301] [cursor=pointer]
+                  - listitem [ref=f13e2305]:
+                    - generic [ref=f13e2306]: "2."
+                    - generic [ref=f13e2307]: Mutating Pulse storage directly
+                    - button [ref=f13e2308] [cursor=pointer]
+                  - listitem [ref=f13e2312]:
+                    - generic [ref=f13e2313]: "3."
+                    - generic [ref=f13e2314]: Disabling gates to manufacture completion
+                    - button [ref=f13e2315] [cursor=pointer]
+              - generic [ref=f13e2319]:
+                - heading "Analysis" [level=4] [ref=f13e2320]
+                - paragraph [ref=f13e2323] [cursor=pointer]: The fixture is a new standalone Python standard-library function plus tests in an isolated audit workspace. Its inputs are requirement(required/optional/waived), implemented(bool), verification(pending/passed/failed). Validate enum values before classifying. Optional or waived returns Not required; for required inputs failed returns Verification failed, otherwise unimplemented returns Work remaining, implemented/pending returns Awaiting verification, implemented/passed returns Delivered. The function has no storage/network access. The test suite exhaustively covers the 18 valid combinations and invalid enum inputs. Existing Pulse UI and backend are systems under test, not imported fixture implementation. Source access and greenfield absence are verified separately before approval. Real failures, corrections, revision identity, native evidence associations and final UI parity remain mandatory.
+              - generic [ref=f13e2327]:
+                - generic [ref=f13e2328]: e2e-043
+                - generic [ref=f13e2329]: operational-audit
+          - generic [ref=f13e2330]:
+            - button "Delete refinement" [ref=f13e2331] [cursor=pointer]
+            - generic [ref=f13e2332]:
+              - button "Create Spec Draft" [ref=f13e2333] [cursor=pointer]
+              - button "Close" [ref=f13e2336] [cursor=pointer]

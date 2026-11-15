@@ -1,0 +1,103 @@
+- generic [ref=f1e3]:
+  - banner [ref=f1e4]:
+    - generic [ref=f1e5]:
+      - generic [ref=f1e6]:
+        - button "Hide sidebar" [ref=f1e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f1e12]
+        - generic [ref=f1e31]: / My Board
+      - generic [ref=f1e32]:
+        - button "Refresh board" [ref=f1e33] [cursor=pointer]
+        - button [ref=f1e40] [cursor=pointer]
+  - generic [ref=f1e13]:
+    - complementary [ref=f1e14]:
+      - generic [ref=f1e15]:
+        - generic [ref=f1e17]:
+          - heading "Boards" [level=2] [ref=f1e18]
+          - button "New board" [ref=f1e19] [cursor=pointer]
+        - navigation [ref=f1e21]:
+          - generic [ref=f1e22]:
+            - heading "My Boards" [level=3] [ref=f1e23]
+            - list [ref=f1e44]:
+              - listitem [ref=f1e45]:
+                - button "okto pulse" [ref=f1e46] [cursor=pointer]
+              - listitem [ref=f1e53]:
+                - button "My Board" [ref=f1e54] [cursor=pointer]
+              - listitem [ref=f1e61]:
+                - button "okto-grafx" [ref=f1e62] [cursor=pointer]
+    - main [ref=f1e26]:
+      - group "Board views" [ref=f1e69]:
+        - button "Stories" [pressed] [ref=f1e70] [cursor=pointer]
+        - button "Ideations" [ref=f1e74] [cursor=pointer]
+        - button "Refinements" [ref=f1e77] [cursor=pointer]
+        - button "Specs" [ref=f1e82] [cursor=pointer]
+        - button "Tasks" [ref=f1e87] [cursor=pointer]
+      - generic [ref=f1e1991]:
+        - generic [ref=f1e1992]:
+          - generic [ref=f1e1993]:
+            - heading "Stories" [level=2] [ref=f1e1994]
+            - generic [ref=f1e1995]: (3 of 3)
+          - generic [ref=f1e1996]:
+            - textbox "Search stories..." [ref=f1e1998]
+            - group "View mode" [ref=f1e1999]:
+              - button "List view" [pressed] [ref=f1e2000] [cursor=pointer]
+              - button "Grid view" [ref=f1e2002] [cursor=pointer]
+            - button "New Story" [ref=f1e2008] [cursor=pointer]
+        - generic [ref=f1e2010]:
+          - button "All" [ref=f1e2011] [cursor=pointer]
+          - button "Draft" [ref=f1e2012] [cursor=pointer]
+          - button "Triage" [ref=f1e2013] [cursor=pointer]
+          - button "Ready" [ref=f1e2014] [cursor=pointer]
+          - button "Converted" [ref=f1e2015] [cursor=pointer]
+          - button "Show archived" [ref=f1e2016] [cursor=pointer]
+        - generic [ref=f1e2017]:
+          - complementary [ref=f1e2018]:
+            - generic [ref=f1e2019]:
+              - generic [ref=f1e2020]: Topics
+              - button "New Topic" [ref=f1e2025] [cursor=pointer]
+            - generic [ref=f1e2027]:
+              - button "All topics 3" [ref=f1e2149] [cursor=pointer]:
+                - generic [ref=f1e2029]: All topics
+                - generic [ref=f1e2030]: "3"
+              - generic [ref=f1e2031]:
+                - button "E2E 0.4.3 — Operational consistency 3" [ref=f1e2150] [cursor=pointer]:
+                  - generic [ref=f1e2033]: E2E 0.4.3 — Operational consistency
+                  - generic [ref=f1e2034]: "3"
+                - 'button "Topic actions: E2E 0.4.3 — Operational consistency" [ref=f1e2035] [cursor=pointer]'
+          - generic [ref=f1e2040]:
+            - generic [ref=f1e2463]:
+              - generic [ref=f1e2466] [cursor=pointer]:
+                - generic [ref=f1e2467]:
+                  - generic [ref=f1e2468]: Converted
+                  - generic [ref=f1e2469]: E2E 0.4.3 — Operational consistency
+                - heading "R4c installed acceptance — persisted Story and recommendation controls" [level=3] [ref=f1e2470]
+                - paragraph [ref=f1e2471]: Isolated My Board acceptance of installed Community 3ce94ac and Core a6b3497. Exercise persisted status, controlled failure rollback, native conversion and recommended-choice metadata. This fixture is test content and grants no delivery proof by itself.
+              - generic [ref=f1e2480] [cursor=pointer]:
+                - generic [ref=f1e2481]:
+                  - generic [ref=f1e2482]: Converted
+                  - generic [ref=f1e2483]: E2E 0.4.3 — Operational consistency
+                - heading "R4 UI acceptance — persisted Story status and recommendations" [level=3] [ref=f1e2484]
+                - paragraph [ref=f1e2485]: Isolated My Board acceptance fixture for the installed 0.4.3 UI. Verify saved status while editing, failure rollback, native Ready conversion, one Ideation link, and explicit Recommended choices. No production scope or delivery proof is implied.
+              - generic [ref=f1e2494] [cursor=pointer]:
+                - generic [ref=f1e2495]:
+                  - generic [ref=f1e2496]: Converted
+                  - generic [ref=f1e2497]: E2E 0.4.3 — Operational consistency
+                - heading "E2E 0.4.3 — Understand and verify a delivery" [level=3] [ref=f1e2498]
+                - paragraph [ref=f1e2499]: As a board user, I need to distinguish delivered, pending, failed and waived work and see which requirement each verification impacts, so that I can make a correct delivery decision without entering technical receipts. This is the isolated intake fixture for the authorized operat…
+                - generic [ref=f1e2500]:
+                  - generic [ref=f1e2501]: "As: Board user"
+                  - generic [ref=f1e2502]: "Want: Understand delivery and requirement-level verification"
+                  - generic [ref=f1e2503]: "So: Make accurate delivery decisions without technical bookkeeping"
+            - generic [ref=f1e2074]:
+              - status [ref=f1e2075]: Showing 1–3 of 3 matching. 3 overall. Page 1 of 1.
+              - generic [ref=f1e2076]:
+                - generic [ref=f1e2077]:
+                  - generic [ref=f1e2078]: Items per page
+                  - combobox "Items per page" [ref=f1e2079]:
+                    - option "25" [selected]
+                    - option "50"
+                    - option "100"
+                - navigation "Stories pagination" [ref=f1e2080]:
+                  - generic [ref=f1e2081]:
+                    - button "Previous page" [disabled] [ref=f1e2082]: Previous
+                    - button "Page 1" [disabled] [ref=f1e2083]: "1"
+                    - button "Next page" [disabled] [ref=f1e2084]: Next

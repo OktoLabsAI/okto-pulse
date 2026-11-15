@@ -1,0 +1,504 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - button "Hide sidebar" [ref=e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=e12]
+        - generic [ref=e77]: / okto pulse
+      - generic [ref=e78]:
+        - button "Refresh board" [ref=e79] [cursor=pointer]
+        - button [ref=e86] [cursor=pointer]
+  - generic [ref=e13]:
+    - complementary [ref=e14]:
+      - generic [ref=e15]:
+        - generic [ref=e17]:
+          - heading "Boards" [level=2] [ref=e18]
+          - button "New board" [ref=e19] [cursor=pointer]
+        - navigation [ref=e21]:
+          - generic [ref=e22]:
+            - heading "My Boards" [level=3] [ref=e23]
+            - list [ref=e90]:
+              - listitem [ref=e91]:
+                - button "okto pulse" [ref=e92] [cursor=pointer]
+              - listitem [ref=e99]:
+                - button "My Board" [ref=e100] [cursor=pointer]
+              - listitem [ref=e107]:
+                - button "okto-grafx" [ref=e108] [cursor=pointer]
+    - main [ref=e26]:
+      - group "Board views" [ref=e115]:
+        - button "Stories" [ref=e116] [cursor=pointer]
+        - button "Ideations" [ref=e120] [cursor=pointer]
+        - button "Refinements" [ref=e123] [cursor=pointer]
+        - button "Specs" [pressed] [ref=e128] [cursor=pointer]
+        - button "Tasks" [ref=e133] [cursor=pointer]
+      - generic [ref=e249]:
+        - generic [ref=e250]:
+          - generic [ref=e251]:
+            - heading "Specifications" [level=2] [ref=e252]
+            - generic [ref=e253]: (13 of 13)
+          - generic [ref=e254]:
+            - textbox "Search specs…" [ref=e256]
+            - group "View mode" [ref=e257]:
+              - button "List view" [pressed] [ref=e258] [cursor=pointer]
+              - button "Grid view" [ref=e260] [cursor=pointer]
+            - generic [ref=e266]: Group specs
+            - combobox "Group specs" [ref=e272]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=e273] [cursor=pointer]
+        - generic [ref=e275]:
+          - button "All" [ref=e276] [cursor=pointer]
+          - button "Draft" [ref=e277] [cursor=pointer]
+          - button "Review" [ref=e278] [cursor=pointer]
+          - button "Approved" [ref=e279] [cursor=pointer]
+          - button "Validated" [ref=e280] [cursor=pointer]
+          - button "In Progress" [ref=e281] [cursor=pointer]
+          - button "Done" [ref=e282] [cursor=pointer]
+          - button "Show archived" [ref=e283] [cursor=pointer]
+        - generic [ref=e285]:
+          - generic [ref=e286]:
+            - generic [ref=e287] [cursor=pointer]:
+              - 'heading "Refinement: Exact-base verification currentness — native acceptance, invalidation and requirement-level Delivery" [level=3] [ref=e294]'
+              - generic [ref=e295]: (2)
+            - generic [ref=e296]:
+              - generic [ref=e299] [cursor=pointer]:
+                - generic [ref=e300]:
+                  - generic [ref=e301]:
+                    - generic [ref=e302]: In Progress
+                    - generic "Edition 2" [ref=e306]
+                  - heading "R6 — Requirement-specific verification in Delivery, Coverage and Help" [level=3] [ref=e307]
+                  - paragraph [ref=e308]: Consume the R5 authenticated per-basis authority so independent verified implementations remain qualified simultaneously. Preserve the agreed simple Delivery UI, exact requirement attribution, native lifecycle gates and automatic human receipts. This Spec owns association/read-mo…
+                  - 'generic "Requirement lint: 0 (0–88) · Edition 2" [ref=e310]':
+                    - generic [ref=e311]: Requirement lint
+                    - strong [ref=e312]: "0"
+                  - generic [ref=e313]:
+                    - generic [ref=e314]: v0.4.3
+                    - generic [ref=e315]: e2e-remediation
+                    - generic [ref=e316]: r6
+                    - generic [ref=e317]: verification-currentness
+                - generic [ref=e318]:
+                  - button "Open lineage graph" [ref=e319]
+                  - button "Archive tree" [ref=e324]
+              - generic [ref=e332] [cursor=pointer]:
+                - generic [ref=e333]:
+                  - generic [ref=e334]:
+                    - generic [ref=e335]: Done
+                    - generic "Edition 2" [ref=e339]
+                    - status "Pending cognitive consolidation — pending" [ref=e340]:
+                      - generic [ref=e343]: Pending cognitive consolidation
+                  - heading "R5 — Native verification authority per exact code basis" [level=3] [ref=e344]
+                  - paragraph [ref=e345]: Replace the single scenario-result authority with authenticated per-basis currentness while preserving immutable evidence, native authorization and reset semantics. This Spec owns Core contracts and shared issuance/publication, Community relational persistence, all invalidation p…
+                  - 'generic "Requirement lint: 0 (0–82) · Edition 2" [ref=e347]':
+                    - generic [ref=e348]: Requirement lint
+                    - strong [ref=e349]: "0"
+                  - generic [ref=e350]:
+                    - generic [ref=e351]: v0.4.3
+                    - generic [ref=e352]: e2e-remediation
+                    - generic [ref=e353]: r5
+                    - generic [ref=e354]: verification-currentness
+                - generic [ref=e355]:
+                  - button "Open lineage graph" [ref=e356]
+                  - button "Archive tree" [ref=e361]
+          - generic [ref=e367]:
+            - generic [ref=e368] [cursor=pointer]:
+              - 'heading "Refinement: R1 — Preserve normative responsibility and consistent lifecycle decisions" [level=3] [ref=e375]'
+              - generic [ref=e376]: (1)
+            - generic [ref=e380] [cursor=pointer]:
+              - generic [ref=e381]:
+                - generic [ref=e382]:
+                  - generic [ref=e383]: Done
+                  - generic "Edition 1" [ref=e387]
+                  - status "Pending cognitive consolidation — pending" [ref=e388]:
+                    - generic [ref=e391]: Pending cognitive consolidation
+                - heading "R1 — Preserve normative responsibility and consistent lifecycle decisions" [level=3] [ref=e392]
+                - paragraph [ref=e393]: 0.4.3 remediation of E004, E009, E012, E013. Implement the approved Refinement decisions and acceptance mockup. Origin lineage is diagnostic context, never an implicit change to approved responsibility; no unresolved planning question may be discarded at freeze, and operational r…
+                - 'generic "Requirement lint: 0 (0–66) · Edition 1" [ref=e395]':
+                  - generic [ref=e396]: Requirement lint
+                  - strong [ref=e397]: "0"
+                - generic [ref=e398]:
+                  - generic [ref=e399]: v0.4.3
+                  - generic [ref=e400]: e2e-remediation
+                  - generic [ref=e401]: r1
+              - generic [ref=e402]:
+                - button "Open lineage graph" [ref=e403]
+                - button "Archive tree" [ref=e408]
+          - generic [ref=e414]:
+            - generic [ref=e415] [cursor=pointer]:
+              - 'heading "Refinement: R4 — Clear human status, recommendations and requirement-level Delivery diagnosis" [level=3] [ref=e422]'
+              - generic [ref=e423]: (1)
+            - generic [ref=e427] [cursor=pointer]:
+              - generic [ref=e428]:
+                - generic [ref=e429]:
+                  - generic [ref=e430]: In Progress
+                  - generic "Edition 1" [ref=e434]
+                - heading "R4 — Clear human status, recommendations and requirement-level Delivery diagnosis" [level=3] [ref=e435]
+                - paragraph [ref=e436]: 0.4.3 remediation of E001, E003, E009, E011. Implement the approved Refinement decisions and acceptance mockup. Human task delivery communicates what was delivered, what remains and what is happening now; technical receipt integrity is automatic, and no displayed recommendation o…
+                - 'generic "Requirement lint: 0 (0–66) · Edition 1" [ref=e438]':
+                  - generic [ref=e439]: Requirement lint
+                  - strong [ref=e440]: "0"
+                - generic [ref=e441]:
+                  - generic [ref=e442]: v0.4.3
+                  - generic [ref=e443]: e2e-remediation
+                  - generic [ref=e444]: r4
+              - generic [ref=e445]:
+                - button "Open lineage graph" [ref=e446]
+                - button "Archive tree" [ref=e451]
+          - generic [ref=e457]:
+            - generic [ref=e458] [cursor=pointer]:
+              - 'heading "Refinement: R3 — Bounded KG writer lifecycle and durable processing health" [level=3] [ref=e465]'
+              - generic [ref=e466]: (1)
+            - generic [ref=e470] [cursor=pointer]:
+              - generic [ref=e471]:
+                - generic [ref=e472]:
+                  - generic [ref=e473]: Done
+                  - generic "Edition 1" [ref=e477]
+                  - status "Pending cognitive consolidation — pending" [ref=e478]:
+                    - generic [ref=e481]: Pending cognitive consolidation
+                - heading "R3 — Bounded KG writer lifecycle and durable processing health" [level=3] [ref=e482]
+                - paragraph [ref=e483]: 0.4.3 remediation of E010, E014, observed SQLite contention. Implement the approved Refinement decisions and acceptance mockup. Graph processing is successful only after durable graph publication and guarded SQL acknowledgement; contention can be retried only before side effects,…
+                - 'generic "Requirement lint: 0 (0–72) · Edition 1" [ref=e485]':
+                  - generic [ref=e486]: Requirement lint
+                  - strong [ref=e487]: "0"
+                - generic [ref=e488]:
+                  - generic [ref=e489]: v0.4.3
+                  - generic [ref=e490]: e2e-remediation
+                  - generic [ref=e491]: r3
+              - generic [ref=e492]:
+                - button "Open lineage graph" [ref=e493]
+                - button "Archive tree" [ref=e498]
+          - generic [ref=e504]:
+            - generic [ref=e505] [cursor=pointer]:
+              - 'heading "Refinement: R2 — Reliable source context, authenticated evidence and economical agent contracts" [level=3] [ref=e512]'
+              - generic [ref=e513]: (1)
+            - generic [ref=e517] [cursor=pointer]:
+              - generic [ref=e518]:
+                - generic [ref=e519]:
+                  - generic [ref=e520]: Done
+                  - generic "Edition 1" [ref=e524]
+                  - status "Pending cognitive consolidation — pending" [ref=e525]:
+                    - generic [ref=e528]: Pending cognitive consolidation
+                - heading "R2 — Reliable source context, authenticated evidence and economical agent contracts" [level=3] [ref=e529]
+                - paragraph [ref=e530]: 0.4.3 remediation of E002, E005, E006, E007, E008, status-only source receipt invalidation. Implement the approved Refinement decisions and acceptance mockup. A receipt is technical evidence owned by the system/agent, not a human form requirement; historical provenance and curren…
+                - 'generic "Requirement lint: 0 (0–66) · Edition 1" [ref=e532]':
+                  - generic [ref=e533]: Requirement lint
+                  - strong [ref=e534]: "0"
+                - generic [ref=e535]:
+                  - generic [ref=e536]: v0.4.3
+                  - generic [ref=e537]: e2e-remediation
+                  - generic [ref=e538]: r2
+              - generic [ref=e539]:
+                - button "Open lineage graph" [ref=e540]
+                - button "Archive tree" [ref=e545]
+          - generic [ref=e551]:
+            - generic [ref=e552] [cursor=pointer]:
+              - 'heading "Refinement: Task Delivery — submissão humana automática, resumo canônico e auditoria opcional" [level=3] [ref=e559]'
+              - generic [ref=e560]: (1)
+            - generic [ref=e564] [cursor=pointer]:
+              - generic [ref=e565]:
+                - generic [ref=e566]:
+                  - generic [ref=e567]: Done
+                  - generic "Edition 2" [ref=e571]
+                  - status "Pending cognitive consolidation — pending" [ref=e572]:
+                    - generic [ref=e575]: Pending cognitive consolidation
+                - heading "Task Delivery simples e recibos automáticos de submissão humana" [level=3] [ref=e576]
+                - paragraph [ref=e577]: Simplificar Delivery da Task com estado único e próxima ação; a aplicação gera e associa recibos de submissões humanas sem campos técnicos. Core decide autoridade/estado; Community garante transação; UI mantém Details opcional.
+                - 'generic "Requirement lint: 0 (0–8) · Edition 2" [ref=e579]':
+                  - generic [ref=e580]: Requirement lint
+                  - strong [ref=e581]: "0"
+                - generic [ref=e582]:
+                  - generic [ref=e583]: task-delivery
+                  - generic [ref=e584]: human-receipts
+                  - generic [ref=e585]: v0.4.3
+                  - generic [ref=e586]: execution-ready
+              - generic [ref=e587]:
+                - button "Open lineage graph" [ref=e588]
+                - button "Archive tree" [ref=e593]
+          - generic [ref=e599]:
+            - generic [ref=e600] [cursor=pointer]:
+              - 'heading "Refinement: v0.4.3 — Progresso e entrega: protocolo MCP enxuto com rastreabilidade integral" [level=3] [ref=e607]'
+              - generic [ref=e608]: (1)
+            - generic [ref=e612] [cursor=pointer]:
+              - generic [ref=e613]:
+                - generic [ref=e614]:
+                  - generic [ref=e615]: Done
+                  - generic "Edition 2" [ref=e619]
+                  - status "Pending cognitive consolidation — pending" [ref=e620]:
+                    - generic [ref=e623]: Pending cognitive consolidation
+                - 'heading "v0.4.3 — Progresso e entrega: protocolo MCP enxuto com rastreabilidade integral" [level=3] [ref=e624]'
+                - paragraph [ref=e625]: O modelo CardDeliveryReportInput já combina batch, relatório e transição; aceita somente in_progress e destinos validation/done, com limite total de 128 KiB e 200 referências. A associação de prova continua explícita, mas execution_submission e referências locais permitem um únic…
+                - 'generic "Requirement lint: 0 (0–96) · Edition 2" [ref=e627]':
+                  - generic [ref=e628]: Requirement lint
+                  - strong [ref=e629]: "0"
+                - generic [ref=e630]:
+                  - generic [ref=e631]: pulse-simplification-2026-11
+                  - generic [ref=e632]: mcp-efficiency
+                  - generic [ref=e633]: traceability
+                  - generic [ref=e634]: agent-resources
+              - generic [ref=e635]:
+                - button "Open lineage graph" [ref=e636]
+                - button "Archive tree" [ref=e641]
+          - generic [ref=e647]:
+            - generic [ref=e648] [cursor=pointer]:
+              - 'heading "Refinement: v0.4.3 — Validation: resultado único da spec com Details" [level=3] [ref=e655]'
+              - generic [ref=e656]: (1)
+            - generic [ref=e660] [cursor=pointer]:
+              - generic [ref=e661]:
+                - generic [ref=e662]:
+                  - generic [ref=e663]: Done
+                  - generic "Edition 2" [ref=e667]
+                  - status "Pending cognitive consolidation — pending" [ref=e668]:
+                    - generic [ref=e671]: Pending cognitive consolidation
+                - 'heading "v0.4.3 — Validation: resultado único da spec com Details" [level=3] [ref=e672]'
+                - paragraph [ref=e673]: "A composição canônica já existe em SpecPlanningReadiness: censo fixo de 17 componentes; unavailable precede blocked e ready requer o censo inteiro. read_spec_planning_readiness resolve permissões, gates nativos e resultados da edição. O React atualmente permite que qualidade succ…"
+                - 'generic "Requirement lint: 0 (0–96) · Edition 2" [ref=e675]':
+                  - generic [ref=e676]: Requirement lint
+                  - strong [ref=e677]: "0"
+                - generic [ref=e678]:
+                  - generic [ref=e679]: pulse-simplification-2026-11
+                  - generic [ref=e680]: ux
+                  - generic [ref=e681]: validation
+                  - generic [ref=e682]: core-community
+              - generic [ref=e683]:
+                - button "Open lineage graph" [ref=e684]
+                - button "Archive tree" [ref=e689]
+          - generic [ref=e695]:
+            - generic [ref=e696] [cursor=pointer]:
+              - 'heading "Refinement: v0.4.3 — Delivery: entregue, em andamento e pendente em uma visão simples" [level=3] [ref=e703]'
+              - generic [ref=e704]: (1)
+            - generic [ref=e708] [cursor=pointer]:
+              - generic [ref=e709]:
+                - generic [ref=e710]:
+                  - generic [ref=e711]: Done
+                  - generic "Edition 5" [ref=e715]
+                  - status "Pending cognitive consolidation — pending" [ref=e716]:
+                    - generic [ref=e719]: Pending cognitive consolidation
+                - 'heading "v0.4.3 — Delivery: entregue, em andamento e pendente em uma visão simples" [level=3] [ref=e720]'
+                - paragraph [ref=e721]: EffectiveDeliveryInventory resolve contribuições e obrigações globalmente; o denominador não pode ser reconstruído somando cards ou percentuais. Cards cancelados são excluídos dos responsáveis elegíveis, mas obrigações sem alocação continuam pendentes. A visão humana deve agrupar…
+                - 'generic "Requirement lint: 0 (0–96) · Edition 5" [ref=e723]':
+                  - generic [ref=e724]: Requirement lint
+                  - strong [ref=e725]: "0"
+                - generic [ref=e726]:
+                  - generic [ref=e727]: pulse-simplification-2026-11
+                  - generic [ref=e728]: ux
+                  - generic [ref=e729]: delivery
+                  - generic [ref=e730]: readiness
+              - generic [ref=e731]:
+                - button "Open lineage graph" [ref=e732]
+                - button "Archive tree" [ref=e737]
+          - generic [ref=e743]:
+            - generic [ref=e744] [cursor=pointer]:
+              - 'heading "Refinement: v0.4.3 — Dispensa de tarefas: uma decisão humana, uma ação auditável" [level=3] [ref=e751]'
+              - generic [ref=e752]: (1)
+            - generic [ref=e756] [cursor=pointer]:
+              - generic [ref=e757]:
+                - generic [ref=e758]:
+                  - generic [ref=e759]: Done
+                  - generic "Edition 2" [ref=e763]
+                  - status "Pending cognitive consolidation — pending" [ref=e764]:
+                    - generic [ref=e767]: Pending cognitive consolidation
+                - 'heading "v0.4.3 — Dispensa de tarefas: uma decisão humana, uma ação auditável" [level=3] [ref=e768]'
+                - paragraph [ref=e769]: O inventário atual distingue obrigações e contribuições; waiver legado é por obrigação/fase, não contribuição. Portanto não se pode reutilizar waiver global para task compartilhada. CardDeliveryDoDPanel escolhe submitWaiver somente quando falta permissão de registrar evidência; c…
+                - 'generic "Requirement lint: 0 (0–112) · Edition 2" [ref=e771]':
+                  - generic [ref=e772]: Requirement lint
+                  - strong [ref=e773]: "0"
+                - generic [ref=e774]:
+                  - generic [ref=e775]: pulse-simplification-2026-11
+                  - generic [ref=e776]: ux
+                  - generic [ref=e777]: human-waiver
+                  - generic [ref=e778]: traceability
+              - generic [ref=e779]:
+                - button "Open lineage graph" [ref=e780]
+                - button "Archive tree" [ref=e785]
+          - generic [ref=e791]:
+            - generic [ref=e792] [cursor=pointer]:
+              - 'heading "Refinement: Readiness persistido — invalidação durável, projeção assíncrona e cobertura coerente" [level=3] [ref=e799]'
+              - generic [ref=e800]: (1)
+            - generic [ref=e804] [cursor=pointer]:
+              - generic [ref=e805]:
+                - generic [ref=e806]:
+                  - generic [ref=e807]: Done
+                  - generic "Edition 3" [ref=e811]
+                  - status "Pending cognitive consolidation — pending" [ref=e812]:
+                    - generic [ref=e815]: Pending cognitive consolidation
+                - heading "Readiness persistido — invalidação durável, projeção assíncrona e cobertura coerente" [level=3] [ref=e816]
+                - paragraph [ref=e817]: Persistir e atualizar de forma durável os percentuais e a tabela de cobertura, com leitura rápida, geração coerente e preservação dos gates de entrega.
+                - 'generic "Requirement lint: 1 (0–42) · Edition 3" [ref=e819]':
+                  - generic [ref=e820]: Requirement lint
+                  - strong [ref=e821]: "1"
+                - generic [ref=e822]:
+                  - generic [ref=e823]: performance
+                  - generic [ref=e824]: delivery-readiness
+                  - generic [ref=e825]: persistencia
+              - generic [ref=e826]:
+                - button "Open lineage graph" [ref=e827]
+                - button "Archive tree" [ref=e832]
+          - generic [ref=e838]:
+            - generic [ref=e839] [cursor=pointer]:
+              - 'heading "Refinement: Unificação do estado de execução e migração de cards Started" [level=3] [ref=e846]'
+              - generic [ref=e847]: (1)
+            - generic [ref=e851] [cursor=pointer]:
+              - generic [ref=e852]:
+                - generic [ref=e853]:
+                  - generic [ref=e854]: Done
+                  - generic "Edition 2" [ref=e858]
+                  - status "Pending cognitive consolidation — pending" [ref=e859]:
+                    - generic [ref=e862]: Pending cognitive consolidation
+                - heading "Unificar Started em In Progress — ciclo de vida e upgrade seguro" [level=3] [ref=e863]
+                - paragraph [ref=e864]: Simplificar o início de normal/test/bug para Not Started → In Progress; converter estados persistidos legados automaticamente, preservar autorização, gates, histórico e durabilidade, e alinhar Kanban/API/MCP. Planejamento para revisão humana; execução não iniciada.
+                - 'generic "Requirement lint: 0 (0–176) · Edition 2" [ref=e866]':
+                  - generic [ref=e867]: Requirement lint
+                  - strong [ref=e868]: "0"
+                - generic [ref=e869]:
+                  - generic [ref=e870]: sdlc
+                  - generic [ref=e871]: usabilidade
+                  - generic [ref=e872]: status-unification
+                  - generic [ref=e873]: aguarda-revisao
+              - generic [ref=e874]:
+                - button "Open lineage graph" [ref=e875]
+                - button "Archive tree" [ref=e880]
+        - generic [ref=e886]:
+          - status [ref=e887]: Showing 1–13 of 13 matching. 13 overall. Page 1 of 1.
+          - generic [ref=e888]:
+            - generic [ref=e889]:
+              - generic [ref=e890]: Items per page
+              - combobox "Items per page" [ref=e891]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=e892]:
+              - generic [ref=e893]:
+                - button "Previous page" [disabled] [ref=e894]: Previous
+                - button "Page 1" [disabled] [ref=e895]: "1"
+                - button "Next page" [disabled] [ref=e896]: Next
+        - dialog [ref=e909]:
+          - generic [ref=e910]:
+            - generic [ref=e911]:
+              - generic [ref=e912]: In Progress
+              - heading "R4 — Clear human status, recommendations and requirement-level Delivery diagnosis" [level=2] [ref=e916]
+              - generic "Edition 1" [ref=e917]
+            - generic [ref=e918]:
+              - button "Open lineage graph" [ref=e919] [cursor=pointer]
+              - button "Export report" [ref=e924] [cursor=pointer]
+              - button "Refresh" [ref=e928] [cursor=pointer]
+              - button "Expand" [ref=e934] [cursor=pointer]
+              - button "Close spec" [ref=e940] [cursor=pointer]
+          - generic [ref=e1196]:
+            - generic [ref=e1197]: "Move to:"
+            - button "Validated" [ref=e1198] [cursor=pointer]
+            - button "Draft" [ref=e1201] [cursor=pointer]
+            - button "Cancelled" [ref=e1204] [cursor=pointer]
+          - generic [ref=e955]:
+            - generic [ref=e956]: "From:"
+            - button "0.4.3 operational consistency — resolve the My Board E2E audit findings v33" [ref=e957] [cursor=pointer]:
+              - text: 0.4.3 operational consistency — resolve the My Board E2E audit findings
+              - generic [ref=e960]: v33
+            - button "R4 — Clear human status, recommendations and requirement-level Delivery diagnosis v18" [ref=e963] [cursor=pointer]:
+              - text: R4 — Clear human status, recommendations and requirement-level Delivery diagnosis
+              - generic [ref=e968]: v18
+          - generic [ref=e970]:
+            - tablist "Spec sections" [ref=e971]:
+              - tab "Details" [ref=e972] [cursor=pointer]
+              - tab "Coverage" [selected] [ref=e977] [cursor=pointer]
+              - tab "Project Structure 38" [ref=e983] [cursor=pointer]:
+                - generic [ref=e989]: Project Structure
+                - generic [ref=e990]: "38"
+              - tab "Code Evidence Matrix" [ref=e991] [cursor=pointer]
+              - tab "Resources" [ref=e995] [cursor=pointer]
+              - tab "Requirements & Decisions" [ref=e999] [cursor=pointer]
+              - tab "Tests & Verifications" [ref=e1004] [cursor=pointer]
+              - tab "Q&A 13" [ref=e1008] [cursor=pointer]:
+                - generic [ref=e1012]: Q&A
+                - generic [ref=e1013]: "13"
+              - tab "Dependencies" [ref=e1014] [cursor=pointer]
+              - tab "References 5" [ref=e1020] [cursor=pointer]:
+                - generic [ref=e1024]: References
+                - generic [ref=e1025]: "5"
+              - tab "KG Graph" [ref=e1026] [cursor=pointer]
+              - tab "Validation" [ref=e1033] [cursor=pointer]
+              - tab "Activity" [ref=e1038] [cursor=pointer]
+            - button "Scroll Spec sections right" [ref=e1044] [cursor=pointer]
+          - tabpanel "Coverage" [ref=e1178]:
+            - tabpanel [ref=e1049]:
+              - region "Spec coverage" [ref=e1179]:
+                - generic [ref=e1180]:
+                  - generic [ref=e1181]:
+                    - heading "Coverage" [level=3] [ref=e1182]
+                    - paragraph [ref=e1183]: Find planning gaps and track proof of delivery.
+                  - button "Reload coverage" [ref=e1184] [cursor=pointer]
+                - tablist "Coverage views" [ref=e1186]:
+                  - tab "Overview" [selected] [ref=e1187] [cursor=pointer]
+                  - tab "Planning" [ref=e1189] [cursor=pointer]
+                  - tab "Implementation" [ref=e1191] [cursor=pointer]
+                - paragraph [ref=e1207]: Edition 1 · Informational view — this does not approve a gate.
+                - status [ref=e1208]: Graph details are temporarily unavailable. Available planning and delivery information is shown below. Reload coverage to retry graph details.
+                - tabpanel "Overview" [ref=e1209]:
+                  - generic [ref=e1210]:
+                    - generic [ref=e1211]:
+                      - paragraph [ref=e1212]: Planning coverage
+                      - paragraph [ref=e1213]: 100%
+                      - progressbar "Planning coverage" [ref=e1214]
+                      - paragraph [ref=e1216]: 6 of 6
+                      - paragraph [ref=e1217]: Applicable link dimensions fully covered. Empty dimensions are excluded.
+                    - generic [ref=e1218]:
+                      - paragraph [ref=e1219]: Implementation proof
+                      - paragraph [ref=e1220]: 88%
+                      - progressbar "Implementation proof" [ref=e1221]
+                      - paragraph [ref=e1223]: 16 of 18
+                      - paragraph [ref=e1224]: Persisted proof for applicable obligations.
+                    - generic [ref=e1225]:
+                      - paragraph [ref=e1226]: Decision adherence
+                      - paragraph [ref=e1227]: No items
+                      - paragraph [ref=e1228]: Current obligation evidence and inspections required by Decisions.
+                    - generic [ref=e1229]:
+                      - paragraph [ref=e1230]: Verification proof
+                      - paragraph [ref=e1231]: 88%
+                      - progressbar "Verification proof" [ref=e1232]
+                      - paragraph [ref=e1234]: 16 of 18
+                      - paragraph [ref=e1235]: Persisted proof for applicable obligations.
+                  - status [ref=e1236]: Delivery data is current
+                  - region "Next steps" [ref=e1237]:
+                    - heading "Next steps" [level=4] [ref=e1238]
+                    - list [ref=e1239]:
+                      - listitem [ref=e1240]: All applicable planning dimensions are covered.
+                      - listitem [ref=e1241]:
+                        - generic [ref=e1242]: 2 of 18 obligations without implementation proof.
+                        - button "Review implementation" [ref=e1243] [cursor=pointer]
+                      - listitem [ref=e1244]:
+                        - generic [ref=e1245]: 2 of 18 obligations without verification proof.
+                        - button "Review verification" [ref=e1246] [cursor=pointer]
+                  - paragraph [ref=e1247]: Planning links are not delivery proof. Waivers do not count as proven work.
+                - group [ref=e1248]:
+                  - generic "Technical diagnostics" [active] [ref=e1249] [cursor=pointer]
+                  - paragraph [ref=e1250]: "Delivery generation: 7837cf44c338456d80ab2ec762a1a35c"
+                  - region "Structural graph observations" [ref=e1251]:
+                    - heading "Structural graph observations" [level=4] [ref=e1252]
+                    - paragraph [ref=e1253]: "Graph freshness: unavailable. Observation: 2026-11-05T17:24:12.663346+00:00."
+                    - paragraph [ref=e1254]: Missing graph observations are not proof of missing work.
+                    - paragraph [ref=e1255]: "Graph access: unavailable. Source nodes: Unknown. Observed nodes: Unknown. Not found: Unknown nodes, Unknown expected relations."
+                    - list
+                  - group [ref=e1256]:
+                    - generic "Delivery findings" [ref=e1257]
+          - generic [ref=e1174]:
+            - button "Delete spec" [ref=e1175] [cursor=pointer]
+            - button "Close" [ref=e1177] [cursor=pointer]
+  - 'status "Cognitive pipeline working: 0 running, 18 pending" [ref=e1258]':
+    - generic [ref=e212]: processing · 18 pending
+  - status [ref=e213]:
+    - generic [ref=e214]:
+      - generic [ref=e215]: Consolidation in progress
+      - generic [ref=e216]: 10%
+    - generic [ref=e218]:
+      - generic [ref=e219]:
+        - generic [ref=e220]: Pending
+        - generic [ref=e221]: "18"
+      - generic [ref=e222]:
+        - generic [ref=e223]: Running
+        - generic [ref=e224]: "0"
+      - generic [ref=e225]:
+        - generic [ref=e226]: Processed
+        - generic [ref=e227]: "2"
+      - generic [ref=e228]:
+        - generic [ref=e229]: Paused
+        - generic [ref=e230]: "0"

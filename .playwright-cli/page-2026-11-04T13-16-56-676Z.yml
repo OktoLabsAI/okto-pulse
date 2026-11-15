@@ -1,0 +1,103 @@
+- generic [ref=f13e3]:
+  - banner [ref=f13e4]:
+    - generic [ref=f13e5]:
+      - generic [ref=f13e6]:
+        - button "Hide sidebar" [ref=f13e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f13e12]
+        - generic [ref=f13e31]: / My Board
+      - generic [ref=f13e32]:
+        - button "Refresh board" [ref=f13e33] [cursor=pointer]
+        - button [ref=f13e40] [cursor=pointer]
+  - generic [ref=f13e13]:
+    - complementary [ref=f13e14]:
+      - generic [ref=f13e15]:
+        - generic [ref=f13e17]:
+          - heading "Boards" [level=2] [ref=f13e18]
+          - button "New board" [ref=f13e19] [cursor=pointer]
+        - navigation [ref=f13e21]:
+          - generic [ref=f13e22]:
+            - heading "My Boards" [level=3] [ref=f13e23]
+            - list [ref=f13e44]:
+              - listitem [ref=f13e45]:
+                - button "okto pulse" [ref=f13e46] [cursor=pointer]
+              - listitem [ref=f13e53]:
+                - button "My Board" [ref=f13e54] [cursor=pointer]
+              - listitem [ref=f13e61]:
+                - button "okto-grafx" [ref=f13e62] [cursor=pointer]
+    - main [ref=f13e26]:
+      - group "Board views" [ref=f13e69]:
+        - button "Stories" [ref=f13e70] [cursor=pointer]
+        - button "Ideations" [active] [pressed] [ref=f13e74] [cursor=pointer]
+        - button "Refinements" [ref=f13e77] [cursor=pointer]
+        - button "Specs" [ref=f13e82] [cursor=pointer]
+        - button "Tasks" [ref=f13e87] [cursor=pointer]
+      - generic [ref=f13e1473]:
+        - generic [ref=f13e1474]:
+          - generic [ref=f13e1475]:
+            - heading "Ideations" [level=2] [ref=f13e1476]
+            - generic [ref=f13e1477]: (1 of 1)
+          - generic [ref=f13e1478]:
+            - textbox "Search ideations…" [ref=f13e1480]
+            - group "View mode" [ref=f13e1481]:
+              - button "List view" [pressed] [ref=f13e1482] [cursor=pointer]
+              - button "Grid view" [ref=f13e1484] [cursor=pointer]
+            - button "New Ideation" [ref=f13e1490] [cursor=pointer]
+        - generic [ref=f13e1492]:
+          - button "All" [ref=f13e1493] [cursor=pointer]
+          - button "Draft" [ref=f13e1494] [cursor=pointer]
+          - button "Review" [ref=f13e1495] [cursor=pointer]
+          - button "Approved" [ref=f13e1496] [cursor=pointer]
+          - button "Evaluating" [ref=f13e1497] [cursor=pointer]
+          - button "Done" [ref=f13e1498] [cursor=pointer]
+          - button "No derivation" [ref=f13e1499] [cursor=pointer]
+          - button "Show archived" [ref=f13e1504] [cursor=pointer]
+        - generic [ref=f13e1507] [cursor=pointer]:
+          - generic [ref=f13e1508]:
+            - generic [ref=f13e1509]:
+              - generic [ref=f13e1510]: Draft
+              - generic [ref=f13e1513]: Edition 1
+            - heading "E2E 0.4.3 — Operational delivery journey" [level=3] [ref=f13e1514]
+            - paragraph [ref=f13e1515]: The complete 0.4.3 operational journey needs evidence that planning lineage, native gates, delivery proof, human updates and the simplified UI agree. Success means a fully traced fixture reaches verified delivery, expected invalid operations are rejected without false success, an…
+            - 'generic "Ambiguity: no current result · Edition 1; 0 previous results" [ref=f13e1517]':
+              - generic [ref=f13e1518]: Ambiguity
+              - strong [ref=f13e1519]: Not assessed
+            - generic "1 unanswered question" [ref=f13e1521]: 1 open Q&A
+            - generic [ref=f13e1525]:
+              - generic [ref=f13e1526]: e2e-043
+              - generic [ref=f13e1527]: operational-audit
+          - generic [ref=f13e1528]:
+            - button "Open lineage graph" [ref=f13e1529]
+            - button "Archive tree" [ref=f13e1534]
+        - generic [ref=f13e1540]:
+          - status [ref=f13e1541]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f13e1542]:
+            - generic [ref=f13e1543]:
+              - generic [ref=f13e1544]: Items per page
+              - combobox "Items per page" [ref=f13e1545]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Ideations pagination" [ref=f13e1546]:
+              - generic [ref=f13e1547]:
+                - button "Previous page" [disabled] [ref=f13e1548]: Previous
+                - button "Page 1" [disabled] [ref=f13e1549]: "1"
+                - button "Next page" [disabled] [ref=f13e1550]: Next
+  - 'status "Cognitive pipeline working: 0 running, 1 pending" [ref=f13e1551]':
+    - generic [ref=f13e1562]: processing · 1 pending
+  - status [ref=f13e1563]:
+    - generic [ref=f13e1564]:
+      - generic [ref=f13e1565]: Consolidation in progress
+      - generic [ref=f13e1566]: 0%
+    - generic [ref=f13e1568]:
+      - generic [ref=f13e1569]:
+        - generic [ref=f13e1570]: Pending
+        - generic [ref=f13e1571]: "1"
+      - generic [ref=f13e1572]:
+        - generic [ref=f13e1573]: Running
+        - generic [ref=f13e1574]: "0"
+      - generic [ref=f13e1575]:
+        - generic [ref=f13e1576]: Processed
+        - generic [ref=f13e1577]: "0"
+      - generic [ref=f13e1578]:
+        - generic [ref=f13e1579]: Paused
+        - generic [ref=f13e1580]: "0"

@@ -1,0 +1,358 @@
+- generic [ref=f13e3]:
+  - banner [ref=f13e4]:
+    - generic [ref=f13e5]:
+      - generic [ref=f13e6]:
+        - button "Hide sidebar" [ref=f13e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f13e12]
+        - generic [ref=f13e31]: / My Board
+      - generic [ref=f13e32]:
+        - button "Refresh board" [ref=f13e33] [cursor=pointer]
+        - button [ref=f13e40] [cursor=pointer]
+  - generic [ref=f13e13]:
+    - complementary [ref=f13e14]:
+      - generic [ref=f13e15]:
+        - generic [ref=f13e17]:
+          - heading "Boards" [level=2] [ref=f13e18]
+          - button "New board" [ref=f13e19] [cursor=pointer]
+        - navigation [ref=f13e21]:
+          - generic [ref=f13e22]:
+            - heading "My Boards" [level=3] [ref=f13e23]
+            - list [ref=f13e44]:
+              - listitem [ref=f13e45]:
+                - button "okto pulse" [ref=f13e46] [cursor=pointer]
+              - listitem [ref=f13e53]:
+                - button "My Board" [ref=f13e54] [cursor=pointer]
+              - listitem [ref=f13e61]:
+                - button "okto-grafx" [ref=f13e62] [cursor=pointer]
+    - main [ref=f13e26]:
+      - group "Board views" [ref=f13e69]:
+        - button "Stories" [ref=f13e70] [cursor=pointer]
+        - button "Ideations" [ref=f13e74] [cursor=pointer]
+        - button "Refinements" [ref=f13e77] [cursor=pointer]
+        - button "Specs" [ref=f13e82] [cursor=pointer]
+        - button "Tasks" [pressed] [ref=f13e87] [cursor=pointer]
+      - generic [ref=f13e2774]:
+        - generic [ref=f13e2775]:
+          - textbox "Search cards…" [ref=f13e2777]
+          - button "Unlinked" [ref=f13e2780] [cursor=pointer]
+          - button "Filter specs..." [ref=f13e2782] [cursor=pointer]
+          - button "Show archived" [ref=f13e2786] [cursor=pointer]
+        - generic [ref=f13e2787]:
+          - generic [ref=f13e2788]:
+            - generic [ref=f13e2789]:
+              - generic [ref=f13e2791]:
+                - generic [ref=f13e2792]:
+                  - generic [ref=f13e2793]:
+                    - heading "Not Started" [level=3] [ref=f13e2794]
+                    - generic "0 total cards" [ref=f13e2795]: "0"
+                  - generic [ref=f13e2796]:
+                    - button "0 task cards" [pressed] [ref=f13e2797] [cursor=pointer]:
+                      - generic [ref=f13e2798]: Task
+                      - generic [ref=f13e2803]: "0"
+                    - button "0 test cards" [pressed] [ref=f13e2804] [cursor=pointer]:
+                      - generic [ref=f13e2805]: Test
+                      - generic [ref=f13e2809]: "0"
+                    - button "0 bug cards" [pressed] [ref=f13e2810] [cursor=pointer]:
+                      - generic [ref=f13e2811]: Bug
+                      - generic [ref=f13e2822]: "0"
+                - button "Add card to Not Started" [ref=f13e2823] [cursor=pointer]
+              - generic [ref=f13e2825]: No cards
+            - generic [ref=f13e2827]:
+              - generic [ref=f13e2830]:
+                - generic [ref=f13e2831]:
+                  - heading "In Progress" [level=3] [ref=f13e2832]
+                  - generic "2 total cards" [ref=f13e3512]: "2"
+                - generic [ref=f13e2834]:
+                  - button "1 task cards" [pressed] [ref=f13e3513] [cursor=pointer]:
+                    - generic [ref=f13e2836]: Task
+                    - generic [ref=f13e2841]: "1"
+                  - button "1 test cards" [pressed] [ref=f13e3514] [cursor=pointer]:
+                    - generic [ref=f13e2843]: Test
+                    - generic [ref=f13e2847]: "1"
+                  - button "0 bug cards" [pressed] [ref=f13e2848] [cursor=pointer]:
+                    - generic [ref=f13e2849]: Bug
+                    - generic [ref=f13e2860]: "0"
+              - generic [ref=f13e2861]:
+                - 'button "QA 0.4.3 — tarefa de dispensa sem justificativa spec Tarefa de teste de interface para Required → Optional → Waived → Required, sem alterar evidência nem status de execução. C: Owner A: Codex" [ref=f13e2862]':
+                  - generic [ref=f13e2863]:
+                    - generic "Move card" [ref=f13e2864]
+                    - generic [ref=f13e2872] [cursor=pointer]:
+                      - generic [ref=f13e2873]:
+                        - heading "QA 0.4.3 — tarefa de dispensa sem justificativa" [level=4] [ref=f13e2874]
+                        - generic "Linked to a spec" [ref=f13e2875]: spec
+                      - paragraph [ref=f13e2879]: Tarefa de teste de interface para Required → Optional → Waived → Required, sem alterar evidência nem status de execução.
+                      - generic [ref=f13e2881]:
+                        - 'generic "Creator: local-user" [ref=f13e2882]': "C: Owner"
+                        - 'generic "Assignee: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f13e2883]': "A: Codex"
+                - 'button "test QA 0.4.3 — teste da validação e dispensa spec Teste de interface rastreável no My Board; sem evidência técnica fabricada. 1 scenario linked C: Owner" [ref=f13e2884]':
+                  - generic [ref=f13e2885]:
+                    - generic "Move card" [ref=f13e2886]
+                    - generic [ref=f13e2894] [cursor=pointer]:
+                      - generic [ref=f13e2895]:
+                        - generic [ref=f13e2896]: test
+                        - heading "QA 0.4.3 — teste da validação e dispensa" [level=4] [ref=f13e2899]
+                        - generic "Linked to a spec" [ref=f13e2900]: spec
+                      - paragraph [ref=f13e2904]: Teste de interface rastreável no My Board; sem evidência técnica fabricada.
+                      - generic [ref=f13e2905]: 1 scenario linked
+                      - 'generic "Creator: local-user" [ref=f13e2911]': "C: Owner"
+            - generic [ref=f13e2965]:
+              - generic [ref=f13e2968]:
+                - generic [ref=f13e2969]:
+                  - heading "Validation" [level=3] [ref=f13e2970]
+                  - generic "0 total cards" [ref=f13e2971]: "0"
+                - generic [ref=f13e2972]:
+                  - button "0 task cards" [pressed] [ref=f13e2973] [cursor=pointer]:
+                    - generic [ref=f13e2974]: Task
+                    - generic [ref=f13e2979]: "0"
+                  - button "0 test cards" [pressed] [ref=f13e2980] [cursor=pointer]:
+                    - generic [ref=f13e2981]: Test
+                    - generic [ref=f13e2985]: "0"
+                  - button "0 bug cards" [pressed] [ref=f13e2986] [cursor=pointer]:
+                    - generic [ref=f13e2987]: Bug
+                    - generic [ref=f13e2998]: "0"
+              - generic [ref=f13e2999]: No cards
+            - generic [ref=f13e3001]:
+              - generic [ref=f13e3004]:
+                - generic [ref=f13e3005]:
+                  - heading "Rejected" [level=3] [ref=f13e3006]
+                  - generic "0 total cards" [ref=f13e3007]: "0"
+                - generic [ref=f13e3008]:
+                  - button "0 task cards" [pressed] [ref=f13e3009] [cursor=pointer]:
+                    - generic [ref=f13e3010]: Task
+                    - generic [ref=f13e3015]: "0"
+                  - button "0 bug cards" [pressed] [ref=f13e3016] [cursor=pointer]:
+                    - generic [ref=f13e3017]: Bug
+                    - generic [ref=f13e3028]: "0"
+              - generic [ref=f13e3029]: No cards requiring rework
+            - generic [ref=f13e3031]:
+              - generic [ref=f13e3034]:
+                - generic [ref=f13e3035]:
+                  - heading "On Hold" [level=3] [ref=f13e3036]
+                  - generic "0 total cards" [ref=f13e3037]: "0"
+                - generic [ref=f13e3038]:
+                  - button "0 task cards" [pressed] [ref=f13e3039] [cursor=pointer]:
+                    - generic [ref=f13e3040]: Task
+                    - generic [ref=f13e3045]: "0"
+                  - button "0 test cards" [pressed] [ref=f13e3046] [cursor=pointer]:
+                    - generic [ref=f13e3047]: Test
+                    - generic [ref=f13e3051]: "0"
+                  - button "0 bug cards" [pressed] [ref=f13e3052] [cursor=pointer]:
+                    - generic [ref=f13e3053]: Bug
+                    - generic [ref=f13e3064]: "0"
+              - generic [ref=f13e3065]: No cards
+            - generic [ref=f13e3067]:
+              - generic [ref=f13e3070]:
+                - generic [ref=f13e3071]:
+                  - heading "Done" [level=3] [ref=f13e3072]
+                  - generic "2 total cards" [ref=f13e3517]: "2"
+                - generic [ref=f13e3074]:
+                  - button "1 task cards" [pressed] [ref=f13e3518] [cursor=pointer]:
+                    - generic [ref=f13e3076]: Task
+                    - generic [ref=f13e3081]: "1"
+                  - button "1 test cards" [pressed] [ref=f13e3519] [cursor=pointer]:
+                    - generic [ref=f13e3083]: Test
+                    - generic [ref=f13e3087]: "1"
+                  - button "0 bug cards" [pressed] [ref=f13e3088] [cursor=pointer]:
+                    - generic [ref=f13e3089]: Bug
+                    - generic [ref=f13e3100]: "0"
+              - generic [ref=f13e3101]:
+                - 'button "test [TEST] E2E 0.4.3 — Verify delivery status and isolation spec Implement test_delivery_status.py using unittest. Execute ts_4e90347d and ts_22468e79 against the exact committed helper revision: exhaustive 18 combinations, invalid enums, non-bool flags and AST no-import isolation. Preserve failed run evidence and rerun after correction. Record authenticated results and associate only the implementation actually tested. Then compare the real Pulse Delivery matrix and percentages with the authoritative projection. e2e-043 2 scenarios linked Execution report: 100% 0% drift C: Codex" [ref=f13e3520]':
+                  - generic [ref=f13e3521]:
+                    - generic "Move card" [ref=f13e3522]
+                    - generic [ref=f13e3530] [cursor=pointer]:
+                      - generic [ref=f13e3531]:
+                        - generic [ref=f13e3532]: test
+                        - heading "[TEST] E2E 0.4.3 — Verify delivery status and isolation" [level=4] [ref=f13e3535]
+                        - generic "Linked to a spec" [ref=f13e3536]: spec
+                      - paragraph [ref=f13e3540]: "Implement test_delivery_status.py using unittest. Execute ts_4e90347d and ts_22468e79 against the exact committed helper revision: exhaustive 18 combinations, invalid enums, non-bool flags and AST no-import isolation. Preserve failed run evidence and rerun after correction. Record authenticated results and associate only the implementation actually tested. Then compare the real Pulse Delivery matrix and percentages with the authoritative projection."
+                      - generic [ref=f13e3541]: e2e-043
+                      - generic [ref=f13e3543]: 2 scenarios linked
+                      - generic [ref=f13e3547]:
+                        - 'generic "Executor-reported completeness: 100%. Delivery verification is separate." [ref=f13e3548]': "Execution report: 100%"
+                        - 'generic "Drift: 0%" [ref=f13e3549]': 0% drift
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f13e3552]': "C: Codex"
+                - 'button "validated E2E 0.4.3 — Implement isolated delivery classifier spec Create delivery_status.py in the isolated fixture workspace after native execution admission. Implement fr_e2e_classify, tr_e2e_isolation and br_8bb896ec, covering ac_e2e_states and ac_e2e_isolation. Validate enums and bool before applying exact precedence. No imports or side effects. Commit the actual implementation, record target execution and bind proof to the five obligations. Verification is performed by the separate Test Card; progress text never counts as proof. e2e-043 Conf: 98% Compl: 100% Drift: 0% Execution report: 100% 0% drift C: Codex" [ref=f13e3553]':
+                  - generic [ref=f13e3554]:
+                    - generic "Move card" [ref=f13e3555]
+                    - generic [ref=f13e3563] [cursor=pointer]:
+                      - generic [ref=f13e3564]:
+                        - generic [ref=f13e3942]: validated
+                        - heading "E2E 0.4.3 — Implement isolated delivery classifier" [level=4] [ref=f13e3569]
+                        - generic "Linked to a spec" [ref=f13e3570]: spec
+                      - paragraph [ref=f13e3574]: Create delivery_status.py in the isolated fixture workspace after native execution admission. Implement fr_e2e_classify, tr_e2e_isolation and br_8bb896ec, covering ac_e2e_states and ac_e2e_isolation. Validate enums and bool before applying exact precedence. No imports or side effects. Commit the actual implementation, record target execution and bind proof to the five obligations. Verification is performed by the separate Test Card; progress text never counts as proof.
+                      - generic [ref=f13e3575]: e2e-043
+                      - generic [ref=f13e3946]:
+                        - 'generic "Confidence: 98%" [ref=f13e3947]': "Conf: 98%"
+                        - 'generic "Completeness: 100%" [ref=f13e3948]': "Compl: 100%"
+                        - 'generic "Drift: 0%" [ref=f13e3949]'
+                      - generic [ref=f13e3581]:
+                        - 'generic "Executor-reported completeness: 100%. Delivery verification is separate." [ref=f13e3582]': "Execution report: 100%"
+                        - 'generic "Drift: 0%" [ref=f13e3583]': 0% drift
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f13e3586]': "C: Codex"
+            - generic [ref=f13e3103]:
+              - generic [ref=f13e3106]:
+                - generic [ref=f13e3107]:
+                  - heading "Cancelled" [level=3] [ref=f13e3108]
+                  - generic "2 total cards" [ref=f13e3587]: "2"
+                - generic [ref=f13e3110]:
+                  - button "0 task cards" [pressed] [ref=f13e3111] [cursor=pointer]:
+                    - generic [ref=f13e3112]: Task
+                    - generic [ref=f13e3117]: "0"
+                  - button "1 test cards" [pressed] [ref=f13e3588] [cursor=pointer]:
+                    - generic [ref=f13e3119]: Test
+                    - generic [ref=f13e3123]: "1"
+                  - button "1 bug cards" [pressed] [ref=f13e3589] [cursor=pointer]:
+                    - generic [ref=f13e3125]: Bug
+                    - generic [ref=f13e3136]: "1"
+              - generic [ref=f13e3137]:
+                - 'button "test E2E 0.4.3 — Fresh regression gate probe test spec Explicit operational probe of fresh post-bug Test Card lineage. No additional test result will be fabricated; the corrected fixture has already passed. Cancel this probe after verifying eligibility and dependency controls. e2e-043 gate-probe 1 scenario linked C: Codex" [ref=f13e3590]':
+                  - generic [ref=f13e3591]:
+                    - generic "Move card" [ref=f13e3592]
+                    - generic [ref=f13e3600] [cursor=pointer]:
+                      - generic [ref=f13e3601]:
+                        - generic [ref=f13e3602]: test
+                        - heading "E2E 0.4.3 — Fresh regression gate probe test" [level=4] [ref=f13e3605]
+                        - generic "Linked to a spec" [ref=f13e3606]: spec
+                      - paragraph [ref=f13e3610]: Explicit operational probe of fresh post-bug Test Card lineage. No additional test result will be fabricated; the corrected fixture has already passed. Cancel this probe after verifying eligibility and dependency controls.
+                      - generic [ref=f13e3611]:
+                        - generic [ref=f13e3612]: e2e-043
+                        - generic [ref=f13e3613]: gate-probe
+                      - generic [ref=f13e3614]: 1 scenario linked
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f13e3620]': "C: Codex"
+                - 'button "bug E2E 0.4.3 — Controlled bug regression gate probe spec Operational test only, not an outstanding product defect. Exercise post-delivery bug creation, eligible scenario lineage, fresh regression Test Card gate and cancellation. The real controlled fixture defect was already fixed in 8cf8509; no further implementation is planned. Minor e2e-043 gate-probe 1 test task linked C: Codex" [ref=f13e3621]':
+                  - generic [ref=f13e3622]:
+                    - generic "Move card" [ref=f13e3623]
+                    - generic [ref=f13e3631] [cursor=pointer]:
+                      - generic [ref=f13e3632]:
+                        - generic [ref=f13e3633]: bug
+                        - heading "E2E 0.4.3 — Controlled bug regression gate probe" [level=4] [ref=f13e3643]
+                        - generic "Linked to a spec" [ref=f13e3644]: spec
+                      - paragraph [ref=f13e3648]: Operational test only, not an outstanding product defect. Exercise post-delivery bug creation, eligible scenario lineage, fresh regression Test Card gate and cancellation. The real controlled fixture defect was already fixed in 8cf8509; no further implementation is planned.
+                      - generic [ref=f13e3649]:
+                        - generic [ref=f13e3650]: Minor
+                        - generic [ref=f13e3651]: e2e-043
+                        - generic [ref=f13e3652]: gate-probe
+                      - generic [ref=f13e3653]: 1 test task linked
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f13e3659]': "C: Codex"
+          - status [ref=f13e3139]
+        - generic [ref=f13e3661]:
+          - generic [ref=f13e3662]:
+            - generic [ref=f13e3663]:
+              - combobox "Card status" [disabled] [ref=f13e3664]:
+                - option "Done" [selected]
+              - heading "E2E 0.4.3 — Implement isolated delivery classifier" [level=2] [ref=f13e3665]
+            - button "E2E 0.4.3 — Delivery status..." [ref=f13e3667] [cursor=pointer]
+            - generic [ref=f13e3672]:
+              - button "Open lineage graph" [ref=f13e3673] [cursor=pointer]
+              - button "Export report" [ref=f13e3678] [cursor=pointer]
+              - button "Refresh card" [active] [ref=f13e3682] [cursor=pointer]
+              - button "Expand" [ref=f13e3688] [cursor=pointer]
+              - button "Close card dialog" [ref=f13e3694] [cursor=pointer]
+          - generic [ref=f13e3698]:
+            - tablist "Card sections" [ref=f13e3699]:
+              - tab "Details" [ref=f13e3700] [cursor=pointer]
+              - tab "Implementation Targets" [ref=f13e3705] [cursor=pointer]
+              - tab "Delivery" [selected] [ref=f13e3711] [cursor=pointer]
+              - tab "Resources 2" [ref=f13e3716] [cursor=pointer]:
+                - generic [ref=f13e3721]: Resources
+                - generic [ref=f13e3722]: "2"
+              - tab "Q&A" [ref=f13e3723] [cursor=pointer]
+              - tab "Comments 1" [ref=f13e3728] [cursor=pointer]:
+                - generic [ref=f13e3731]: Comments
+                - generic [ref=f13e3732]: "1"
+              - tab "References" [ref=f13e3733] [cursor=pointer]
+              - tab "Validation 4" [ref=f13e3738] [cursor=pointer]:
+                - generic [ref=f13e3741]: Validation
+                - generic [ref=f13e3742]: "4"
+              - tab "Activity" [ref=f13e3743] [cursor=pointer]
+            - button "Scroll Card sections left" [ref=f13e3749] [cursor=pointer]
+          - generic [ref=f13e3752]:
+            - status [ref=f13e3753]: This Spec is Done. Normal task content is locked; use the authorized Spec revision workflow to resume normal work. Reading and collaboration remain available.
+            - tabpanel "Delivery" [ref=f13e3754]:
+              - region "Task delivery" [ref=f13e3755]:
+                - generic [ref=f13e3756]:
+                  - heading "Delivery" [level=3] [ref=f13e3757]
+                  - button "How this works" [ref=f13e3758] [cursor=pointer]
+                - generic [ref=f13e3766]:
+                  - status [ref=f13e3767]: Delivered
+                  - paragraph [ref=f13e3768]: Delivery is complete and confirmed by current information.
+                - generic [ref=f13e3769]:
+                  - generic "Delivery progress" [ref=f13e3770]:
+                    - generic [ref=f13e3771]:
+                      - term [ref=f13e3772]: Implementation
+                      - definition [ref=f13e3773]: 100%
+                      - progressbar "Implementation" [ref=f13e3998]
+                    - generic [ref=f13e3776]:
+                      - term [ref=f13e3777]: Verification
+                      - definition [ref=f13e3778]: 100%
+                      - progressbar "Verification" [ref=f13e4000]
+                  - table "Implementation and verification by requirement" [ref=f13e3782]:
+                    - rowgroup [ref=f13e3783]:
+                      - row [ref=f13e3784]:
+                        - columnheader "Requirement / Objective" [ref=f13e3785]
+                        - columnheader "Implementation" [ref=f13e3786]
+                        - columnheader "Verification" [ref=f13e3787]
+                    - rowgroup [ref=f13e3788]:
+                      - row [ref=f13e3789]:
+                        - rowheader "Acceptance criterion An AST inspection of delivery_status.py finds no import statements, and the standard-library unittest command exits 0 for the fixture suite." [ref=f13e3790]:
+                          - generic [ref=f13e3791]: Acceptance criterion
+                          - text: An AST inspection of delivery_status.py finds no import statements, and the standard-library unittest command exits 0 for the fixture suite.
+                        - cell "Implemented" [ref=f13e3792]
+                        - cell "Verified" [ref=f13e3797]
+                      - row [ref=f13e3802]:
+                        - rowheader "Acceptance criterion All 18 valid combinations return exactly the status specified by FR Classify delivery status; invalid requirement and verification strings raise ValueError, and non-boolean implemented values raise TypeError." [ref=f13e3803]:
+                          - generic [ref=f13e3804]: Acceptance criterion
+                          - text: All 18 valid combinations return exactly the status specified by FR Classify delivery status; invalid requirement and verification strings raise ValueError, and non-boolean implemented values raise TypeError.
+                        - cell "Implemented" [ref=f13e3805]
+                        - cell "Verified" [ref=f13e3810]
+                      - row [ref=f13e3969]:
+                        - rowheader "Business rule Exemptions and failed verification remain distinct" [ref=f13e3816]:
+                          - generic [ref=f13e3817]: Business rule
+                          - text: Exemptions and failed verification remain distinct
+                        - cell "Implemented" [ref=f13e3970]
+                        - cell "Verified" [ref=f13e3974]
+                      - row [ref=f13e3828]:
+                        - rowheader "Functional requirement Classify delivery status" [ref=f13e3829]:
+                          - generic [ref=f13e3830]: Functional requirement
+                          - text: Classify delivery status
+                        - cell "Implemented" [ref=f13e3831]
+                        - cell "Verified" [ref=f13e3836]
+                      - row [ref=f13e3984]:
+                        - rowheader "Technical requirement Keep the fixture isolated" [ref=f13e3842]:
+                          - generic [ref=f13e3843]: Technical requirement
+                          - text: Keep the fixture isolated
+                        - cell "Implemented" [ref=f13e3985]
+                        - cell "Verified" [ref=f13e3989]
+                - region "Task requirement" [ref=f13e3854]:
+                  - generic [ref=f13e3855]:
+                    - button "Hide details" [expanded] [ref=f13e3856] [cursor=pointer]
+                    - button "Change task requirements" [ref=f13e3859] [cursor=pointer]
+                - generic [ref=f13e3861]:
+                  - heading "Delivery details" [level=4] [ref=f13e3862]
+                  - region "Pending work and verification" [ref=f13e3863]:
+                    - heading "Pending work and verification" [level=4] [ref=f13e3864]
+                    - paragraph [ref=f13e4033]: No pending checks were identified in this assessment. The delivery status above still determines whether the task is complete.
+                  - paragraph [ref=f13e3911]: Updates are declarations. Technical verification and completion are assessed separately.
+                  - generic [ref=f13e3912]:
+                    - heading "Latest update" [level=4] [ref=f13e3913]
+                    - paragraph [ref=f13e3914]: "E2E human update: reviewed the task requirements and isolated workspace. Implementation and test evidence are still being collected."
+                    - heading "Remaining" [level=4] [ref=f13e3915]
+                    - paragraph [ref=f13e3916]: Finish the classifier, execute the required checks and review delivery.
+                  - region "Delivery record history" [ref=f13e3918]:
+                    - heading "Delivery record history" [level=4] [ref=f13e3919]
+                    - paragraph [ref=f13e3920]: Edition 1 · Current
+                    - button "Browse delivery records" [ref=f13e3921] [cursor=pointer]
+                    - paragraph [ref=f13e3922]: 3 records in edition 1. Current edition. Historical declarations do not establish current proof or completion.
+                    - group [ref=f13e3923]:
+                      - generic "Corrected committed revision 8cf8509 validates the strict bool type before applying exact status precedence. Exhaustive 18 combinations, invalid enums, six invalid-type cases and AST isolation all pass locally. All assigned implementation obligations are now complete; authenticated Test Card verification follows separately. implementation" [ref=f13e3924] [cursor=pointer]:
+                        - generic "Corrected committed revision 8cf8509 validates the strict bool type before applying exact status precedence. Exhaustive 18 combinations, invalid enums, six invalid-type cases and AST isolation all pass locally. All assigned implementation obligations are now complete; authenticated Test Card verification follows separately." [ref=f13e3925]
+                        - generic [ref=f13e3926]: implementation
+                    - group [ref=f13e3929]:
+                      - generic "Committed isolated helper implements all 18 valid states and enum validation without imports. Deliberate missing strict-boolean input validation is currently failing, so behavioral obligations and full-suite AC remain partial; TR isolation is complete. implementation" [ref=f13e3930] [cursor=pointer]:
+                        - generic "Committed isolated helper implements all 18 valid states and enum validation without imports. Deliberate missing strict-boolean input validation is currently failing, so behavioral obligations and full-suite AC remain partial; TR isolation is complete." [ref=f13e3931]
+                        - generic [ref=f13e3932]: implementation
+                    - group [ref=f13e3935]:
+                      - 'generic "E2E human update: reviewed the task requirements and isolated workspace. Implementation and test evidence are still being collected. human_submission" [ref=f13e3936] [cursor=pointer]':
+                        - 'generic "E2E human update: reviewed the task requirements and isolated workspace. Implementation and test evidence are still being collected." [ref=f13e3937]'
+                        - generic [ref=f13e3938]: human_submission
+                    - paragraph [ref=f13e3941]: End of this edition’s delivery records.

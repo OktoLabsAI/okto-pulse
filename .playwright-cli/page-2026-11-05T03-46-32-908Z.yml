@@ -1,0 +1,84 @@
+- generic [ref=f1e3]:
+  - banner [ref=f1e4]:
+    - generic [ref=f1e5]:
+      - generic [ref=f1e6]:
+        - button "Hide sidebar" [ref=f1e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f1e12]
+        - generic [ref=f1e31]: / My Board
+      - generic [ref=f1e32]:
+        - button "Refresh board" [ref=f1e33] [cursor=pointer]
+        - button [ref=f1e40] [cursor=pointer]
+  - generic [ref=f1e13]:
+    - complementary [ref=f1e14]:
+      - generic [ref=f1e15]:
+        - generic [ref=f1e17]:
+          - heading "Boards" [level=2] [ref=f1e18]
+          - button "New board" [ref=f1e19] [cursor=pointer]
+        - navigation [ref=f1e21]:
+          - generic [ref=f1e22]:
+            - heading "My Boards" [level=3] [ref=f1e23]
+            - list [ref=f1e44]:
+              - listitem [ref=f1e45]:
+                - button "okto pulse" [ref=f1e46] [cursor=pointer]
+              - listitem [ref=f1e53]:
+                - button "My Board" [ref=f1e54] [cursor=pointer]
+              - listitem [ref=f1e61]:
+                - button "okto-grafx" [ref=f1e62] [cursor=pointer]
+    - main [ref=f1e26]:
+      - group "Board views" [ref=f1e69]:
+        - button "Stories" [ref=f1e70] [cursor=pointer]
+        - button "Ideations" [ref=f1e74] [cursor=pointer]
+        - button "Refinements" [active] [pressed] [ref=f1e77] [cursor=pointer]
+        - button "Specs" [ref=f1e82] [cursor=pointer]
+        - button "Tasks" [ref=f1e87] [cursor=pointer]
+      - generic [ref=f1e3832]:
+        - generic [ref=f1e3833]:
+          - generic [ref=f1e3834]:
+            - heading "Refinements" [level=2] [ref=f1e3835]
+            - generic [ref=f1e3836]: (1 of 1)
+          - generic [ref=f1e3837]:
+            - textbox "Search refinements…" [ref=f1e3839]
+            - group "View mode" [ref=f1e3840]:
+              - button "List view" [pressed] [ref=f1e3841] [cursor=pointer]
+              - button "Grid view" [ref=f1e3843] [cursor=pointer]
+            - button "New Refinement" [ref=f1e3849] [cursor=pointer]
+        - generic [ref=f1e3851]:
+          - button "All" [ref=f1e3852] [cursor=pointer]
+          - button "Draft" [ref=f1e3853] [cursor=pointer]
+          - button "Review" [ref=f1e3854] [cursor=pointer]
+          - button "Approved" [ref=f1e3855] [cursor=pointer]
+          - button "Done" [ref=f1e3856] [cursor=pointer]
+          - button "No derivation" [ref=f1e3857] [cursor=pointer]
+          - button "Show archived" [ref=f1e3862] [cursor=pointer]
+        - generic [ref=f1e3864]:
+          - heading "E2E 0.4.3 — Operational delivery journey" [level=3] [ref=f1e3870]
+          - generic [ref=f1e3873] [cursor=pointer]:
+            - generic [ref=f1e3874]:
+              - generic [ref=f1e3875]:
+                - generic [ref=f1e3876]: Done
+                - generic [ref=f1e3880]: Edition 1
+              - heading "E2E 0.4.3 — Delivery fixture refinement" [level=3] [ref=f1e3881]
+              - paragraph [ref=f1e3882]: "Isolated executable fixture for the authorized My Board operational audit. No production behavior is changed by this fixture. ## Parent Ideation Context - Title: E2E 0.4.3 — Operational delivery journey - Version: 11 ### Description User-authorized test fixture for exercising the full Pulse workflow on My Board. This creates test artifacts, not new production scope. ### Problem Statement The complete 0.4.3 operational journey needs evidence that planning lineage, native gates, delivery proof, human updates and the simplified UI agree. Success means a fully traced fixture reaches verified delivery, expected invalid operations are rejected without false success, and UI state matches authoritative records. ### Proposed Approach Derive one refinement and one Spec for a small isolated delivery-status reference helper. Implement and test it with real local source and execution evidence. Exercise normal, test and bug lifecycles, human progress and requirement choices, current/previous validation, resource propagation and detailed diagnosis. Inspect every primary UI area; keep a coverage matrix and reproducible defects. Preserve existing My Board artifacts and all operational gates. ### Scope Assessment - Domains: 3/5 - Ambiguity: 1/5 - Dependencies: 2/5 - Complexity: large ### Q&A Decisions **Q:** For this E2E fixture, which execution approach preserves meaningful delivery proof while keeping the production application unchanged? **A:** E2E fixture selection under the authorized audit: use real isolated implementation and execution evidence. Synthetic status values must never count as proof."
+              - 'generic "Ambiguity: 1 (0–5) · Edition 1" [ref=f1e3884]':
+                - generic [ref=f1e3885]: Ambiguity
+                - strong [ref=f1e3886]: "1"
+              - generic [ref=f1e3887]:
+                - generic [ref=f1e3888]: e2e-043
+                - generic [ref=f1e3889]: operational-audit
+            - generic [ref=f1e3890]:
+              - button "Open lineage graph" [ref=f1e3891]
+              - button "Archive tree" [ref=f1e3896]
+        - generic [ref=f1e3902]:
+          - status [ref=f1e3903]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f1e3904]:
+            - generic [ref=f1e3905]:
+              - generic [ref=f1e3906]: Items per page
+              - combobox "Items per page" [ref=f1e3907]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Refinements pagination" [ref=f1e3908]:
+              - generic [ref=f1e3909]:
+                - button "Previous page" [disabled] [ref=f1e3910]: Previous
+                - button "Page 1" [disabled] [ref=f1e3911]: "1"
+                - button "Next page" [disabled] [ref=f1e3912]: Next

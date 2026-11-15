@@ -1,0 +1,160 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - button "Hide sidebar" [ref=e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=e12]
+        - generic [ref=e31]: / My Board
+      - generic [ref=e32]:
+        - button "Refresh board" [ref=e33] [cursor=pointer]
+        - button [ref=e40] [cursor=pointer]
+  - generic [ref=e13]:
+    - complementary [ref=e14]:
+      - generic [ref=e15]:
+        - generic [ref=e17]:
+          - heading "Boards" [level=2] [ref=e18]
+          - button "New board" [ref=e19] [cursor=pointer]
+        - navigation [ref=e21]:
+          - generic [ref=e22]:
+            - heading "My Boards" [level=3] [ref=e23]
+            - list [ref=e44]:
+              - listitem [ref=e45]:
+                - button "okto pulse" [ref=e46] [cursor=pointer]
+              - listitem [ref=e53]:
+                - button "My Board" [ref=e54] [cursor=pointer]
+              - listitem [ref=e61]:
+                - button "okto-grafx" [ref=e62] [cursor=pointer]
+    - main [ref=e26]:
+      - group "Board views" [ref=e69]:
+        - button "Stories" [ref=e70] [cursor=pointer]
+        - button "Ideations" [ref=e74] [cursor=pointer]
+        - button "Refinements" [ref=e77] [cursor=pointer]
+        - button "Specs" [pressed] [ref=e82] [cursor=pointer]
+        - button "Tasks" [ref=e87] [cursor=pointer]
+      - generic [ref=e6029]:
+        - generic [ref=e6030]:
+          - generic [ref=e6031]:
+            - heading "Specifications" [level=2] [ref=e6032]
+            - generic [ref=e6033]: (4 of 4)
+          - generic [ref=e6034]:
+            - textbox "Search specs…" [ref=e6036]
+            - group "View mode" [ref=e6037]:
+              - button "List view" [pressed] [ref=e6038] [cursor=pointer]
+              - button "Grid view" [ref=e6040] [cursor=pointer]
+            - generic [ref=e6046]: Group specs
+            - combobox "Group specs" [ref=e6052]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=e6053] [cursor=pointer]
+        - generic [ref=e6055]:
+          - button "All" [ref=e6056] [cursor=pointer]
+          - button "Draft" [ref=e6057] [cursor=pointer]
+          - button "Review" [ref=e6058] [cursor=pointer]
+          - button "Approved" [ref=e6059] [cursor=pointer]
+          - button "Validated" [ref=e6060] [cursor=pointer]
+          - button "In Progress" [ref=e6061] [cursor=pointer]
+          - button "Done" [ref=e6062] [cursor=pointer]
+          - button "Show archived" [ref=e6063] [cursor=pointer]
+        - generic [ref=e6065]:
+          - generic [ref=e6066]:
+            - generic [ref=e6067] [cursor=pointer]:
+              - 'heading "Refinement: E2E 0.4.3 — Delivery fixture refinement" [level=3] [ref=e6074]'
+              - generic [ref=e6075]: (1)
+            - generic [ref=e6079] [cursor=pointer]:
+              - generic [ref=e6080]:
+                - generic [ref=e6081]:
+                  - generic [ref=e6082]: Done
+                  - generic "Edition 1" [ref=e6086]
+                  - status "Pending cognitive consolidation — pending" [ref=e6087]:
+                    - generic [ref=e6090]: Pending cognitive consolidation
+                - heading "E2E 0.4.3 — Delivery status reference fixture" [level=3] [ref=e6091]
+                - paragraph [ref=e6092]: Implement and verify an isolated pure Python delivery-status reference function. The fixture provides real evidence for the My Board operational/UI audit; it does not change Pulse production behavior.
+                - 'generic "Requirement lint: 0 (0–32) · Edition 1" [ref=e6094]':
+                  - generic [ref=e6095]: Requirement lint
+                  - strong [ref=e6096]: "0"
+                - generic [ref=e6097]:
+                  - generic [ref=e6098]: e2e-043
+                  - generic [ref=e6099]: operational-audit
+              - generic [ref=e6100]:
+                - button "Open lineage graph" [ref=e6101]
+                - button "Archive tree" [ref=e6106]
+          - generic [ref=e6112]:
+            - generic [ref=e6115] [cursor=pointer]:
+              - generic [ref=e6116]:
+                - generic [ref=e6117]:
+                  - generic [ref=e6118]: Draft
+                  - generic "Edition 1" [ref=e6122]
+                - heading "R4 UI acceptance — unvalidated Spec verdict" [level=3] [ref=e6123]
+                - paragraph [ref=e6124]: Isolated My Board acceptance fixture for the negative Spec Validation state. This Draft intentionally has no approved planning cycle, implementation allocation or execution tasks. It must display an X and a clear not-validated verdict, with the original validation systems reachab…
+                - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=e6126]':
+                  - generic [ref=e6127]: Requirement lint
+                  - strong [ref=e6128]: Not assessed
+                - generic [ref=e6129]:
+                  - generic [ref=e6130]: e2e-043
+                  - generic [ref=e6131]: r4-ui-acceptance
+                  - generic [ref=e6132]: negative-validation-fixture
+              - generic [ref=e6133]:
+                - button "Open lineage graph" [ref=e6134]
+                - button "Archive tree" [ref=e6139]
+            - generic [ref=e6147] [cursor=pointer]:
+              - generic [ref=e6148]:
+                - generic [ref=e6149]:
+                  - generic [ref=e6150]: Draft
+                  - generic "Edition 1" [ref=e6154]
+                - heading "QA 0.4.3 — API scenario default" [level=3] [ref=e6155]
+                - paragraph [ref=e6156]: Fixture de regressão do estado inicial; cenário enviado sem status explícito.
+                - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=e6158]':
+                  - generic [ref=e6159]: Requirement lint
+                  - strong [ref=e6160]: Not assessed
+              - generic [ref=e6161]:
+                - button "Open lineage graph" [ref=e6162]
+                - button "Archive tree" [ref=e6167]
+            - generic [ref=e6175] [cursor=pointer]:
+              - generic [ref=e6176]:
+                - generic [ref=e6177]:
+                  - generic [ref=e6178]: In Progress
+                  - generic "Edition 3" [ref=e6182]
+                - heading "QA 0.4.3 — validação, entregas e dispensa" [level=3] [ref=e6183]
+                - paragraph [ref=e6184]: "Casos de teste de interface da versão 0.4.3: resumo canônico de validação, detalhes, entregas, dispensa de tarefa e ajuda contextual. Dados de teste no My Board."
+                - 'generic "Requirement lint: 0 (0–16) · Edition 3" [ref=e6186]':
+                  - generic [ref=e6187]: Requirement lint
+                  - strong [ref=e6188]: "0"
+              - generic [ref=e6189]:
+                - button "Open lineage graph" [ref=e6190]
+                - button "Archive tree" [ref=e6195]
+        - generic [ref=e6201]:
+          - status [ref=e6202]: Showing 1–4 of 4 matching. 4 overall. Page 1 of 1.
+          - generic [ref=e6203]:
+            - generic [ref=e6204]:
+              - generic [ref=e6205]: Items per page
+              - combobox "Items per page" [ref=e6206]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=e6207]:
+              - generic [ref=e6208]:
+                - button "Previous page" [disabled] [ref=e6209]: Previous
+                - button "Page 1" [disabled] [ref=e6210]: "1"
+                - button "Next page" [disabled] [ref=e6211]: Next
+        - generic [ref=e6242]: Loading spec...
+  - 'status "Cognitive pipeline working: 1 running, 0 pending" [ref=e6245]':
+    - generic [ref=e6223]: 1 running
+  - status [ref=e6224]:
+    - generic [ref=e6225]:
+      - generic [ref=e6226]: Consolidation in progress
+      - generic [ref=e6227]: 0%
+    - generic [ref=e6229]:
+      - generic [ref=e6230]:
+        - generic [ref=e6231]: Pending
+        - generic [ref=e6232]: "0"
+      - generic [ref=e6233]:
+        - generic [ref=e6234]: Running
+        - generic [ref=e6235]: "1"
+      - generic [ref=e6236]:
+        - generic [ref=e6237]: Processed
+        - generic [ref=e6238]: "0"
+      - generic [ref=e6239]:
+        - generic [ref=e6240]: Paused
+        - generic [ref=e6241]: "0"

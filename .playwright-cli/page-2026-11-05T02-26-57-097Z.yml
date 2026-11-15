@@ -1,0 +1,541 @@
+- generic [ref=f1e3]:
+  - banner [ref=f1e4]:
+    - generic [ref=f1e5]:
+      - generic [ref=f1e6]:
+        - button "Hide sidebar" [ref=f1e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f1e12]
+        - generic [ref=f1e31]: / My Board
+      - generic [ref=f1e32]:
+        - button "Refresh board" [ref=f1e33] [cursor=pointer]
+        - button [ref=f1e40] [cursor=pointer]
+  - generic [ref=f1e13]:
+    - complementary [ref=f1e14]:
+      - generic [ref=f1e15]:
+        - generic [ref=f1e17]:
+          - heading "Boards" [level=2] [ref=f1e18]
+          - button "New board" [ref=f1e19] [cursor=pointer]
+        - navigation [ref=f1e21]:
+          - generic [ref=f1e22]:
+            - heading "My Boards" [level=3] [ref=f1e23]
+            - list [ref=f1e44]:
+              - listitem [ref=f1e45]:
+                - button "okto pulse" [ref=f1e46] [cursor=pointer]
+              - listitem [ref=f1e53]:
+                - button "My Board" [ref=f1e54] [cursor=pointer]
+              - listitem [ref=f1e61]:
+                - button "okto-grafx" [ref=f1e62] [cursor=pointer]
+    - main [ref=f1e26]:
+      - group "Board views" [ref=f1e69]:
+        - button "Stories" [ref=f1e70] [cursor=pointer]
+        - button "Ideations" [ref=f1e74] [cursor=pointer]
+        - button "Refinements" [ref=f1e77] [cursor=pointer]
+        - button "Specs" [ref=f1e82] [cursor=pointer]
+        - button "Tasks" [pressed] [ref=f1e87] [cursor=pointer]
+      - generic [ref=f1e280]:
+        - generic [ref=f1e281]:
+          - textbox "Search cards…" [ref=f1e283]
+          - button "Unlinked" [ref=f1e286] [cursor=pointer]
+          - button "Filter specs..." [ref=f1e288] [cursor=pointer]
+          - button "Show archived" [ref=f1e292] [cursor=pointer]
+        - generic [ref=f1e293]:
+          - generic [ref=f1e294]:
+            - generic [ref=f1e295]:
+              - generic [ref=f1e297]:
+                - generic [ref=f1e298]:
+                  - generic [ref=f1e299]:
+                    - heading "Not Started" [level=3] [ref=f1e300]
+                    - generic "2 total cards" [ref=f1e301]: "2"
+                  - generic [ref=f1e302]:
+                    - button "1 task cards" [pressed] [ref=f1e303] [cursor=pointer]:
+                      - generic [ref=f1e304]: Task
+                      - generic [ref=f1e309]: "1"
+                    - button "1 test cards" [pressed] [ref=f1e310] [cursor=pointer]:
+                      - generic [ref=f1e311]: Test
+                      - generic [ref=f1e315]: "1"
+                    - button "0 bug cards" [pressed] [ref=f1e316] [cursor=pointer]:
+                      - generic [ref=f1e317]: Bug
+                      - generic [ref=f1e328]: "0"
+                - button "Add card to Not Started" [ref=f1e329] [cursor=pointer]
+              - generic [ref=f1e331]:
+                - 'button "test [TEST] R4 UI fixture — unmet approval criterion spec Isolated presentation fixture for a genuine failed observation: the linked criterion requires planning approval, while this labeled Spec is deliberately Draft and unapproved. Retain the observed unmet prerequisite and its requirement-specific cause. This is neither a product defect nor an implementation/delivery claim. e2e-043 r4-ui-acceptance intentional-incomplete-fixture 1 scenario linked C: Codex" [ref=f1e865]':
+                  - generic [ref=f1e333]:
+                    - generic "Move card" [ref=f1e334]
+                    - generic [ref=f1e342] [cursor=pointer]:
+                      - generic [ref=f1e343]:
+                        - generic [ref=f1e344]: test
+                        - heading "[TEST] R4 UI fixture — unmet approval criterion" [level=4] [ref=f1e347]
+                        - generic "Linked to a spec" [ref=f1e348]: spec
+                      - paragraph [ref=f1e352]: "Isolated presentation fixture for a genuine failed observation: the linked criterion requires planning approval, while this labeled Spec is deliberately Draft and unapproved. Retain the observed unmet prerequisite and its requirement-specific cause. This is neither a product defect nor an implementation/delivery claim."
+                      - generic [ref=f1e353]:
+                        - generic [ref=f1e354]: e2e-043
+                        - generic [ref=f1e355]: r4-ui-acceptance
+                        - generic [ref=f1e356]: intentional-incomplete-fixture
+                      - generic [ref=f1e365]: 1 scenario linked
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f1e371]': "C: Codex"
+                - 'button "R4 UI fixture — allocation needs attention spec Isolated presentation fixture. This Draft planning requirement is associated with the task but intentionally lacks a completed implementation allocation. A settled assessment must identify the unresolved allocation and next planning action; it must not pretend a request is still loading or grant implementation credit. e2e-043 r4-ui-acceptance intentional-incomplete-fixture C: Codex" [ref=f1e866]':
+                  - generic [ref=f1e373]:
+                    - generic "Move card" [ref=f1e374]
+                    - generic [ref=f1e382] [cursor=pointer]:
+                      - generic [ref=f1e383]:
+                        - heading "R4 UI fixture — allocation needs attention" [level=4] [ref=f1e384]
+                        - generic "Linked to a spec" [ref=f1e385]: spec
+                      - paragraph [ref=f1e389]: Isolated presentation fixture. This Draft planning requirement is associated with the task but intentionally lacks a completed implementation allocation. A settled assessment must identify the unresolved allocation and next planning action; it must not pretend a request is still loading or grant implementation credit.
+                      - generic [ref=f1e390]:
+                        - generic [ref=f1e391]: e2e-043
+                        - generic [ref=f1e392]: r4-ui-acceptance
+                        - generic [ref=f1e393]: intentional-incomplete-fixture
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f1e409]': "C: Codex"
+            - generic [ref=f1e410]:
+              - generic [ref=f1e413]:
+                - generic [ref=f1e414]:
+                  - heading "In Progress" [level=3] [ref=f1e415]
+                  - generic "2 total cards" [ref=f1e416]: "2"
+                - generic [ref=f1e417]:
+                  - button "1 task cards" [pressed] [ref=f1e418] [cursor=pointer]:
+                    - generic [ref=f1e419]: Task
+                    - generic [ref=f1e424]: "1"
+                  - button "1 test cards" [pressed] [ref=f1e425] [cursor=pointer]:
+                    - generic [ref=f1e426]: Test
+                    - generic [ref=f1e430]: "1"
+                  - button "0 bug cards" [pressed] [ref=f1e431] [cursor=pointer]:
+                    - generic [ref=f1e432]: Bug
+                    - generic [ref=f1e443]: "0"
+              - generic [ref=f1e444]:
+                - 'button "QA 0.4.3 — tarefa de dispensa sem justificativa spec Tarefa de teste de interface para Required → Optional → Waived → Required, sem alterar evidência nem status de execução. C: Owner A: Codex" [ref=f1e867]':
+                  - generic [ref=f1e446]:
+                    - generic "Move card" [ref=f1e447]
+                    - generic [ref=f1e455] [cursor=pointer]:
+                      - generic [ref=f1e456]:
+                        - heading "QA 0.4.3 — tarefa de dispensa sem justificativa" [level=4] [ref=f1e457]
+                        - generic "Linked to a spec" [ref=f1e458]: spec
+                      - paragraph [ref=f1e462]: Tarefa de teste de interface para Required → Optional → Waived → Required, sem alterar evidência nem status de execução.
+                      - generic [ref=f1e477]:
+                        - 'generic "Creator: local-user" [ref=f1e478]': "C: Owner"
+                        - 'generic "Assignee: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f1e479]': "A: Codex"
+                - 'button "test QA 0.4.3 — teste da validação e dispensa spec Teste de interface rastreável no My Board; sem evidência técnica fabricada. 1 scenario linked C: Owner" [ref=f1e868]':
+                  - generic [ref=f1e481]:
+                    - generic "Move card" [ref=f1e482]
+                    - generic [ref=f1e490] [cursor=pointer]:
+                      - generic [ref=f1e491]:
+                        - generic [ref=f1e492]: test
+                        - heading "QA 0.4.3 — teste da validação e dispensa" [level=4] [ref=f1e495]
+                        - generic "Linked to a spec" [ref=f1e496]: spec
+                      - paragraph [ref=f1e500]: Teste de interface rastreável no My Board; sem evidência técnica fabricada.
+                      - generic [ref=f1e509]: 1 scenario linked
+                      - 'generic "Creator: local-user" [ref=f1e515]': "C: Owner"
+            - generic [ref=f1e516]:
+              - generic [ref=f1e519]:
+                - generic [ref=f1e520]:
+                  - heading "Validation" [level=3] [ref=f1e521]
+                  - generic "0 total cards" [ref=f1e522]: "0"
+                - generic [ref=f1e523]:
+                  - button "0 task cards" [pressed] [ref=f1e524] [cursor=pointer]:
+                    - generic [ref=f1e525]: Task
+                    - generic [ref=f1e530]: "0"
+                  - button "0 test cards" [pressed] [ref=f1e531] [cursor=pointer]:
+                    - generic [ref=f1e532]: Test
+                    - generic [ref=f1e536]: "0"
+                  - button "0 bug cards" [pressed] [ref=f1e537] [cursor=pointer]:
+                    - generic [ref=f1e538]: Bug
+                    - generic [ref=f1e549]: "0"
+              - generic [ref=f1e550]: No cards
+            - generic [ref=f1e552]:
+              - generic [ref=f1e555]:
+                - generic [ref=f1e556]:
+                  - heading "Rejected" [level=3] [ref=f1e557]
+                  - generic "0 total cards" [ref=f1e558]: "0"
+                - generic [ref=f1e559]:
+                  - button "0 task cards" [pressed] [ref=f1e560] [cursor=pointer]:
+                    - generic [ref=f1e561]: Task
+                    - generic [ref=f1e566]: "0"
+                  - button "0 bug cards" [pressed] [ref=f1e567] [cursor=pointer]:
+                    - generic [ref=f1e568]: Bug
+                    - generic [ref=f1e579]: "0"
+              - generic [ref=f1e580]: No cards requiring rework
+            - generic [ref=f1e582]:
+              - generic [ref=f1e585]:
+                - generic [ref=f1e586]:
+                  - heading "On Hold" [level=3] [ref=f1e587]
+                  - generic "0 total cards" [ref=f1e588]: "0"
+                - generic [ref=f1e589]:
+                  - button "0 task cards" [pressed] [ref=f1e590] [cursor=pointer]:
+                    - generic [ref=f1e591]: Task
+                    - generic [ref=f1e596]: "0"
+                  - button "0 test cards" [pressed] [ref=f1e597] [cursor=pointer]:
+                    - generic [ref=f1e598]: Test
+                    - generic [ref=f1e602]: "0"
+                  - button "0 bug cards" [pressed] [ref=f1e603] [cursor=pointer]:
+                    - generic [ref=f1e604]: Bug
+                    - generic [ref=f1e615]: "0"
+              - generic [ref=f1e616]: No cards
+            - generic [ref=f1e618]:
+              - generic [ref=f1e621]:
+                - generic [ref=f1e622]:
+                  - heading "Done" [level=3] [ref=f1e623]
+                  - generic "2 total cards" [ref=f1e624]: "2"
+                - generic [ref=f1e625]:
+                  - button "1 task cards" [pressed] [ref=f1e626] [cursor=pointer]:
+                    - generic [ref=f1e627]: Task
+                    - generic [ref=f1e632]: "1"
+                  - button "1 test cards" [pressed] [ref=f1e633] [cursor=pointer]:
+                    - generic [ref=f1e634]: Test
+                    - generic [ref=f1e638]: "1"
+                  - button "0 bug cards" [pressed] [ref=f1e639] [cursor=pointer]:
+                    - generic [ref=f1e640]: Bug
+                    - generic [ref=f1e651]: "0"
+              - generic [ref=f1e652]:
+                - 'button "test [TEST] E2E 0.4.3 — Verify delivery status and isolation spec Implement test_delivery_status.py using unittest. Execute ts_4e90347d and ts_22468e79 against the exact committed helper revision: exhaustive 18 combinations, invalid enums, non-bool flags and AST no-import isolation. Preserve failed run evidence and rerun after correction. Record authenticated results and associate only the implementation actually tested. Then compare the real Pulse Delivery matrix and percentages with the authoritative projection. e2e-043 2 scenarios linked Execution report: 100% 0% drift C: Codex" [ref=f1e869]':
+                  - generic [ref=f1e654]:
+                    - generic "Move card" [ref=f1e655]
+                    - generic [ref=f1e663] [cursor=pointer]:
+                      - generic [ref=f1e664]:
+                        - generic [ref=f1e665]: test
+                        - heading "[TEST] E2E 0.4.3 — Verify delivery status and isolation" [level=4] [ref=f1e668]
+                        - generic "Linked to a spec" [ref=f1e669]: spec
+                      - paragraph [ref=f1e673]: "Implement test_delivery_status.py using unittest. Execute ts_4e90347d and ts_22468e79 against the exact committed helper revision: exhaustive 18 combinations, invalid enums, non-bool flags and AST no-import isolation. Preserve failed run evidence and rerun after correction. Record authenticated results and associate only the implementation actually tested. Then compare the real Pulse Delivery matrix and percentages with the authoritative projection."
+                      - generic [ref=f1e674]: e2e-043
+                      - generic [ref=f1e685]: 2 scenarios linked
+                      - generic [ref=f1e689]:
+                        - 'generic "Executor-reported completeness: 100%. Delivery verification is separate." [ref=f1e690]': "Execution report: 100%"
+                        - 'generic "Drift: 0%" [ref=f1e691]': 0% drift
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f1e694]': "C: Codex"
+                - 'button "E2E 0.4.3 — Implement isolated delivery classifier spec Create delivery_status.py in the isolated fixture workspace after native execution admission. Implement fr_e2e_classify, tr_e2e_isolation and br_8bb896ec, covering ac_e2e_states and ac_e2e_isolation. Validate enums and bool before applying exact precedence. No imports or side effects. Commit the actual implementation, record target execution and bind proof to the five obligations. Verification is performed by the separate Test Card; progress text never counts as proof. e2e-043 Execution report: 100% 0% drift C: Codex" [ref=f1e1574]':
+                  - generic [ref=f1e696]:
+                    - generic "Move card" [ref=f1e697]
+                    - generic [ref=f1e705] [cursor=pointer]:
+                      - generic [ref=f1e706]:
+                        - heading "E2E 0.4.3 — Implement isolated delivery classifier" [level=4] [ref=f1e707]
+                        - generic "Linked to a spec" [ref=f1e708]: spec
+                      - paragraph [ref=f1e712]: Create delivery_status.py in the isolated fixture workspace after native execution admission. Implement fr_e2e_classify, tr_e2e_isolation and br_8bb896ec, covering ac_e2e_states and ac_e2e_isolation. Validate enums and bool before applying exact precedence. No imports or side effects. Commit the actual implementation, record target execution and bind proof to the five obligations. Verification is performed by the separate Test Card; progress text never counts as proof.
+                      - generic [ref=f1e713]: e2e-043
+                      - generic [ref=f1e730]:
+                        - 'generic "Executor-reported completeness: 100%. Delivery verification is separate." [ref=f1e731]': "Execution report: 100%"
+                        - 'generic "Drift: 0%" [ref=f1e732]': 0% drift
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f1e735]': "C: Codex"
+            - generic [ref=f1e736]:
+              - generic [ref=f1e739]:
+                - generic [ref=f1e740]:
+                  - heading "Cancelled" [level=3] [ref=f1e741]
+                  - generic "2 total cards" [ref=f1e742]: "2"
+                - generic [ref=f1e743]:
+                  - button "0 task cards" [pressed] [ref=f1e744] [cursor=pointer]:
+                    - generic [ref=f1e745]: Task
+                    - generic [ref=f1e750]: "0"
+                  - button "1 test cards" [pressed] [ref=f1e751] [cursor=pointer]:
+                    - generic [ref=f1e752]: Test
+                    - generic [ref=f1e756]: "1"
+                  - button "1 bug cards" [pressed] [ref=f1e757] [cursor=pointer]:
+                    - generic [ref=f1e758]: Bug
+                    - generic [ref=f1e769]: "1"
+              - generic [ref=f1e770]:
+                - 'button "test E2E 0.4.3 — Fresh regression gate probe test spec Explicit operational probe of fresh post-bug Test Card lineage. No additional test result will be fabricated; the corrected fixture has already passed. Cancel this probe after verifying eligibility and dependency controls. e2e-043 gate-probe 1 scenario linked C: Codex" [ref=f1e871]':
+                  - generic [ref=f1e772]:
+                    - generic "Move card" [ref=f1e773]
+                    - generic [ref=f1e781] [cursor=pointer]:
+                      - generic [ref=f1e782]:
+                        - generic [ref=f1e783]: test
+                        - heading "E2E 0.4.3 — Fresh regression gate probe test" [level=4] [ref=f1e786]
+                        - generic "Linked to a spec" [ref=f1e787]: spec
+                      - paragraph [ref=f1e791]: Explicit operational probe of fresh post-bug Test Card lineage. No additional test result will be fabricated; the corrected fixture has already passed. Cancel this probe after verifying eligibility and dependency controls.
+                      - generic [ref=f1e792]:
+                        - generic [ref=f1e793]: e2e-043
+                        - generic [ref=f1e794]: gate-probe
+                      - generic [ref=f1e803]: 1 scenario linked
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f1e809]': "C: Codex"
+                - 'button "bug E2E 0.4.3 — Controlled bug regression gate probe spec Operational test only, not an outstanding product defect. Exercise post-delivery bug creation, eligible scenario lineage, fresh regression Test Card gate and cancellation. The real controlled fixture defect was already fixed in 8cf8509; no further implementation is planned. Minor e2e-043 gate-probe 1 test task linked C: Codex" [ref=f1e872]':
+                  - generic [ref=f1e811]:
+                    - generic "Move card" [ref=f1e812]
+                    - generic [ref=f1e820] [cursor=pointer]:
+                      - generic [ref=f1e821]:
+                        - generic [ref=f1e822]: bug
+                        - heading "E2E 0.4.3 — Controlled bug regression gate probe" [level=4] [ref=f1e832]
+                        - generic "Linked to a spec" [ref=f1e833]: spec
+                      - paragraph [ref=f1e837]: Operational test only, not an outstanding product defect. Exercise post-delivery bug creation, eligible scenario lineage, fresh regression Test Card gate and cancellation. The real controlled fixture defect was already fixed in 8cf8509; no further implementation is planned.
+                      - generic [ref=f1e838]:
+                        - generic [ref=f1e839]: Minor
+                        - generic [ref=f1e840]: e2e-043
+                        - generic [ref=f1e841]: gate-probe
+                      - generic [ref=f1e857]: 1 test task linked
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f1e863]': "C: Codex"
+          - status [ref=f1e864]
+        - generic [ref=f1e1261]:
+          - generic [ref=f1e1262]:
+            - generic [ref=f1e1263]:
+              - combobox "Card status" [ref=f1e1264]:
+                - option "In Progress" [selected]
+                - option "Not Started"
+                - option "Validation"
+                - option "On Hold"
+                - option "Cancelled"
+              - heading "QA 0.4.3 — tarefa de dispensa sem justificativa" [level=2] [ref=f1e1265]
+            - button "QA 0.4.3 — validação, entre..." [ref=f1e1270] [cursor=pointer]
+            - generic [ref=f1e1275]:
+              - button "Open lineage graph" [ref=f1e1276] [cursor=pointer]
+              - button "Export report" [ref=f1e1281] [cursor=pointer]
+              - button "Refresh card" [ref=f1e1285] [cursor=pointer]
+              - button "Expand" [ref=f1e1291] [cursor=pointer]
+              - button "Close card dialog" [ref=f1e1297] [cursor=pointer]
+          - generic [ref=f1e1301]:
+            - tablist "Card sections" [ref=f1e1302]:
+              - tab "Details" [ref=f1e1303] [cursor=pointer]
+              - tab "Implementation Targets" [ref=f1e1308] [cursor=pointer]
+              - tab "Delivery" [selected] [ref=f1e1314] [cursor=pointer]
+              - tab "Resources" [ref=f1e1319] [cursor=pointer]
+              - tab "Q&A" [ref=f1e1325] [cursor=pointer]
+              - tab "Comments 1" [ref=f1e1330] [cursor=pointer]:
+                - generic [ref=f1e1333]: Comments
+                - generic [ref=f1e1334]: "1"
+              - tab "References" [ref=f1e1335] [cursor=pointer]
+              - tab "Validation" [ref=f1e1340] [cursor=pointer]
+              - tab "Activity" [ref=f1e1344] [cursor=pointer]
+            - button "Scroll Card sections right" [ref=f1e1350] [cursor=pointer]
+          - tabpanel "Delivery" [ref=f1e1354]:
+            - region "Task delivery" [ref=f1e1355]:
+              - generic [ref=f1e1356]:
+                - heading "Delivery" [level=3] [ref=f1e1357]
+                - button "How this works" [ref=f1e1358] [cursor=pointer]
+              - generic [ref=f1e1366]:
+                - status [ref=f1e1367]: Work remaining
+                - paragraph [ref=f1e1368]: Work or implementation evidence is still pending.
+              - generic [ref=f1e1369]:
+                - generic "Delivery progress" [ref=f1e1370]:
+                  - generic [ref=f1e1371]:
+                    - term [ref=f1e1372]: Implementation
+                    - definition [ref=f1e1373]: 0%
+                    - progressbar "Implementation" [ref=f1e1578]
+                  - generic [ref=f1e1375]:
+                    - term [ref=f1e1376]: Verification
+                    - definition [ref=f1e1377]: 0%
+                    - progressbar "Verification" [ref=f1e1579]
+                - table "Implementation and verification by requirement" [ref=f1e1380]:
+                  - rowgroup [ref=f1e1381]:
+                    - row [ref=f1e1382]:
+                      - columnheader "Requirement / Objective" [ref=f1e1383]
+                      - columnheader "Implementation" [ref=f1e1384]
+                      - columnheader "Verification" [ref=f1e1385]
+                  - rowgroup [ref=f1e1386]:
+                    - row [ref=f1e1387]:
+                      - rowheader "Acceptance criterion The validation summary exposes the result icon and matching text for the current edition." [ref=f1e1388]:
+                        - generic [ref=f1e1389]: Acceptance criterion
+                        - text: The validation summary exposes the result icon and matching text for the current edition.
+                      - cell "Pending" [ref=f1e1390]
+                      - cell "Pending" [ref=f1e1395]
+                    - row [ref=f1e1400]:
+                      - rowheader "Business rule Current-edition validation icon" [ref=f1e1401]:
+                        - generic [ref=f1e1402]: Business rule
+                        - text: Current-edition validation icon
+                      - cell "Pending" [ref=f1e1403]
+                      - cell "Pending" [ref=f1e1408]
+                    - row [ref=f1e1413]:
+                      - rowheader "Functional requirement Display one current-edition validation result with a check for success or an X while validation is incomplete." [ref=f1e1414]:
+                        - generic [ref=f1e1415]: Functional requirement
+                        - text: Display one current-edition validation result with a check for success or an X while validation is incomplete.
+                      - cell "Pending" [ref=f1e1416]
+                      - cell "Pending" [ref=f1e1421]
+              - region "Task requirement" [ref=f1e1426]:
+                - generic [ref=f1e1427]:
+                  - button "Hide details" [expanded] [ref=f1e1428] [cursor=pointer]
+                  - button "Close task requirements" [expanded] [ref=f1e1694] [cursor=pointer]
+                  - button "Task requirement rules" [ref=f1e1695] [cursor=pointer]
+                - generic [ref=f1e1699]:
+                  - paragraph [ref=f1e1700]: Choose Required, Optional or Waived. A note is optional. This is the delivery requirement for this Spec edition; work status and evidence stay unchanged.
+                  - group "Tasks (up to 50)" [ref=f1e1701]:
+                    - generic [ref=f1e1703]:
+                      - generic [ref=f1e1704]:
+                        - checkbox "QA 0.4.3 — tarefa de dispensa sem justificativa" [checked] [ref=f1e1705]
+                        - generic [ref=f1e1706]: QA 0.4.3 — tarefa de dispensa sem justificativa
+                        - generic [ref=f1e1707]: Required
+                      - group [ref=f1e1709]:
+                        - generic "Decision history for QA 0.4.3 — tarefa de dispensa sem justificativa" [active] [ref=f1e1710] [cursor=pointer]: Details · Decision history
+                        - generic [ref=f1e1716]:
+                          - paragraph [ref=f1e1717]: Historical decisions do not establish the current requirement. Current requirements are shown above.
+                          - paragraph [ref=f1e1718]: Edition 3 · 10 recorded decisions
+                          - generic [ref=f1e1719]:
+                            - generic [ref=f1e1720]:
+                              - text: Edition
+                              - spinbutton "Edition" [ref=f1e1721]
+                            - button "View edition" [disabled] [ref=f1e1722]
+                          - list [ref=f1e1723]:
+                            - listitem [ref=f1e1724]:
+                              - paragraph [ref=f1e1725]: Waived → Required
+                              - paragraph [ref=f1e1726]:
+                                - text: Recorded by local-user ·
+                                - time [ref=f1e1727]: 04/11/2026, 23:12:50
+                              - paragraph [ref=f1e1728]: "Final installed My Board acceptance: restore Required after Optional and Waived. This decision grants no implementation or test proof."
+                            - listitem [ref=f1e1729]:
+                              - paragraph [ref=f1e1730]: Optional → Waived
+                              - paragraph [ref=f1e1731]:
+                                - text: Recorded by local-user ·
+                                - time [ref=f1e1732]: 04/11/2026, 23:12:49
+                              - paragraph [ref=f1e1733]: No note provided.
+                            - listitem [ref=f1e1734]:
+                              - paragraph [ref=f1e1735]: Required → Optional
+                              - paragraph [ref=f1e1736]:
+                                - text: Recorded by local-user ·
+                                - time [ref=f1e1737]: 04/11/2026, 23:12:43
+                              - paragraph [ref=f1e1738]: No note provided.
+                            - listitem [ref=f1e1739]:
+                              - paragraph [ref=f1e1740]: Waived → Required
+                              - paragraph [ref=f1e1741]:
+                                - text: Recorded by local-user ·
+                                - time [ref=f1e1742]: 04/11/2026, 21:32:54
+                              - paragraph [ref=f1e1743]: "R4 installed UI acceptance: restore the original Required decision after testing Optional and Waived without notes."
+                            - listitem [ref=f1e1744]:
+                              - paragraph [ref=f1e1745]: Optional → Waived
+                              - paragraph [ref=f1e1746]:
+                                - text: Recorded by local-user ·
+                                - time [ref=f1e1747]: 04/11/2026, 21:31:20
+                              - paragraph [ref=f1e1748]: No note provided.
+                            - listitem [ref=f1e1749]:
+                              - paragraph [ref=f1e1750]: Required → Optional
+                              - paragraph [ref=f1e1751]:
+                                - text: Recorded by local-user ·
+                                - time [ref=f1e1752]: 04/11/2026, 21:29:14
+                              - paragraph [ref=f1e1753]: No note provided.
+                            - listitem [ref=f1e1754]:
+                              - paragraph [ref=f1e1755]: Optional → Required
+                              - paragraph [ref=f1e1756]:
+                                - text: Recorded by local-user ·
+                                - time [ref=f1e1757]: 03/11/2026, 19:13:56
+                              - paragraph [ref=f1e1758]: "QA final 0.4.3: restaurar Task e Test para Required após verificar dispensa em lote, contagens e histórico; sem alterar status ou provas."
+                            - listitem [ref=f1e1759]:
+                              - paragraph [ref=f1e1760]: Required → Optional
+                              - paragraph [ref=f1e1761]:
+                                - text: Recorded by local-user ·
+                                - time [ref=f1e1762]: 03/11/2026, 19:06:04
+                              - paragraph [ref=f1e1763]: "QA final: seleção mista de Task e Test; verificar visibilidade de ambas sem crédito de entrega."
+                            - listitem [ref=f1e1764]:
+                              - paragraph [ref=f1e1765]: Optional → Required
+                              - paragraph [ref=f1e1766]:
+                                - text: Recorded by local-user ·
+                                - time [ref=f1e1767]: 03/11/2026, 18:57:20
+                              - paragraph [ref=f1e1768]: "QA: restaurar obrigatoriedade das duas tarefas após a verificação em lote."
+                            - listitem [ref=f1e1769]:
+                              - paragraph [ref=f1e1770]: Required → Optional
+                              - paragraph [ref=f1e1771]:
+                                - text: Recorded by local-user ·
+                                - time [ref=f1e1772]: 03/11/2026, 18:55:44
+                              - paragraph [ref=f1e1773]: "QA: alteração em lote de duas tarefas; verificar operação atômica e restauração."
+                  - generic [ref=f1e1711]:
+                    - text: Requirement
+                    - combobox "Requirement" [ref=f1e1712]:
+                      - option "Select a requirement…" [selected]
+                      - option "Required"
+                      - option "Optional"
+                      - option "Waived"
+                  - generic [ref=f1e1713]:
+                    - text: Note (optional)
+                    - textbox "Note (optional)" [ref=f1e1714]
+                  - button "Save task requirement" [disabled] [ref=f1e1715]
+              - generic [ref=f1e1454]:
+                - heading "Delivery details" [level=4] [ref=f1e1455]
+                - region "Pending work and verification" [ref=f1e1456]:
+                  - heading "Pending work and verification" [level=4] [ref=f1e1457]
+                  - region "Requirements and verification" [ref=f1e1601]:
+                    - heading "Requirements and verification" [level=5] [ref=f1e1602]
+                    - table "Requirements and verification" [ref=f1e1604]:
+                      - rowgroup [ref=f1e1605]:
+                        - row [ref=f1e1606]:
+                          - columnheader "Requirement / Objective" [ref=f1e1607]
+                          - columnheader "Affected stage" [ref=f1e1608]
+                          - columnheader "What needs attention" [ref=f1e1609]
+                          - columnheader "Next step" [ref=f1e1610]
+                      - rowgroup [ref=f1e1611]:
+                        - row [ref=f1e1612]:
+                          - rowheader [ref=f1e1613]:
+                            - generic [ref=f1e1615]:
+                              - paragraph [ref=f1e1616]: Acceptance criterion
+                              - paragraph [ref=f1e1617]: The validation summary exposes the result icon and matching text for the current edition.
+                          - cell "Implementation" [ref=f1e1618]
+                          - cell [ref=f1e1619]:
+                            - paragraph [ref=f1e1620]: There is no complete implementation evidence for this item.
+                          - cell [ref=f1e1621]:
+                            - generic [ref=f1e1622]:
+                              - paragraph [ref=f1e1624]: The responsible agent needs to complete the work and record its implementation evidence.
+                              - paragraph [ref=f1e1625]:
+                                - text: "Responsible task:"
+                                - button "QA 0.4.3 — tarefa de dispensa sem justificativa" [ref=f1e1626] [cursor=pointer]
+                        - row [ref=f1e1627]:
+                          - cell [ref=f1e1628]:
+                            - group [ref=f1e1629]:
+                              - generic "Evidence and technical details" [ref=f1e1630] [cursor=pointer]
+                        - row [ref=f1e1631]:
+                          - rowheader [ref=f1e1632]:
+                            - generic [ref=f1e1634]:
+                              - paragraph [ref=f1e1635]: Functional requirement
+                              - paragraph [ref=f1e1636]: Display one current-edition validation result with a check for success or an X while validation is incomplete.
+                          - cell "Implementation" [ref=f1e1637]
+                          - cell [ref=f1e1638]:
+                            - paragraph [ref=f1e1639]: There is no complete implementation evidence for this item.
+                          - cell [ref=f1e1640]:
+                            - generic [ref=f1e1641]:
+                              - paragraph [ref=f1e1643]: The responsible agent needs to complete the work and record its implementation evidence.
+                              - paragraph [ref=f1e1644]:
+                                - text: "Responsible task:"
+                                - button "QA 0.4.3 — tarefa de dispensa sem justificativa" [ref=f1e1645] [cursor=pointer]
+                        - row [ref=f1e1646]:
+                          - cell [ref=f1e1647]:
+                            - group [ref=f1e1648]:
+                              - generic "Evidence and technical details" [ref=f1e1649] [cursor=pointer]
+                        - row [ref=f1e1650]:
+                          - rowheader [ref=f1e1651]:
+                            - generic [ref=f1e1653]:
+                              - paragraph [ref=f1e1654]: Business rule
+                              - paragraph [ref=f1e1655]: Current-edition validation icon
+                          - cell "Implementation" [ref=f1e1656]
+                          - cell [ref=f1e1657]:
+                            - paragraph [ref=f1e1658]: There is no complete implementation evidence for this item.
+                          - cell [ref=f1e1659]:
+                            - generic [ref=f1e1660]:
+                              - paragraph [ref=f1e1662]: The responsible agent needs to complete the work and record its implementation evidence.
+                              - paragraph [ref=f1e1663]:
+                                - text: "Responsible task:"
+                                - button "QA 0.4.3 — tarefa de dispensa sem justificativa" [ref=f1e1664] [cursor=pointer]
+                        - row [ref=f1e1665]:
+                          - cell [ref=f1e1666]:
+                            - group [ref=f1e1667]:
+                              - generic "Evidence and technical details" [ref=f1e1668] [cursor=pointer]
+                        - row [ref=f1e1669]:
+                          - rowheader [ref=f1e1670]:
+                            - generic [ref=f1e1671]:
+                              - generic [ref=f1e1672]:
+                                - paragraph [ref=f1e1673]: Acceptance criterion
+                                - paragraph [ref=f1e1674]: The validation summary exposes the result icon and matching text for the current edition.
+                              - generic [ref=f1e1675]:
+                                - paragraph [ref=f1e1676]: Business rule
+                                - paragraph [ref=f1e1677]: Current-edition validation icon
+                              - generic [ref=f1e1678]:
+                                - paragraph [ref=f1e1679]: Functional requirement
+                                - paragraph [ref=f1e1680]: Display one current-edition validation result with a check for success or an X while validation is incomplete.
+                          - cell "Verification" [ref=f1e1681]
+                          - cell [ref=f1e1682]:
+                            - paragraph [ref=f1e1683]: Verification is waiting for the required implementation or version.
+                          - cell [ref=f1e1684]:
+                            - generic [ref=f1e1685]:
+                              - paragraph [ref=f1e1686]: Resolve the implementation checks first, then run the required verification.
+                              - paragraph [ref=f1e1687]: Waiting for 3 related checks.
+                        - row [ref=f1e1688]:
+                          - cell [ref=f1e1689]:
+                            - group [ref=f1e1690]:
+                              - generic "Evidence and technical details" [ref=f1e1691] [cursor=pointer]
+                - paragraph [ref=f1e1550]: Updates are declarations. Technical verification and completion are assessed separately.
+                - generic [ref=f1e1551]:
+                  - heading "Last recorded update" [level=4] [ref=f1e1552]
+                  - paragraph [ref=f1e1553]:
+                    - text: Recorded on
+                    - time [ref=f1e1554]: 11/4/2026, 11:14:29 PM
+                    - text: . This is a historical declaration; the current status and matrix above determine what remains.
+                  - paragraph [ref=f1e1555]: "Final installed R4 acceptance on My Board: reviewed the requirement matrix, verified Optional and Waived with empty notes, restored Required, and checked scope guidance and Help. This is a test update, not technical proof."
+                  - heading "Work remaining when this update was recorded" [level=4] [ref=f1e1556]
+                  - paragraph [ref=f1e1557]: This fixture has no accepted implementation or verification proof. Keep its delivery pending.
+                - status [ref=f1e1692]: Submission saved.
+                - button "Record progress" [ref=f1e1693] [cursor=pointer]
+                - region "Delivery record history" [ref=f1e1559]:
+                  - heading "Delivery record history" [level=4] [ref=f1e1560]
+                  - paragraph [ref=f1e1561]: Edition 3 · Current
+                  - button "Browse delivery records" [ref=f1e1562] [cursor=pointer]
+                  - group [ref=f1e1563]:
+                    - generic "Previous versions 2" [ref=f1e1564] [cursor=pointer]:
+                      - generic "Previous versions" [ref=f1e1565]
+                      - generic [ref=f1e1566]: "2"
+          - button "Delete" [ref=f1e1570] [cursor=pointer]

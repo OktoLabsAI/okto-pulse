@@ -1,0 +1,425 @@
+- generic [ref=f1e3]:
+  - banner [ref=f1e4]:
+    - generic [ref=f1e5]:
+      - generic [ref=f1e6]:
+        - button "Hide sidebar" [ref=f1e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f1e12]
+        - generic [ref=f1e31]: / My Board
+      - generic [ref=f1e32]:
+        - button "Refresh board" [ref=f1e33] [cursor=pointer]
+        - button [ref=f1e40] [cursor=pointer]
+  - dialog [active] [ref=f1e1068]:
+    - navigation [ref=f1e1069]:
+      - generic [ref=f1e1070]:
+        - img "Okto Pulse" [ref=f1e1071]
+        - generic [ref=f1e1072]:
+          - heading "Help Guide" [level=2] [ref=f1e1073]
+          - paragraph [ref=f1e1074]: Community Edition
+      - generic [ref=f1e1075]:
+        - button "Guided Tours" [ref=f1e1076] [cursor=pointer]
+        - button "Quickstart" [ref=f1e1081] [cursor=pointer]
+        - button "Agents & MCP" [ref=f1e1088] [cursor=pointer]
+        - button "Ideations" [ref=f1e1093] [cursor=pointer]
+        - button "Refinements" [ref=f1e1097] [cursor=pointer]
+        - button "Code Traceability" [ref=f1e1102] [cursor=pointer]
+        - button "Specs" [ref=f1e1108] [cursor=pointer]
+        - button "Spec validation" [ref=f1e1113] [cursor=pointer]
+        - button "Task progress" [ref=f1e1118] [cursor=pointer]
+        - button "Delivery status" [ref=f1e1123] [cursor=pointer]
+        - button "Task requirements" [ref=f1e1128] [cursor=pointer]
+        - button "Questions and recommendations" [ref=f1e1135] [cursor=pointer]
+        - button "Tasks (Kanban)" [ref=f1e1140] [cursor=pointer]
+        - button "Bug tracking" [ref=f1e1145] [cursor=pointer]
+        - button "Analytics" [ref=f1e1156] [cursor=pointer]
+        - button "Guidelines" [ref=f1e1160] [cursor=pointer]
+        - button "Policy Governance" [ref=f1e1164] [cursor=pointer]
+        - button "Semantic guideline metrics" [ref=f1e1168] [cursor=pointer]
+        - button "Governance & rules" [ref=f1e1173] [cursor=pointer]
+        - button "Knowledge Graph" [ref=f1e1177] [cursor=pointer]
+        - button "Board Settings" [ref=f1e1184] [cursor=pointer]
+        - button "Requirement lint" [ref=f1e1189] [cursor=pointer]
+        - button "Curated Spec Checklist" [ref=f1e1193] [cursor=pointer]
+    - generic [ref=f1e1198]:
+      - generic [ref=f1e1199]:
+        - heading "Task requirements" [level=3] [ref=f1e1200]
+        - button "Close help" [ref=f1e1204] [cursor=pointer]
+      - generic [ref=f1e1209]:
+        - heading "Task requirements — Change what must be delivered" [level=2] [ref=f1e1210]
+        - paragraph [ref=f1e1211]:
+          - text: Open
+          - strong [ref=f1e1212]: Change task requirement
+          - text: from a task's Delivery tab, or select tasks from the Spec's Delivery view. Choose the tasks, select one requirement and save. A note is optional. Only an authorized human can save this decision; agents can inspect the current rules and prepare a request.
+        - table [ref=f1e1213]:
+          - rowgroup [ref=f1e1214]:
+            - row [ref=f1e1215]:
+              - columnheader "Choice" [ref=f1e1216]
+              - columnheader "Effect" [ref=f1e1217]
+          - rowgroup [ref=f1e1218]:
+            - row [ref=f1e1219]:
+              - cell [ref=f1e1220]:
+                - strong [ref=f1e1221]: Required
+              - cell "The task's current contributions must meet the applicable delivery checks. Also use this to restore a previous requirement." [ref=f1e1222]
+            - row [ref=f1e1223]:
+              - cell [ref=f1e1224]:
+                - strong [ref=f1e1225]: Optional
+              - cell "The task's contributions can be omitted from the required delivery. Any work and history remain visible." [ref=f1e1226]
+            - row [ref=f1e1227]:
+              - cell [ref=f1e1228]:
+                - strong [ref=f1e1229]: Waived
+              - cell "A human has explicitly dispensed with the task's contributions for this Spec edition. The decision remains visible." [ref=f1e1230]
+        - heading "What changes when you save" [level=3] [ref=f1e1231]
+        - paragraph [ref=f1e1232]: The decision applies to the selected tasks' current contributions in the current Spec edition. It does not mark tasks Done, create implementation proof, pass tests or change dependencies. Other tasks sharing a requirement remain responsible for their own contributions.
+        - paragraph [ref=f1e1233]:
+          - text: "For example, waive an integration task that is no longer needed: it remains visible as"
+          - strong [ref=f1e1234]: Waived
+          - text: ", with its existing work status and history. It does not appear as a delivered task. Restore"
+          - strong [ref=f1e1235]: Required
+          - text: later and its delivery checks apply again; earlier work must still have current evidence.
+        - paragraph [ref=f1e1236]: A Test Card decision applies to that card's execution responsibility. Required scenarios and criteria for other tasks or the Spec still need the applicable verification. A task decision cannot remove a policy finding or an independent completion check.
+        - heading "Scope, history and changed information" [level=3] [ref=f1e1237]
+        - paragraph [ref=f1e1238]: A new Spec edition or changed task contributions require a new decision. An old decision stays in history and cannot silently excuse a different scope. Finished, cancelled or submitted tasks must follow their normal reopen workflow before changing their requirement.
+        - paragraph [ref=f1e1239]: "Saving multiple selected tasks is one operation: either all decisions are saved with the authenticated author and time, or none are saved. Restoring a requirement adds a new decision and preserves the earlier one. Notes can be left blank; the author, time, affected tasks and choice are always recorded."
+        - paragraph [ref=f1e1240]:
+          - text: If the task or Spec changed,
+          - strong [ref=f1e1241]: Review latest task requirements
+          - text: refreshes the options and keeps your note and choice for review before saving again. If the response is uncertain,
+          - strong [ref=f1e1242]: Retry same decision
+          - text: checks the original submission without creating a duplicate. This does not automatically apply your draft to changed work.
+        - paragraph [ref=f1e1243]:
+          - text: If the delivery scope cannot be confirmed, saving is unavailable. Review the requirements and task assignments in the Spec, then use
+          - strong [ref=f1e1244]: Review latest task requirements
+          - text: to reload the confirmed scope. An unresolved assignment cannot be waived by guessing which work belongs to the task.
+        - paragraph [ref=f1e1245]:
+          - text: Visible actions depend on your permissions.
+          - strong [ref=f1e1246]: Details
+          - text: retains the existing evidence, test and governed exception tools for investigation. These remain separate from changing a task's requirement.
+        - paragraph [ref=f1e1247]:
+          - text: Open
+          - strong [ref=f1e1248]: Details · Decision history
+          - text: for the selected task to inspect the author, time, choice and note. History loads only when opened, in pages.
+          - strong [ref=f1e1249]: Older decisions
+          - text: and the edition selector let you inspect previous decisions;
+          - strong [ref=f1e1250]: Read full note
+          - text: opens a long note on demand. Historical decisions do not establish the current requirement shown above.
+  - generic [ref=f1e13]:
+    - complementary [ref=f1e14]:
+      - generic [ref=f1e15]:
+        - generic [ref=f1e17]:
+          - heading "Boards" [level=2] [ref=f1e18]
+          - button "New board" [ref=f1e19] [cursor=pointer]
+        - navigation [ref=f1e21]:
+          - generic [ref=f1e22]:
+            - heading "My Boards" [level=3] [ref=f1e23]
+            - list [ref=f1e44]:
+              - listitem [ref=f1e45]:
+                - button "okto pulse" [ref=f1e46] [cursor=pointer]
+              - listitem [ref=f1e53]:
+                - button "My Board" [ref=f1e54] [cursor=pointer]
+              - listitem [ref=f1e61]:
+                - button "okto-grafx" [ref=f1e62] [cursor=pointer]
+    - main [ref=f1e26]:
+      - group "Board views" [ref=f1e69]:
+        - button "Stories" [ref=f1e70] [cursor=pointer]
+        - button "Ideations" [ref=f1e74] [cursor=pointer]
+        - button "Refinements" [ref=f1e77] [cursor=pointer]
+        - button "Specs" [ref=f1e82] [cursor=pointer]
+        - button "Tasks" [pressed] [ref=f1e87] [cursor=pointer]
+      - generic [ref=f1e280]:
+        - generic [ref=f1e281]:
+          - textbox "Search cards…" [ref=f1e283]
+          - button "Unlinked" [ref=f1e286] [cursor=pointer]
+          - button "Filter specs..." [ref=f1e288] [cursor=pointer]
+          - button "Show archived" [ref=f1e292] [cursor=pointer]
+        - generic [ref=f1e293]:
+          - generic [ref=f1e294]:
+            - generic [ref=f1e295]:
+              - generic [ref=f1e297]:
+                - generic [ref=f1e298]:
+                  - generic [ref=f1e299]:
+                    - heading "Not Started" [level=3] [ref=f1e300]
+                    - generic "2 total cards" [ref=f1e301]: "2"
+                  - generic [ref=f1e302]:
+                    - button "1 task cards" [pressed] [ref=f1e303] [cursor=pointer]:
+                      - generic [ref=f1e304]: Task
+                      - generic [ref=f1e309]: "1"
+                    - button "1 test cards" [pressed] [ref=f1e310] [cursor=pointer]:
+                      - generic [ref=f1e311]: Test
+                      - generic [ref=f1e315]: "1"
+                    - button "0 bug cards" [pressed] [ref=f1e316] [cursor=pointer]:
+                      - generic [ref=f1e317]: Bug
+                      - generic [ref=f1e328]: "0"
+                - button "Add card to Not Started" [ref=f1e329] [cursor=pointer]
+              - generic [ref=f1e331]:
+                - 'button "test [TEST] R4 UI fixture — unmet approval criterion spec Isolated presentation fixture for a genuine failed observation: the linked criterion requires planning approval, while this labeled Spec is deliberately Draft and unapproved. Retain the observed unmet prerequisite and its requirement-specific cause. This is neither a product defect nor an implementation/delivery claim. e2e-043 r4-ui-acceptance intentional-incomplete-fixture 1 scenario linked C: Codex" [ref=f1e865]':
+                  - generic [ref=f1e333]:
+                    - generic "Move card" [ref=f1e334]
+                    - generic [ref=f1e342] [cursor=pointer]:
+                      - generic [ref=f1e343]:
+                        - generic [ref=f1e344]: test
+                        - heading "[TEST] R4 UI fixture — unmet approval criterion" [level=4] [ref=f1e347]
+                        - generic "Linked to a spec" [ref=f1e348]: spec
+                      - paragraph [ref=f1e352]: "Isolated presentation fixture for a genuine failed observation: the linked criterion requires planning approval, while this labeled Spec is deliberately Draft and unapproved. Retain the observed unmet prerequisite and its requirement-specific cause. This is neither a product defect nor an implementation/delivery claim."
+                      - generic [ref=f1e353]:
+                        - generic [ref=f1e354]: e2e-043
+                        - generic [ref=f1e355]: r4-ui-acceptance
+                        - generic [ref=f1e356]: intentional-incomplete-fixture
+                      - generic [ref=f1e365]: 1 scenario linked
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f1e371]': "C: Codex"
+                - 'button "R4 UI fixture — allocation needs attention spec Isolated presentation fixture. This Draft planning requirement is associated with the task but intentionally lacks a completed implementation allocation. A settled assessment must identify the unresolved allocation and next planning action; it must not pretend a request is still loading or grant implementation credit. e2e-043 r4-ui-acceptance intentional-incomplete-fixture C: Codex" [ref=f1e866]':
+                  - generic [ref=f1e373]:
+                    - generic "Move card" [ref=f1e374]
+                    - generic [ref=f1e382] [cursor=pointer]:
+                      - generic [ref=f1e383]:
+                        - heading "R4 UI fixture — allocation needs attention" [level=4] [ref=f1e384]
+                        - generic "Linked to a spec" [ref=f1e385]: spec
+                      - paragraph [ref=f1e389]: Isolated presentation fixture. This Draft planning requirement is associated with the task but intentionally lacks a completed implementation allocation. A settled assessment must identify the unresolved allocation and next planning action; it must not pretend a request is still loading or grant implementation credit.
+                      - generic [ref=f1e390]:
+                        - generic [ref=f1e391]: e2e-043
+                        - generic [ref=f1e392]: r4-ui-acceptance
+                        - generic [ref=f1e393]: intentional-incomplete-fixture
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f1e409]': "C: Codex"
+            - generic [ref=f1e410]:
+              - generic [ref=f1e413]:
+                - generic [ref=f1e414]:
+                  - heading "In Progress" [level=3] [ref=f1e415]
+                  - generic "2 total cards" [ref=f1e416]: "2"
+                - generic [ref=f1e417]:
+                  - button "1 task cards" [pressed] [ref=f1e418] [cursor=pointer]:
+                    - generic [ref=f1e419]: Task
+                    - generic [ref=f1e424]: "1"
+                  - button "1 test cards" [pressed] [ref=f1e425] [cursor=pointer]:
+                    - generic [ref=f1e426]: Test
+                    - generic [ref=f1e430]: "1"
+                  - button "0 bug cards" [pressed] [ref=f1e431] [cursor=pointer]:
+                    - generic [ref=f1e432]: Bug
+                    - generic [ref=f1e443]: "0"
+              - generic [ref=f1e444]:
+                - 'button "QA 0.4.3 — tarefa de dispensa sem justificativa spec Tarefa de teste de interface para Required → Optional → Waived → Required, sem alterar evidência nem status de execução. C: Owner A: Codex" [ref=f1e867]':
+                  - generic [ref=f1e446]:
+                    - generic "Move card" [ref=f1e447]
+                    - generic [ref=f1e455] [cursor=pointer]:
+                      - generic [ref=f1e456]:
+                        - heading "QA 0.4.3 — tarefa de dispensa sem justificativa" [level=4] [ref=f1e457]
+                        - generic "Linked to a spec" [ref=f1e458]: spec
+                      - paragraph [ref=f1e462]: Tarefa de teste de interface para Required → Optional → Waived → Required, sem alterar evidência nem status de execução.
+                      - generic [ref=f1e477]:
+                        - 'generic "Creator: local-user" [ref=f1e478]': "C: Owner"
+                        - 'generic "Assignee: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f1e479]': "A: Codex"
+                - 'button "test QA 0.4.3 — teste da validação e dispensa spec Teste de interface rastreável no My Board; sem evidência técnica fabricada. 1 scenario linked C: Owner" [ref=f1e868]':
+                  - generic [ref=f1e481]:
+                    - generic "Move card" [ref=f1e482]
+                    - generic [ref=f1e490] [cursor=pointer]:
+                      - generic [ref=f1e491]:
+                        - generic [ref=f1e492]: test
+                        - heading "QA 0.4.3 — teste da validação e dispensa" [level=4] [ref=f1e495]
+                        - generic "Linked to a spec" [ref=f1e496]: spec
+                      - paragraph [ref=f1e500]: Teste de interface rastreável no My Board; sem evidência técnica fabricada.
+                      - generic [ref=f1e509]: 1 scenario linked
+                      - 'generic "Creator: local-user" [ref=f1e515]': "C: Owner"
+            - generic [ref=f1e516]:
+              - generic [ref=f1e519]:
+                - generic [ref=f1e520]:
+                  - heading "Validation" [level=3] [ref=f1e521]
+                  - generic "0 total cards" [ref=f1e522]: "0"
+                - generic [ref=f1e523]:
+                  - button "0 task cards" [pressed] [ref=f1e524] [cursor=pointer]:
+                    - generic [ref=f1e525]: Task
+                    - generic [ref=f1e530]: "0"
+                  - button "0 test cards" [pressed] [ref=f1e531] [cursor=pointer]:
+                    - generic [ref=f1e532]: Test
+                    - generic [ref=f1e536]: "0"
+                  - button "0 bug cards" [pressed] [ref=f1e537] [cursor=pointer]:
+                    - generic [ref=f1e538]: Bug
+                    - generic [ref=f1e549]: "0"
+              - generic [ref=f1e550]: No cards
+            - generic [ref=f1e552]:
+              - generic [ref=f1e555]:
+                - generic [ref=f1e556]:
+                  - heading "Rejected" [level=3] [ref=f1e557]
+                  - generic "0 total cards" [ref=f1e558]: "0"
+                - generic [ref=f1e559]:
+                  - button "0 task cards" [pressed] [ref=f1e560] [cursor=pointer]:
+                    - generic [ref=f1e561]: Task
+                    - generic [ref=f1e566]: "0"
+                  - button "0 bug cards" [pressed] [ref=f1e567] [cursor=pointer]:
+                    - generic [ref=f1e568]: Bug
+                    - generic [ref=f1e579]: "0"
+              - generic [ref=f1e580]: No cards requiring rework
+            - generic [ref=f1e582]:
+              - generic [ref=f1e585]:
+                - generic [ref=f1e586]:
+                  - heading "On Hold" [level=3] [ref=f1e587]
+                  - generic "0 total cards" [ref=f1e588]: "0"
+                - generic [ref=f1e589]:
+                  - button "0 task cards" [pressed] [ref=f1e590] [cursor=pointer]:
+                    - generic [ref=f1e591]: Task
+                    - generic [ref=f1e596]: "0"
+                  - button "0 test cards" [pressed] [ref=f1e597] [cursor=pointer]:
+                    - generic [ref=f1e598]: Test
+                    - generic [ref=f1e602]: "0"
+                  - button "0 bug cards" [pressed] [ref=f1e603] [cursor=pointer]:
+                    - generic [ref=f1e604]: Bug
+                    - generic [ref=f1e615]: "0"
+              - generic [ref=f1e616]: No cards
+            - generic [ref=f1e618]:
+              - generic [ref=f1e621]:
+                - generic [ref=f1e622]:
+                  - heading "Done" [level=3] [ref=f1e623]
+                  - generic "2 total cards" [ref=f1e624]: "2"
+                - generic [ref=f1e625]:
+                  - button "1 task cards" [pressed] [ref=f1e626] [cursor=pointer]:
+                    - generic [ref=f1e627]: Task
+                    - generic [ref=f1e632]: "1"
+                  - button "1 test cards" [pressed] [ref=f1e633] [cursor=pointer]:
+                    - generic [ref=f1e634]: Test
+                    - generic [ref=f1e638]: "1"
+                  - button "0 bug cards" [pressed] [ref=f1e639] [cursor=pointer]:
+                    - generic [ref=f1e640]: Bug
+                    - generic [ref=f1e651]: "0"
+              - generic [ref=f1e652]:
+                - 'button "test [TEST] E2E 0.4.3 — Verify delivery status and isolation spec Implement test_delivery_status.py using unittest. Execute ts_4e90347d and ts_22468e79 against the exact committed helper revision: exhaustive 18 combinations, invalid enums, non-bool flags and AST no-import isolation. Preserve failed run evidence and rerun after correction. Record authenticated results and associate only the implementation actually tested. Then compare the real Pulse Delivery matrix and percentages with the authoritative projection. e2e-043 2 scenarios linked Execution report: 100% 0% drift C: Codex" [ref=f1e869]':
+                  - generic [ref=f1e654]:
+                    - generic "Move card" [ref=f1e655]
+                    - generic [ref=f1e663] [cursor=pointer]:
+                      - generic [ref=f1e664]:
+                        - generic [ref=f1e665]: test
+                        - heading "[TEST] E2E 0.4.3 — Verify delivery status and isolation" [level=4] [ref=f1e668]
+                        - generic "Linked to a spec" [ref=f1e669]: spec
+                      - paragraph [ref=f1e673]: "Implement test_delivery_status.py using unittest. Execute ts_4e90347d and ts_22468e79 against the exact committed helper revision: exhaustive 18 combinations, invalid enums, non-bool flags and AST no-import isolation. Preserve failed run evidence and rerun after correction. Record authenticated results and associate only the implementation actually tested. Then compare the real Pulse Delivery matrix and percentages with the authoritative projection."
+                      - generic [ref=f1e674]: e2e-043
+                      - generic [ref=f1e685]: 2 scenarios linked
+                      - generic [ref=f1e689]:
+                        - 'generic "Executor-reported completeness: 100%. Delivery verification is separate." [ref=f1e690]': "Execution report: 100%"
+                        - 'generic "Drift: 0%" [ref=f1e691]': 0% drift
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f1e694]': "C: Codex"
+                - 'button "E2E 0.4.3 — Implement isolated delivery classifier spec Create delivery_status.py in the isolated fixture workspace after native execution admission. Implement fr_e2e_classify, tr_e2e_isolation and br_8bb896ec, covering ac_e2e_states and ac_e2e_isolation. Validate enums and bool before applying exact precedence. No imports or side effects. Commit the actual implementation, record target execution and bind proof to the five obligations. Verification is performed by the separate Test Card; progress text never counts as proof. e2e-043 Execution report: 100% 0% drift C: Codex" [ref=f1e870]':
+                  - generic [ref=f1e696]:
+                    - generic "Move card" [ref=f1e697]
+                    - generic [ref=f1e705] [cursor=pointer]:
+                      - generic [ref=f1e706]:
+                        - heading "E2E 0.4.3 — Implement isolated delivery classifier" [level=4] [ref=f1e707]
+                        - generic "Linked to a spec" [ref=f1e708]: spec
+                      - paragraph [ref=f1e712]: Create delivery_status.py in the isolated fixture workspace after native execution admission. Implement fr_e2e_classify, tr_e2e_isolation and br_8bb896ec, covering ac_e2e_states and ac_e2e_isolation. Validate enums and bool before applying exact precedence. No imports or side effects. Commit the actual implementation, record target execution and bind proof to the five obligations. Verification is performed by the separate Test Card; progress text never counts as proof.
+                      - generic [ref=f1e713]: e2e-043
+                      - generic [ref=f1e730]:
+                        - 'generic "Executor-reported completeness: 100%. Delivery verification is separate." [ref=f1e731]': "Execution report: 100%"
+                        - 'generic "Drift: 0%" [ref=f1e732]': 0% drift
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f1e735]': "C: Codex"
+            - generic [ref=f1e736]:
+              - generic [ref=f1e739]:
+                - generic [ref=f1e740]:
+                  - heading "Cancelled" [level=3] [ref=f1e741]
+                  - generic "2 total cards" [ref=f1e742]: "2"
+                - generic [ref=f1e743]:
+                  - button "0 task cards" [pressed] [ref=f1e744] [cursor=pointer]:
+                    - generic [ref=f1e745]: Task
+                    - generic [ref=f1e750]: "0"
+                  - button "1 test cards" [pressed] [ref=f1e751] [cursor=pointer]:
+                    - generic [ref=f1e752]: Test
+                    - generic [ref=f1e756]: "1"
+                  - button "1 bug cards" [pressed] [ref=f1e757] [cursor=pointer]:
+                    - generic [ref=f1e758]: Bug
+                    - generic [ref=f1e769]: "1"
+              - generic [ref=f1e770]:
+                - 'button "test E2E 0.4.3 — Fresh regression gate probe test spec Explicit operational probe of fresh post-bug Test Card lineage. No additional test result will be fabricated; the corrected fixture has already passed. Cancel this probe after verifying eligibility and dependency controls. e2e-043 gate-probe 1 scenario linked C: Codex" [ref=f1e871]':
+                  - generic [ref=f1e772]:
+                    - generic "Move card" [ref=f1e773]
+                    - generic [ref=f1e781] [cursor=pointer]:
+                      - generic [ref=f1e782]:
+                        - generic [ref=f1e783]: test
+                        - heading "E2E 0.4.3 — Fresh regression gate probe test" [level=4] [ref=f1e786]
+                        - generic "Linked to a spec" [ref=f1e787]: spec
+                      - paragraph [ref=f1e791]: Explicit operational probe of fresh post-bug Test Card lineage. No additional test result will be fabricated; the corrected fixture has already passed. Cancel this probe after verifying eligibility and dependency controls.
+                      - generic [ref=f1e792]:
+                        - generic [ref=f1e793]: e2e-043
+                        - generic [ref=f1e794]: gate-probe
+                      - generic [ref=f1e803]: 1 scenario linked
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f1e809]': "C: Codex"
+                - 'button "bug E2E 0.4.3 — Controlled bug regression gate probe spec Operational test only, not an outstanding product defect. Exercise post-delivery bug creation, eligible scenario lineage, fresh regression Test Card gate and cancellation. The real controlled fixture defect was already fixed in 8cf8509; no further implementation is planned. Minor e2e-043 gate-probe 1 test task linked C: Codex" [ref=f1e872]':
+                  - generic [ref=f1e811]:
+                    - generic "Move card" [ref=f1e812]
+                    - generic [ref=f1e820] [cursor=pointer]:
+                      - generic [ref=f1e821]:
+                        - generic [ref=f1e822]: bug
+                        - heading "E2E 0.4.3 — Controlled bug regression gate probe" [level=4] [ref=f1e832]
+                        - generic "Linked to a spec" [ref=f1e833]: spec
+                      - paragraph [ref=f1e837]: Operational test only, not an outstanding product defect. Exercise post-delivery bug creation, eligible scenario lineage, fresh regression Test Card gate and cancellation. The real controlled fixture defect was already fixed in 8cf8509; no further implementation is planned.
+                      - generic [ref=f1e838]:
+                        - generic [ref=f1e839]: Minor
+                        - generic [ref=f1e840]: e2e-043
+                        - generic [ref=f1e841]: gate-probe
+                      - generic [ref=f1e857]: 1 test task linked
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f1e863]': "C: Codex"
+          - status [ref=f1e864]
+        - generic [ref=f1e874]:
+          - generic [ref=f1e875]:
+            - generic [ref=f1e876]:
+              - combobox "Card status" [ref=f1e877]:
+                - option "Not Started" [selected]
+                - option "Cancelled"
+              - heading "R4 UI fixture — allocation needs attention" [level=2] [ref=f1e878]
+            - button "R4 UI acceptance — unvalida..." [ref=f1e883] [cursor=pointer]
+            - generic [ref=f1e888]:
+              - button "Open lineage graph" [ref=f1e889] [cursor=pointer]
+              - button "Export report" [ref=f1e894] [cursor=pointer]
+              - button "Refresh card" [ref=f1e898] [cursor=pointer]
+              - button "Expand" [ref=f1e904] [cursor=pointer]
+              - button "Close card dialog" [ref=f1e910] [cursor=pointer]
+          - generic [ref=f1e914]:
+            - tablist "Card sections" [ref=f1e915]:
+              - tab "Details" [ref=f1e916] [cursor=pointer]
+              - tab "Implementation Targets" [ref=f1e921] [cursor=pointer]
+              - tab "Delivery" [selected] [ref=f1e927] [cursor=pointer]
+              - tab "Resources" [ref=f1e932] [cursor=pointer]
+              - tab "Q&A" [ref=f1e938] [cursor=pointer]
+              - tab "Comments" [ref=f1e943] [cursor=pointer]
+              - tab "References" [ref=f1e947] [cursor=pointer]
+              - tab "Validation" [ref=f1e952] [cursor=pointer]
+              - tab "Activity" [ref=f1e956] [cursor=pointer]
+            - button "Scroll Card sections right" [ref=f1e962] [cursor=pointer]
+          - tabpanel "Delivery" [ref=f1e1000]:
+            - region "Task delivery" [ref=f1e1001]:
+              - generic [ref=f1e1002]:
+                - heading "Delivery" [level=3] [ref=f1e1003]
+                - button "How this works" [ref=f1e1004] [cursor=pointer]
+              - generic [ref=f1e1011]:
+                - status [ref=f1e1012]: Needs attention
+                - paragraph [ref=f1e1013]: Responsibility for one or more requirements needs review. Open Details to see the affected items and next steps.
+              - generic [ref=f1e1014]:
+                - generic "Delivery progress" [ref=f1e1015]:
+                  - generic [ref=f1e1016]:
+                    - term [ref=f1e1017]: Implementation
+                    - definition [ref=f1e1018]: 0%
+                    - progressbar "Implementation" [ref=f1e1019]
+                  - generic [ref=f1e1020]:
+                    - term [ref=f1e1021]: Verification
+                    - definition [ref=f1e1022]: 0%
+                    - progressbar "Verification" [ref=f1e1023]
+                - table "Implementation and verification by requirement" [ref=f1e1025]:
+                  - rowgroup [ref=f1e1026]:
+                    - row [ref=f1e1027]:
+                      - columnheader "Requirement / Objective" [ref=f1e1028]
+                      - columnheader "Implementation" [ref=f1e1029]
+                      - columnheader "Verification" [ref=f1e1030]
+                  - rowgroup [ref=f1e1031]:
+                    - row [ref=f1e1032]:
+                      - 'rowheader "Functional requirement UI acceptance fixture: this Spec must have a completed current-edition planning validation before it could be presented as approved." [ref=f1e1033]':
+                        - generic [ref=f1e1034]: Functional requirement
+                        - text: "UI acceptance fixture: this Spec must have a completed current-edition planning validation before it could be presented as approved."
+                      - cell "Pending" [ref=f1e1035]
+                      - cell "Pending" [ref=f1e1040]
+              - region "Task requirement" [ref=f1e1045]:
+                - generic [ref=f1e1046]:
+                  - button "Show details" [ref=f1e1047] [cursor=pointer]
+                  - button "Close task requirements" [expanded] [ref=f1e1051] [cursor=pointer]
+                  - button "Task requirement rules" [ref=f1e1052] [cursor=pointer]
+                - generic [ref=f1e1056]:
+                  - paragraph [ref=f1e1057]: Choose Required, Optional or Waived. A note is optional. This is the delivery requirement for this Spec edition; work status and evidence stay unchanged.
+                  - group "Tasks (up to 50)" [ref=f1e1058]:
+                    - generic [ref=f1e1061]:
+                      - checkbox "R4 UI fixture — allocation needs attention" [checked] [ref=f1e1062]
+                      - generic [ref=f1e1063]: R4 UI fixture — allocation needs attention
+                  - alert [ref=f1e1064]: The tasks' delivery scope could not be confirmed. Review the requirements and task assignments in the Spec, then reload the task requirements.
+                  - button "Review latest task requirements" [ref=f1e1065] [cursor=pointer]
+                  - button "Save task requirement" [disabled] [ref=f1e1066]
+          - button "Delete" [ref=f1e996] [cursor=pointer]

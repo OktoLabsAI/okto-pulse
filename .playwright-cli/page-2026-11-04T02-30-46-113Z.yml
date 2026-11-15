@@ -1,0 +1,193 @@
+- generic [ref=f7e3]:
+  - banner [ref=f7e4]:
+    - generic [ref=f7e5]:
+      - generic [ref=f7e6]:
+        - button "Hide sidebar" [ref=f7e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f7e12]
+        - generic [ref=f7e31]: / My Board
+      - generic [ref=f7e32]:
+        - button "Refresh board" [ref=f7e33] [cursor=pointer]
+        - button [ref=f7e40] [cursor=pointer]
+  - generic [ref=f7e13]:
+    - complementary [ref=f7e14]:
+      - generic [ref=f7e15]:
+        - generic [ref=f7e17]:
+          - heading "Boards" [level=2] [ref=f7e18]
+          - button "New board" [ref=f7e19] [cursor=pointer]
+        - navigation [ref=f7e21]:
+          - generic [ref=f7e22]:
+            - heading "My Boards" [level=3] [ref=f7e23]
+            - list [ref=f7e44]:
+              - listitem [ref=f7e45]:
+                - button "okto pulse" [ref=f7e46] [cursor=pointer]
+              - listitem [ref=f7e53]:
+                - button "My Board" [ref=f7e54] [cursor=pointer]
+              - listitem [ref=f7e61]:
+                - button "okto-grafx" [ref=f7e62] [cursor=pointer]
+    - main [ref=f7e26]:
+      - group "Board views" [ref=f7e69]:
+        - button "Stories" [ref=f7e70] [cursor=pointer]
+        - button "Ideations" [ref=f7e74] [cursor=pointer]
+        - button "Refinements" [ref=f7e77] [cursor=pointer]
+        - button "Specs" [ref=f7e82] [cursor=pointer]
+        - button "Tasks" [active] [pressed] [ref=f7e87] [cursor=pointer]
+      - generic [ref=f7e247]:
+        - generic [ref=f7e248]:
+          - textbox "Search cards…" [ref=f7e250]
+          - button "Unlinked" [ref=f7e253] [cursor=pointer]
+          - button "Filter specs..." [ref=f7e255] [cursor=pointer]
+          - button "Show archived" [ref=f7e259] [cursor=pointer]
+        - generic [ref=f7e260]:
+          - generic [ref=f7e261]:
+            - generic [ref=f7e262]:
+              - generic [ref=f7e264]:
+                - generic [ref=f7e265]:
+                  - generic [ref=f7e266]:
+                    - heading "Not Started" [level=3] [ref=f7e267]
+                    - generic "1 total cards" [ref=f7e268]: "1"
+                  - generic [ref=f7e269]:
+                    - button "0 task cards" [pressed] [ref=f7e270] [cursor=pointer]:
+                      - generic [ref=f7e271]: Task
+                      - generic [ref=f7e276]: "0"
+                    - button "1 test cards" [pressed] [ref=f7e277] [cursor=pointer]:
+                      - generic [ref=f7e278]: Test
+                      - generic [ref=f7e282]: "1"
+                    - button "0 bug cards" [pressed] [ref=f7e283] [cursor=pointer]:
+                      - generic [ref=f7e284]: Bug
+                      - generic [ref=f7e295]: "0"
+                - button "Add card to Not Started" [ref=f7e296] [cursor=pointer]
+              - 'button "test QA 0.4.3 — teste da validação e dispensa spec Teste de interface rastreável no My Board; sem evidência técnica fabricada. Delivery readiness 1 scenario linked C: Owner" [ref=f7e299]':
+                - generic [ref=f7e300]:
+                  - generic "Move card" [ref=f7e301]
+                  - generic [ref=f7e309] [cursor=pointer]:
+                    - generic [ref=f7e310]:
+                      - generic [ref=f7e311]: test
+                      - heading "QA 0.4.3 — teste da validação e dispensa" [level=4] [ref=f7e314]
+                      - generic "Linked to a spec" [ref=f7e315]: spec
+                    - paragraph [ref=f7e319]: Teste de interface rastreável no My Board; sem evidência técnica fabricada.
+                    - region "Delivery readiness" [ref=f7e320]:
+                      - generic [ref=f7e322]:
+                        - generic [ref=f7e323]: Verification
+                        - strong [ref=f7e325]: 0%
+                        - generic [ref=f7e326]:
+                          - progressbar "Verification"
+                      - button "Open delivery details" [ref=f7e327]
+                    - generic [ref=f7e328]: 1 scenario linked
+                    - 'generic "Creator: local-user" [ref=f7e334]': "C: Owner"
+            - generic [ref=f7e335]:
+              - generic [ref=f7e338]:
+                - generic [ref=f7e339]:
+                  - heading "In Progress" [level=3] [ref=f7e340]
+                  - generic "1 total cards" [ref=f7e341]: "1"
+                - generic [ref=f7e342]:
+                  - button "1 task cards" [pressed] [ref=f7e343] [cursor=pointer]:
+                    - generic [ref=f7e344]: Task
+                    - generic [ref=f7e349]: "1"
+                  - button "0 test cards" [pressed] [ref=f7e350] [cursor=pointer]:
+                    - generic [ref=f7e351]: Test
+                    - generic [ref=f7e355]: "0"
+                  - button "0 bug cards" [pressed] [ref=f7e356] [cursor=pointer]:
+                    - generic [ref=f7e357]: Bug
+                    - generic [ref=f7e368]: "0"
+              - 'button "QA 0.4.3 — tarefa de dispensa sem justificativa spec Tarefa de teste de interface para Required → Optional → Waived → Required, sem alterar evidência nem status de execução. Delivery readiness C: Owner A: Codex" [ref=f7e370]':
+                - generic [ref=f7e371]:
+                  - generic "Move card" [ref=f7e372]
+                  - generic [ref=f7e380] [cursor=pointer]:
+                    - generic [ref=f7e381]:
+                      - heading "QA 0.4.3 — tarefa de dispensa sem justificativa" [level=4] [ref=f7e382]
+                      - generic "Linked to a spec" [ref=f7e383]: spec
+                    - paragraph [ref=f7e387]: Tarefa de teste de interface para Required → Optional → Waived → Required, sem alterar evidência nem status de execução.
+                    - region "Delivery readiness" [ref=f7e388]:
+                      - generic [ref=f7e389]:
+                        - generic [ref=f7e390]:
+                          - generic [ref=f7e391]: Implementation
+                          - strong [ref=f7e393]: 0%
+                          - generic [ref=f7e394]:
+                            - progressbar "Implementation"
+                        - generic [ref=f7e395]:
+                          - generic [ref=f7e396]: Verification
+                          - strong [ref=f7e398]: 0%
+                          - generic [ref=f7e399]:
+                            - progressbar "Verification"
+                      - button "Open delivery details" [ref=f7e400]
+                    - generic [ref=f7e402]:
+                      - 'generic "Creator: local-user" [ref=f7e403]': "C: Owner"
+                      - 'generic "Assignee: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f7e404]': "A: Codex"
+            - generic [ref=f7e405]:
+              - generic [ref=f7e408]:
+                - generic [ref=f7e409]:
+                  - heading "Validation" [level=3] [ref=f7e410]
+                  - generic "0 total cards" [ref=f7e411]: "0"
+                - generic [ref=f7e412]:
+                  - button "0 task cards" [pressed] [ref=f7e413] [cursor=pointer]:
+                    - generic [ref=f7e414]: Task
+                    - generic [ref=f7e419]: "0"
+                  - button "0 test cards" [pressed] [ref=f7e420] [cursor=pointer]:
+                    - generic [ref=f7e421]: Test
+                    - generic [ref=f7e425]: "0"
+                  - button "0 bug cards" [pressed] [ref=f7e426] [cursor=pointer]:
+                    - generic [ref=f7e427]: Bug
+                    - generic [ref=f7e438]: "0"
+              - generic [ref=f7e439]: No cards
+            - generic [ref=f7e441]:
+              - generic [ref=f7e444]:
+                - generic [ref=f7e445]:
+                  - heading "Rejected" [level=3] [ref=f7e446]
+                  - generic "0 total cards" [ref=f7e447]: "0"
+                - generic [ref=f7e448]:
+                  - button "0 task cards" [pressed] [ref=f7e449] [cursor=pointer]:
+                    - generic [ref=f7e450]: Task
+                    - generic [ref=f7e455]: "0"
+                  - button "0 bug cards" [pressed] [ref=f7e456] [cursor=pointer]:
+                    - generic [ref=f7e457]: Bug
+                    - generic [ref=f7e468]: "0"
+              - generic [ref=f7e469]: No cards requiring rework
+            - generic [ref=f7e471]:
+              - generic [ref=f7e474]:
+                - generic [ref=f7e475]:
+                  - heading "On Hold" [level=3] [ref=f7e476]
+                  - generic "0 total cards" [ref=f7e477]: "0"
+                - generic [ref=f7e478]:
+                  - button "0 task cards" [pressed] [ref=f7e479] [cursor=pointer]:
+                    - generic [ref=f7e480]: Task
+                    - generic [ref=f7e485]: "0"
+                  - button "0 test cards" [pressed] [ref=f7e486] [cursor=pointer]:
+                    - generic [ref=f7e487]: Test
+                    - generic [ref=f7e491]: "0"
+                  - button "0 bug cards" [pressed] [ref=f7e492] [cursor=pointer]:
+                    - generic [ref=f7e493]: Bug
+                    - generic [ref=f7e504]: "0"
+              - generic [ref=f7e505]: No cards
+            - generic [ref=f7e507]:
+              - generic [ref=f7e510]:
+                - generic [ref=f7e511]:
+                  - heading "Done" [level=3] [ref=f7e512]
+                  - generic "0 total cards" [ref=f7e513]: "0"
+                - generic [ref=f7e514]:
+                  - button "0 task cards" [pressed] [ref=f7e515] [cursor=pointer]:
+                    - generic [ref=f7e516]: Task
+                    - generic [ref=f7e521]: "0"
+                  - button "0 test cards" [pressed] [ref=f7e522] [cursor=pointer]:
+                    - generic [ref=f7e523]: Test
+                    - generic [ref=f7e527]: "0"
+                  - button "0 bug cards" [pressed] [ref=f7e528] [cursor=pointer]:
+                    - generic [ref=f7e529]: Bug
+                    - generic [ref=f7e540]: "0"
+              - generic [ref=f7e541]: No cards
+            - generic [ref=f7e543]:
+              - generic [ref=f7e546]:
+                - generic [ref=f7e547]:
+                  - heading "Cancelled" [level=3] [ref=f7e548]
+                  - generic "0 total cards" [ref=f7e549]: "0"
+                - generic [ref=f7e550]:
+                  - button "0 task cards" [pressed] [ref=f7e551] [cursor=pointer]:
+                    - generic [ref=f7e552]: Task
+                    - generic [ref=f7e557]: "0"
+                  - button "0 test cards" [pressed] [ref=f7e558] [cursor=pointer]:
+                    - generic [ref=f7e559]: Test
+                    - generic [ref=f7e563]: "0"
+                  - button "0 bug cards" [pressed] [ref=f7e564] [cursor=pointer]:
+                    - generic [ref=f7e565]: Bug
+                    - generic [ref=f7e576]: "0"
+              - generic [ref=f7e577]: No cards
+          - status [ref=f7e579]

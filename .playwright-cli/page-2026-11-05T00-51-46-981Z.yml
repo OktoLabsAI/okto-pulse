@@ -1,0 +1,191 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - button "Hide sidebar" [ref=e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=e12]
+        - generic [ref=e31]: / My Board
+      - generic [ref=e32]:
+        - button "Refresh board" [ref=e33] [cursor=pointer]
+        - button [ref=e40] [cursor=pointer]
+  - generic [ref=e13]:
+    - complementary [ref=e14]:
+      - generic [ref=e15]:
+        - generic [ref=e17]:
+          - heading "Boards" [level=2] [ref=e18]
+          - button "New board" [ref=e19] [cursor=pointer]
+        - navigation [ref=e21]:
+          - generic [ref=e22]:
+            - heading "My Boards" [level=3] [ref=e23]
+            - list [ref=e44]:
+              - listitem [ref=e45]:
+                - button "okto pulse" [ref=e46] [cursor=pointer]
+              - listitem [ref=e53]:
+                - button "My Board" [ref=e54] [cursor=pointer]
+              - listitem [ref=e61]:
+                - button "okto-grafx" [ref=e62] [cursor=pointer]
+    - main [ref=e26]:
+      - group "Board views" [ref=e69]:
+        - button "Stories" [ref=e70] [cursor=pointer]
+        - button "Ideations" [pressed] [ref=e74] [cursor=pointer]
+        - button "Refinements" [ref=e77] [cursor=pointer]
+        - button "Specs" [ref=e82] [cursor=pointer]
+        - button "Tasks" [ref=e87] [cursor=pointer]
+      - generic [ref=e3595]:
+        - generic [ref=e3596]:
+          - generic [ref=e3597]:
+            - heading "Ideations" [level=2] [ref=e3598]
+            - generic [ref=e3599]: (2 of 2)
+          - generic [ref=e3600]:
+            - textbox "Search ideations…" [ref=e3602]
+            - group "View mode" [ref=e3603]:
+              - button "List view" [pressed] [ref=e3604] [cursor=pointer]
+              - button "Grid view" [ref=e3606] [cursor=pointer]
+            - button "New Ideation" [ref=e3612] [cursor=pointer]
+        - generic [ref=e3614]:
+          - button "All" [ref=e3615] [cursor=pointer]
+          - button "Draft" [ref=e3616] [cursor=pointer]
+          - button "Review" [ref=e3617] [cursor=pointer]
+          - button "Approved" [ref=e3618] [cursor=pointer]
+          - button "Evaluating" [ref=e3619] [cursor=pointer]
+          - button "Done" [ref=e3620] [cursor=pointer]
+          - button "No derivation" [ref=e3621] [cursor=pointer]
+          - button "Show archived" [ref=e3626] [cursor=pointer]
+        - generic [ref=e3627]:
+          - generic [ref=e3629] [cursor=pointer]:
+            - generic [ref=e3630]:
+              - generic [ref=e3631]:
+                - generic [ref=e3632]: Draft
+                - generic [ref=e3635]: Edition 1
+              - heading "R4 UI acceptance — persisted Story status and recommendations" [level=3] [ref=e3636]
+              - paragraph [ref=e3637]: "Selected Stories: - R4 UI acceptance — persisted Story status and recommendations (topic: E2E 0.4.3 — Operational consistency)"
+              - 'generic "Ambiguity: no current result · Edition 1; 0 previous results" [ref=e3639]':
+                - generic [ref=e3640]: Ambiguity
+                - strong [ref=e3641]: Not assessed
+              - generic "1 unanswered question" [ref=e3643]: 1 open Q&A
+              - generic [ref=e3647]:
+                - generic [ref=e3648]: e2e-043
+                - generic [ref=e3649]: r4-ui-acceptance
+            - generic [ref=e3650]:
+              - button "Open lineage graph" [ref=e3651]
+              - button "Archive tree" [ref=e3656]
+          - generic [ref=e3663] [cursor=pointer]:
+            - generic [ref=e3664]:
+              - generic [ref=e3665]:
+                - generic [ref=e3666]: Done
+                - generic [ref=e3670]: Large
+                - generic [ref=e3671]: Edition 1
+              - heading "E2E 0.4.3 — Operational delivery journey" [level=3] [ref=e3672]
+              - paragraph [ref=e3673]: The complete 0.4.3 operational journey needs evidence that planning lineage, native gates, delivery proof, human updates and the simplified UI agree. Success means a fully traced fixture reaches verified delivery, expected invalid operations are rejected without false success, an…
+              - generic [ref=e3674]:
+                - 'generic "Domains score: 3/5" [ref=e3675]':
+                  - text: Domains
+                  - generic [ref=e3676]: "3"
+                - 'generic "Dependencies score: 2/5" [ref=e3677]':
+                  - text: Dependencies
+                  - generic [ref=e3678]: "2"
+              - 'generic "Ambiguity: 1 (0–5) · Edition 1" [ref=e3680]':
+                - generic [ref=e3681]: Ambiguity
+                - strong [ref=e3682]: "1"
+              - generic "1 unanswered question" [ref=e3684]: 1 open Q&A
+              - generic [ref=e3688]:
+                - generic [ref=e3689]: e2e-043
+                - generic [ref=e3690]: operational-audit
+            - generic [ref=e3691]:
+              - button "Open lineage graph" [ref=e3692]
+              - button "Archive tree" [ref=e3697]
+        - generic [ref=e3703]:
+          - status [ref=e3704]: Showing 1–2 of 2 matching. 2 overall. Page 1 of 1.
+          - generic [ref=e3705]:
+            - generic [ref=e3706]:
+              - generic [ref=e3707]: Items per page
+              - combobox "Items per page" [ref=e3708]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Ideations pagination" [ref=e3709]:
+              - generic [ref=e3710]:
+                - button "Previous page" [disabled] [ref=e3711]: Previous
+                - button "Page 1" [disabled] [ref=e3712]: "1"
+                - button "Next page" [disabled] [ref=e3713]: Next
+        - generic [ref=e3715]:
+          - generic [ref=e3716]:
+            - generic [ref=e3717]:
+              - generic [ref=e3718]: Draft
+              - heading "R4 UI acceptance — persisted Story status and recommendations" [level=2] [ref=e3721]
+              - generic [ref=e3722]: Edition 1
+            - generic [ref=e3723]:
+              - button "Open lineage graph" [ref=e3724] [cursor=pointer]
+              - button "Export report" [ref=e3729] [cursor=pointer]
+              - button "Refresh" [ref=e3733] [cursor=pointer]
+              - button "Expand" [ref=e3739] [cursor=pointer]
+              - button [ref=e3745] [cursor=pointer]
+          - generic [ref=e3749]:
+            - generic [ref=e3750]: "Move to:"
+            - button "Review" [ref=e3751] [cursor=pointer]
+            - button "Cancelled" [ref=e3754] [cursor=pointer]
+          - generic [ref=e3758]:
+            - tablist "Ideation sections" [ref=e3759]:
+              - tab "Details" [ref=e3760] [cursor=pointer]
+              - tab "Resources" [ref=e3765] [cursor=pointer]
+              - tab "Q&A 1" [active] [selected] [ref=e3769] [cursor=pointer]:
+                - generic [ref=e3773]: Q&A
+                - generic [ref=e3774]: "1"
+              - tab "Evaluation" [ref=e3775] [cursor=pointer]
+              - tab "References 1" [ref=e3780] [cursor=pointer]:
+                - generic [ref=e3784]: References
+                - generic [ref=e3785]: "1"
+              - tab "Versions" [ref=e3786] [cursor=pointer]
+              - tab "Activity" [ref=e3791] [cursor=pointer]
+            - button "Scroll Ideation sections right" [ref=e3797] [cursor=pointer]
+          - tabpanel "Q&A 1" [ref=e3835]:
+            - generic [ref=e3836]:
+              - button "How recommendations work" [ref=e3838] [cursor=pointer]
+              - generic [ref=e3842]:
+                - generic [ref=e3843]:
+                  - button "Free Text" [ref=e3844] [cursor=pointer]
+                  - button "Choice / Form" [ref=e3845] [cursor=pointer]
+                - generic [ref=e3846]:
+                  - textbox "Ask a question... (type @ to mention)" [ref=e3848]
+                  - button "Ask" [disabled] [ref=e3849]
+              - generic [ref=e3853]:
+                - heading "Unanswered (1)" [level=4] [ref=e3854]
+                - generic [ref=e3856]:
+                  - generic [ref=e3857]:
+                    - generic [ref=e3858]:
+                      - generic [ref=e3859]:
+                        - paragraph [ref=e3860]: "R4 UI acceptance: how should this isolated test record be handled after the review?"
+                        - generic [ref=e3861]: single-select
+                      - generic [ref=e3862]:
+                        - generic [ref=e3864]:
+                          - text: Keep the labeled test record for traceability
+                          - generic [ref=e3865]: Recommended
+                          - generic [ref=e3866]: Preserves the saved answer and Story lineage for the acceptance audit.
+                        - generic [ref=e3868]:
+                          - text: Archive the labeled record after the review
+                          - generic [ref=e3869]: Reduces active-board clutter while retaining history.
+                      - generic [ref=e3870]: Asked by e7090eed-0fa... · 05/11/2026
+                    - button [ref=e3871] [cursor=pointer]
+                  - button "Answer this question" [ref=e3875] [cursor=pointer]
+          - generic [ref=e3831]:
+            - button "Delete ideation" [ref=e3832] [cursor=pointer]
+            - button "Close" [ref=e3834] [cursor=pointer]
+  - 'status "Cognitive pipeline working: 1 running, 1 pending" [ref=e3594]':
+    - generic [ref=e3145]: 1 running · 1 pending
+  - status [ref=e3146]:
+    - generic [ref=e3147]:
+      - generic [ref=e3148]: Consolidation in progress
+      - generic [ref=e3149]: 0%
+    - generic [ref=e3151]:
+      - generic [ref=e3152]:
+        - generic [ref=e3153]: Pending
+        - generic [ref=e3154]: "1"
+      - generic [ref=e3155]:
+        - generic [ref=e3156]: Running
+        - generic [ref=e3157]: "1"
+      - generic [ref=e3158]:
+        - generic [ref=e3159]: Processed
+        - generic [ref=e3160]: "0"
+      - generic [ref=e3161]:
+        - generic [ref=e3162]: Paused
+        - generic [ref=e3163]: "0"

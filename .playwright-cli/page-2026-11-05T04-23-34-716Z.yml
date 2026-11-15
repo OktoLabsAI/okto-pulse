@@ -1,0 +1,523 @@
+- generic [ref=f1e3]:
+  - banner [ref=f1e4]:
+    - generic [ref=f1e5]:
+      - generic [ref=f1e6]:
+        - button "Hide sidebar" [ref=f1e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f1e12]
+        - generic [ref=f1e31]: / okto pulse
+      - generic [ref=f1e32]:
+        - button "Refresh board" [ref=f1e33] [cursor=pointer]
+        - button [ref=f1e40] [cursor=pointer]
+  - generic [ref=f1e13]:
+    - complementary [ref=f1e14]:
+      - generic [ref=f1e15]:
+        - generic [ref=f1e17]:
+          - heading "Boards" [level=2] [ref=f1e18]
+          - button "New board" [ref=f1e19] [cursor=pointer]
+        - navigation [ref=f1e21]:
+          - generic [ref=f1e22]:
+            - heading "My Boards" [level=3] [ref=f1e23]
+            - list [ref=f1e44]:
+              - listitem [ref=f1e45]:
+                - button "okto pulse" [ref=f1e46] [cursor=pointer]
+              - listitem [ref=f1e53]:
+                - button "My Board" [ref=f1e54] [cursor=pointer]
+              - listitem [ref=f1e61]:
+                - button "okto-grafx" [ref=f1e62] [cursor=pointer]
+    - main [ref=f1e26]:
+      - group "Board views" [ref=f1e69]:
+        - button "Stories" [ref=f1e70] [cursor=pointer]
+        - button "Ideations" [ref=f1e74] [cursor=pointer]
+        - button "Refinements" [ref=f1e77] [cursor=pointer]
+        - button "Specs" [pressed] [ref=f1e82] [cursor=pointer]
+        - button "Tasks" [ref=f1e87] [cursor=pointer]
+      - generic [ref=f1e7454]:
+        - generic [ref=f1e7455]:
+          - generic [ref=f1e7456]:
+            - heading "Specifications" [level=2] [ref=f1e7457]
+            - generic [ref=f1e7458]: (11 of 11)
+          - generic [ref=f1e7459]:
+            - textbox "Search specs…" [ref=f1e7461]
+            - group "View mode" [ref=f1e7462]:
+              - button "List view" [pressed] [ref=f1e7463] [cursor=pointer]
+              - button "Grid view" [ref=f1e7465] [cursor=pointer]
+            - generic [ref=f1e7471]: Group specs
+            - combobox "Group specs" [ref=f1e7477]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=f1e7478] [cursor=pointer]
+        - generic [ref=f1e7480]:
+          - button "All" [ref=f1e7481] [cursor=pointer]
+          - button "Draft" [ref=f1e7482] [cursor=pointer]
+          - button "Review" [ref=f1e7483] [cursor=pointer]
+          - button "Approved" [ref=f1e7484] [cursor=pointer]
+          - button "Validated" [ref=f1e7485] [cursor=pointer]
+          - button "In Progress" [ref=f1e7486] [cursor=pointer]
+          - button "Done" [ref=f1e7487] [cursor=pointer]
+          - button "Show archived" [ref=f1e7488] [cursor=pointer]
+        - generic [ref=f1e7490]:
+          - generic [ref=f1e7491]:
+            - generic [ref=f1e7492] [cursor=pointer]:
+              - 'heading "Refinement: R3 — Bounded KG writer lifecycle and durable processing health" [level=3] [ref=f1e7499]'
+              - generic [ref=f1e7500]: (1)
+            - generic [ref=f1e7504] [cursor=pointer]:
+              - generic [ref=f1e7505]:
+                - generic [ref=f1e7506]:
+                  - generic [ref=f1e7507]: Done
+                  - generic "Edition 1" [ref=f1e7511]
+                  - status "Pending cognitive consolidation — pending" [ref=f1e7512]:
+                    - generic [ref=f1e7515]: Pending cognitive consolidation
+                - heading "R3 — Bounded KG writer lifecycle and durable processing health" [level=3] [ref=f1e7516]
+                - paragraph [ref=f1e7517]: 0.4.3 remediation of E010, E014, observed SQLite contention. Implement the approved Refinement decisions and acceptance mockup. Graph processing is successful only after durable graph publication and guarded SQL acknowledgement; contention can be retried only before side effects,…
+                - 'generic "Requirement lint: 0 (0–72) · Edition 1" [ref=f1e7519]':
+                  - generic [ref=f1e7520]: Requirement lint
+                  - strong [ref=f1e7521]: "0"
+                - generic [ref=f1e7522]:
+                  - generic [ref=f1e7523]: v0.4.3
+                  - generic [ref=f1e7524]: e2e-remediation
+                  - generic [ref=f1e7525]: r3
+              - generic [ref=f1e7526]:
+                - button "Open lineage graph" [ref=f1e7527]
+                - button "Archive tree" [ref=f1e7532]
+          - generic [ref=f1e7538]:
+            - generic [ref=f1e7539] [cursor=pointer]:
+              - 'heading "Refinement: R4 — Clear human status, recommendations and requirement-level Delivery diagnosis" [level=3] [ref=f1e7546]'
+              - generic [ref=f1e7547]: (1)
+            - generic [ref=f1e7551] [cursor=pointer]:
+              - generic [ref=f1e7552]:
+                - generic [ref=f1e7553]:
+                  - generic [ref=f1e7554]: In Progress
+                  - generic "Edition 1" [ref=f1e7558]
+                - heading "R4 — Clear human status, recommendations and requirement-level Delivery diagnosis" [level=3] [ref=f1e7559]
+                - paragraph [ref=f1e7560]: 0.4.3 remediation of E001, E003, E009, E011. Implement the approved Refinement decisions and acceptance mockup. Human task delivery communicates what was delivered, what remains and what is happening now; technical receipt integrity is automatic, and no displayed recommendation o…
+                - 'generic "Requirement lint: 0 (0–66) · Edition 1" [ref=f1e7562]':
+                  - generic [ref=f1e7563]: Requirement lint
+                  - strong [ref=f1e7564]: "0"
+                - generic [ref=f1e7565]:
+                  - generic [ref=f1e7566]: v0.4.3
+                  - generic [ref=f1e7567]: e2e-remediation
+                  - generic [ref=f1e7568]: r4
+              - generic [ref=f1e7569]:
+                - button "Open lineage graph" [ref=f1e7570]
+                - button "Archive tree" [ref=f1e7575]
+          - generic [ref=f1e7581]:
+            - generic [ref=f1e7582] [cursor=pointer]:
+              - 'heading "Refinement: R2 — Reliable source context, authenticated evidence and economical agent contracts" [level=3] [ref=f1e7589]'
+              - generic [ref=f1e7590]: (1)
+            - generic [ref=f1e7594] [cursor=pointer]:
+              - generic [ref=f1e7595]:
+                - generic [ref=f1e7596]:
+                  - generic [ref=f1e7597]: Done
+                  - generic "Edition 1" [ref=f1e7601]
+                  - status "Pending cognitive consolidation — pending" [ref=f1e7602]:
+                    - generic [ref=f1e7605]: Pending cognitive consolidation
+                - heading "R2 — Reliable source context, authenticated evidence and economical agent contracts" [level=3] [ref=f1e7606]
+                - paragraph [ref=f1e7607]: 0.4.3 remediation of E002, E005, E006, E007, E008, status-only source receipt invalidation. Implement the approved Refinement decisions and acceptance mockup. A receipt is technical evidence owned by the system/agent, not a human form requirement; historical provenance and curren…
+                - 'generic "Requirement lint: 0 (0–66) · Edition 1" [ref=f1e7609]':
+                  - generic [ref=f1e7610]: Requirement lint
+                  - strong [ref=f1e7611]: "0"
+                - generic [ref=f1e7612]:
+                  - generic [ref=f1e7613]: v0.4.3
+                  - generic [ref=f1e7614]: e2e-remediation
+                  - generic [ref=f1e7615]: r2
+              - generic [ref=f1e7616]:
+                - button "Open lineage graph" [ref=f1e7617]
+                - button "Archive tree" [ref=f1e7622]
+          - generic [ref=f1e7628]:
+            - generic [ref=f1e7629] [cursor=pointer]:
+              - 'heading "Refinement: R1 — Preserve normative responsibility and consistent lifecycle decisions" [level=3] [ref=f1e7636]'
+              - generic [ref=f1e7637]: (1)
+            - generic [ref=f1e7641] [cursor=pointer]:
+              - generic [ref=f1e7642]:
+                - generic [ref=f1e7643]:
+                  - generic [ref=f1e7644]: Done
+                  - generic "Edition 1" [ref=f1e7648]
+                  - status "Pending cognitive consolidation — pending" [ref=f1e7649]:
+                    - generic [ref=f1e7652]: Pending cognitive consolidation
+                - heading "R1 — Preserve normative responsibility and consistent lifecycle decisions" [level=3] [ref=f1e7653]
+                - paragraph [ref=f1e7654]: 0.4.3 remediation of E004, E009, E012, E013. Implement the approved Refinement decisions and acceptance mockup. Origin lineage is diagnostic context, never an implicit change to approved responsibility; no unresolved planning question may be discarded at freeze, and operational r…
+                - 'generic "Requirement lint: 0 (0–66) · Edition 1" [ref=f1e7656]':
+                  - generic [ref=f1e7657]: Requirement lint
+                  - strong [ref=f1e7658]: "0"
+                - generic [ref=f1e7659]:
+                  - generic [ref=f1e7660]: v0.4.3
+                  - generic [ref=f1e7661]: e2e-remediation
+                  - generic [ref=f1e7662]: r1
+              - generic [ref=f1e7663]:
+                - button "Open lineage graph" [ref=f1e7664]
+                - button "Archive tree" [ref=f1e7669]
+          - generic [ref=f1e7675]:
+            - generic [ref=f1e7676] [cursor=pointer]:
+              - 'heading "Refinement: Task Delivery — submissão humana automática, resumo canônico e auditoria opcional" [level=3] [ref=f1e7683]'
+              - generic [ref=f1e7684]: (1)
+            - generic [ref=f1e7688] [cursor=pointer]:
+              - generic [ref=f1e7689]:
+                - generic [ref=f1e7690]:
+                  - generic [ref=f1e7691]: Done
+                  - generic "Edition 2" [ref=f1e7695]
+                  - status "Pending cognitive consolidation — pending" [ref=f1e7696]:
+                    - generic [ref=f1e7699]: Pending cognitive consolidation
+                - heading "Task Delivery simples e recibos automáticos de submissão humana" [level=3] [ref=f1e7700]
+                - paragraph [ref=f1e7701]: Simplificar Delivery da Task com estado único e próxima ação; a aplicação gera e associa recibos de submissões humanas sem campos técnicos. Core decide autoridade/estado; Community garante transação; UI mantém Details opcional.
+                - 'generic "Requirement lint: 0 (0–8) · Edition 2" [ref=f1e7703]':
+                  - generic [ref=f1e7704]: Requirement lint
+                  - strong [ref=f1e7705]: "0"
+                - generic [ref=f1e7706]:
+                  - generic [ref=f1e7707]: task-delivery
+                  - generic [ref=f1e7708]: human-receipts
+                  - generic [ref=f1e7709]: v0.4.3
+                  - generic [ref=f1e7710]: execution-ready
+              - generic [ref=f1e7711]:
+                - button "Open lineage graph" [ref=f1e7712]
+                - button "Archive tree" [ref=f1e7717]
+          - generic [ref=f1e7723]:
+            - generic [ref=f1e7724] [cursor=pointer]:
+              - 'heading "Refinement: v0.4.3 — Progresso e entrega: protocolo MCP enxuto com rastreabilidade integral" [level=3] [ref=f1e7731]'
+              - generic [ref=f1e7732]: (1)
+            - generic [ref=f1e7736] [cursor=pointer]:
+              - generic [ref=f1e7737]:
+                - generic [ref=f1e7738]:
+                  - generic [ref=f1e7739]: Done
+                  - generic "Edition 2" [ref=f1e7743]
+                  - status "Pending cognitive consolidation — pending" [ref=f1e7744]:
+                    - generic [ref=f1e7747]: Pending cognitive consolidation
+                - 'heading "v0.4.3 — Progresso e entrega: protocolo MCP enxuto com rastreabilidade integral" [level=3] [ref=f1e7748]'
+                - paragraph [ref=f1e7749]: O modelo CardDeliveryReportInput já combina batch, relatório e transição; aceita somente in_progress e destinos validation/done, com limite total de 128 KiB e 200 referências. A associação de prova continua explícita, mas execution_submission e referências locais permitem um únic…
+                - 'generic "Requirement lint: 0 (0–96) · Edition 2" [ref=f1e7751]':
+                  - generic [ref=f1e7752]: Requirement lint
+                  - strong [ref=f1e7753]: "0"
+                - generic [ref=f1e7754]:
+                  - generic [ref=f1e7755]: pulse-simplification-2026-11
+                  - generic [ref=f1e7756]: mcp-efficiency
+                  - generic [ref=f1e7757]: traceability
+                  - generic [ref=f1e7758]: agent-resources
+              - generic [ref=f1e7759]:
+                - button "Open lineage graph" [ref=f1e7760]
+                - button "Archive tree" [ref=f1e7765]
+          - generic [ref=f1e7771]:
+            - generic [ref=f1e7772] [cursor=pointer]:
+              - 'heading "Refinement: v0.4.3 — Validation: resultado único da spec com Details" [level=3] [ref=f1e7779]'
+              - generic [ref=f1e7780]: (1)
+            - generic [ref=f1e7784] [cursor=pointer]:
+              - generic [ref=f1e7785]:
+                - generic [ref=f1e7786]:
+                  - generic [ref=f1e7787]: Done
+                  - generic "Edition 2" [ref=f1e7791]
+                  - status "Pending cognitive consolidation — pending" [ref=f1e7792]:
+                    - generic [ref=f1e7795]: Pending cognitive consolidation
+                - 'heading "v0.4.3 — Validation: resultado único da spec com Details" [level=3] [ref=f1e7796]'
+                - paragraph [ref=f1e7797]: "A composição canônica já existe em SpecPlanningReadiness: censo fixo de 17 componentes; unavailable precede blocked e ready requer o censo inteiro. read_spec_planning_readiness resolve permissões, gates nativos e resultados da edição. O React atualmente permite que qualidade succ…"
+                - 'generic "Requirement lint: 0 (0–96) · Edition 2" [ref=f1e7799]':
+                  - generic [ref=f1e7800]: Requirement lint
+                  - strong [ref=f1e7801]: "0"
+                - generic [ref=f1e7802]:
+                  - generic [ref=f1e7803]: pulse-simplification-2026-11
+                  - generic [ref=f1e7804]: ux
+                  - generic [ref=f1e7805]: validation
+                  - generic [ref=f1e7806]: core-community
+              - generic [ref=f1e7807]:
+                - button "Open lineage graph" [ref=f1e7808]
+                - button "Archive tree" [ref=f1e7813]
+          - generic [ref=f1e7819]:
+            - generic [ref=f1e7820] [cursor=pointer]:
+              - 'heading "Refinement: v0.4.3 — Delivery: entregue, em andamento e pendente em uma visão simples" [level=3] [ref=f1e7827]'
+              - generic [ref=f1e7828]: (1)
+            - generic [ref=f1e7832] [cursor=pointer]:
+              - generic [ref=f1e7833]:
+                - generic [ref=f1e7834]:
+                  - generic [ref=f1e7835]: Done
+                  - generic "Edition 5" [ref=f1e7839]
+                  - status "Pending cognitive consolidation — pending" [ref=f1e7840]:
+                    - generic [ref=f1e7843]: Pending cognitive consolidation
+                - 'heading "v0.4.3 — Delivery: entregue, em andamento e pendente em uma visão simples" [level=3] [ref=f1e7844]'
+                - paragraph [ref=f1e7845]: EffectiveDeliveryInventory resolve contribuições e obrigações globalmente; o denominador não pode ser reconstruído somando cards ou percentuais. Cards cancelados são excluídos dos responsáveis elegíveis, mas obrigações sem alocação continuam pendentes. A visão humana deve agrupar…
+                - 'generic "Requirement lint: 0 (0–96) · Edition 5" [ref=f1e7847]':
+                  - generic [ref=f1e7848]: Requirement lint
+                  - strong [ref=f1e7849]: "0"
+                - generic [ref=f1e7850]:
+                  - generic [ref=f1e7851]: pulse-simplification-2026-11
+                  - generic [ref=f1e7852]: ux
+                  - generic [ref=f1e7853]: delivery
+                  - generic [ref=f1e7854]: readiness
+              - generic [ref=f1e7855]:
+                - button "Open lineage graph" [ref=f1e7856]
+                - button "Archive tree" [ref=f1e7861]
+          - generic [ref=f1e7867]:
+            - generic [ref=f1e7868] [cursor=pointer]:
+              - 'heading "Refinement: v0.4.3 — Dispensa de tarefas: uma decisão humana, uma ação auditável" [level=3] [ref=f1e7875]'
+              - generic [ref=f1e7876]: (1)
+            - generic [ref=f1e7880] [cursor=pointer]:
+              - generic [ref=f1e7881]:
+                - generic [ref=f1e7882]:
+                  - generic [ref=f1e7883]: Done
+                  - generic "Edition 2" [ref=f1e7887]
+                  - status "Pending cognitive consolidation — pending" [ref=f1e7888]:
+                    - generic [ref=f1e7891]: Pending cognitive consolidation
+                - 'heading "v0.4.3 — Dispensa de tarefas: uma decisão humana, uma ação auditável" [level=3] [ref=f1e7892]'
+                - paragraph [ref=f1e7893]: O inventário atual distingue obrigações e contribuições; waiver legado é por obrigação/fase, não contribuição. Portanto não se pode reutilizar waiver global para task compartilhada. CardDeliveryDoDPanel escolhe submitWaiver somente quando falta permissão de registrar evidência; c…
+                - 'generic "Requirement lint: 0 (0–112) · Edition 2" [ref=f1e7895]':
+                  - generic [ref=f1e7896]: Requirement lint
+                  - strong [ref=f1e7897]: "0"
+                - generic [ref=f1e7898]:
+                  - generic [ref=f1e7899]: pulse-simplification-2026-11
+                  - generic [ref=f1e7900]: ux
+                  - generic [ref=f1e7901]: human-waiver
+                  - generic [ref=f1e7902]: traceability
+              - generic [ref=f1e7903]:
+                - button "Open lineage graph" [ref=f1e7904]
+                - button "Archive tree" [ref=f1e7909]
+          - generic [ref=f1e7915]:
+            - generic [ref=f1e7916] [cursor=pointer]:
+              - 'heading "Refinement: Readiness persistido — invalidação durável, projeção assíncrona e cobertura coerente" [level=3] [ref=f1e7923]'
+              - generic [ref=f1e7924]: (1)
+            - generic [ref=f1e7928] [cursor=pointer]:
+              - generic [ref=f1e7929]:
+                - generic [ref=f1e7930]:
+                  - generic [ref=f1e7931]: Done
+                  - generic "Edition 3" [ref=f1e7935]
+                  - status "Pending cognitive consolidation — pending" [ref=f1e7936]:
+                    - generic [ref=f1e7939]: Pending cognitive consolidation
+                - heading "Readiness persistido — invalidação durável, projeção assíncrona e cobertura coerente" [level=3] [ref=f1e7940]
+                - paragraph [ref=f1e7941]: Persistir e atualizar de forma durável os percentuais e a tabela de cobertura, com leitura rápida, geração coerente e preservação dos gates de entrega.
+                - 'generic "Requirement lint: 1 (0–42) · Edition 3" [ref=f1e7943]':
+                  - generic [ref=f1e7944]: Requirement lint
+                  - strong [ref=f1e7945]: "1"
+                - generic [ref=f1e7946]:
+                  - generic [ref=f1e7947]: performance
+                  - generic [ref=f1e7948]: delivery-readiness
+                  - generic [ref=f1e7949]: persistencia
+              - generic [ref=f1e7950]:
+                - button "Open lineage graph" [ref=f1e7951]
+                - button "Archive tree" [ref=f1e7956]
+          - generic [ref=f1e7962]:
+            - generic [ref=f1e7963] [cursor=pointer]:
+              - 'heading "Refinement: Unificação do estado de execução e migração de cards Started" [level=3] [ref=f1e7970]'
+              - generic [ref=f1e7971]: (1)
+            - generic [ref=f1e7975] [cursor=pointer]:
+              - generic [ref=f1e7976]:
+                - generic [ref=f1e7977]:
+                  - generic [ref=f1e7978]: Done
+                  - generic "Edition 2" [ref=f1e7982]
+                  - status "Pending cognitive consolidation — pending" [ref=f1e7983]:
+                    - generic [ref=f1e7986]: Pending cognitive consolidation
+                - heading "Unificar Started em In Progress — ciclo de vida e upgrade seguro" [level=3] [ref=f1e7987]
+                - paragraph [ref=f1e7988]: Simplificar o início de normal/test/bug para Not Started → In Progress; converter estados persistidos legados automaticamente, preservar autorização, gates, histórico e durabilidade, e alinhar Kanban/API/MCP. Planejamento para revisão humana; execução não iniciada.
+                - 'generic "Requirement lint: 0 (0–176) · Edition 2" [ref=f1e7990]':
+                  - generic [ref=f1e7991]: Requirement lint
+                  - strong [ref=f1e7992]: "0"
+                - generic [ref=f1e7993]:
+                  - generic [ref=f1e7994]: sdlc
+                  - generic [ref=f1e7995]: usabilidade
+                  - generic [ref=f1e7996]: status-unification
+                  - generic [ref=f1e7997]: aguarda-revisao
+              - generic [ref=f1e7998]:
+                - button "Open lineage graph" [ref=f1e7999]
+                - button "Archive tree" [ref=f1e8004]
+        - generic [ref=f1e8010]:
+          - status [ref=f1e8011]: Showing 1–11 of 11 matching. 11 overall. Page 1 of 1.
+          - generic [ref=f1e8012]:
+            - generic [ref=f1e8013]:
+              - generic [ref=f1e8014]: Items per page
+              - combobox "Items per page" [ref=f1e8015]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=f1e8016]:
+              - generic [ref=f1e8017]:
+                - button "Previous page" [disabled] [ref=f1e8018]: Previous
+                - button "Page 1" [disabled] [ref=f1e8019]: "1"
+                - button "Next page" [disabled] [ref=f1e8020]: Next
+        - dialog [ref=f1e8022]:
+          - generic [ref=f1e8023]:
+            - generic [ref=f1e8024]:
+              - generic [ref=f1e8025]: In Progress
+              - heading "R4 — Clear human status, recommendations and requirement-level Delivery diagnosis" [level=2] [ref=f1e8029]
+              - generic "Edition 1" [ref=f1e8030]
+            - generic [ref=f1e8031]:
+              - button "Open lineage graph" [ref=f1e8032] [cursor=pointer]
+              - button "Export report" [ref=f1e8037] [cursor=pointer]
+              - button "Refresh" [ref=f1e8041] [cursor=pointer]
+              - button "Expand" [ref=f1e8047] [cursor=pointer]
+              - button "Close spec" [ref=f1e8053] [cursor=pointer]
+          - generic [ref=f1e8057]:
+            - generic [ref=f1e8058]: "Move to:"
+            - button "Validated" [ref=f1e8059] [cursor=pointer]
+            - button "Draft" [ref=f1e8062] [cursor=pointer]
+            - button "Cancelled" [ref=f1e8065] [cursor=pointer]
+          - generic [ref=f1e8068]:
+            - generic [ref=f1e8069]: "From:"
+            - button "0.4.3 operational consistency — resolve the My Board E2E audit findings v33" [ref=f1e8070] [cursor=pointer]:
+              - text: 0.4.3 operational consistency — resolve the My Board E2E audit findings
+              - generic [ref=f1e8073]: v33
+            - button "R4 — Clear human status, recommendations and requirement-level Delivery diagnosis v18" [ref=f1e8076] [cursor=pointer]:
+              - text: R4 — Clear human status, recommendations and requirement-level Delivery diagnosis
+              - generic [ref=f1e8081]: v18
+          - generic [ref=f1e8083]:
+            - tablist "Spec sections" [ref=f1e8084]:
+              - tab "Details" [selected] [ref=f1e8085] [cursor=pointer]
+              - tab "Coverage" [ref=f1e8090] [cursor=pointer]
+              - tab "Project Structure 38" [ref=f1e8096] [cursor=pointer]:
+                - generic [ref=f1e8102]: Project Structure
+                - generic [ref=f1e8103]: "38"
+              - tab "Code Evidence Matrix" [ref=f1e8104] [cursor=pointer]
+              - tab "Resources" [ref=f1e8108] [cursor=pointer]
+              - tab "Requirements & Decisions" [ref=f1e8112] [cursor=pointer]
+              - tab "Tests & Verifications" [ref=f1e8117] [cursor=pointer]
+              - tab "Q&A 13" [ref=f1e8121] [cursor=pointer]:
+                - generic [ref=f1e8125]: Q&A
+                - generic [ref=f1e8126]: "13"
+              - tab "Dependencies" [ref=f1e8127] [cursor=pointer]
+              - tab "References 4" [ref=f1e8133] [cursor=pointer]:
+                - generic [ref=f1e8137]: References
+                - generic [ref=f1e8138]: "4"
+              - tab "KG Graph" [ref=f1e8139] [cursor=pointer]
+              - tab "Validation" [ref=f1e8146] [cursor=pointer]
+              - tab "Activity" [ref=f1e8151] [cursor=pointer]
+            - button "Scroll Spec sections right" [ref=f1e8157] [cursor=pointer]
+          - tabpanel "Details" [ref=f1e8161]:
+            - tabpanel [ref=f1e8162]:
+              - generic [ref=f1e8163]:
+                - generic [ref=f1e8164]:
+                  - heading "Description" [level=4] [ref=f1e8165]
+                  - generic [ref=f1e8166]:
+                    - paragraph [ref=f1e8167]: 0.4.3 remediation of E001, E003, E009, E011. Implement the approved Refinement decisions and acceptance mockup. Human task delivery communicates what was delivered, what remains and what is happening now; technical receipt integrity is automatic, and no displayed recommendation or draft status acts as an implicit user decision.
+                    - paragraph [ref=f1e8168]: "Execution boundary: source-backed planning only; passing tests and delivery are recorded separately. Three bounded implementation tasks and one Test Card cover this Spec. The R4 installed UI campaign follows successful R1/R2/R3 delivery. Existing feature/v0.4.3 work and historical My Board artifacts are preserved."
+                - generic [ref=f1e8169]:
+                  - heading "Context" [level=4] [ref=f1e8170]
+                  - generic [ref=f1e8171]:
+                    - heading "Refinement Description" [level=2] [ref=f1e8172]
+                    - paragraph [ref=f1e8173]: Focused brownfield remediation research for the completed 0.4.3 E2E audit. This draft is not approved for implementation. Complete code Evidence, research decisions, architecture/visual details and precise acceptance before saturation and derivation. All four remediation Specs must be ready before development starts.
+                    - heading "Parent Ideation Context" [level=2] [ref=f1e8174]
+                    - list [ref=f1e8175]:
+                      - listitem [ref=f1e8176]: "Title: 0.4.3 operational consistency — resolve the My Board E2E audit findings"
+                      - listitem [ref=f1e8177]: "Version: 33"
+                    - heading "Description" [level=3] [ref=f1e8178]
+                    - paragraph [ref=f1e8179]: Remediation intake authorized by the user after the My Board operational audit on 2026-11-04. Preserve the completed simplification work and trace every finding through investigation, decisions, Refinements, Specs, ordered implementation tasks and independent Test Cards. Specification of the complete scope must finish before production implementation starts.
+                    - paragraph [ref=f1e8180]: "Evidence: output/playwright/e2e-operational-043-20261104/findings.json, audit-results.json, coverage-final.json and final-proof-and-regression.json. My Board audit Spec 1bd8d124-9f06-5c3c-882d-feccd6ed22a9; Normal task 7ff2f2a5-d459-5f9e-a667-04599057883d. Initial baselines: Core bf5c7e9b8896c4b388dc3c1d894169299637063e, Community 68ad3d6dd8d66a09b356b448c633a1e2d8c4f02c, both feature/v0.4.3."
+                    - paragraph [ref=f1e8181]: "Scope inventory: E2E-001 Story invalid conversion UI; 002 contradictory assessment/resource contracts; 003 hidden recommended Q&A choices; 004 pending-Q&A lifecycle policy; 006 Target links to native scenarios; 007 non-serializable MCP validation errors; 008 transient authenticated receipt-ledger scan; 009 post-completion Bug changes normative responsibility and degrades delivery; 010 KG health and delivery failures; 011 outdated/flaky UI regressions; 012 omitted Bug regression candidate discovery; 013 validation response/persisted version disagreement; 014 cognitive commit contention and retryability disagreement. Investigate the additional Refinement investigation-outcome display observation (E2E-005, not yet confirmed)."
+                    - paragraph [ref=f1e8182]: "Prior art: existing completed Specs 65a786f1-3c8b-5bce-968e-e0c2ba6ca24e (human Delivery), 13e9c345-efec-5bae-9d60-80caf576060e (readiness), a98082d2-504f-51d3-bab0-510bb0353a48 (agent protocol). Do not reopen or silently change their frozen scope."
+                    - paragraph [ref=f1e8183]: "KG Stage 1: health graph_state=at_risk, discovery_state=healthy; triad completed. No similar Decisions or Bug Learnings. Global discovery found entity_d83955fa55bc30b1bb6146b2 (delivery matrix), entity_83646a3f5c621a0fefc04b5b (worker snapshot/publish), criterion_5ee79d5e718f249f666f8f62 (worker concurrency tests), requirement_b6dd9ecb980e0d83fcb96dae (SQLite worker protocol). These are contextual hits, not new decision authority. Health also reports 1 consolidation dead letter and 87 global outbox dead letters on this board; investigate without manually editing graph/ledgers or bypassing gates."
+                    - paragraph [ref=f1e8184]: User delegates investigation, recommended decision selection, saturation and approval. Q&A answers must identify themselves as delegated agent decisions and retain explicit recommended options. English-only product copy and authored remediation artifacts. Human submissions keep automatic application receipts; humans never supply technical receipts. No weakening of evidence, authorization, traceability or native completion gates.
+                    - heading "Agreed outcome and non-negotiable invariants" [level=2] [ref=f1e8185]
+                    - paragraph [ref=f1e8186]: Operational consistency means a command's persisted result, its response, all native gates, the Delivery summary/matrix, and downstream lineage agree for the same authorized artifact revision. A completed delivery must not lose responsibility coverage merely because a related Bug is created. An actual new scope change may invalidate evidence only through an explicit governed change.
+                    - paragraph [ref=f1e8187]: "The latest user direction is authoritative: Delivery shows status; separate implementation/verification percentages; the assigned requirement/objective matrix when applicable; Show details/Hide details and Change task requirements. Pending work is tabular: Requirement | Impacted phase | What needs attention | Next action. Preserve green check/red X Spec validation, the task modal refresh, automatic application receipts for human submissions, optional note for Required/Optional/Waived, English product copy, central Help and help at the point of use. Never revive the earlier status-only design or require technical receipts from humans."
+                    - heading "Four bounded workstreams and ownership" [level=2] [ref=f1e8188]
+                    - paragraph [ref=f1e8189]: "R1 — Lifecycle and normative responsibility integrity: E2E-004, E2E-009, E2E-012, E2E-013. Own actor-independent pending-Q&A gates, immutable origin responsibility, native regression candidate discovery, accurate persisted validation version/CAS/replay, and a conservative auditable repair of proven inherited links. R2 — Source/evidence and agent contract reliability: E2E-002, E2E-005, E2E-006, E2E-007, E2E-008. Own contextual investigation provenance across finalization, correct native scenario membership for Targets, JSON-safe bounded errors, stable authenticated ledger observation, and exact resource/tool examples without extra orchestration. R3 — KG concurrency and durable operational health: E2E-010 and E2E-014, including the transient SQLite write contention reproduced while answering this initiative's Q&A. Own writer lifecycle, short relational transactions, bounded conflict handling, cancellation/release, retryability parity and durable debt diagnostics/reconciliation. Investigate the actual lock owner and configuration errors before prescribing a fix. R4 — Human-facing clarity and regression coverage: E2E-001, E2E-003, E2E-011 and the Delivery display portion of E2E-009/E2E-005. Own valid Story status actions, truthful saved status, visible recommended choices and tradeoffs, actionable settled scope-gap text, current-vs-historical source context, component regression updates/stability, English Help and live installed-UI acceptance."
+                    - heading "Investigation evidence and confidence" [level=2] [ref=f1e8190]
+                    - paragraph [ref=f1e8191]: "Confirmed source causes: Core CardService._inherit_bug_origin_traceability directly appends the new Bug to business_rules, technical_requirements and other Spec collections (main.py:3737-3793), although the implementation plan remains unchanged. This is a command-side normative write, not an inferred graph-projection cause. Code Traceability _require_spec_entity looks up test_scenario_ids on Spec rather than its native scenario collection and assumes status=active for all child families. MCP regression preview normalizes an omitted candidate list through validate_string_list; its domain resolver distinguishes omission from an explicit set. Validation response promises expected_subject_version+1 before the shared resequencer; persisted-version behavior requires adapter-level proof. StoryModal renders the complete STORY_STATUSES catalog in a manual selector and shares draft selection state with its status presentation. Confirmed runtime discrepancy: finalized audit Refinement 950d51d8-93fc-43c8-a003-da4bd9d58e61 has version 6 and reports investigation_outcome=null, although its approved version-5 investigation and derived Spec preserve the legitimate no_relevant_existing_implementation result. Treat this as E2E-005 and distinguish frozen source context from a fresh execution attestation. Still to resolve in Refinement research: exact KG long-held writer/configuration failure, stable receipt-scan race source, and the UI test timeout mechanism. Their symptoms are confirmed; their root causes are not asserted yet. The initial Q&A write failed atomically with SQLite lock contention; a fresh read showed no partial answer and a later single retry succeeded. This is evidence of an operational failure, not permission to weaken transaction integrity."
+                    - heading "Acceptance and verification boundary" [level=2] [ref=f1e8192]
+                    - paragraph [ref=f1e8193]: Every E2E-001 through E2E-014 finding must map to a requirement, implementation task and negative/positive regression test or a source-backed non-defect disposition. E2E-005 is newly confirmed as a read/provenance discrepancy; no numbered gap may disappear. Test actual persistence and newly opened sessions, not just mocked responses. Verify MCP and REST parity, agent/human authorization, duplicate/reordered requests, version conflicts, rollback, cross-board/cross-Spec rejection, cancellation, receipt tampering, and concurrent graph/relational writers as applicable. After all four Specs are saturated and ready, execute ordered Normal tasks and separate Test Cards. Build/install the paired 0.4.3 packages on existing feature/v0.4.3 branches, restart the verified runtime without altering data, then verify My Board and screenshots. Retain the initial failed audit history and cancelled probes; append correction proof. KG closeout must commit and be queryable or remain explicitly unresolved; green unit suites alone do not close the initiative.
+                    - heading "Research deliverables and precedence" [level=2] [ref=f1e8194]
+                    - paragraph [ref=f1e8195]: "The ideation now includes Architecture Design bf9bf04d-f119-40bb-8d61-0acf8a42768f and Mockup sm_9c3ecd01 as concrete ownership and visual acceptance baselines. The focused Refinements extend these with source-backed details. R1 specifies association/authority and validation state transitions; R2 specifies evidence receipt/transport boundaries; R3 specifies lock and transaction lifecycle; R4 includes screen states for Story, Q&A, Delivery and source-context interpretation. Board design-system preflight: none configured, mandate=false; reuse existing application components and English style. Specify all four streams before modifying production code. Implementation order: shared domain/transaction contracts and graph runtime prerequisites, adapter changes, human UI/help/resources, then integration/installed E2E and cognitive closeout. Cross-Spec dependencies must be explicit and acyclic. No new product feature, gate bypass, direct database/graph repair, retrospective fabricated evidence, replacement of storage backend, or destructive queue clearing is in scope. Repairs must be narrowly proven and auditable; ambiguous legacy links remain visible for explicit review."
+                    - heading "Problem Statement" [level=3] [ref=f1e8196]
+                    - paragraph [ref=f1e8197]: The 0.4.3 E2E audit found contradictions across persisted lifecycle, normative responsibility, evidence/transport contracts, KG processing and human UI. These produce retroactive delivery degradation, misleading status, failed evidence operations, unresolved clarifications and unreliable closeout despite passing isolated tests.
+                    - heading "Proposed Approach" [level=3] [ref=f1e8198]
+                    - paragraph [ref=f1e8199]: "Deliver four traceable remediation Specs from focused brownfield Refinements: lifecycle/responsibility; source/evidence/agent contracts; KG concurrency and durable health; human UI/help and regression coverage. Resolve every audit finding with source-backed research, explicit recommended decisions, architecture/mockups and negative/positive scenarios before development. Preserve the approved Delivery matrix layout and all traceability/authority gates; verify the installed paired 0.4.3 release in My Board."
+                    - heading "Scope Assessment" [level=3] [ref=f1e8200]
+                    - list [ref=f1e8201]:
+                      - listitem [ref=f1e8202]: "Domains: 3/5"
+                      - listitem [ref=f1e8203]: "Ambiguity: 1/5"
+                      - listitem [ref=f1e8204]: "Dependencies: 3/5"
+                      - listitem [ref=f1e8205]: "Complexity: large"
+                    - heading "Q&A Decisions" [level=3] [ref=f1e8206]
+                    - paragraph [ref=f1e8207]:
+                      - strong [ref=f1e8208]: "Q:"
+                      - text: How should corrections be organized while preserving the existing 0.4.3 simplification work?
+                      - strong [ref=f1e8209]: "A:"
+                      - text: "Delegated agent decision under the user's explicit authorization to saturate, approve, derive, implement and test autonomously. Recommended option selected: One remediation initiative with four bounded Refinements and Specs. Rationale: Groups lifecycle/responsibility, evidence/contracts, KG concurrency, and human UI; one coverage matrix prevents orphan findings. This records Codex's decision; it does not impersonate a human approval or grant a human-only waiver."
+                    - paragraph [ref=f1e8210]:
+                      - strong [ref=f1e8211]: "Q:"
+                      - text: What authority should a Bug created from a completed task have over the originating Spec?
+                      - strong [ref=f1e8212]: "A:"
+                      - text: "Delegated agent decision under the user's explicit autonomous authorization. Recommended option selected: Preserve approved responsibilities; record Bug lineage separately. Rationale: Origin and regression links remain traceable without changing normative allocation, percentages, or frozen scope. Codex is the recorded actor; no human-only authority is assumed."
+                    - paragraph [ref=f1e8213]:
+                      - strong [ref=f1e8214]: "Q:"
+                      - text: How should pending Q&A affect a planning artifact's closeout?
+                      - strong [ref=f1e8215]: "A:"
+                      - text: "Delegated agent decision under the user's explicit autonomous authorization. Recommended option selected: Require resolution for both humans and agents. Rationale: An open clarification cannot disappear at derivation; unresolved items must be answered or explicitly disposed through an auditable supported action before freezing. Codex is the recorded actor; no human-only authority is assumed."
+                    - paragraph [ref=f1e8216]:
+                      - strong [ref=f1e8217]: "Q:"
+                      - text: Which Delivery layout is the acceptance baseline for remediation?
+                      - strong [ref=f1e8218]: "A:"
+                      - text: "Delegated agent decision under the user's explicit autonomous authorization. Recommended option selected: Keep status, implementation/verification percentages, requirement matrix, and Details buttons. Rationale: Matches the latest explicit user direction; clarify failures per requirement and reserve loading text for actual computation. Codex is the recorded actor; no human-only authority is assumed."
+                    - paragraph [ref=f1e8219]:
+                      - strong [ref=f1e8220]: "Q:"
+                      - text: How should authenticated evidence behave when a receipt directory changes during a scan?
+                      - strong [ref=f1e8221]: "A:"
+                      - text: "Delegated agent decision under the user's explicit autonomous authorization. Recommended option selected: Bounded re-observation of legitimate concurrent publication with integrity checks intact. Rationale: Avoid unnecessary agent resubmission while continuing to reject tampering, invalid files, symlinks, incomplete receipts, and exhausted retries. Codex is the recorded actor; no human-only authority is assumed."
+                    - paragraph [ref=f1e8222]:
+                      - strong [ref=f1e8223]: "Q:"
+                      - text: How should KG contention and unhealthy delivery be addressed?
+                      - strong [ref=f1e8224]: "A:"
+                      - text: "Delegated agent decision under the user's explicit autonomous authorization. Recommended option selected: Fix writer ownership and bounded retry; preserve failed records and truthful health. Rationale: Find the actual blocking path, prevent starvation, reconcile only through authorized durable processing, and verify commit plus queries. Codex is the recorded actor; no human-only authority is assumed."
+                    - paragraph [ref=f1e8225]:
+                      - strong [ref=f1e8226]: "Q:"
+                      - text: What should happen to already affected audit data?
+                      - strong [ref=f1e8227]: "A:"
+                      - text: "Delegated agent decision under the user's explicit autonomous authorization. Recommended option selected: Use a narrowly scoped auditable repair with preview, authority fences, and idempotence. Rationale: Repair only links proven to be automatic origin inheritance, retain historical evidence, and preserve explicit user-authored responsibility. Codex is the recorded actor; no human-only authority is assumed."
+                    - paragraph [ref=f1e8228]:
+                      - strong [ref=f1e8229]: "Q:"
+                      - text: What is the release acceptance criterion?
+                      - strong [ref=f1e8230]: "A:"
+                      - text: "Delegated agent decision under the user's explicit autonomous authorization. Recommended option selected: Every finding has a verified disposition and the installed My Board journey passes. Rationale: Includes targeted regressions, transport parity, real UI, English Help/resources, authenticated proof, and no unacknowledged KG failure. Codex is the recorded actor; no human-only authority is assumed."
+                    - heading "In Scope" [level=2] [ref=f1e8231]
+                    - list [ref=f1e8232]:
+                      - listitem [ref=f1e8233]: "E2E-001: Story status selector offers only legitimate manual transitions; Converted comes from native conversion; header reflects persisted status and errors are clear."
+                      - listitem [ref=f1e8234]: "E2E-003: display native Recommended badge and tradeoff in every relevant Q&A preview, answer and read surface; no automatic selection/submission."
+                      - listitem [ref=f1e8235]: "E2E-009 UI: settled scope mismatch is actionable Delivery needs attention, distinct from actual Checking delivery, unavailable and historical status."
+                      - listitem [ref=f1e8236]: "E2E-011: update outdated regression assertions for required Delivery percentages/matrix; diagnose the intermittent multi-task selection timeout without deleting coverage."
+                      - listitem [ref=f1e8237]: "E2E-005 UI: show finalized source investigation provenance honestly; maintain English central/contextual Help and installed My Board E2E."
+                    - heading "Out of Scope" [level=2] [ref=f1e8238]
+                    - list [ref=f1e8239]:
+                      - listitem [ref=f1e8240]: Weakening native gates, receipt integrity, authorization or human-only waiver authority.
+                      - listitem [ref=f1e8241]: Direct storage mutation, destructive queue cleanup, graph rebuild or replacing the storage backend.
+                      - listitem [ref=f1e8242]: Reopening or rewriting prior completed product Specs; unrelated feature expansion.
+                    - heading "Analysis" [level=2] [ref=f1e8243]
+                    - paragraph [ref=f1e8244]: This refinement implements the latest user-approved hierarchy, not earlier status-only sketches. Delivery contains (1) delivery status, (2) independent Implementation and Verification percentages, (3) assigned requirement/objective matrix when applicable, (4) Show details/Hide details and Change task requirements. Pending verification is explained in a table naming the affected requirement, phase, concrete issue and next action. There is no duplicate Verification and pending work toggle, no local refresh competing with the task modal refresh, and no human receipt field. The application generates the human receipt atomically; agents retain their authenticated evidence requirements.
+                    - paragraph [ref=f1e8245]: E2E-009 UI — task_delivery_summary currently routes unknown/incomplete responsibility through updating_or_unknown/assessment_incomplete before examining settled failures. The My Board allocation mismatch therefore appears indefinitely as Checking delivery despite a stable TR/BR conflict. Add canonical reason/state semantics that distinguish active assessment, unavailable assessment and settled actionable conflict. The UI does not independently invent approval. Delivery needs attention names affected TR/BR rows and actions. A historic Done status is shown as history, not proof of current readiness. Unknown denominator remains unknown/N/A rather than 0 or 100; implementation and verification never average each other. Pending work remains visible in the matrix/table and details retain technical provenance on demand.
+                    - paragraph [ref=f1e8246]: E2E-001 — StoryModal renders the complete status catalog into a manual selector and displays local editable status as if persisted. Converted is a native-conversion outcome. Manual choices must follow the lifecycle contract; conversion remains a separate valid Ready action. Separate saved header status from draft selection, disable duplicate submissions while pending, and restore/display the actual saved state with a clear English error on rejection. Native conversion returns the linked Ideation once; repeated actions do not create duplicates. Cover successful edit, invalid/stale transition, request failure, keyboard selection, reopen and converted read-only display.
+                    - paragraph [ref=f1e8247]: E2E-003 — IdeationModal, RefinementModal and SpecModal have repeated preview, answer and read choice renderers that output opt.label only. CardModal poll renderer also omits recommended/tradeoff. Add a shared accessible choice-content component with visible Recommended badge and tradeoff text, preserving existing selection/vote semantics, IDs, user labels and legacy choices. A recommendation must not preselect or submit an answer. Use native metadata, not label string parsing. Test all four surfaces, read-only answered state, unanswered state, multiple choice, legacy no-metadata and long text. Existing authored Portuguese content is preserved; application labels/help remain English.
+                    - paragraph [ref=f1e8248]: E2E-005 UI — finalized Source Context shows Investigation outcome not recorded because it receives the wrong live-version projection. R2 fixes the source; UI then distinguishes frozen approval context from current source evidence and shows provenance/version. No local fallback that fabricates receipt availability. Revoked/expired current evidence remains explicit.
+                    - paragraph [ref=f1e8249]: "E2E-011 — prior frontend run had 305 passed and 5 failures: four assertions enforce the retired no-Delivery-progress-bars design; one multi-task selection timeout passed in isolation. Update assertions to test the current independent percentages and matrix, do not remove desired UI. Investigate request completion, modal lifecycle and shared mock cleanup for the intermittent test; avoid a blanket timeout increase. Regression coverage includes settled conflict, actively loading, unavailable, partial, complete, N/A, no scope, test-only, multiple-task selection, requirement selection, human submission rollback and reopened modal refresh."
+                    - paragraph [ref=f1e8250]: "Mockup: inherited native sm_9c3ecd01 and local acceptance-mockup.html show a coherent four-row example (75% implementation, 50% verification), Delivery needs attention, requirement-linked diagnosis, Details and requirements controls, Story valid status options and recommended Q&A. It is an acceptance illustration, not live delivery evidence. Architecture is inherited and resource-validation passed. Final implementation must use existing product components/styles and preserve accessible labels/focus rather than copy illustrative static HTML."
+                    - paragraph [ref=f1e8251]: "Central Help and contextual Help at Delivery, Q&A, Story conversion and Source Context explain these rules in English: what is delivered/pending/running, each percentage and N/A, why a requirement blocks, how Change task requirements works with genuine human authority, automatic human receipts, agent evidence ownership, saved versus pending status, and recommendation versus answered decision. Keep Spec validation's visible check for success and X for failure, one simple overall verdict with Details preserving underlying assessments. No duplicated technical policy wall in the default Delivery view."
+                    - paragraph [ref=f1e8252]: "Stage 2 topic query returned no direct match; preserve canonical summary and atomicity decisions decision_13c64bc4458c2fed84d1d1a2 and decision_ad5d719086c969a10f4e380d whose contradiction/alternative checks were completed. New UI choices are in answered Q&A/RDL. Dependency: canonical R1/R2 status/source semantics before final integration; R3 healthy workers before installed E2E conclusions."
+                    - paragraph [ref=f1e8253]: Acceptance requires focused frontend tests, backend contract checks, production build, paired version/branch verification, reinstall and runtime restart, then direct browser interaction in active My Board. Capture screenshots of success/failure Spec validation, Delivery summary/details/table, human submission without receipt input, requirement change, Q&A recommendation and Story conversion/error. Verify network/console errors and persistence after refresh/reopen, preserve prior audit fixtures and do not claim UI success from unit tests alone.
+                    - paragraph [ref=f1e8254]: evidence:code_evidence_ceccfdef429741229e3e1254edcb0ce8 evidence:code_evidence_6201322d3d214497be062a389524f29c evidence:code_evidence_96a712d09cc84f09aa70644886e48e27 evidence:code_evidence_c7f5cb74ec654541bfdaf320ff39e2af evidence:code_evidence_4b236ad6f5be4050b09b4b7b02c11907 evidence:code_evidence_bdfeb859044849bc88674a4fe7c72ed0
+                    - heading "Decisions" [level=2] [ref=f1e8255]
+                    - list [ref=f1e8256]:
+                      - listitem [ref=f1e8257]: "New decision: a settled responsibility mismatch is Delivery needs attention with actionable rows; a running refresh is Checking delivery; unavailable evidence is explicit unknown rather than 0% or success. Existing Done history does not manufacture current proof."
+                      - listitem [ref=f1e8258]: "New decision: derive options from the shared lifecycle contract, preserve Ready conversion action and prevent duplicate converted entities on repeat. Test keyboard, error recovery, reopen and native conversion."
+                      - listitem [ref=f1e8259]: "New decision: render recommended metadata and tradeoff as English UI affordances; no answer is automatically selected or submitted. Legacy string-only choices remain readable and recommendations do not imply accepted decisions."
+                      - listitem [ref=f1e8260]: "New decision: replace obsolete assertions with semantic user-flow checks, investigate asynchronous selection flakiness through deterministic request completion, and verify installed My Board UI after paired 0.4.3 deployment. Preserve Spec validation check/X and current receipts/waiver policies."
+                    - heading "Spec execution decisions and acceptance bounds" [level=2] [ref=f1e8261]
+                    - paragraph [ref=f1e8262]: "Presentation vocabulary: Delivered, In progress, Pending and Needs attention describe settled delivery; Checking describes a request/assessment currently in flight. Unknown/unavailable has its own readable state and no inferred percentage. Percentages use canonical numerator/denominator; an unavailable denominator displays an em dash with an accessible explanation. Requirement impact rows use Requirement, Implementation, Verification, What needs attention and Next action (or an equivalent combined cause/action cell on narrow screens). Do not infer state solely from color/icon. Recommended is visible text; no choice is preselected by metadata. Human requirement rationale remains optional. The complete live acceptance campaign uses My Board, preserves prior artifacts, and captures default view, expanded details, failure/pending rows and success/failure Spec verdicts."
+                    - heading "Implementation precedence and planning provenance" [level=2] [ref=f1e8263]
+                    - paragraph [ref=f1e8264]: "Project Structure is applicable for edition 1 and identifies existing owners and planned regression files. Tasks d66c6681-16db-5b28-ac7a-f9061e198d8e, 33d7e28b-57be-5364-9273-826f5ac22ee7, 2b6d96a0-bb50-5a3b-8671-6f75faa6697b implement explicit whole-requirement contributions. Execution order is by implementation checkpoint, not by Normal-task Done: start Test Card 99680ca4-6137-512b-ba0e-422bfb321d6f alongside the three implementation tasks, implement the first two areas, integrate the third, and publish each current scenario proof before Normal-task completion. No intra-Spec Done dependency is imposed because the blocking delivery gate consumes cross-card verification and would otherwise create a completion deadlock. R1, R2 and R3 are native prerequisite Specs; the installed UI campaign starts after their Done state. All inherited Code Evidence is linked as motivates, not implementation proof. The known status-only Refinement receipt materiality defect is explicitly tracked in R2; no gate is skipped and no source receipt is represented as a delivered result."
+                    - heading "Stage 3 decision research" [level=2] [ref=f1e8265]
+                    - paragraph [ref=f1e8266]: "Reviewed each material FR and its governing BR against the KG. Relevant inherited decisions: decision_c3f7a3e32918af43e4bd1c42 (New decision: a settled responsibility mismatch is Delivery needs attention with actionable rows; a running refresh is C); decision_fb5e9bc9b3969fe0d8bde47e (New decision: derive options from the shared lifecycle contract, preserve Ready conversion action and prevent duplicate ); decision_650613b6a9b698203fa96e6f (New decision: render recommended metadata and tradeoff as English UI affordances; no answer is automatically selected or); decision_c3f7a3e32918af43e4bd1c42 (New decision: a settled responsibility mismatch is Delivery needs attention with actionable rows; a running refresh is C). These support the selected direction; no contradictory decision pair was returned. Current draft deterministic Constraint projection is checked separately; missing graph rows are an operational observation, never fabricated IDs or proof of absent constraints."
+                - generic [ref=f1e8267]:
+                  - generic [ref=f1e8268]: v0.4.3
+                  - generic [ref=f1e8269]: e2e-remediation
+                  - generic [ref=f1e8270]: r4
+                - region "Task Validation Gate" [ref=f1e8271]:
+                  - heading "Task Validation Gate" [level=4] [ref=f1e8272]
+                  - paragraph [ref=f1e8273]: Controls whether cards derived from this spec must pass Task Validation. These settings do not change the Spec Validation Gate.
+                  - generic [ref=f1e8274]:
+                    - generic [ref=f1e8275]:
+                      - term [ref=f1e8276]: Validation
+                      - definition [ref=f1e8277]: Board default
+                    - generic [ref=f1e8278]:
+                      - term [ref=f1e8279]: Minimum confidence
+                      - definition [ref=f1e8280]: Board default
+                    - generic [ref=f1e8281]:
+                      - term [ref=f1e8282]: Minimum completeness
+                      - definition [ref=f1e8283]: Board default
+                    - generic [ref=f1e8284]:
+                      - term [ref=f1e8285]: Maximum drift
+                      - definition [ref=f1e8286]: Board default
+          - generic [ref=f1e8287]:
+            - button "Delete spec" [ref=f1e8288] [cursor=pointer]
+            - button "Close" [ref=f1e8290] [cursor=pointer]

@@ -1,0 +1,311 @@
+- generic [ref=f1e3]:
+  - banner [ref=f1e4]:
+    - generic [ref=f1e5]:
+      - generic [ref=f1e6]:
+        - button "Hide sidebar" [ref=f1e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f1e12]
+        - generic [ref=f1e31]: / My Board
+      - generic [ref=f1e32]:
+        - button "Refresh board" [ref=f1e33] [cursor=pointer]
+        - button [ref=f1e40] [cursor=pointer]
+  - generic [ref=f1e13]:
+    - complementary [ref=f1e14]:
+      - generic [ref=f1e15]:
+        - generic [ref=f1e17]:
+          - heading "Boards" [level=2] [ref=f1e18]
+          - button "New board" [ref=f1e19] [cursor=pointer]
+        - navigation [ref=f1e21]:
+          - generic [ref=f1e22]:
+            - heading "My Boards" [level=3] [ref=f1e23]
+            - list [ref=f1e44]:
+              - listitem [ref=f1e45]:
+                - button "okto pulse" [ref=f1e46] [cursor=pointer]
+              - listitem [ref=f1e53]:
+                - button "My Board" [ref=f1e54] [cursor=pointer]
+              - listitem [ref=f1e61]:
+                - button "okto-grafx" [ref=f1e62] [cursor=pointer]
+    - main [ref=f1e26]:
+      - group "Board views" [ref=f1e69]:
+        - button "Stories" [ref=f1e70] [cursor=pointer]
+        - button "Ideations" [ref=f1e74] [cursor=pointer]
+        - button "Refinements" [ref=f1e77] [cursor=pointer]
+        - button "Specs" [ref=f1e82] [cursor=pointer]
+        - button "Tasks" [pressed] [ref=f1e87] [cursor=pointer]
+      - generic [ref=f1e2947]:
+        - generic [ref=f1e2948]:
+          - textbox "Search cards…" [ref=f1e2950]
+          - button "Unlinked" [ref=f1e2953] [cursor=pointer]
+          - button "Filter specs..." [ref=f1e2955] [cursor=pointer]
+          - button "Show archived" [ref=f1e2959] [cursor=pointer]
+        - generic [ref=f1e2960]:
+          - generic [ref=f1e2961]:
+            - generic [ref=f1e2962]:
+              - generic [ref=f1e2964]:
+                - generic [ref=f1e2965]:
+                  - generic [ref=f1e2966]:
+                    - heading "Not Started" [level=3] [ref=f1e2967]
+                    - generic "2 total cards" [ref=f1e2968]: "2"
+                  - generic [ref=f1e2969]:
+                    - button "1 task cards" [pressed] [ref=f1e2970] [cursor=pointer]:
+                      - generic [ref=f1e2971]: Task
+                      - generic [ref=f1e2976]: "1"
+                    - button "1 test cards" [pressed] [ref=f1e2977] [cursor=pointer]:
+                      - generic [ref=f1e2978]: Test
+                      - generic [ref=f1e2982]: "1"
+                    - button "0 bug cards" [pressed] [ref=f1e2983] [cursor=pointer]:
+                      - generic [ref=f1e2984]: Bug
+                      - generic [ref=f1e2995]: "0"
+                - button "Add card to Not Started" [ref=f1e2996] [cursor=pointer]
+              - generic [ref=f1e2998]:
+                - 'button "test [TEST] R4 UI fixture — unmet approval criterion spec Isolated presentation fixture for a genuine failed observation: the linked criterion requires planning approval, while this labeled Spec is deliberately Draft and unapproved. Retain the observed unmet prerequisite and its requirement-specific cause. This is neither a product defect nor an implementation/delivery claim. e2e-043 r4-ui-acceptance intentional-incomplete-fixture 1 scenario linked C: Codex" [ref=f1e3532]':
+                  - generic [ref=f1e3000]:
+                    - generic "Move card" [ref=f1e3001]
+                    - generic [ref=f1e3009] [cursor=pointer]:
+                      - generic [ref=f1e3010]:
+                        - generic [ref=f1e3011]: test
+                        - heading "[TEST] R4 UI fixture — unmet approval criterion" [level=4] [ref=f1e3014]
+                        - generic "Linked to a spec" [ref=f1e3015]: spec
+                      - paragraph [ref=f1e3019]: "Isolated presentation fixture for a genuine failed observation: the linked criterion requires planning approval, while this labeled Spec is deliberately Draft and unapproved. Retain the observed unmet prerequisite and its requirement-specific cause. This is neither a product defect nor an implementation/delivery claim."
+                      - generic [ref=f1e3020]:
+                        - generic [ref=f1e3021]: e2e-043
+                        - generic [ref=f1e3022]: r4-ui-acceptance
+                        - generic [ref=f1e3023]: intentional-incomplete-fixture
+                      - generic [ref=f1e3032]: 1 scenario linked
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f1e3038]': "C: Codex"
+                - 'button "R4 UI fixture — allocation needs attention spec Isolated presentation fixture. This Draft planning requirement is associated with the task but intentionally lacks a completed implementation allocation. A settled assessment must identify the unresolved allocation and next planning action; it must not pretend a request is still loading or grant implementation credit. e2e-043 r4-ui-acceptance intentional-incomplete-fixture C: Codex" [ref=f1e3533]':
+                  - generic [ref=f1e3040]:
+                    - generic "Move card" [ref=f1e3041]
+                    - generic [ref=f1e3049] [cursor=pointer]:
+                      - generic [ref=f1e3050]:
+                        - heading "R4 UI fixture — allocation needs attention" [level=4] [ref=f1e3051]
+                        - generic "Linked to a spec" [ref=f1e3052]: spec
+                      - paragraph [ref=f1e3056]: Isolated presentation fixture. This Draft planning requirement is associated with the task but intentionally lacks a completed implementation allocation. A settled assessment must identify the unresolved allocation and next planning action; it must not pretend a request is still loading or grant implementation credit.
+                      - generic [ref=f1e3057]:
+                        - generic [ref=f1e3058]: e2e-043
+                        - generic [ref=f1e3059]: r4-ui-acceptance
+                        - generic [ref=f1e3060]: intentional-incomplete-fixture
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f1e3076]': "C: Codex"
+            - generic [ref=f1e3077]:
+              - generic [ref=f1e3080]:
+                - generic [ref=f1e3081]:
+                  - heading "In Progress" [level=3] [ref=f1e3082]
+                  - generic "2 total cards" [ref=f1e3083]: "2"
+                - generic [ref=f1e3084]:
+                  - button "1 task cards" [pressed] [ref=f1e3085] [cursor=pointer]:
+                    - generic [ref=f1e3086]: Task
+                    - generic [ref=f1e3091]: "1"
+                  - button "1 test cards" [pressed] [ref=f1e3092] [cursor=pointer]:
+                    - generic [ref=f1e3093]: Test
+                    - generic [ref=f1e3097]: "1"
+                  - button "0 bug cards" [pressed] [ref=f1e3098] [cursor=pointer]:
+                    - generic [ref=f1e3099]: Bug
+                    - generic [ref=f1e3110]: "0"
+              - generic [ref=f1e3111]:
+                - 'button "QA 0.4.3 — tarefa de dispensa sem justificativa spec Tarefa de teste de interface para Required → Optional → Waived → Required, sem alterar evidência nem status de execução. C: Owner A: Codex" [active] [ref=f1e3534]':
+                  - generic [ref=f1e3113]:
+                    - generic "Move card" [ref=f1e3114]
+                    - generic [ref=f1e3122] [cursor=pointer]:
+                      - generic [ref=f1e3123]:
+                        - heading "QA 0.4.3 — tarefa de dispensa sem justificativa" [level=4] [ref=f1e3124]
+                        - generic "Linked to a spec" [ref=f1e3125]: spec
+                      - paragraph [ref=f1e3129]: Tarefa de teste de interface para Required → Optional → Waived → Required, sem alterar evidência nem status de execução.
+                      - generic [ref=f1e3144]:
+                        - 'generic "Creator: local-user" [ref=f1e3145]': "C: Owner"
+                        - 'generic "Assignee: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f1e3146]': "A: Codex"
+                - 'button "test QA 0.4.3 — teste da validação e dispensa spec Teste de interface rastreável no My Board; sem evidência técnica fabricada. 1 scenario linked C: Owner" [ref=f1e3535]':
+                  - generic [ref=f1e3148]:
+                    - generic "Move card" [ref=f1e3149]
+                    - generic [ref=f1e3157] [cursor=pointer]:
+                      - generic [ref=f1e3158]:
+                        - generic [ref=f1e3159]: test
+                        - heading "QA 0.4.3 — teste da validação e dispensa" [level=4] [ref=f1e3162]
+                        - generic "Linked to a spec" [ref=f1e3163]: spec
+                      - paragraph [ref=f1e3167]: Teste de interface rastreável no My Board; sem evidência técnica fabricada.
+                      - generic [ref=f1e3176]: 1 scenario linked
+                      - 'generic "Creator: local-user" [ref=f1e3182]': "C: Owner"
+            - generic [ref=f1e3183]:
+              - generic [ref=f1e3186]:
+                - generic [ref=f1e3187]:
+                  - heading "Validation" [level=3] [ref=f1e3188]
+                  - generic "0 total cards" [ref=f1e3189]: "0"
+                - generic [ref=f1e3190]:
+                  - button "0 task cards" [pressed] [ref=f1e3191] [cursor=pointer]:
+                    - generic [ref=f1e3192]: Task
+                    - generic [ref=f1e3197]: "0"
+                  - button "0 test cards" [pressed] [ref=f1e3198] [cursor=pointer]:
+                    - generic [ref=f1e3199]: Test
+                    - generic [ref=f1e3203]: "0"
+                  - button "0 bug cards" [pressed] [ref=f1e3204] [cursor=pointer]:
+                    - generic [ref=f1e3205]: Bug
+                    - generic [ref=f1e3216]: "0"
+              - generic [ref=f1e3217]: No cards
+            - generic [ref=f1e3219]:
+              - generic [ref=f1e3222]:
+                - generic [ref=f1e3223]:
+                  - heading "Rejected" [level=3] [ref=f1e3224]
+                  - generic "0 total cards" [ref=f1e3225]: "0"
+                - generic [ref=f1e3226]:
+                  - button "0 task cards" [pressed] [ref=f1e3227] [cursor=pointer]:
+                    - generic [ref=f1e3228]: Task
+                    - generic [ref=f1e3233]: "0"
+                  - button "0 bug cards" [pressed] [ref=f1e3234] [cursor=pointer]:
+                    - generic [ref=f1e3235]: Bug
+                    - generic [ref=f1e3246]: "0"
+              - generic [ref=f1e3247]: No cards requiring rework
+            - generic [ref=f1e3249]:
+              - generic [ref=f1e3252]:
+                - generic [ref=f1e3253]:
+                  - heading "On Hold" [level=3] [ref=f1e3254]
+                  - generic "0 total cards" [ref=f1e3255]: "0"
+                - generic [ref=f1e3256]:
+                  - button "0 task cards" [pressed] [ref=f1e3257] [cursor=pointer]:
+                    - generic [ref=f1e3258]: Task
+                    - generic [ref=f1e3263]: "0"
+                  - button "0 test cards" [pressed] [ref=f1e3264] [cursor=pointer]:
+                    - generic [ref=f1e3265]: Test
+                    - generic [ref=f1e3269]: "0"
+                  - button "0 bug cards" [pressed] [ref=f1e3270] [cursor=pointer]:
+                    - generic [ref=f1e3271]: Bug
+                    - generic [ref=f1e3282]: "0"
+              - generic [ref=f1e3283]: No cards
+            - generic [ref=f1e3285]:
+              - generic [ref=f1e3288]:
+                - generic [ref=f1e3289]:
+                  - heading "Done" [level=3] [ref=f1e3290]
+                  - generic "2 total cards" [ref=f1e3291]: "2"
+                - generic [ref=f1e3292]:
+                  - button "1 task cards" [pressed] [ref=f1e3293] [cursor=pointer]:
+                    - generic [ref=f1e3294]: Task
+                    - generic [ref=f1e3299]: "1"
+                  - button "1 test cards" [pressed] [ref=f1e3300] [cursor=pointer]:
+                    - generic [ref=f1e3301]: Test
+                    - generic [ref=f1e3305]: "1"
+                  - button "0 bug cards" [pressed] [ref=f1e3306] [cursor=pointer]:
+                    - generic [ref=f1e3307]: Bug
+                    - generic [ref=f1e3318]: "0"
+              - generic [ref=f1e3319]:
+                - 'button "test [TEST] E2E 0.4.3 — Verify delivery status and isolation spec Implement test_delivery_status.py using unittest. Execute ts_4e90347d and ts_22468e79 against the exact committed helper revision: exhaustive 18 combinations, invalid enums, non-bool flags and AST no-import isolation. Preserve failed run evidence and rerun after correction. Record authenticated results and associate only the implementation actually tested. Then compare the real Pulse Delivery matrix and percentages with the authoritative projection. e2e-043 2 scenarios linked Execution report: 100% 0% drift C: Codex" [ref=f1e3536]':
+                  - generic [ref=f1e3321]:
+                    - generic "Move card" [ref=f1e3322]
+                    - generic [ref=f1e3330] [cursor=pointer]:
+                      - generic [ref=f1e3331]:
+                        - generic [ref=f1e3332]: test
+                        - heading "[TEST] E2E 0.4.3 — Verify delivery status and isolation" [level=4] [ref=f1e3335]
+                        - generic "Linked to a spec" [ref=f1e3336]: spec
+                      - paragraph [ref=f1e3340]: "Implement test_delivery_status.py using unittest. Execute ts_4e90347d and ts_22468e79 against the exact committed helper revision: exhaustive 18 combinations, invalid enums, non-bool flags and AST no-import isolation. Preserve failed run evidence and rerun after correction. Record authenticated results and associate only the implementation actually tested. Then compare the real Pulse Delivery matrix and percentages with the authoritative projection."
+                      - generic [ref=f1e3341]: e2e-043
+                      - generic [ref=f1e3352]: 2 scenarios linked
+                      - generic [ref=f1e3356]:
+                        - 'generic "Executor-reported completeness: 100%. Delivery verification is separate." [ref=f1e3357]': "Execution report: 100%"
+                        - 'generic "Drift: 0%" [ref=f1e3358]': 0% drift
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f1e3361]': "C: Codex"
+                - 'button "E2E 0.4.3 — Implement isolated delivery classifier spec Create delivery_status.py in the isolated fixture workspace after native execution admission. Implement fr_e2e_classify, tr_e2e_isolation and br_8bb896ec, covering ac_e2e_states and ac_e2e_isolation. Validate enums and bool before applying exact precedence. No imports or side effects. Commit the actual implementation, record target execution and bind proof to the five obligations. Verification is performed by the separate Test Card; progress text never counts as proof. e2e-043 Execution report: 100% 0% drift C: Codex" [ref=f1e3537]':
+                  - generic [ref=f1e3363]:
+                    - generic "Move card" [ref=f1e3364]
+                    - generic [ref=f1e3372] [cursor=pointer]:
+                      - generic [ref=f1e3373]:
+                        - heading "E2E 0.4.3 — Implement isolated delivery classifier" [level=4] [ref=f1e3374]
+                        - generic "Linked to a spec" [ref=f1e3375]: spec
+                      - paragraph [ref=f1e3379]: Create delivery_status.py in the isolated fixture workspace after native execution admission. Implement fr_e2e_classify, tr_e2e_isolation and br_8bb896ec, covering ac_e2e_states and ac_e2e_isolation. Validate enums and bool before applying exact precedence. No imports or side effects. Commit the actual implementation, record target execution and bind proof to the five obligations. Verification is performed by the separate Test Card; progress text never counts as proof.
+                      - generic [ref=f1e3380]: e2e-043
+                      - generic [ref=f1e3397]:
+                        - 'generic "Executor-reported completeness: 100%. Delivery verification is separate." [ref=f1e3398]': "Execution report: 100%"
+                        - 'generic "Drift: 0%" [ref=f1e3399]': 0% drift
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f1e3402]': "C: Codex"
+            - generic [ref=f1e3403]:
+              - generic [ref=f1e3406]:
+                - generic [ref=f1e3407]:
+                  - heading "Cancelled" [level=3] [ref=f1e3408]
+                  - generic "2 total cards" [ref=f1e3409]: "2"
+                - generic [ref=f1e3410]:
+                  - button "0 task cards" [pressed] [ref=f1e3411] [cursor=pointer]:
+                    - generic [ref=f1e3412]: Task
+                    - generic [ref=f1e3417]: "0"
+                  - button "1 test cards" [pressed] [ref=f1e3418] [cursor=pointer]:
+                    - generic [ref=f1e3419]: Test
+                    - generic [ref=f1e3423]: "1"
+                  - button "1 bug cards" [pressed] [ref=f1e3424] [cursor=pointer]:
+                    - generic [ref=f1e3425]: Bug
+                    - generic [ref=f1e3436]: "1"
+              - generic [ref=f1e3437]:
+                - 'button "test E2E 0.4.3 — Fresh regression gate probe test spec Explicit operational probe of fresh post-bug Test Card lineage. No additional test result will be fabricated; the corrected fixture has already passed. Cancel this probe after verifying eligibility and dependency controls. e2e-043 gate-probe 1 scenario linked C: Codex" [ref=f1e3538]':
+                  - generic [ref=f1e3439]:
+                    - generic "Move card" [ref=f1e3440]
+                    - generic [ref=f1e3448] [cursor=pointer]:
+                      - generic [ref=f1e3449]:
+                        - generic [ref=f1e3450]: test
+                        - heading "E2E 0.4.3 — Fresh regression gate probe test" [level=4] [ref=f1e3453]
+                        - generic "Linked to a spec" [ref=f1e3454]: spec
+                      - paragraph [ref=f1e3458]: Explicit operational probe of fresh post-bug Test Card lineage. No additional test result will be fabricated; the corrected fixture has already passed. Cancel this probe after verifying eligibility and dependency controls.
+                      - generic [ref=f1e3459]:
+                        - generic [ref=f1e3460]: e2e-043
+                        - generic [ref=f1e3461]: gate-probe
+                      - generic [ref=f1e3470]: 1 scenario linked
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f1e3476]': "C: Codex"
+                - 'button "bug E2E 0.4.3 — Controlled bug regression gate probe spec Operational test only, not an outstanding product defect. Exercise post-delivery bug creation, eligible scenario lineage, fresh regression Test Card gate and cancellation. The real controlled fixture defect was already fixed in 8cf8509; no further implementation is planned. Minor e2e-043 gate-probe 1 test task linked C: Codex" [ref=f1e3539]':
+                  - generic [ref=f1e3478]:
+                    - generic "Move card" [ref=f1e3479]
+                    - generic [ref=f1e3487] [cursor=pointer]:
+                      - generic [ref=f1e3488]:
+                        - generic [ref=f1e3489]: bug
+                        - heading "E2E 0.4.3 — Controlled bug regression gate probe" [level=4] [ref=f1e3499]
+                        - generic "Linked to a spec" [ref=f1e3500]: spec
+                      - paragraph [ref=f1e3504]: Operational test only, not an outstanding product defect. Exercise post-delivery bug creation, eligible scenario lineage, fresh regression Test Card gate and cancellation. The real controlled fixture defect was already fixed in 8cf8509; no further implementation is planned.
+                      - generic [ref=f1e3505]:
+                        - generic [ref=f1e3506]: Minor
+                        - generic [ref=f1e3507]: e2e-043
+                        - generic [ref=f1e3508]: gate-probe
+                      - generic [ref=f1e3524]: 1 test task linked
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f1e3530]': "C: Codex"
+          - status [ref=f1e3531]
+        - generic [ref=f1e3541]:
+          - generic [ref=f1e3542]:
+            - generic [ref=f1e3543]:
+              - combobox "Card status" [disabled] [ref=f1e3544]:
+                - option "In Progress" [selected]
+              - heading "QA 0.4.3 — tarefa de dispensa sem justificativa" [level=2] [ref=f1e3545]
+            - button "QA 0.4.3 — validação, entre..." [ref=f1e3550] [cursor=pointer]
+            - generic [ref=f1e3555]:
+              - button "Open lineage graph" [ref=f1e3556] [cursor=pointer]
+              - button "Export report" [ref=f1e3561] [cursor=pointer]
+              - button "Refresh card" [ref=f1e3565] [cursor=pointer]
+              - button "Expand" [ref=f1e3571] [cursor=pointer]
+              - button "Close card dialog" [ref=f1e3577] [cursor=pointer]
+          - generic [ref=f1e3581]:
+            - tablist "Card sections" [ref=f1e3582]:
+              - tab "Details" [selected] [ref=f1e3583] [cursor=pointer]
+              - tab "Implementation Targets" [ref=f1e3588] [cursor=pointer]
+              - tab "Delivery" [ref=f1e3594] [cursor=pointer]
+              - tab "Resources" [ref=f1e3599] [cursor=pointer]
+              - tab "Q&A" [ref=f1e3605] [cursor=pointer]
+              - tab "Comments 2" [ref=f1e3610] [cursor=pointer]:
+                - generic [ref=f1e3613]: Comments
+                - generic [ref=f1e3614]: "2"
+              - tab "References" [ref=f1e3615] [cursor=pointer]
+              - tab "Validation" [ref=f1e3620] [cursor=pointer]
+              - tab "Activity" [ref=f1e3624] [cursor=pointer]
+            - button "Scroll Card sections right" [ref=f1e3630] [cursor=pointer]
+          - tabpanel "Details" [ref=f1e3634]:
+            - generic [ref=f1e3635]:
+              - generic [ref=f1e3636]:
+                - heading "Description" [level=3] [ref=f1e3637]
+                - paragraph [ref=f1e3640] [cursor=pointer]: Tarefa de teste de interface para Required → Optional → Waived → Required, sem alterar evidência nem status de execução.
+              - generic [ref=f1e3644]:
+                - heading "Assignee" [level=3] [ref=f1e3645]
+                - combobox "Card assignee" [ref=f1e3646]:
+                  - option "None"
+                  - option "Owner (creator)"
+                  - option "Codex" [selected]
+              - generic [ref=f1e3647]:
+                - heading "Priority" [level=3] [ref=f1e3648]
+                - combobox "Card priority" [ref=f1e3649]:
+                  - option "Critical"
+                  - option "Very High"
+                  - option "High"
+                  - option "Medium"
+                  - option "Low"
+                  - option "None" [selected]
+              - generic [ref=f1e3650]:
+                - heading "Details" [level=3] [ref=f1e3651]
+                - paragraph [ref=f1e3653] [cursor=pointer]: No details
+          - button "Delete" [ref=f1e3658] [cursor=pointer]

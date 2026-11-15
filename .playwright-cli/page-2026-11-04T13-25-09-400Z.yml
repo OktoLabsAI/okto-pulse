@@ -1,0 +1,179 @@
+- generic [ref=f13e3]:
+  - banner [ref=f13e4]:
+    - generic [ref=f13e5]:
+      - generic [ref=f13e6]:
+        - button "Hide sidebar" [ref=f13e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f13e12]
+        - generic [ref=f13e31]: / My Board
+      - generic [ref=f13e32]:
+        - button "Refresh board" [ref=f13e33] [cursor=pointer]
+        - button [ref=f13e40] [cursor=pointer]
+  - generic [ref=f13e13]:
+    - complementary [ref=f13e14]:
+      - generic [ref=f13e15]:
+        - generic [ref=f13e17]:
+          - heading "Boards" [level=2] [ref=f13e18]
+          - button "New board" [ref=f13e19] [cursor=pointer]
+        - navigation [ref=f13e21]:
+          - generic [ref=f13e22]:
+            - heading "My Boards" [level=3] [ref=f13e23]
+            - list [ref=f13e44]:
+              - listitem [ref=f13e45]:
+                - button "okto pulse" [ref=f13e46] [cursor=pointer]
+              - listitem [ref=f13e53]:
+                - button "My Board" [ref=f13e54] [cursor=pointer]
+              - listitem [ref=f13e61]:
+                - button "okto-grafx" [ref=f13e62] [cursor=pointer]
+    - main [ref=f13e26]:
+      - group "Board views" [ref=f13e69]:
+        - button "Stories" [ref=f13e70] [cursor=pointer]
+        - button "Ideations" [pressed] [ref=f13e74] [cursor=pointer]
+        - button "Refinements" [ref=f13e77] [cursor=pointer]
+        - button "Specs" [ref=f13e82] [cursor=pointer]
+        - button "Tasks" [ref=f13e87] [cursor=pointer]
+      - generic [ref=f13e1473]:
+        - generic [ref=f13e1474]:
+          - generic [ref=f13e1475]:
+            - heading "Ideations" [level=2] [ref=f13e1476]
+            - generic [ref=f13e1477]: (1 of 1)
+          - generic [ref=f13e1478]:
+            - textbox "Search ideations…" [ref=f13e1480]
+            - group "View mode" [ref=f13e1481]:
+              - button "List view" [pressed] [ref=f13e1482] [cursor=pointer]
+              - button "Grid view" [ref=f13e1484] [cursor=pointer]
+            - button "New Ideation" [ref=f13e1490] [cursor=pointer]
+        - generic [ref=f13e1492]:
+          - button "All" [ref=f13e1493] [cursor=pointer]
+          - button "Draft" [ref=f13e1494] [cursor=pointer]
+          - button "Review" [ref=f13e1495] [cursor=pointer]
+          - button "Approved" [ref=f13e1496] [cursor=pointer]
+          - button "Evaluating" [ref=f13e1497] [cursor=pointer]
+          - button "Done" [ref=f13e1498] [cursor=pointer]
+          - button "No derivation" [ref=f13e1499] [cursor=pointer]
+          - button "Show archived" [ref=f13e1504] [cursor=pointer]
+        - generic [ref=f13e1746] [cursor=pointer]:
+          - generic [ref=f13e1747]:
+            - generic [ref=f13e1748]:
+              - generic [ref=f13e1749]: Draft
+              - generic [ref=f13e1752]: Edition 1
+            - heading "E2E 0.4.3 — Operational delivery journey" [level=3] [ref=f13e1753]
+            - paragraph [ref=f13e1754]: The complete 0.4.3 operational journey needs evidence that planning lineage, native gates, delivery proof, human updates and the simplified UI agree. Success means a fully traced fixture reaches verified delivery, expected invalid operations are rejected without false success, an…
+            - 'generic "Ambiguity: no current result · Edition 1; 0 previous results" [ref=f13e1756]':
+              - generic [ref=f13e1757]: Ambiguity
+              - strong [ref=f13e1758]: Not assessed
+            - generic [ref=f13e1759]:
+              - generic [ref=f13e1760]: e2e-043
+              - generic [ref=f13e1761]: operational-audit
+          - generic [ref=f13e1762]:
+            - button "Open lineage graph" [ref=f13e1763]
+            - button "Archive tree" [ref=f13e1768]
+        - generic [ref=f13e1540]:
+          - status [ref=f13e1541]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f13e1542]:
+            - generic [ref=f13e1543]:
+              - generic [ref=f13e1544]: Items per page
+              - combobox "Items per page" [ref=f13e1545]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Ideations pagination" [ref=f13e1546]:
+              - generic [ref=f13e1547]:
+                - button "Previous page" [disabled] [ref=f13e1548]: Previous
+                - button "Page 1" [disabled] [ref=f13e1549]: "1"
+                - button "Next page" [disabled] [ref=f13e1550]: Next
+        - generic [ref=f13e1582]:
+          - generic [ref=f13e1583]:
+            - generic [ref=f13e1811]:
+              - generic [ref=f13e1812]: Evaluating
+              - heading "E2E 0.4.3 — Operational delivery journey" [level=2] [ref=f13e1815]
+              - generic [ref=f13e1816]: Edition 1
+            - generic [ref=f13e1817]:
+              - button "Open lineage graph" [ref=f13e1818] [cursor=pointer]
+              - button "Export report" [ref=f13e1823] [cursor=pointer]
+              - button "Refresh" [ref=f13e1827] [cursor=pointer]
+              - button "Expand" [ref=f13e1833] [cursor=pointer]
+              - button [ref=f13e1839] [cursor=pointer]
+          - generic [ref=f13e1843]:
+            - generic [ref=f13e1844]: "Move to:"
+            - button "Approved" [ref=f13e1845] [cursor=pointer]
+            - button "Done" [ref=f13e1848] [cursor=pointer]
+            - button "Cancelled" [ref=f13e1851] [cursor=pointer]
+          - generic [ref=f13e1855]:
+            - tablist "Ideation sections" [ref=f13e1856]:
+              - tab "Details" [ref=f13e1857] [cursor=pointer]
+              - tab "Resources 2" [ref=f13e1862] [cursor=pointer]:
+                - generic [ref=f13e1865]: Resources
+                - generic [ref=f13e1866]: "2"
+              - tab "Q&A 2" [selected] [ref=f13e1867] [cursor=pointer]:
+                - generic [ref=f13e1871]: Q&A
+                - generic [ref=f13e1872]: "2"
+              - tab "Evaluation" [ref=f13e1873] [cursor=pointer]
+              - tab "References 1" [ref=f13e1878] [cursor=pointer]:
+                - generic [ref=f13e1882]: References
+                - generic [ref=f13e1883]: "1"
+              - tab "Versions" [ref=f13e1884] [cursor=pointer]
+              - tab "Activity" [ref=f13e1889] [cursor=pointer]
+            - button "Scroll Ideation sections right" [ref=f13e1895] [cursor=pointer]
+          - tabpanel "Q&A 2" [ref=f13e1899]:
+            - generic [ref=f13e1900]:
+              - generic [ref=f13e1901]:
+                - generic [ref=f13e1902]:
+                  - button "Free Text" [ref=f13e1903] [cursor=pointer]
+                  - button "Choice / Form" [ref=f13e1904] [cursor=pointer]
+                - generic [ref=f13e1905]:
+                  - textbox "Ask a question... (type @ to mention)" [ref=f13e1907]
+                  - button "Ask" [disabled] [ref=f13e1908]
+              - generic [ref=f13e1912]:
+                - heading "Unanswered (1)" [level=4] [ref=f13e1913]
+                - generic [ref=f13e1915]:
+                  - generic [ref=f13e1916]:
+                    - generic [ref=f13e1917]:
+                      - generic [ref=f13e1918]:
+                        - paragraph [ref=f13e1919]: For the isolated E2E helper, which status takes precedence when a waived requirement has a failed verification?
+                        - generic [ref=f13e1920]: single-select
+                      - generic [ref=f13e1921]:
+                        - generic [ref=f13e1922]: • Not required; preserve the failed check in separate audit history (Recommended)
+                        - generic [ref=f13e1923]: • Verification failed; override the explicit exemption
+                      - generic [ref=f13e1924]: Asked by e7090eed-0fa... · 04/11/2026
+                    - button [ref=f13e1925] [cursor=pointer]
+                  - button "Answer this question" [ref=f13e1929] [cursor=pointer]
+              - generic [ref=f13e1930]:
+                - heading "Answered (1)" [level=4] [ref=f13e1931]
+                - generic [ref=f13e1933]:
+                  - generic [ref=f13e1934]:
+                    - generic [ref=f13e1935]:
+                      - paragraph [ref=f13e1936]: For this E2E fixture, which execution approach preserves meaningful delivery proof while keeping the production application unchanged?
+                      - generic [ref=f13e1937]: choice
+                    - button [ref=f13e1938] [cursor=pointer]
+                  - generic [ref=f13e1942]: Asked by e7090eed-0fa...
+                  - generic [ref=f13e1943]:
+                    - generic [ref=f13e1944]:
+                      - generic [ref=f13e1945]: Implement an isolated reference helper and execute real tests
+                      - generic [ref=f13e1950]: Use only synthetic passing status values
+                      - generic [ref=f13e1952]: Modify production features during the audit
+                    - paragraph [ref=f13e1954]: "E2E fixture selection under the authorized audit: use real isolated implementation and execution evidence. Synthetic status values must never count as proof."
+                    - generic [ref=f13e1955]: Answered by local-user... · 04/11/2026
+          - generic [ref=f13e1956]:
+            - button "Delete ideation" [ref=f13e1957] [cursor=pointer]
+            - generic [ref=f13e1958]:
+              - button "Evaluate" [ref=f13e1959] [cursor=pointer]
+              - button "Close" [ref=f13e1963] [cursor=pointer]
+  - 'status "Cognitive pipeline working: 0 running, 1 pending" [ref=f13e1964]':
+    - generic [ref=f13e1975]: processing · 1 pending
+  - status [ref=f13e1976]:
+    - generic [ref=f13e1977]:
+      - generic [ref=f13e1978]: Consolidation in progress
+      - generic [ref=f13e1979]: 0%
+    - generic [ref=f13e1981]:
+      - generic [ref=f13e1982]:
+        - generic [ref=f13e1983]: Pending
+        - generic [ref=f13e1984]: "1"
+      - generic [ref=f13e1985]:
+        - generic [ref=f13e1986]: Running
+        - generic [ref=f13e1987]: "0"
+      - generic [ref=f13e1988]:
+        - generic [ref=f13e1989]: Processed
+        - generic [ref=f13e1990]: "0"
+      - generic [ref=f13e1991]:
+        - generic [ref=f13e1992]: Paused
+        - generic [ref=f13e1993]: "0"

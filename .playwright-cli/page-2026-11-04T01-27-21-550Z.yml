@@ -1,0 +1,92 @@
+- generic [ref=f2e1]:
+  - generic [ref=f2e31]:
+    - banner [ref=f2e32]:
+      - generic [ref=f2e33]:
+        - generic [ref=f2e34]:
+          - button "Hide sidebar" [ref=f2e35] [cursor=pointer]
+          - img "Okto Pulse" [ref=f2e40]
+          - generic [ref=f2e59]: / My Board
+        - generic [ref=f2e60]:
+          - button "Refresh board" [ref=f2e61] [cursor=pointer]
+          - button [ref=f2e68] [cursor=pointer]
+    - generic [ref=f2e41]:
+      - complementary [ref=f2e42]:
+        - generic [ref=f2e43]:
+          - generic [ref=f2e45]:
+            - heading "Boards" [level=2] [ref=f2e46]
+            - button "New board" [ref=f2e47] [cursor=pointer]
+          - navigation [ref=f2e49]:
+            - generic [ref=f2e50]:
+              - heading "My Boards" [level=3] [ref=f2e51]
+              - list [ref=f2e72]:
+                - listitem [ref=f2e73]:
+                  - button "My Board" [ref=f2e74] [cursor=pointer]
+                - listitem [ref=f2e81]:
+                  - button "okto pulse" [ref=f2e82] [cursor=pointer]
+                - listitem [ref=f2e89]:
+                  - button "okto-grafx" [ref=f2e90] [cursor=pointer]
+      - main [ref=f2e54]:
+        - group "Board views" [ref=f2e97]:
+          - button "Stories" [pressed] [ref=f2e98] [cursor=pointer]
+          - button "Ideations" [ref=f2e102] [cursor=pointer]
+          - button "Refinements" [ref=f2e105] [cursor=pointer]
+          - button "Specs" [ref=f2e110] [cursor=pointer]
+          - button "Tasks" [ref=f2e115] [cursor=pointer]
+        - generic [ref=f2e122]:
+          - generic [ref=f2e123]:
+            - generic [ref=f2e124]:
+              - heading "Stories" [level=2] [ref=f2e125]
+              - generic [ref=f2e126]: (0 of 0)
+            - generic [ref=f2e127]:
+              - textbox "Search stories..." [ref=f2e129]
+              - group "View mode" [ref=f2e130]:
+                - button "List view" [pressed] [ref=f2e131] [cursor=pointer]
+                - button "Grid view" [ref=f2e133] [cursor=pointer]
+              - button "New Story" [ref=f2e139] [cursor=pointer]
+          - generic [ref=f2e141]:
+            - button "All" [ref=f2e142] [cursor=pointer]
+            - button "Draft" [ref=f2e143] [cursor=pointer]
+            - button "Triage" [ref=f2e144] [cursor=pointer]
+            - button "Ready" [ref=f2e145] [cursor=pointer]
+            - button "Converted" [ref=f2e146] [cursor=pointer]
+            - button "Show archived" [ref=f2e147] [cursor=pointer]
+          - generic [ref=f2e148]:
+            - complementary [ref=f2e149]:
+              - generic [ref=f2e150]:
+                - generic [ref=f2e151]: Topics
+                - button "New Topic" [ref=f2e156] [cursor=pointer]
+              - button "All topics 0" [ref=f2e159] [cursor=pointer]:
+                - generic [ref=f2e160]: All topics
+                - generic [ref=f2e161]: "0"
+            - generic [ref=f2e162]:
+              - generic [ref=f2e164]:
+                - paragraph [ref=f2e169]: No topics yet
+                - button "New Topic" [ref=f2e170] [cursor=pointer]
+              - generic [ref=f2e172]:
+                - status [ref=f2e173]:
+                  - text: No stories match the active filters.
+                  - generic [ref=f2e174]: 0 overall.
+                - generic [ref=f2e175]:
+                  - generic [ref=f2e176]:
+                    - generic [ref=f2e177]: Items per page
+                    - combobox "Items per page" [ref=f2e178]:
+                      - option "25" [selected]
+                      - option "50"
+                      - option "100"
+                  - navigation "Stories pagination" [ref=f2e179]:
+                    - generic [ref=f2e180]:
+                      - button "Previous page" [disabled] [ref=f2e181]: Previous
+                      - button "Next page" [disabled] [ref=f2e182]: Next
+  - dialog [ref=f2e183]:
+    - generic [ref=f2e185]:
+      - paragraph [ref=f2e186]: Guided help
+      - paragraph [ref=f2e187]: 1 / 2
+    - heading "Move across work areas" [level=2] [ref=f2e188]
+    - paragraph [ref=f2e189]: Use the main tabs to switch between stories, ideations, refinements, specs, and task execution.
+    - generic [ref=f2e190]:
+      - generic [ref=f2e191]:
+        - button "Back" [disabled] [ref=f2e192]
+        - button "Skip step" [ref=f2e195] [cursor=pointer]
+      - generic [ref=f2e196]:
+        - button "Skip all" [ref=f2e197] [cursor=pointer]
+        - button "Next" [active] [ref=f2e198] [cursor=pointer]
