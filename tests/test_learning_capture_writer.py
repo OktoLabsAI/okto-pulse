@@ -9,6 +9,9 @@ import pytest
 from okto_pulse.community.adapters.bug_cognitive_context import CommunityBugCognitiveContextAssembler
 from okto_pulse.community.adapters.sqlalchemy_kg_cognitive_source import CommunitySqlAlchemyCognitiveSourceStore
 from okto_pulse.community.adapters.sqlalchemy_models import Board, Card, Spec
+from okto_pulse.community.adapters.sqlalchemy_verification_currentness import (
+    CommunityVerificationCurrentnessStore, CommunityVerificationReservationPort,
+)
 from okto_pulse.community.adapters.test_evidence import (
     CommunityEvidenceLedger, CommunityTestVerificationReportIssuer, CommunityTestEvidenceWriteVerifier,
 )
@@ -19,6 +22,13 @@ from okto_pulse.core.ports.bug_cognitive_context import register_bug_cognitive_c
 from okto_pulse.core.ports.kg_cognitive_source import register_cognitive_source_store, reset_cognitive_source_store_for_tests
 from okto_pulse.core.ports.learning_capture import CreateLearningCapture
 from okto_pulse.core.ports.permission_policy import set_permission_flag
+from okto_pulse.core.domain.verification_currentness import (
+    VerificationScope, canonical_scenario_sha256, result_from_authenticated_evidence,
+)
+from okto_pulse.core.ports.verification_currentness import (
+    VerificationReservationRequest, register_verification_currentness_store_factory,
+    reset_verification_currentness_store_factory_for_tests,
+)
 from okto_pulse.core.ports.test_evidence import (
     TestVerificationReportRequest as ReportRequest, register_test_evidence_write_verifier,
     reset_test_evidence_write_verifier_for_tests,
@@ -37,6 +47,7 @@ async def runtime(tmp_path):
     ledger = CommunityEvidenceLedger(evidence_root=tmp_path / 'evidence')
     issuer = CommunityTestVerificationReportIssuer(ledger=ledger)
     register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(ledger=ledger))
+    register_verification_currentness_store_factory(CommunityVerificationCurrentnessStore)
     assembler = CommunityBugCognitiveContextAssembler(_CanonicalBugReader(fail=True))
     store = CommunitySqlAlchemyCognitiveSourceStore(factory)
     register_bug_cognitive_context_assembler(assembler)
@@ -51,16 +62,29 @@ async def runtime(tmp_path):
     try:
         async with factory() as session:
             spec = await session.get(Spec, 'spec-bug-context')
-            scenario = {**spec.test_scenarios[0], 'verification_method': 'inspection'}
+            scenario = {**spec.test_scenarios[0], 'verification_method': 'inspection',
+                        'status': 'ready', 'evidence': None}
+            spec.test_scenarios = [scenario]
+            bug = await session.get(Card, 'bug-context')
+            bug.status = 'in_progress'
+            await session.commit()
             digest = compute_test_scenario_semantic_sha256(board_id=BOARD, spec_id=spec.id,
                 scenario=scenario, acceptance_criteria=spec.acceptance_criteria)
+            reserved = await CommunityVerificationReservationPort(factory).reserve(
+                VerificationReservationRequest(
+                    VerificationScope(board_id=BOARD, spec_id=spec.id, spec_edition=spec.edition,
+                                      scenario_id=scenario['id']),
+                    canonical_scenario_sha256(digest), 'inspection', 'reviewer', 'human', spec.version))
             value = report()
             value['observations'][0]['criterion_id'] = 'ac-about'
             issued = await issuer.admit(ReportRequest(board_id=BOARD, spec_id=spec.id,
-                scenario_id=scenario['id'], scenario_sha256=digest, actor_id='reviewer', report=value))
-            spec.test_scenarios = [{**scenario, 'evidence': dict(issued.evidence)}]
-            bug = await session.get(Card, 'bug-context')
-            bug.status = 'in_progress'
+                scenario_id=scenario['id'], scenario_sha256=digest, actor_id='reviewer', report=value,
+                verification_context=reserved.context))
+            result = result_from_authenticated_evidence(issued.evidence, actor_id='reviewer', actor_kind='human')
+            accepted = await CommunityVerificationCurrentnessStore(session).publish(result,
+                evidence=issued.evidence, evidence_status='passed', expected_spec_version=spec.version)
+            assert accepted.replace_operational_summary
+            spec.test_scenarios = [{**scenario, 'status': 'passed', 'evidence': dict(issued.evidence)}]
             await session.commit()
             source = await assembler.assemble_semantic(session, board_id=BOARD, bug_id='bug-context')
         request = CreateLearningCapture(BOARD, 'bug-context', 'capture-1', source.source_digest,
@@ -71,6 +95,7 @@ async def runtime(tmp_path):
         reset_bug_cognitive_context_ports_for_tests()
         reset_cognitive_source_store_for_tests()
         reset_test_evidence_write_verifier_for_tests()
+        reset_verification_currentness_store_factory_for_tests()
         await engine.dispose()
 
 
