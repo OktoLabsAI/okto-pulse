@@ -175,6 +175,20 @@ describe('Code Evidence source context presentation', () => {
     cleanup();
   });
 
+  it('distinguishes finalized source context from current investigation authority', async () => {
+    apiMock.getCodeTraceabilityProjection.mockResolvedValue(projection({
+      source_context: sourceContext({ investigation_outcome: 'no_relevant_existing_implementation', evidence_applicable: false, role_counts: emptyRoleCounts }),
+      source_context_snapshot: { kind: 'historical_snapshot', snapshot_id: 'snapshot', snapshot_version: 3, manifest_sha256: 'a'.repeat(64) },
+      current_source_context: sourceContext({ investigation_outcome: null }),
+    }));
+    renderPanel();
+    const finalized = await screen.findByRole('region', { name: 'Finalized source context' });
+    expect(finalized).toHaveTextContent('Recorded for Refinement version 3');
+    expect(finalized).toHaveTextContent('This historical context does not authorize new execution.');
+    expect(finalized).toHaveTextContent('No current investigation outcome is available.');
+    expect(screen.getByText('No relevant existing implementation')).toBeVisible();
+  });
+
   it('ts_02e08e5b — orders context, outcome/counts, groups, and applicability in the DOM', async () => {
     apiMock.getCodeTraceabilityProjection.mockResolvedValue(projection({
       source_context: sourceContext(),

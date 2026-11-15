@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { StoriesPanel } from '../StoriesPanel';
 import type { IdeationSummary, StorySummary, TopicSummary } from '@/types';
@@ -182,6 +182,44 @@ describe('StoriesPanel', () => {
       ],
     }));
     permissionsMock.has.mockReturnValue(true);
+  });
+
+  it.each(['success', 'failure'])('keeps the saved Story header until a status save resolves: %s', async result => {
+    const initial = { ...stories[0], topic: topics[0] };
+    apiMock.updateStory.mockResolvedValue(initial);
+    let resolve!: (value: typeof initial) => void;
+    let reject!: (reason: Error) => void;
+    apiMock.moveStory.mockReturnValue(new Promise((yes, no) => { resolve = yes; reject = no; }));
+    render(<StoriesPanel boardId="board-1" />);
+    fireEvent.click(await screen.findByText('Stories intake before ideation'));
+    const select = await screen.findByLabelText('Status');
+    expect(within(select).getAllByRole('option').map(option => option.textContent)).toEqual(['Ready', 'Triage']);
+    expect(screen.queryByRole('option', { name: 'Converted' })).not.toBeInTheDocument();
+    fireEvent.change(select, { target: { value: 'triage' } });
+    expect(screen.getByLabelText('Saved story status')).toHaveTextContent('Ready');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(apiMock.moveStory).toHaveBeenCalledWith('story-1', { status: 'triage' }));
+    expect(screen.getByLabelText('Saved story status')).toHaveTextContent('Ready');
+    await act(async () => {
+      if (result === 'success') resolve({ ...initial, status: 'triage' });
+      else reject(new Error('Status transition rejected'));
+    });
+    if (result === 'success') {
+      expect(screen.getByLabelText('Saved story status')).toHaveTextContent('Triage');
+      expect(select).toHaveValue('triage');
+    } else {
+      expect(screen.getByRole('alert')).toHaveTextContent('Story status was not confirmed. Status transition rejected');
+      expect(screen.getByLabelText('Saved story status')).toHaveTextContent('Ready');
+      expect(select).toHaveValue('ready');
+    }
+  });
+
+  it('shows Converted as a persisted result without a manual status selector', async () => {
+    apiMock.getStory.mockResolvedValue({ ...stories[0], topic: topics[0], status: 'converted' });
+    render(<StoriesPanel boardId="board-1" />);
+    fireEvent.click(await screen.findByText('Stories intake before ideation'));
+    expect(await screen.findByLabelText('Saved story status')).toHaveTextContent('Converted');
+    expect(screen.queryByRole('combobox', { name: 'Status' })).not.toBeInTheDocument();
   });
 
   it('renders Stories before Ideation work with Topic grouping and modal mockups tab', async () => {

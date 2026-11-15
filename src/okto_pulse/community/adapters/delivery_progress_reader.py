@@ -13,6 +13,16 @@ from okto_pulse.core.domain.delivery_progress import DeliveryProgress
 
 def progress_item(record, revoked, *, detail=False):
     payload = record.payload
+    if payload.get("kind") == "human_submission":
+        human = payload["human_submission"]
+        content, remaining = payload["justification"], human.get("remaining") or ""
+        return {"id": record.id, "kind": "human_submission", "actor_id": record.actor_id,
+            "actor_kind": record.actor_kind, "created_at": record.created_at.isoformat(),
+            "revoked": record.id in revoked, "summary": content if detail else content[:1000],
+            "remaining": remaining if detail else remaining[:1000],
+            "text_truncated": not detail and (len(content) > 1000 or len(remaining) > 1000),
+            "action": human["action"], "authority": "human_declaration",
+            "receipt": human["receipt"] if detail else None}
     progress = DeliveryProgress.model_validate(payload["progress"])
     summary, remaining = payload["justification"], progress.remaining
     item = {
@@ -98,6 +108,10 @@ async def read_progress_history(store, query, *, actor_id):
         "items": [progress_item(row, revoked, detail=bool(query.record_id)) if query.view == "progress"
                   else ledger_item(row, revoked, detail=bool(query.record_id)) for row in records],
     }
+    for item in result['items']:
+        item['can_correct'] = (item.get('kind') == 'human_submission'
+            and item.get('actor_id') == actor_id and not item.get('revoked')
+            and requested_edition == current_edition and card.status == 'in_progress')
     # Explicit detail is bounded separately from the default short manifest.
     result["response_limit_bytes"] = 512 * 1024 if query.record_id else 128 * 1024
     if len(json.dumps(result, ensure_ascii=False).encode()) > result["response_limit_bytes"]:
@@ -110,7 +124,7 @@ def ledger_item(record, revoked, *, detail):
     payload = record.payload
     summary = payload.get("justification", "")
     bindings = payload.get("bindings", [])
-    result = {"id": record.id, "kind": record.kind, "actor_id": record.actor_id,
+    result = {"id": record.id, "kind": "human_submission" if payload.get("kind") == "human_submission" else record.kind, "actor_id": record.actor_id,
         "actor_kind": record.actor_kind, "created_at": record.created_at.isoformat(),
         "revoked": record.id in revoked, "summary": summary if detail else summary[:1000],
         "text_truncated": not detail and len(summary) > 1000,

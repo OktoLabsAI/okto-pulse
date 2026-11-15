@@ -44,6 +44,7 @@ def verify(root, evidence):
 async def test_roundtrip_preserves_acceptance_and_denial_without_issuing(tmp_path):
     source, retained, restored = (tmp_path / name for name in ('source', 'retained', 'restored'))
     ledger, evidence = await issue(source)
+    assert ledger.staging_root.is_dir() and not list(ledger.staging_root.iterdir())
     # Retain authored manifests as opaque bytes too, including nested paths.
     (ledger.manifest_root / 'nested').mkdir(parents=True)
     (ledger.manifest_root / 'nested/original.json').write_bytes(b'{"opaque":true}')
@@ -59,6 +60,8 @@ async def test_roundtrip_preserves_acceptance_and_denial_without_issuing(tmp_pat
     assert not verify(source, denied).verified and not verify(restored, denied).verified
     assert {path.relative_to(restored): path.read_bytes() for path in restored.rglob('*') if path.is_file()} == before
     assert {path.relative_to(source): path.read_bytes() for path in source.rglob('*') if path.is_file()} == before
+    assert restored.joinpath('.receipt-staging').is_dir()
+    assert not list(restored.joinpath('.receipt-staging').iterdir())
     if os.name != 'nt':
         assert restored.joinpath('receipt.key').stat().st_mode & 0o077 == 0
 
@@ -136,3 +139,41 @@ async def test_hardlinked_key_is_refused(tmp_path):
     with pytest.raises(ValueError, match='private_file_required'):
         with evidence_capture_window(ledger.evidence_root, tmp_path / 'retained'):
             pytest.fail('shared signing key may not be captured')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('entry_kind', ['payload', 'nested_directory'])
+async def test_nonempty_staging_refuses_capture_without_removing_owned_files(tmp_path, entry_kind):
+    ledger, evidence = await issue(tmp_path / 'source')
+    pending = ledger.staging_root / 'unpublished.tmp'
+    if entry_kind == 'payload':
+        pending.write_bytes(b'not an authenticated receipt')
+    else:
+        pending.mkdir()
+    retained = tmp_path / 'retained'
+    with pytest.raises(ValueError, match='publication_in_progress'):
+        with evidence_capture_window(ledger.evidence_root, retained):
+            pytest.fail('incomplete publication may not be captured')
+    assert pending.exists() and not retained.exists()
+    assert verify(ledger.evidence_root, evidence).verified
+
+
+@pytest.mark.asyncio
+async def test_staging_write_invalidates_an_existing_capture_guard(tmp_path):
+    ledger, _ = await issue(tmp_path / 'source')
+    with evidence_capture_window(ledger.evidence_root, tmp_path / 'retained') as capture:
+        pending = ledger.staging_root / 'unpublished.tmp'
+        pending.write_bytes(b'pending')
+        with pytest.raises(ValueError, match='publication_in_progress'):
+            capture.validate()
+        assert pending.read_bytes() == b'pending'
+
+
+@pytest.mark.asyncio
+async def test_staging_cannot_be_replaced_by_a_regular_file(tmp_path):
+    ledger, _ = await issue(tmp_path / 'source')
+    ledger.staging_root.rmdir()
+    ledger.staging_root.write_bytes(b'not a directory')
+    with pytest.raises(ValueError, match='directory_invalid'):
+        with evidence_capture_window(ledger.evidence_root, tmp_path / 'retained'):
+            pytest.fail('a staging file may not be captured')

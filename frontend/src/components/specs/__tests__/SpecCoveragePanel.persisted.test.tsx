@@ -2,16 +2,17 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { SpecCoveragePanel } from '../SpecCoveragePanel';
 import type { SpecCoverageResponse } from '../specCoverageTypes';
-import { persistedProjection, readiness } from '@/components/code-traceability/__tests__/readinessFixture';
+import { persistedProjection } from '@/components/code-traceability/__tests__/readinessFixture';
+import { deliverySummary } from '@/components/code-traceability/__tests__/deliverySummaryFixture';
 
 const api = vi.hoisted(() => ({
   getSpecCoverage: vi.fn(),
   getPersistedReadinessProjection: vi.fn(),
-  getDeliveryReadiness: vi.fn(),
+  getDeliverySummary: vi.fn(),
 }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 vi.mock('@/components/code-traceability/DeliveryEvidencePanel', () => ({
-  DeliveryEvidencePanel: () => <div>Persisted coverage table</div>,
+  DeliveryEvidenceDetails: () => <div>Persisted coverage table</div>,
 }));
 
 function sourceCoverage(): SpecCoverageResponse {
@@ -36,8 +37,7 @@ function sourceCoverage(): SpecCoverageResponse {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
-  delete (window as typeof window & { OKTO_PULSE_CONFIG?: unknown }).OKTO_PULSE_CONFIG;
+  vi.resetAllMocks();
   api.getSpecCoverage.mockResolvedValue(sourceCoverage());
   const value = persistedProjection();
   value.summaries[0].implementation.percent = 88;
@@ -45,24 +45,9 @@ beforeEach(() => {
   value.summaries[0].implementation.applicable = 9;
   value.summaries[0].verification.percent = 50;
   api.getPersistedReadinessProjection.mockResolvedValue(value);
+  api.getDeliverySummary.mockResolvedValue(deliverySummary());
 });
 afterEach(cleanup);
-
-it('uses the diagnostic response when the operator selects legacy reads', async () => {
-  (window as typeof window & { OKTO_PULSE_CONFIG?: { READINESS_READ_MODE: string } })
-    .OKTO_PULSE_CONFIG = { READINESS_READ_MODE: 'legacy' };
-  const legacy = readiness(null);
-  legacy.implementation.percent = 63;
-  legacy.verification.percent = 25;
-  api.getDeliveryReadiness.mockResolvedValue(legacy);
-  render(<SpecCoveragePanel boardId="b" specId="s" revision="1" onOpenSection={() => {}} />);
-  const implementation = await screen.findByText('Implementation proof');
-  await waitFor(() => expect(within(implementation.closest('div')!).getByText('63%')).toBeVisible());
-  const verification = screen.getByText('Verification proof');
-  expect(within(verification.closest('div')!).getByText('25%')).toBeVisible();
-  expect(api.getDeliveryReadiness).toHaveBeenCalledOnce();
-  expect(api.getPersistedReadinessProjection).not.toHaveBeenCalled();
-});
 
 it('uses the persisted Spec generation for Overview proof percentages', async () => {
   render(<SpecCoveragePanel boardId="b" specId="s" revision="1" onOpenSection={() => {}} />);
@@ -70,34 +55,29 @@ it('uses the persisted Spec generation for Overview proof percentages', async ()
   await waitFor(() => expect(within(implementation.closest('div')!).getByText('88%')).toBeVisible());
   const verification = screen.getByText('Verification proof');
   expect(within(verification.closest('div')!).getByText('50%')).toBeVisible();
-  expect(screen.getByText(/Generation generation-1/)).toBeVisible();
-  expect(api.getSpecCoverage).toHaveBeenCalledOnce();
+  expect(screen.getByText('Delivery data is current')).toBeVisible();
+  expect(screen.getByText(/Graph details are temporarily unavailable/)).toBeVisible();
+  expect(screen.queryByText('Delivery generation: generation-1')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+  const generation = await screen.findByText('Delivery generation: generation-1');
+  expect(generation).not.toBeVisible();
+  const diagnostics = screen.getByText('Technical diagnostics');
+  expect(generation.closest('details')).not.toHaveAttribute('open');
+  fireEvent.click(diagnostics);
+  expect(generation).toBeVisible();
+  fireEvent.click(diagnostics);
+  expect(generation).not.toBeVisible();
+  expect(api.getSpecCoverage).toHaveBeenCalledTimes(2);
   expect(api.getPersistedReadinessProjection).toHaveBeenCalledOnce();
 });
 
-it('reloads persisted proof with structural coverage after calculation becomes available', async () => {
-  const unavailable = persistedProjection();
-  unavailable.projection.freshness = 'unavailable';
-  unavailable.projection.generation_id = null;
-  unavailable.summaries = [];
-  const recovered = persistedProjection();
-  recovered.summaries[0].implementation.percent = 75;
-  api.getPersistedReadinessProjection.mockResolvedValueOnce(unavailable).mockResolvedValueOnce(recovered);
-  render(<SpecCoveragePanel boardId="b" specId="s" revision="1" onOpenSection={() => {}} />);
-  await screen.findByText('Calculation unavailable');
-  fireEvent.click(screen.getByRole('button', { name: 'Reload coverage' }));
-  await waitFor(() => expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(2));
-  const implementation = screen.getByText('Implementation proof');
-  await waitFor(() => expect(within(implementation.closest('div')!).getByText('75%')).toBeVisible());
-  expect(api.getSpecCoverage).toHaveBeenCalledTimes(2);
-});
-
-it('does not invoke the structural coverage query on the Implementation tab', () => {
+it('does not invoke the structural coverage query without planning read authority', async () => {
   render(<SpecCoveragePanel boardId="b" specId="s" revision="1"
     canReadSummary={false} canReadImplementation onOpenSection={() => {}} />);
-  expect(screen.getByText('Persisted coverage table')).toBeVisible();
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+  expect(await screen.findByText('Persisted coverage table')).toBeVisible();
   expect(api.getSpecCoverage).not.toHaveBeenCalled();
-  expect(api.getPersistedReadinessProjection).not.toHaveBeenCalled();
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledOnce();
 });
 
 it('shows waiting without inventing zero before the first generation', async () => {

@@ -476,11 +476,24 @@ Use the contextual error message as the source of truth when reporting an issue.
 
 ## Release Notes
 
-**Current: 0.4.0 — BREAKING CHANGE.** This release requires a new installation
-with fresh storage. Data from previous Pulse versions is incompatible and is
-refused without conversion or automatic deletion; no migration is provided.
-Community delivers unified validation, structured requirements and verification,
-separate implementation and verified-delivery progress, and a Grafx-only KG.
+**In development: 0.4.3.** Core and Community use the matching `0.4.3` version.
+The release simplifies Spec validation and human task requirement decisions,
+with central and contextual Help. Startup continues to require the exact storage
+format; it never silently converts an existing database.
+
+An exact 0.4.2 database can be converted to a **new verified copy**:
+
+```bash
+okto-pulse storage upgrade-copy --source-db ORIGINAL_DB --output-db NEW_DB --json
+```
+
+The output file must not exist. The command preserves every source table's rows
+and historical receipts, adds the task requirement tables and guards, and advances
+the derived freshness fence. Its JSON receipt includes preservation hashes.
+The original database and active installation remain unchanged. Keep its associated
+graph, uploads and metrics directories; this command copies only SQLite storage.
+Unknown or modified formats are refused. The 0.4.0 boundary with pre-0.4.0 storage
+remains incompatible; this command does not convert those installations.
 
 **→ [Full release notes](docs/RELEASE-NOTES.md)** — 0.4.0, 0.3.3, 0.3.2, 0.3.1 and 0.3.0 changesets, plus 0.2.6, 0.2.5,
 0.2.3, 0.2.2, 0.2.1 and 0.2.0.

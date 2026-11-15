@@ -71,7 +71,11 @@ async def test_batch_matches_native_facts_including_unbound_negative_results(led
     assert actual.facts.effective_context.native_verification.runs[0].outcome == outcome
     assert actual.scenarios[0].given == 'The delivered revision'
     assert actual.scenarios[0].verification_method == method
-    assert len([s for s in sql if s.lstrip().upper().startswith('SELECT')]) == 10
+    # Four bounded authority reads add Spec/State validation and one indexed
+    # current-head join. This cost is per scope, never per Delivery association.
+    assert len([s for s in sql if s.lstrip().upper().startswith('SELECT')]) == 14
+    accepted = [s for s in sql if 'verification_acceptances' in s]
+    assert len(accepted) == 1 and 'FROM verification_basis_heads' in accepted[0]
     assert all(s.lstrip().upper().startswith(('SELECT', 'PRAGMA DATA_VERSION', 'BEGIN')) for s in sql)
     assert not session.new and not session.dirty and not session.deleted
 
@@ -177,7 +181,7 @@ async def test_query_count_does_not_grow_per_card(ledger):
     with statements(session.bind) as second:
         result = await read(value)
     assert len(result.cards) == 32
-    assert len(first) == len(second) == 13
+    assert len(first) == len(second) == 17
 
 
 @native
@@ -269,7 +273,7 @@ async def test_near_native_card_limit_has_fixed_query_count(ledger):
     with statements(session.bind) as sql:
         result = await read(reader(session))
     assert len(result.cards) == 4502
-    assert len(sql) == 13
+    assert len(sql) == 17
 
 
 @native

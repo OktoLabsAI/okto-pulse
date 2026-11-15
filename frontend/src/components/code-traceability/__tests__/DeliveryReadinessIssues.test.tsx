@@ -4,9 +4,9 @@ import type { ReadinessAction, ReadinessDetail, ReadinessIssue } from '@/types/d
 import { DeliveryReadinessPanel } from '../DeliveryReadinessPanel';
 import { DeliveryReadinessIssues } from '../DeliveryReadinessIssues';
 import { readinessDiagnostic } from '../readinessDiagnostic';
-import { readiness } from './readinessFixture';
+import { readiness, persistedProjection } from './readinessFixture';
 
-const api = vi.hoisted(() => ({ getDeliveryReadiness: vi.fn(), getDeliveryReadinessPage: vi.fn() }));
+const api = vi.hoisted(() => ({ getDeliveryReadiness: vi.fn(), getDeliveryReadinessPage: vi.fn(), getPersistedReadinessProjection: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 const action: ReadinessAction = {
   id: 'action-1', kind: 'execute_verification', message_code: 'verification_not_run', message_params: {},
@@ -43,7 +43,9 @@ function detail(): ReadinessDetail {
     entries: [{ id: 'entry', type: 'action', section: 'actions', value: action }],
     page: { total: 1, returned: 1, has_more: false, next_cursor: null, response_truncated: false, phase_filter: 'all' } };
 }
-beforeEach(() => { vi.clearAllMocks(); api.getDeliveryReadiness.mockResolvedValue(response()); api.getDeliveryReadinessPage.mockResolvedValue(detail()); });
+beforeEach(() => { vi.clearAllMocks(); api.getDeliveryReadiness.mockResolvedValue(response()); api.getDeliveryReadinessPage.mockResolvedValue(detail());
+  const value = persistedProjection(); value.scope.card_id = 'c'; api.getPersistedReadinessProjection.mockResolvedValue(value);
+});
 afterEach(cleanup);
 
 it('P09 appends complete detail pages once without losing their native references', async () => {
@@ -151,7 +153,7 @@ it('focuses the diagnosis heading, loads another page without changing metrics, 
   render(<DeliveryReadinessPanel boardId="b" specId="s" cardId="c" />);
   await screen.findByRole('progressbar', { name: 'Verification' });
   const open = screen.getByRole('button', { name: 'What is missing?' }); open.focus(); fireEvent.click(open);
-  expect(screen.getByRole('heading', { name: 'What is missing?' })).toHaveFocus();
+  expect(await screen.findByRole('heading', { name: 'What is missing?' })).toHaveFocus();
   fireEvent.click(screen.getByRole('button', { name: 'Load more causes' }));
   await waitFor(() => expect(screen.getAllByText('Capacity has no current verification.')).toHaveLength(2));
   expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');

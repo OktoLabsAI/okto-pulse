@@ -85,8 +85,8 @@ function Entry({ entry, onNavigate }: { entry: ReadinessEntry; onNavigate?: Navi
     case 'relations': return <p className="break-all">{label(entry.value.kind)}: {entry.value.source_id}{entry.value.target_id ? ' → ' + entry.value.target_id : ''}</p>;
   }
 }
-function Issue({ issue, onNavigate, onSnapshotInvalid, expanded, onToggle }: { issue: ReadinessIssue; onNavigate?: Navigate; onSnapshotInvalid: (message: string) => void;
-  expanded?: boolean; onToggle?: (open: boolean) => void }) {
+export function DeliveryReadinessIssue({ issue, onNavigate, onSnapshotInvalid, expanded, onToggle, summaryLabel }: { issue: ReadinessIssue; onNavigate?: Navigate; onSnapshotInvalid: (message: string) => void;
+  expanded?: boolean; onToggle?: (open: boolean) => void; summaryLabel?: string }) {
   const api = useDashboardApi();
   const [detail, setDetail] = useState<ReadinessDetail>();
   const [entries, setEntries] = useState<ReadinessEntry[]>([]);
@@ -130,10 +130,11 @@ function Issue({ issue, onNavigate, onSnapshotInvalid, expanded, onToggle }: { i
       // Store the intent synchronously; native toggle events may arrive after a refresh unmounts the row.
       if (onToggle) { event.preventDefault(); onToggle(!expanded); }
     }} className="cursor-pointer space-y-1 p-3 text-sm">
-      <span className="font-medium">{issue.message}</span>
-      <span className="block text-xs text-gray-500 dark:text-gray-400">{label(issue.phase)} · {issue.affected_unit_count} affected units · {label(issue.intrinsic_state)}</span>
+      <span className="font-medium">{summaryLabel || issue.message}</span>
+      {!summaryLabel && <span className="block text-xs text-gray-500 dark:text-gray-400">{label(issue.phase)} · {issue.affected_unit_count} affected units · {label(issue.intrinsic_state)}</span>}
     </summary>
     <div className="space-y-4 border-t border-gray-200 p-3 text-sm dark:border-gray-700">
+      {summaryLabel && <p>{issue.message}</p>}
       <p className="break-all text-xs text-gray-500 dark:text-gray-400">{issue.id} · {issue.code}</p>
       <p>Owner: {issue.owner ?? label(issue.owner_state)}</p>
       <p>Proof: {issue.blocks_proof ? 'blocked by this cause' : 'not blocked by this cause'} · Closure: {issue.blocks_target_transition === null ? 'not evaluated' : issue.blocks_target_transition ? 'blocked' : 'not blocked by this cause'}</p>
@@ -181,7 +182,7 @@ export function DeliveryReadinessIssues({ value, onNavigate, onSnapshotInvalid, 
     {copied.startsWith('Copy unavailable') && <textarea readOnly aria-label="Diagnostic text" value={readinessDiagnostic(value)} className="w-full rounded border p-2 text-xs dark:bg-gray-900" rows={8} />}
     <p className="text-xs text-gray-500 dark:text-gray-400">{value.summary.unresolved_units ?? 'Unknown'} pending units · {value.summary.root_causes} causes · {value.summary.lifecycle_pending ?? 'Unknown'} closure items. Exceptions: {value.summary.exceptions}.</p>
     <Actions values={value.next_actions} onNavigate={onNavigate} />
-    <div className="space-y-2">{value.issues.map(issue => <Issue key={value.snapshot_id + ':' + issue.id} issue={issue} onNavigate={onNavigate} onSnapshotInvalid={onSnapshotInvalid}
+    <div className="space-y-2">{value.issues.map(issue => <DeliveryReadinessIssue key={value.snapshot_id + ':' + issue.id} issue={issue} onNavigate={onNavigate} onSnapshotInvalid={onSnapshotInvalid}
       expanded={expandedIssueIds?.includes(issue.id)} onToggle={onIssueToggle ? open => onIssueToggle(issue.id, open) : undefined} />)}</div>
     {value.page.total === 0 && <p>No causes in this assessment. A transition still requires current authorization and gate checks.</p>}
     <p className="text-xs text-gray-500 dark:text-gray-400">{value.issues.length} of {value.page.total} causes shown{value.page.has_more || value.page.response_truncated ? ' · partial summary; more information is available' : ''}. Up to three recommended actions; all actions are available in cause details.</p>

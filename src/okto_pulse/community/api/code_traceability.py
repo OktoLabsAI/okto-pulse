@@ -12,6 +12,10 @@ invoke only those governance operations.
 from __future__ import annotations
 from okto_pulse.core.models.delivery_evidence import card_delivery_command, DeliveryBatchEntryError, DeliveryEvidenceInput, DeliveryEvidenceCommand, DeliveryEvidenceReadQuery, DeliveryEvidenceQuery, PersistedReadinessQuery, ReadinessRequeueCommand
 from okto_pulse.core.models.delivery_report import CardDeliveryRecordInput, DeliveryReportRejected
+from okto_pulse.core.models.human_task_submission import (
+    HumanTaskSubmissionInput, HumanTaskSubmissionRequest, HumanSubmissionConflict,
+)
+from okto_pulse.core.application.use_cases.human_task_submission import SubmitHumanTaskUseCase
 from okto_pulse.core.application.use_cases.delivery_evidence import GetDeliveryEvidenceUseCase, RecordCardDeliveryEvidenceUseCase, RecordDeliveryEvidenceUseCase
 from okto_pulse.core.application.use_cases.decision_review import GetDecisionReviewsUseCase, RecordDecisionReviewsUseCase
 from okto_pulse.core.models.decision_review import DecisionReviewInput, DecisionReviewCommand, DecisionReviewQuery
@@ -1276,6 +1280,29 @@ async def requeue_persisted_delivery_readiness(board_id: str, spec_id: str,
         board_id=board_id, principal=principal, uow=uow)
 
 
+@router.get("/{board_id}/specs/{spec_id}/delivery-summary")
+async def get_delivery_summary(board_id: str, spec_id: str, response: Response, request: Request,
+    group: Literal['delivered', 'in_progress', 'pending', 'optional_or_waived'] | None = Query(default=None),
+    limit: int = Query(default=10, ge=1, le=20),
+    cursor: str | None = Query(default=None, min_length=1, max_length=8192),
+    principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)):
+    from okto_pulse.core.application.use_cases.delivery_evidence import GetDeliverySummaryUseCase
+    from okto_pulse.core.models.delivery_summary import DeliverySummaryQuery
+
+    response.headers['Cache-Control'] = 'no-store'
+    if (set(request.query_params) - {'group', 'limit', 'cursor'}
+            or any(len(request.query_params.getlist(key)) != 1 for key in request.query_params)):
+        raise _http_error(ReadinessReadError('readiness_query_invalid'))
+    try:
+        query = DeliverySummaryQuery(board_id=board_id, spec_id=spec_id,
+            group=group, limit=limit, cursor=cursor)
+    except ValueError as exc:
+        raise _http_error(ReadinessReadError('readiness_query_invalid')) from exc
+    result = await _execute(GetDeliverySummaryUseCase(), query,
+        board_id=board_id, principal=principal, uow=uow, json_ready=True)
+    return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+
 @router.get("/{board_id}/specs/{spec_id}/delivery-readiness-summary")
 async def get_delivery_readiness_summary(board_id: str, spec_id: str, response: Response,
     principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)):
@@ -1349,6 +1376,39 @@ async def record_card_delivery_evidence(board_id: str, card_id: str, spec_id: st
     return await _execute(RecordCardDeliveryEvidenceUseCase(
         SubmitImplementationTargetExecutionUseCase(_investigation_service(), ImplementationTargetService())
     ), command, board_id=board_id, principal=principal, uow=uow)
+
+
+async def _human_submission_size(request: Request):
+    if len(await request.body()) > 128 * 1024:
+        raise HTTPException(413, detail={"code": "payload_too_large", "message": "O envio excede o limite permitido."})
+
+
+@router.post("/{board_id}/cards/{card_id}/human-submissions", status_code=201,
+             dependencies=[Depends(_human_submission_size)])
+async def submit_human_task(board_id: str, card_id: str, body: HumanTaskSubmissionInput,
+    principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)):
+    command = HumanTaskSubmissionRequest(board_id=board_id, card_id=card_id,
+                                        **body.model_dump(exclude_unset=True))
+    try:
+        result = await SubmitHumanTaskUseCase().execute(command, actor=_actor(principal, board_id), uow=uow)
+    except HumanSubmissionConflict as exc:
+        raise HTTPException(409, detail=exc.to_error_dict()) from exc
+    except DeliveryReportRejected as exc:
+        raise HTTPException(409, detail={"code": "submission_conflict",
+            "message": "Delivery cannot be completed yet. The owner must resolve the pending conditions.",
+            "details": {"reason": exc.code}, "next_action": "resolve_delivery_conditions",
+            "next_owner": "technical_owner"}) from exc
+    except (PermissionDeniedError, EntityNotFoundError) as exc:
+        raise _http_error(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(409, detail={"code": "submission_conflict",
+            "message": "The submission could not be accepted. Refresh the task and review your text.",
+            "next_action": "refresh_and_retry", "next_owner": "user"}) from exc
+    except Exception as exc:
+        raise HTTPException(503, detail={"code": "submission_unavailable",
+            "message": "The submission could not be confirmed. Try again with the same content.",
+            "next_action": "retry_same_intent", "next_owner": "user"}) from exc
+    return JSONResponse(result, status_code=200 if result["replayed"] else 201, headers={"Cache-Control": "no-store"})
 
 
 __all__ = ["router"]

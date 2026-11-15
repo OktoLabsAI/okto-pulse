@@ -182,11 +182,11 @@ const LINT_LANGUAGE_OPTIONS: Array<{
   label: string;
   title: string;
 }> = [
-  { code: 'pt-BR', label: 'PT-BR', title: 'Português (Brasil)' },
+  { code: 'pt-BR', label: 'PT-BR', title: 'Portuguese (Brazil)' },
   { code: 'en-US', label: 'EN-US', title: 'English (US)' },
-  { code: 'es-ES', label: 'ES', title: 'Español' },
-  { code: 'de-DE', label: 'DE', title: 'Deutsch' },
-  { code: 'fr-FR', label: 'FR', title: 'Français' },
+  { code: 'es-ES', label: 'ES', title: 'Spanish' },
+  { code: 'de-DE', label: 'DE', title: 'German' },
+  { code: 'fr-FR', label: 'FR', title: 'French' },
 ];
 export const IMPACT_EVIDENCE_MODES = ['off', 'advisory', 'require'] as const;
 export type ImpactEvidenceMode = (typeof IMPACT_EVIDENCE_MODES)[number];

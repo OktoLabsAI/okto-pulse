@@ -53,9 +53,17 @@ def _inventory(root, deadline):
         before = directory.lstat()
         if not stat.S_ISDIR(before.st_mode) or depth > 32:
             raise ValueError('evidence_recovery_directory_invalid')
+        if directory == ledger.staging_root and os.name != 'nt' and stat.S_IMODE(before.st_mode) & 0o077:
+            raise ValueError('evidence_recovery_staging_permissions_invalid')
         with os.scandir(directory) as entries:
             for entry in entries:
                 _check_time(deadline)
+                # Recovery requires an offline, quiescent publication window.
+                # An empty private staging directory is persistent infrastructure;
+                # staged payloads are neither authenticated receipts nor backup
+                # input. Preserve them in place and refuse an incomplete capture.
+                if directory == ledger.staging_root:
+                    raise ValueError('evidence_recovery_publication_in_progress')
                 if len(identities) >= _MAX_ENTRIES:
                     raise ValueError('evidence_recovery_entry_limit')
                 path = directory / entry.name
@@ -66,8 +74,10 @@ def _inventory(root, deadline):
                 if _is_reparse_stat(current):
                     raise ValueError('evidence_recovery_reparse_forbidden')
                 identities.append((relative, _file_identity(current)))
-                if directory == root and entry.name not in {'receipt.key', 'receipts', 'manifests'}:
+                if directory == root and entry.name not in {'receipt.key', 'receipts', 'manifests', '.receipt-staging'}:
                     raise ValueError('evidence_recovery_unclassified_entry')
+                if path == ledger.staging_root and not stat.S_ISDIR(current.st_mode):
+                    raise ValueError('evidence_recovery_directory_invalid')
                 if stat.S_ISDIR(current.st_mode):
                     if relative == 'receipt.key' or relative.startswith('receipts/'):
                         raise ValueError('evidence_recovery_directory_invalid')

@@ -7,6 +7,9 @@ aborts the source mutation too; no outbox worker or KG write is involved.
 from __future__ import annotations
 
 _DIRECT = {
+    "amendment_hotfix_revisions": "s.id = {row}.original_spec_id AND s.board_id = {row}.board_id",
+    "verification_scenario_states": "s.id = {row}.spec_id AND s.board_id = {row}.board_id AND s.edition = {row}.spec_edition",
+    "task_requirement_decisions": "s.id = {row}.spec_id AND s.board_id = {row}.board_id AND s.edition = {row}.spec_edition",
     "boards": "s.board_id = {row}.id",
     "specs": "s.id = {row}.id",
     "spec_history": "s.id = {row}.spec_id",
@@ -35,6 +38,13 @@ _DIRECT = {
 
 
 def _selection(table: str, row: str) -> str:
+    if table == 'specs':
+        # After deletion the revision row no longer exists, but its durable
+        # amendment references still identify surviving original consumers.
+        return ("FROM specs s JOIN boards b ON b.id=s.board_id WHERE ("
+            f"s.id={row}.id OR EXISTS (SELECT 1 FROM amendment_hotfix_revisions a "
+            "WHERE a.original_spec_id=s.id AND a.board_id=s.board_id "
+            f"AND a.revision_spec_id={row}.id AND a.board_id={row}.board_id))")
     predicate = _DIRECT[table].format(row=row)
     joins = {
         "implementation_targets": " JOIN cards c ON c.spec_id = s.id",
@@ -47,7 +57,15 @@ def _selection(table: str, row: str) -> str:
             " JOIN cards c ON c.spec_id = s.id JOIN implementation_target_execution_records e ON e.card_id = c.id"
         ),
     }.get(table, "")
-    return f"FROM specs s JOIN boards b ON b.id = s.board_id{joins} WHERE {predicate}"
+    native = f"FROM specs s JOIN boards b ON b.id = s.board_id{joins} WHERE {predicate}"
+    if table == 'amendment_hotfix_revisions':
+        return native
+    # Exact native lineage is a read dependency, never Delivery authority.
+    # One hop suffices because source snapshots forbid nested attribution.
+    return ("FROM specs s JOIN boards b ON b.id=s.board_id WHERE ("
+        f"s.id IN (SELECT s.id {native}) OR EXISTS (SELECT 1 FROM amendment_hotfix_revisions a "
+        "WHERE a.original_spec_id=s.id AND a.board_id=s.board_id "
+        f"AND a.revision_spec_id IN (SELECT s.id {native})))")
 
 
 def _statements(table: str, row: str, operation: str) -> str:
@@ -56,15 +74,19 @@ def _statements(table: str, row: str, operation: str) -> str:
     now = "strftime('%Y-%m-%d %H:%M:%f','now')"
     due = "strftime('%Y-%m-%d %H:%M:%f','now','+0.05 seconds')"
     if table == "card_delivery_evidence_records" and operation == "INSERT":
-        delta_kind = "CASE WHEN NEW.kind='progress' THEN 'card_progress_insert' ELSE 'full' END"
-        delta_card = "CASE WHEN NEW.kind='progress' THEN NEW.card_id ELSE NULL END"
+        delta_kind = "CASE WHEN NEW.kind='progress' AND spec_id=NEW.spec_id THEN 'card_progress_insert' ELSE 'full' END"
+        delta_card = "CASE WHEN NEW.kind='progress' AND spec_id=NEW.spec_id THEN NEW.card_id ELSE NULL END"
     else:
         delta_kind, delta_card = "'full'", "NULL"
+    # An outer SQLite UPSERT may override a nested INSERT OR IGNORE conflict
+    # policy. Test absence explicitly; the source transaction owns the writer.
     return f"""
-    INSERT OR IGNORE INTO readiness_scope
+    INSERT INTO readiness_scope
       (id,realm_id,board_id,spec_id,edition,source_revision,active_generation_id,tombstone,updated_at)
     SELECT s.id || ':' || s.edition,coalesce(b.realm_id,'local'),s.board_id,s.id,s.edition,
-      0,NULL,0,{now} {selection};
+      0,NULL,0,{now} {selection}
+      AND NOT EXISTS (SELECT 1 FROM readiness_scope existing_scope
+        WHERE existing_scope.id=s.id || ':' || s.edition);
     UPDATE readiness_scope SET source_revision=source_revision+1,updated_at={now},
       realm_id=(SELECT coalesce(realm_id,'local') FROM boards WHERE id=readiness_scope.board_id),
       tombstone=CASE WHEN EXISTS(SELECT 1 FROM specs active_spec
@@ -104,13 +126,17 @@ def _statements(table: str, row: str, operation: str) -> str:
 def readiness_trigger_statements() -> tuple[str, ...]:
     statements = []
     for table in _DIRECT:
-        for operation in (("UPDATE",) if table == "boards" else ("INSERT", "UPDATE", "DELETE")):
+        operations = ("UPDATE",) if table in {"boards", "verification_scenario_states"} else ("INSERT", "UPDATE", "DELETE")
+        for operation in operations:
             row = "OLD" if operation == "DELETE" else "NEW"
             # A deleted Spec is removed by foreign-key cascade; its old scope
             # must not be reintroduced with a dangling FK.
-            if table == "specs" and operation == "DELETE":
-                continue
             body = _statements(table, row, operation)
+            if operation == 'UPDATE' and table == 'amendment_hotfix_revisions':
+                statements.append(f"""CREATE TRIGGER trg_readiness_amendment_hotfix_revisions_update_old
+                AFTER UPDATE ON amendment_hotfix_revisions
+                WHEN OLD.original_spec_id IS NOT NEW.original_spec_id OR OLD.board_id IS NOT NEW.board_id
+                BEGIN {_statements(table, 'OLD', operation)} END""")
             if operation == "UPDATE" and table == "cards":
                 # Reparenting invalidates both consumers, without double
                 # counting ordinary field updates of the same Card.
@@ -128,6 +154,12 @@ def readiness_trigger_statements() -> tuple[str, ...]:
                 END""")
             condition = (" WHEN OLD.settings IS NOT NEW.settings OR OLD.realm_id IS NOT NEW.realm_id"
                 if table == "boards" else "")
+            if table == "verification_scenario_states" and operation == "UPDATE":
+                # Spec mutation already invalidates its scope once, regardless
+                # of how many scenario generations it changes/creates. Only a
+                # new acceptance needs this additional publication signal.
+                # Reservation order and exact replay do not change authority.
+                condition = " WHEN OLD.revision IS NOT NEW.revision AND OLD.generation=NEW.generation"
             statements.append(f"CREATE TRIGGER trg_readiness_{table}_{operation.lower()} "
                 f"AFTER {operation} ON {table}{condition} BEGIN {body} END")
     return tuple(statements)

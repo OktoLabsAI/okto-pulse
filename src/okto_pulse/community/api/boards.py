@@ -33,6 +33,7 @@ from okto_pulse.community.api.cards_pagination import (
     validate_card_list_query,
 )
 from okto_pulse.community.api.deps import (
+    get_read_unit_of_work,
     get_unit_of_work,
     get_unit_of_work_factory,
 )
@@ -65,6 +66,8 @@ from okto_pulse.core.application.use_cases import (
     PermissionDeniedError,
 )
 from okto_pulse.core.application.use_cases.boards_crud import (
+    ActivateBoardRuntimeCommand,
+    ActivateBoardRuntimeUseCase,
     ArchiveTreeCommand,
     ArchiveTreeUseCase,
     CreateCardInBoardCommand,
@@ -213,6 +216,80 @@ async def get_board(
     except PermissionDeniedError as exc:
         raise permission_denied_http_error(exc) from exc
     return result.board
+
+
+@router.post("/{board_id}/runtime/activate", response_model=dict[str, str])
+async def activate_board_runtime(
+    board_id: str,
+    principal: Principal = Depends(require_principal),
+    uow: PulseUnitOfWork = Depends(get_read_unit_of_work),
+):
+    """Activate existing graph readers under Core authorization and ownership."""
+    from okto_pulse.core.application.graph_write_contracts import GuardedWriteError
+    from okto_pulse.core.kg.interfaces.graph_errors import GraphActivationBusy, GraphError
+
+    try:
+        return await ActivateBoardRuntimeUseCase().execute(
+            ActivateBoardRuntimeCommand(board_id),
+            actor=RESTAdapterContract.actor_from_principal(principal, board_id=board_id),
+            uow=uow,
+        )
+    except EntityNotFoundError:
+        raise HTTPException(status_code=404, detail="Board not found") from None
+    except PermissionDeniedError as exc:
+        raise permission_denied_http_error(exc) from exc
+    except GraphActivationBusy as exc:
+        # Core identifies a read-only probe or writer admission refused before
+        # graph work. Do not retry arbitrary lifecycle failures, timeouts after
+        # mutation or lost ownership.
+        phase = exc.details.get("phase")
+        phase = phase if isinstance(phase, str) and phase in {
+            "observe_prepared_reader", "acquire_writer",
+        } else None
+        logging.getLogger(__name__).info(
+            "board_runtime.activation_busy board=%s phase=%s", board_id, phase,
+        )
+        raise HTTPException(status_code=503, headers={"Retry-After": "1"}, detail={
+            "code": "board_runtime_busy",
+            "message": "Graph information is being updated. Please try again shortly.",
+            "retryable": True,
+        }) from None
+    except (GraphError, GuardedWriteError) as exc:
+        # Keep the typed cause observable without logging native messages,
+        # arbitrary details, storage paths or ownership tokens.
+        codes = {
+            "graph_error", "graph_unavailable", "graph_invalid_query",
+            "graph_query_timeout", "graph_query_resource_limit", "graph_corruption",
+            "graph_lock_contention", "graph_capability_unavailable", "graph_index_unavailable",
+            "graph_memory_pressure", "lock_contention", "writer_lease_lost",
+            "writer_lock_unavailable", "writer_lease_board_mismatch",
+            "safe_lifecycle_unavailable", "safe_lifecycle_failed",
+            "boundary_violation", "invalid_board_id",
+        }
+        phases = {
+            "bootstrap", "checkpoint", "flush", "fsync", "close_reopen_probe",
+            "prepare_query_readers", "prepare_query_reader", "before_lifecycle",
+            "after_lifecycle", "before_runtime_activation_response", "heartbeat",
+            "guard_enter", "guard_exit", "exception_exit", "graph_lifecycle_checkpoint",
+            "graph_lifecycle_flush", "graph_lifecycle_fsync", "graph_lifecycle_close_reopen_probe",
+        }
+        code = exc.code if exc.code in codes else "other"
+        phase = exc.details.get("failure_phase", exc.details.get("phase"))
+        phase = phase if isinstance(phase, str) and phase in phases else None
+        step = exc.details.get("failed_step")
+        step = step if isinstance(step, str) and step in {"checkpoint", "flush", "fsync", "close_reopen_probe"} else None
+        logging.getLogger(__name__).warning(
+            "board_runtime.activation_failed board=%s exception_type=%s code=%s "
+            "retryable=%s failure_phase=%s failed_step=%s",
+            board_id, "GuardedWriteError" if isinstance(exc, GuardedWriteError) else "GraphError",
+            code, exc.retryable is True, phase, step,
+        )
+        # Native failures can contain storage paths. Keep the response bounded;
+        # the caller may continue using the Board's relational views.
+        raise HTTPException(status_code=503, detail={
+            "code": "board_runtime_unavailable",
+            "message": "Graph information is unavailable. Refresh the board to try again.",
+        }) from None
 
 
 @router.patch("/{board_id}", response_model=BoardResponse)

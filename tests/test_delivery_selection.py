@@ -8,7 +8,7 @@ from test_delivery_execution_sets import native_verifier as _native_verifier, co
 from test_delivery_progress_currentness import checkpoint
 from okto_pulse.community.adapters.sqlalchemy_models import Card, Spec
 from okto_pulse.core.domain.delivery_evidence import CardDeliveryScope, implementation_binding_ready
-from okto_pulse.core.domain.delivery_selection import superseded_delivery_selection
+from okto_pulse.core.domain.delivery_selection import superseded_delivery_selection, seal_delivery_selection
 from okto_pulse.core.models.delivery_selection import DeliverySelectionInput
 
 db = _db
@@ -127,6 +127,54 @@ async def test_reopened_spec_projects_old_done_card_as_zero_current_proof(compos
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("composed", [("target", "target-two")], indirect=True)
+@pytest.mark.parametrize("change", ["new_bug", "changed_requirement"])
+async def test_known_scope_change_preserves_history_and_keeps_rollup_readable(composed, change):
+    session, uow, use_case, actor = composed
+    store = uow.services.delivery_evidence
+    await seed_scope(session)
+    saved = await use_case.execute(composite_batch(), actor=actor, uow=uow)
+    normal_manifest = await store.seal_selection(SCOPE,
+        selection([saved["entries"][2]["id"]]), expected_status="in_progress", impact=None)
+    await frozen(session, normal_manifest, status="done")
+    test_scope = CardDeliveryScope("b", "scope-test-card", "s", 1)
+    old_test = await store.load_card_snapshot(test_scope)
+    test_manifest = seal_delivery_selection(scope=test_scope, card_version=1, revision=0,
+        records=[], obligations=old_test.obligations, impact=None)
+    test_report = dict(source="move_to_done", delivery_manifest=test_manifest)
+    await session.execute(update(Card).where(Card.id == test_scope.card_id).values(
+        status="done", conclusions=[test_report]))
+    if change == "new_bug":
+        session.add(Card(id="new-bug", board_id="b", spec_id="s", title="New regression",
+            status="in_progress", position=3, created_by="owner", card_type="bug"))
+    else:
+        spec = await session.get(Spec, "s")
+        rows = deepcopy(spec.functional_requirements)
+        rows[0]["text"] = "Changed functional semantics"
+        spec.functional_requirements = rows
+    await session.commit()
+
+    old_card = await store.load_card_snapshot(test_scope)
+    rollup, per_card = await store.load_rollup_snapshot("b", "s")
+    assert old_card.complete and old_card.facts_complete
+    assert old_card.tests == () and old_card.implementations == ()
+    assert rollup.complete and rollup.facts_complete
+    assert all(row["complete"] for row in per_card)
+    assert (await session.get(Card, test_scope.card_id)).conclusions == [test_report]
+    assert (await session.get(Card, "c")).conclusions[-1]["delivery_manifest"] == normal_manifest
+    if change == "new_bug":
+        assert "card:new-bug" in {row.binding.obligation_ref for row in rollup.obligations}
+        assert rollup.implementations  # unaffected Normal proof remains eligible
+    else:
+        assert rollup.implementations == ()  # changed semantics get no old credit
+    projection = await store.projection("b", "s")
+    assert not projection["allowed"]  # readable is not delivered
+    assert "delivery_projection_incomplete" not in projection["blockers"]
+    proposed = await store.load_card_snapshot(test_scope, prospective_report=test_report)
+    assert not proposed.complete
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("composed", [("target", "target-two")], indirect=True)
 @pytest.mark.parametrize("change,code", [
     ({"expected_delivery_revision": 2}, "revision_conflict"),
     ({"expected_card_version": 2}, "version_conflict"),
@@ -158,6 +206,7 @@ async def test_real_card_report_and_delivery_store_share_manifest_and_gate(compo
     from okto_pulse.core.models.schemas import CardMove
     from okto_pulse.core.services.main import CardService
     from okto_pulse.core.services.delivery_evidence import require_card_delivery
+    from okto_pulse.core.application.delivery_errors import DeliveryGateBlocked
     from sqlalchemy.ext.asyncio import async_sessionmaker
     from okto_pulse.community.adapters.sqlalchemy_policy_subject_versioning import CommunitySemanticSession
     from okto_pulse.community.adapters.sqlalchemy_delivery_evidence import CommunityDeliveryEvidenceStore
@@ -191,8 +240,14 @@ async def test_real_card_report_and_delivery_store_share_manifest_and_gate(compo
         assert [row["id"] for row in manifest["records"]] == [identity]
         store = CommunityDeliveryEvidenceStore(reader)
         card, spec, _ = await store._card_scope_guard(SCOPE)
-        from okto_pulse.core.services import delivery_evidence as delivery_gate
-        monkeypatch.setattr(delivery_gate, "delivery_store", lambda _: store)
-        with pytest.raises(ValueError, match="verification_not_run"):
+        snapshot = await store.load_card_snapshot(SCOPE)
+        assert snapshot.complete
+        assert all(any(implementation_binding_ready(fact, row.binding)
+            for fact in snapshot.implementations) for row in snapshot.obligations)
+        # A persisted implementation report is not an executed Test Card.
+        with pytest.raises(DeliveryGateBlocked) as blocked:
             await require_card_delivery(reader, card, spec)
+        metrics = blocked.value.to_error_dict()["details"]["readiness_summary"]
+        assert metrics["implementation"]["percent"] == 100
+        assert metrics["verification"]["percent"] == 0
         assert (await counts(reader))[:2] == [2, 3]

@@ -494,6 +494,12 @@ async def test_planning_read_keeps_providers_and_does_not_write(cycle_rig, monke
         added = set(registry.snapshot()) - set(providers)
         assert all(key.startswith("observability.samples.") for key in added)
     components = {item.key: item for item in result.planning_readiness.components}
+    assert result.validation_summary.edition == result.edition
+    assert result.validation_summary.verdict in {'not_validated', 'unavailable'}
+    assert project_validation_cycle(result)['validation_summary'] == result.validation_summary.to_dict()
+    assert 'validation_summary' not in project_validation_cycle(before)
+    from okto_pulse.community.api.validation_cycles import SpecValidationCycleResponse
+    assert SpecValidationCycleResponse.model_validate(project_validation_cycle(result)).validation_summary.edition == result.edition
     assert components["spec_validation"].native_result == (None if only_decomposition else "missing")
     if only_decomposition:
         assert result.visible_sections == ()
@@ -503,6 +509,9 @@ async def test_planning_read_keeps_providers_and_does_not_write(cycle_rig, monke
     assert components["decision_verification"].native_result == "not_applicable"
     if only_decomposition:
         assert components["task_requirement_links"].state == "unavailable"
+        assert result.validation_summary.verdict == 'unavailable'
+        assert result.validation_summary.blockers_count is None
+        assert result.validation_summary.exception_count is None
     else:
         assert components["task_requirement_links"].state != "unavailable"
     assert not commits

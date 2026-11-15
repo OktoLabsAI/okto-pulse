@@ -311,7 +311,9 @@ async def test_authority_batch_query_count_is_independent_of_card_count(ledger, 
     with statements(session.bind) as second:
         await read(session)
     # Native coverage check adds scalar Spec/Board reads; neither path loads per Card.
-    assert len(first) == len(second) == (19 if native_gate else 17)
+    # One bounded history query captures the current task requirement axis;
+    # adding Cards still adds no query or per-Card proof evaluation.
+    assert len(first) == len(second) == (20 if native_gate else 18)
     logs = [r for r in caplog.records if r.msg.startswith('readiness_batch_read')]
     assert len(logs) == 2
     assert [r.args[1] for r in logs] == [len(first), len(second)]

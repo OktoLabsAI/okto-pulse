@@ -1,0 +1,36 @@
+- generic [ref=e1]:
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - generic [ref=e6]:
+        - button "Hide sidebar" [ref=e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=e12]
+    - generic [ref=e13]:
+      - complementary [ref=e14]:
+        - generic [ref=e15]:
+          - generic [ref=e17]:
+            - heading "Boards" [level=2] [ref=e18]
+            - button "New board" [disabled] [ref=e19]
+          - navigation [ref=e21]:
+            - generic [ref=e22]:
+              - heading "My Boards" [level=3] [ref=e23]
+              - generic [ref=e24]:
+                - text: No boards created
+                - button "Create first board" [disabled] [ref=e25]
+      - main [ref=e26]:
+        - generic [ref=e28]:
+          - paragraph [ref=e29]: Select or create a board to get started
+          - button "Create Board" [disabled] [ref=e30]
+  - dialog [ref=e31]:
+    - generic [ref=e32]:
+      - paragraph [ref=e33]: Guided help
+      - paragraph [ref=e34]: 1 / 2
+    - heading "Move across work areas" [level=2] [ref=e35]
+    - paragraph [ref=e36]: Use the main tabs to switch between stories, ideations, refinements, specs, and task execution.
+    - paragraph [ref=e37]: This step is available even when its anchor is not visible.
+    - generic [ref=e38]:
+      - generic [ref=e39]:
+        - button "Back" [disabled] [ref=e40]
+        - button "Skip step" [ref=e43] [cursor=pointer]
+      - generic [ref=e44]:
+        - button "Skip all" [ref=e45] [cursor=pointer]
+        - button "Next" [active] [ref=e46] [cursor=pointer]

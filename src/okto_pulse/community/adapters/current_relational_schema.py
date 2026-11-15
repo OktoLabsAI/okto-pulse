@@ -20,7 +20,7 @@ from .sqlalchemy_models import Base
 
 
 APPLICATION_ID = 0x4F50554C  # OPUL
-SCHEMA_VERSION = 405
+SCHEMA_VERSION = 408
 _SCHEMA_QUERY = (
     "SELECT type, name, tbl_name, sql FROM main.sqlite_schema "
     "WHERE name NOT GLOB 'sqlite_*' ORDER BY type, name"
@@ -34,8 +34,9 @@ class StorageFormatError(RuntimeError):
         self.reason = reason
         super().__init__(
             f"storage_format_incompatible:{reason}; "
-            "Pulse 0.4.0 requires new storage or storage created by this schema. "
-            "Existing data was not converted; select a new storage location."
+            "Pulse requires storage matching this build. Existing data was not converted; "
+            "select matching storage or explicitly create a verified copy of the exact "
+            "supported historical format with 'okto-pulse storage upgrade-copy'."
         )
 
 
@@ -72,6 +73,12 @@ def create_current_schema_objects(connection: Any) -> None:
     The JSON contains concrete DDL, with no upgrade execution or version selection.
     """
     Base.metadata.create_all(connection)
+    from .sqlite_verification_currentness import (
+        install_verification_currentness_functions, install_verification_currentness_triggers,
+    )
+
+    install_verification_currentness_functions(connection.connection)
+    install_verification_currentness_triggers(connection)
     definitions = json.loads(files(__package__).joinpath("current_relational_objects.json").read_text(encoding="utf-8"))
     existing = {(row[0],row[1]): row[3] for row in connection.exec_driver_sql(_SCHEMA_QUERY)}
     for item in definitions:

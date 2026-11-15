@@ -1,515 +1,366 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { CardDeliveryDoDPanel } from '../CardDeliveryDoDPanel';
-import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
-import { readiness } from './readinessFixture';
+import { persistedProjection, readiness } from './readinessFixture';
+import type { TaskDeliveryState, TaskDeliverySummary } from '@/types/task-delivery';
+import type { Spec } from '@/types';
+import type { PersistedReadinessProjection } from '@/types/delivery-readiness';
 
-const api = vi.hoisted(() => ({
-  getDeliveryEvidence: vi.fn(),
-  recordDeliveryEvidence: vi.fn(),
-  recordCardDeliveryEvidence: vi.fn(),
-  getBoard: vi.fn(),
-  getDeliveryReadiness: vi.fn(),
-}));
+const api = vi.hoisted(() => ({ getPersistedReadinessProjection: vi.fn(), getDeliveryEvidence: vi.fn(), getBoard: vi.fn(),
+  getDeliveryReadinessPage: vi.fn(), getCardDeliveryLedger: vi.fn(), getTaskRequirementOptions: vi.fn(), submitHumanTask: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
-
-const CARD = { id: 'task-1', card_type: 'normal', spec_id: 's' };
-
-function projection(): DeliveryEvidenceProjection {
-  return {
-    board_id: 'b', spec_id: 's', edition: 2, version: 7, status: 'in_progress', allowed: false, complete: true,
-    blockers: ['delivery_implementation_missing'], rejected_record_ids: [],
-    rows: [],
-    implementations: [
-      { id: 'card_delivery_abc111', card_id: 'task-1', explanation: 'Observed implementation',
-        bindings: [{ obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64) }],
-        contributions: [{ binding: { obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64) }, contribution: 'complete', execution_ids: ['execution-1'] }],
-        admitted_obligation_refs: ['fr:fr_3a9f'], ready_obligation_refs: ['fr:fr_3a9f'],
-        executions: [{ execution_id: 'execution-1', target_id: 'target-1', source_ref: 'repo', relative_path: 'src/api.py', symbol: 'record', result_revision: 'r'.repeat(40), current_accepted_execution: true }] },
-    ],
-    tests: [],
-    candidates: [
-      { kind: 'implementation', id: 'execution-1', card_id: 'task-1', card_version: 4, label: 'src/api.py @ rev' },
-      { kind: 'implementation', id: 'execution-2', card_id: 'OTHER', card_version: 2, label: 'other card receipt' },
-    ],
-    records: [],
-    per_card: [
-      { card_id: 'task-1', title: 'TASK-142 — Re-anchor delivery bindings', card_type: 'normal', status: 'in_progress', satisfied: false,
-        obligations: [
-          { ref: 'fr:fr_3a9f', title: 'Bindings live on the card ledger', implementation_satisfied: true },
-          { ref: 'ac:ac_77ce', title: 'Done is rejected without proof', implementation_satisfied: false },
-        ] },
-    ],
-  };
+const card = { id: 'c', card_type: 'normal', spec_id: 's' };
+export function summary(state: TaskDeliveryState = 'implementation_pending'): TaskDeliverySummary {
+  return { contract_version: 'task-delivery-summary/v1', board_id: 'b', spec_id: 's', card_id: 'c',
+    spec_edition: 1, card_version: 1, snapshot_id: 'a'.repeat(64), population_known: true, evaluation_complete: true,
+    state, reason_code: state, reason: `Canonical reason: ${state}`, historical_status: 'in_progress',
+    next_action: { kind: 'record_progress', label: 'Record progress', owner: 'user', mutation_reauthorization_required: true },
+    pending_count: 1, last_update: null };
 }
-
+function projection(state?: TaskDeliveryState) {
+  const result = persistedProjection(); result.scope.card_id = 'c'; result.task_delivery = summary(state); return result;
+}
 beforeEach(() => {
-  vi.clearAllMocks();
-  api.getDeliveryEvidence.mockResolvedValue(projection());
-  api.getBoard.mockResolvedValue({ id: 'b', settings: { delivery_evidence_gate: 'blocking' } });
-  api.getDeliveryReadiness.mockResolvedValue(readiness('task-1'));
-  api.recordCardDeliveryEvidence.mockResolvedValue({ id: 'new', replayed: false });
-  api.recordDeliveryEvidence.mockResolvedValue({ id: 'waiver', replayed: false });
+  vi.resetAllMocks(); api.getPersistedReadinessProjection.mockResolvedValue(projection());
+  api.getDeliveryReadinessPage.mockResolvedValue({ ...readiness(), projection: {
+    projection_version: 1, generation_id: 'generation-1', snapshot_id: 'a'.repeat(64), freshness: 'current' } });
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.useRealTimers(); });
 
-it('keeps failed outcomes visible alongside the current run without adding delivery credit', async () => {
-  const value = projection();
-  value.tests = [
-    { id: 'failed', card_id: 'test-card', scenario_id: 'scenario', result: 'failed', current_verified_run: false },
-    { id: 'passed', card_id: 'test-card', scenario_id: 'scenario', result: 'passed', current_verified_run: true },
-    { id: 'foreign', card_id: 'another', scenario_id: 'other-card-scenario', result: 'failed', current_verified_run: true },
-  ];
-  api.getDeliveryEvidence.mockResolvedValue(value);
-  render(<CardDeliveryDoDPanel boardId="b" card={{ id: 'test-card', card_type: 'test', spec_id: 's' }} />);
-  expect(await screen.findByRole('region', { name: 'Recorded test outcomes' })).toBeInTheDocument();
-  expect(screen.getByText('failed', { selector: 'summary span' })).toBeInTheDocument();
-  expect(screen.getByText('passed', { selector: 'summary span' })).toBeInTheDocument();
-  const rows = screen.getAllByText('scenario').filter(element => element.closest('summary'));
-  expect(rows).toHaveLength(2);
-  for (const row of rows) {
-    expect(row.closest('details')).not.toHaveAttribute('open');
-    fireEvent.click(row.closest('summary')!);
-    expect(row.closest('details')).toHaveAttribute('open');
-  }
-  expect(screen.getByText('Outside the current authenticated run')).toBeInTheDocument();
-  expect(screen.getByText('Current authenticated run')).toBeInTheDocument();
-  expect(screen.queryByText(/other-card-scenario/)).not.toBeInTheDocument();
-  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
-});
-
-it('explains an empty Test delivery and keeps checkpoints secondary', async () => {
-  const value = projection();
-  value.implementations = [];
-  value.per_card![0].card_type = 'test';
-  value.per_card![0].status = 'not_started';
-  api.getDeliveryEvidence.mockResolvedValue(value);
-  const onOpenTests = vi.fn();
-  render(<CardDeliveryDoDPanel boardId="b" card={{ ...CARD, card_type: 'test' }} canTest onOpenTests={onOpenTests} />);
-  expect(await screen.findByRole('heading', { name: 'Evidence of test execution' })).toBeInTheDocument();
-  expect(screen.getByText('No test evidence recorded yet')).toBeInTheDocument();
-  expect(screen.getByText(/Start by executing a scenario/)).toBeInTheDocument();
-  expect(screen.getByText('Progress & recovery').closest('details')).not.toHaveAttribute('open');
-  fireEvent.click(screen.getByRole('button', { name: 'Record test evidence' }));
-  expect(screen.getByText(/No authenticated runs available/)).toBeInTheDocument();
-  expect(screen.getByRole('combobox', { name: /Authenticated run/ })).toBeDisabled();
-  expect(screen.getByText(/This card is not started/)).toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: 'Open Tests' }));
-  expect(onOpenTests).toHaveBeenCalledOnce();
-  expect(screen.getByText(/No implementation evidence is ready/)).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Record delivery evidence' })).toBeDisabled();
-  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
-});
-
-it('loads a newly eligible run after refresh, without listing foreign cards runs', async () => {
-  const value = projection();
-  api.getDeliveryEvidence.mockResolvedValueOnce(value);
-  render(<CardDeliveryDoDPanel boardId="b" card={{ ...CARD, card_type: 'test' }} canTest />);
-  fireEvent.click(await screen.findByRole('button', { name: 'Record test evidence' }));
-  expect(screen.getByRole('combobox', { name: /Authenticated run/ })).toBeDisabled();
-  api.getDeliveryEvidence.mockResolvedValue({ ...value, candidates: [
-    { kind: 'test', id: 'scenario', card_id: 'task-1', label: 'Verified capacity run · passed' },
-    { kind: 'test', id: 'foreign', card_id: 'another-card', label: 'Foreign run' },
-  ] });
-  fireEvent.click(screen.getByRole('button', { name: 'Refresh evidence' }));
-  const review = await screen.findByRole('button', { name: 'Review latest evidence for this draft' });
-  await waitFor(() => expect(review).toBeEnabled());
-  fireEvent.click(review);
-  expect(await screen.findByRole('option', { name: 'Verified capacity run · passed' })).toBeInTheDocument();
-  expect(screen.getByRole('combobox', { name: /Authenticated run/ })).toBeEnabled();
-  expect(screen.queryByRole('option', { name: 'Foreign run' })).not.toBeInTheDocument();
-});
-
-it('uses the pulse loader and preserves a failed read instead of presenting empty results', async () => {
-  api.getDeliveryEvidence.mockRejectedValue(new Error('Evidence unavailable'));
-  render(<CardDeliveryDoDPanel boardId="b" card={{ ...CARD, card_type: 'test' }} />);
-  expect(screen.getByRole('status', { name: 'Loading delivery evidence…' })).toBeInTheDocument();
-  expect(await screen.findByRole('alert')).toHaveTextContent('Evidence unavailable');
-  expect(screen.queryByText('No test evidence recorded yet')).not.toBeInTheDocument();
-});
-
-it('shows recorded explanations without substituting another cards evidence', async () => {
-  const value = projection();
-  value.tests = [{ id: 'proof', card_id: 'task-1', scenario_id: 'scenario-1', result: 'failed', current_verified_run: true }];
-  value.candidates = [{ kind: 'test', id: 'scenario-1', card_id: 'task-1', label: 'Capacity boundary', card_version: 4 }];
-  value.records = [{ id: 'proof', kind: 'test', actor_id: 'reviewer', created_at: '2026-10-09', revoked: false, payload: { justification: 'Capacity exceeded the configured limit.' } }];
-  api.getDeliveryEvidence.mockResolvedValue(value);
-  render(<CardDeliveryDoDPanel boardId="b" card={{ ...CARD, card_type: 'test' }} />);
-  const label = await screen.findByText('Capacity boundary');
-  fireEvent.click(label.closest('summary')!);
-  expect(screen.getByText('Capacity exceeded the configured limit.')).toBeVisible();
-  expect(screen.getByText('reviewer')).toBeVisible();
-  expect(screen.getByText('1 recorded · 1 current')).toBeInTheDocument();
-  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
-});
-
-it.each([true, false])('shows submitted impact currentness=%s independently of delivery credit', async current => {
-  const result = projection();
-  result.per_card![0].report_impact = { source: 'accumulated', current, reason: current ? null : 'known_source_changed' };
-  api.getDeliveryEvidence.mockResolvedValue(result);
-  render(<CardDeliveryDoDPanel boardId="b" card={CARD} />);
-  expect(await screen.findByText(current ? 'Submitted impact matches the known source bases.' : 'Submitted impact needs a new current basis before required impact validation can pass.')).toBeInTheDocument();
-  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
-});
-
-it('loads accumulated impact for this card without changing its delivery verdict', async () => {
-  const result = projection();
-  result.per_card![0].accumulated_impact = {
-    contract_version: 'delivery-net-impact/v1', status: 'needs_reconciliation', claim_only: true,
-    history_count: 1, sources: [], issues: [{ source_ref: null, code: 'source_unknown', record_ids: ['progress'] }],
-    issue_count: 1, issues_truncated: false,
-  };
-  api.getDeliveryEvidence.mockResolvedValue(result);
-  render(<CardDeliveryDoDPanel boardId="b" card={CARD} />);
-  expect(await screen.findByRole('region', { name: 'Accumulated impact claims' })).toBeInTheDocument();
-  expect(screen.getByText('Identify the source of this declaration.')).toBeInTheDocument();
-  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
-});
-
-it('renders the DoD obligations name-first with per-obligation proof state', async () => {
-  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
-  expect(await screen.findByText('Bindings live on the card ledger')).toBeTruthy();
-  expect(screen.getByText('(fr_3a9f)')).toBeTruthy();
-  expect(screen.getByText('✓ Implementation')).toBeTruthy();
-  expect(screen.getAllByText('Done is rejected without proof').length).toBeGreaterThan(0);
-  expect(screen.getByText('◌ No accepted proof')).toBeTruthy();
-});
-
-it('shows the gate pill with the unproven count', async () => {
-  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
-  const pill = await screen.findByTestId('dod-gate-pill');
-  expect(pill.textContent).toContain('Blocking');
-  expect(pill.textContent).toContain('1 of 2 implementation obligations unproven');
-});
-
-it('shows the blocked banner naming the unproven obligation', async () => {
-  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
-  const banner = await screen.findByTestId('dod-blocked-banner');
-  expect(banner.textContent).toContain('delivery_evidence_incomplete');
-  expect(banner.textContent).toContain('Done is rejected without proof');
-});
-
-it('stages a complete contribution without persisting proof or a waiver', async () => {
-  const value = projection(); Object.assign(value.per_card![0], { card_version: 4, delivery_revision: 3 });
-  api.getDeliveryEvidence.mockResolvedValue(value);
-  const onStage = vi.fn();
-  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord canWaiver onStage={onStage} />);
-  expect(screen.queryByText('Request Waiver (human)')).not.toBeInTheDocument();
-  fireEvent.click(await screen.findByTestId('dod-record-button'));
-  fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
-  fireEvent.click(screen.getByLabelText('Complete contribution for ac:ac_77ce'));
-  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'task-1:execution-1' } });
-  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Gate implementation completed.' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Add evidence to report draft' }));
-  await waitFor(() => expect(onStage).toHaveBeenCalledOnce());
-  expect(onStage.mock.calls[0][0]).toMatchObject({ expected_card_version: 4, expected_spec_edition: 2, expected_delivery_revision: 3,
-    entries: [{ kind: 'implementation', execution_id: 'execution-1', bindings: [{ obligation_ref: 'ac:ac_77ce', contribution: 'complete' }] }] });
-  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled(); expect(api.recordDeliveryEvidence).not.toHaveBeenCalled();
-});
-
-it('records implementation proof through the card-scoped surface with the card CAS', async () => {
-  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
-  fireEvent.click(await screen.findByTestId('dod-record-button'));
-  fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
-  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'task-1:execution-1' } });
-  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Execution receipt covers the gate behavior.' } });
-  fireEvent.click(screen.getByRole('button', { name: /Record delivery evidence/ }));
-  await waitFor(() => expect(api.recordCardDeliveryEvidence).toHaveBeenCalledTimes(1));
-  expect(api.recordCardDeliveryEvidence.mock.calls[0]).toEqual([
-    'b', 'task-1', 's',
-    expect.objectContaining({
-      kind: 'implementation', execution_id: 'execution-1',
-      expected_card_version: 4, expected_spec_edition: 2,
-      obligation_refs: [],
-      bindings: [{ obligation_ref: 'ac:ac_77ce', contribution: 'partial' }],
-    }),
-  ]);
-  expect(api.recordDeliveryEvidence).not.toHaveBeenCalled();
-});
-
-it('declares complete separately from partial for two obligations', async () => {
-  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
-  fireEvent.click(await screen.findByTestId('dod-record-button'));
-  fireEvent.click(screen.getByLabelText('Select fr:fr_3a9f'));
-  fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
-  fireEvent.click(screen.getByLabelText('Complete contribution for ac:ac_77ce'));
-  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'task-1:execution-1' } });
-  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Gate complete, other work remains.' } });
-  fireEvent.click(screen.getByRole('button', { name: /Record delivery evidence/ }));
-  await waitFor(() => expect(api.recordCardDeliveryEvidence).toHaveBeenCalledTimes(1));
-  expect(api.recordCardDeliveryEvidence.mock.calls[0][3].bindings).toEqual([
-    { obligation_ref: 'fr:fr_3a9f', contribution: 'partial' },
-    { obligation_ref: 'ac:ac_77ce', contribution: 'complete' },
-  ]);
-});
-
-it('shows a partial receipt after reload without marking implementation complete', async () => {
-  const value = projection();
-  value.per_card![0].obligations[0].implementation_satisfied = false;
-  value.implementations[0].ready_obligation_refs = [];
-  value.implementations[0].contributions = [{ binding: { obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64) }, contribution: 'partial', execution_ids: ['execution-1'] }];
-  api.getDeliveryEvidence.mockResolvedValue(value);
-  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
-  expect(await screen.findByText('◌ Partial contribution')).toBeTruthy();
-  expect(screen.queryByText('✓ Implementation')).toBeNull();
-  expect(screen.getByTestId('dod-gate-pill').textContent).toContain('2 of 2 implementation obligations unproven');
-});
-
-it('names exact receipt sets per obligation without a Cartesian assignment', async () => {
-  const value = projection();
-  value.candidates.push({ kind: 'implementation', id: 'execution-3', card_id: 'task-1', card_version: 4, label: 'src/other.py @ rev' });
-  api.getDeliveryEvidence.mockResolvedValue(value);
-  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
-  fireEvent.click(await screen.findByTestId('dod-record-button'));
-  fireEvent.click(screen.getByLabelText('Select receipts separately for each obligation'));
-  fireEvent.click(screen.getByLabelText('Select fr:fr_3a9f'));
-  fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
-  fireEvent.click(screen.getByLabelText('Complete contribution for fr:fr_3a9f'));
-  fireEvent.click(screen.getByLabelText('Receipt execution-1 for fr:fr_3a9f'));
-  fireEvent.click(screen.getByLabelText('Receipt execution-3 for fr:fr_3a9f'));
-  expect(screen.queryByLabelText('Receipt execution-2 for fr:fr_3a9f')).toBeNull();
-  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Complete parser, partial gate.' } });
-  expect((screen.getByRole('button', { name: /Record delivery evidence/ }) as HTMLButtonElement).disabled).toBe(true);
-  fireEvent.click(screen.getByLabelText('Receipt execution-3 for ac:ac_77ce'));
-  fireEvent.click(screen.getByRole('button', { name: /Record delivery evidence/ }));
-  await waitFor(() => expect(api.recordCardDeliveryEvidence).toHaveBeenCalledTimes(1));
-  const sent = api.recordCardDeliveryEvidence.mock.calls[0][3];
-  expect(sent.execution_id).toBeUndefined();
-  expect(sent.expected_card_version).toBe(4);
-  expect(sent.bindings).toEqual([
-    { obligation_ref: 'fr:fr_3a9f', contribution: 'complete', execution_refs: [{ execution_id: 'execution-1' }, { execution_id: 'execution-3' }] },
-    { obligation_ref: 'ac:ac_77ce', contribution: 'partial', execution_refs: [{ execution_id: 'execution-3' }] },
-  ]);
-});
-
-it('uses server readiness per binding when another receipt in the record is stale', async () => {
-  const value = projection();
-  value.per_card![0].obligations.forEach(obligation => { obligation.implementation_satisfied = false; });
-  value.implementations[0] = { ...value.implementations[0],
-    executions: [{ ...value.implementations[0].executions[0], current_accepted_execution: false }],
-    admitted_obligation_refs: ['ac:ac_77ce'], ready_obligation_refs: ['ac:ac_77ce'],
-    bindings: [{ obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64) }, { obligation_ref: 'ac:ac_77ce', semantic_sha256: 'b'.repeat(64) }],
-    contributions: [
-      { binding: { obligation_ref: 'fr:fr_3a9f', semantic_sha256: 'a'.repeat(64) }, contribution: 'complete', execution_ids: ['execution-1'] },
-      { binding: { obligation_ref: 'ac:ac_77ce', semantic_sha256: 'b'.repeat(64) }, contribution: 'complete', execution_ids: ['execution-2'] },
-    ],
-  };
-  api.getDeliveryEvidence.mockResolvedValue(value);
-  render(<CardDeliveryDoDPanel boardId="b" card={CARD} />);
-  const obligations = await screen.findByTestId('dod-obligations');
-  expect(within(obligations).getByText('Bindings live on the card ledger')).toBeTruthy();
-  const items = obligations.querySelectorAll('li');
-  expect(items[0].textContent).toContain('No accepted proof');
-  expect(items[1].textContent).toContain('✓ Implementation');
-});
-
-it('offers only this card receipts as accepted proof', async () => {
-  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
-  fireEvent.click(await screen.findByTestId('dod-record-button'));
-  const options = screen.getAllByRole('option') as HTMLOptionElement[];
-  expect(options.some(o => o.value === 'task-1:execution-1')).toBeTruthy();
-  expect(options.some(o => o.value.includes('execution-2'))).toBeFalsy();
-});
-
-it('routes a human waiver to the native Spec exception surface, never the card ledger', async () => {
-  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canWaiver />);
-  fireEvent.click(await screen.findByText('Request Waiver (human)'));
-  fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
-  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Not testable in this lane.' } });
-  fireEvent.click(screen.getByRole('button', { name: /Record waiver/ }));
-  await waitFor(() => expect(api.recordDeliveryEvidence).toHaveBeenCalledTimes(1));
-  expect(api.recordDeliveryEvidence.mock.calls[0]).toEqual([
-    'b', 's', expect.objectContaining({ kind: 'waiver', phase: 'implementation', obligation_refs: ['ac:ac_77ce'] }),
-  ]);
-  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
-});
-
-it('hides recording controls when the actor lacks the permissions', async () => {
-  render(<CardDeliveryDoDPanel boardId="b" card={CARD} />);
-  await screen.findByText('Bindings live on the card ledger');
-  expect(screen.queryByTestId('dod-record-button')).toBeNull();
-  expect(screen.queryByText('Request Waiver (human)')).toBeNull();
-});
-
-it.each([['passed', false], ['failed', false], ['passed', true], ['failed', true]] as const)('test cards record authenticated %s runs during execution, staged=%s', async (result, staged) => {
-  const p = projection();
-  p.per_card = [{ card_id: 'task-1', title: 'TEST-21', card_type: 'test', status: 'in_progress', card_version: 2, delivery_revision: 5, satisfied: false, obligations: [] }];
-  p.rows = [{ obligation: { title: 'Done is rejected without proof', binding: { obligation_ref: 'ac:ac_77ce', semantic_sha256: 'c'.repeat(64) } }, implementation_ids: [], test_ids: [], implementation_waiver_ids: [], test_waiver_ids: [], implementation_satisfied: true, test_satisfied: false }];
-  p.candidates = [{ kind: 'test', id: 'scenario-9', card_id: 'task-1', card_version: 2, label: `DoD rejection scenario · ${result}` }];
-  api.getDeliveryEvidence.mockResolvedValue(p);
-  const onStage = vi.fn();
-  render(<CardDeliveryDoDPanel boardId="b" card={{ id: 'task-1', card_type: 'test', spec_id: 's' }} canTest onStage={staged ? onStage : undefined} />);
-  fireEvent.click(await screen.findByTestId('dod-record-button'));
-  fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
-  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'task-1:scenario-9' } });
-  fireEvent.click(screen.getByRole('checkbox', { name: /card_delivery_abc111/ }));
-  fireEvent.change(screen.getByRole('textbox'), { target: { value: `Authenticated ${result} run.` } });
-  fireEvent.click(screen.getByRole('button', { name: staged ? 'Add evidence to report draft' : 'Record delivery evidence' }));
-  await waitFor(() => expect(staged ? onStage : api.recordCardDeliveryEvidence).toHaveBeenCalledTimes(1));
-  const sent = staged ? onStage.mock.calls[0][0].entries[0] : api.recordCardDeliveryEvidence.mock.calls[0][3];
-  expect(sent).toMatchObject({
-    kind: 'test', scenario_id: 'scenario-9', implementation_ids: ['card_delivery_abc111'],
-  });
-  expect(sent).not.toHaveProperty('test_result');
-  if (staged) expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
-});
-
-it.each([null, 'off'])('does not invent a gate mode for incompatible policy %j', async (mode) => {
-  api.getBoard.mockResolvedValue({ settings: { delivery_evidence_gate: mode } });
-  render(<CardDeliveryDoDPanel boardId="b" card={CARD} />);
-  expect(await screen.findByText(/Unknown/)).toBeInTheDocument();
-  await waitFor(() => expect(api.getDeliveryEvidence).toHaveBeenCalled());
-  expect(screen.queryByText(/Gate: Blocking/)).not.toBeInTheDocument();
-});
-
-it('clears the previous gate mode when a different Board cannot be read', async () => {
-  api.getBoard.mockResolvedValueOnce({ settings: { delivery_evidence_gate: 'advisory' } });
-  const view = render(<CardDeliveryDoDPanel boardId="b" card={CARD} />);
-  expect(await screen.findByText(/Advisory/)).toBeInTheDocument();
-  api.getBoard.mockRejectedValueOnce(new Error('Board unavailable'));
-  view.rerender(<CardDeliveryDoDPanel boardId="other" card={CARD} />);
-  await waitFor(() => expect(api.getBoard).toHaveBeenLastCalledWith('other'));
-  expect(await screen.findByText(/Unknown/)).toBeInTheDocument();
-  expect(screen.queryByText(/Advisory/)).not.toBeInTheDocument();
-});
-
-
-it('does not apply the implementation DoD presentation to a Test Card with inherited obligations', async () => {
-  const value = projection();
-  value.per_card![0].card_type = 'test';
-  api.getDeliveryEvidence.mockResolvedValue(value);
-  render(<CardDeliveryDoDPanel boardId="b" card={{ ...CARD, card_type: 'test' }} canTest />);
-  expect(await screen.findByText(/Test Cards have a verification gate before Done/)).toBeInTheDocument();
-  expect(screen.queryByTestId('dod-gate-pill')).not.toBeInTheDocument();
-  expect(screen.queryByTestId('dod-obligations')).not.toBeInTheDocument();
-  expect(screen.queryByTestId('dod-blocked-banner')).not.toBeInTheDocument();
-  expect(screen.getByTestId('dod-record-button')).toBeInTheDocument();
-  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
-});
-
-async function fillRecordingDraft() {
-  fireEvent.click(await screen.findByTestId('dod-record-button'));
-  fireEvent.click(screen.getByLabelText('Select ac:ac_77ce'));
-  fireEvent.change(screen.getByRole('combobox'), { target: { value: 'task-1:execution-1' } });
-  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Preserved explanation' } });
+async function openProgress() {
+  await screen.findByText('Work remaining');
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Record progress' }));
 }
 
-it('preserves a delivery draft and adopts new CAS values only after explicit review', async () => {
-  const initial = projection();
-  Object.assign(initial.per_card![0], { card_version: 4, delivery_revision: 3 });
-  api.getDeliveryEvidence.mockResolvedValue(initial);
-  const onStage = vi.fn();
-  const view = render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={0} onStage={onStage} />);
-  await fillRecordingDraft();
-  const current = projection();
-  current.edition = 3;
-  Object.assign(current.per_card![0], { card_version: 7, delivery_revision: 5 });
-  current.candidates[0].card_version = 7;
-  api.getDeliveryEvidence.mockResolvedValue(current);
-  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={1} onStage={onStage} />);
-  const review = await screen.findByRole('button', { name: 'Review latest evidence for this draft' });
-  await waitFor(() => expect(review).toBeEnabled());
-  expect(screen.getByRole('textbox')).toHaveValue('Preserved explanation');
-  expect(screen.getByLabelText('Select ac:ac_77ce')).toBeChecked();
-  const submit = screen.getByRole('button', { name: 'Add evidence to report draft' });
-  expect(submit).toBeDisabled();
-  fireEvent.submit(screen.getByTestId('dod-record-form'));
-  expect(onStage).not.toHaveBeenCalled();
-  fireEvent.click(review);
-  expect(onStage).not.toHaveBeenCalled();
-  fireEvent.click(submit);
-  await waitFor(() => expect(onStage).toHaveBeenCalledOnce());
-  expect(onStage.mock.calls[0][0]).toMatchObject({ expected_card_version: 7, expected_spec_edition: 3, expected_delivery_revision: 5,
-    entries: [{ justification: 'Preserved explanation', execution_id: 'execution-1' }] });
+function unit(ref: string, implementation = 'satisfied', verification = 'missing'): PersistedReadinessProjection['units'][number] {
+  return { card_id: 'c', kind: 'obligation', ref, semantic_sha256: 'a'.repeat(64), spec_edition: 1,
+    contribution_card_ids: ['c'], implementation_state: implementation, verification_state: verification,
+    implementation_reason_codes: [], verification_reason_codes: [] };
+}
+
+it('shows the verdict, canonical percentages and assigned matrix before the two overview actions', async () => {
+  const value = projection();
+  value.units = [unit('fr:login'), unit('ac:secure', 'partial', 'failed'), unit('tr:audit', 'waived', 'not_applicable')];
+  value.page = { offset: 0, limit: 20, total: 3, has_more: false, next_cursor: null };
+  value.task_delivery!.last_update = { record_id: 'note', content: 'Narrative belongs in Details', remaining: null,
+    submitted_at: '2026-11-04', origin: 'human_submission', text_truncated: false };
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  const spec = { id: 's', edition: 1, version: 1, functional_requirements: [{ id: 'login', text: 'Sign in with a valid account' },
+    { id: 'unassigned', text: 'Unassigned work must not appear' }], acceptance_criteria: [{ id: 'secure', text: 'Reject expired credentials' }],
+    technical_requirements: [{ id: 'audit', text: 'Record access attempts' }] } as Spec;
+  render(<CardDeliveryDoDPanel boardId="b" card={card} spec={spec} canProgress canWaiver />);
+  await screen.findByText('Work remaining');
+  expect(screen.getByRole('progressbar', { name: 'Implementation' })).toHaveAttribute('aria-valuenow', '100');
+  expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');
+  const table = screen.getByRole('table', { name: 'Implementation and verification by requirement' });
+  expect(within(table).getAllByRole('row')).toHaveLength(4);
+  expect(within(table).getByRole('row', { name: /Sign in with a valid account/ })).toHaveTextContent('ImplementedPending');
+  const partial = within(table).getByRole('row', { name: /Reject expired credentials/ });
+  expect(within(partial).getByText('Partial')).toBeVisible();
+  expect(within(partial).getByText('Failed')).toBeVisible();
+  expect(within(table).getByRole('row', { name: /Record access attempts/ })).toHaveTextContent('WaivedNot applicable');
+  expect(screen.queryByText('Unassigned work must not appear')).not.toBeInTheDocument();
+  expect(screen.queryByText('Narrative belongs in Details')).not.toBeInTheDocument();
+  const overview = screen.getByRole('region', { name: 'Task delivery' });
+  expect(within(overview).getAllByRole('button').map(button => button.textContent)).toEqual(['How this works', 'Show details', 'Change task requirements']);
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(1);
+  expect(api.getTaskRequirementOptions).not.toHaveBeenCalled();
+  expect(api.getDeliveryReadinessPage).not.toHaveBeenCalled();
 });
 
-it('blocks recording after a failed refresh and retains selections through retry', async () => {
-  const view = render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={0} />);
-  await fillRecordingDraft();
-  api.getDeliveryEvidence.mockRejectedValueOnce(new Error('Refresh failed'));
-  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={1} />);
-  expect(await screen.findByText('Refresh failed')).toBeInTheDocument();
-  const submit = screen.getByRole('button', { name: 'Record delivery evidence' });
-  expect(submit).toBeDisabled();
-  expect(screen.getByRole('button', { name: 'Review latest evidence for this draft' })).toBeDisabled();
-  expect(screen.getByRole('textbox')).toHaveValue('Preserved explanation');
-  fireEvent.submit(screen.getByTestId('dod-record-form'));
-  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole('button', { name: 'Retry evidence' }));
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Review latest evidence for this draft' })).toBeEnabled());
-  fireEvent.click(screen.getByRole('button', { name: 'Review latest evidence for this draft' }));
-  expect(screen.getByRole('textbox')).toHaveValue('Preserved explanation');
-  fireEvent.click(submit);
-  await waitFor(() => expect(api.recordCardDeliveryEvidence).toHaveBeenCalledOnce());
+it('keeps an independently verified requirement green and attributes the failed version and repair to its own row', async () => {
+  const value = projection('verification_failed');
+  value.units = [unit('fr:stable', 'satisfied', 'satisfied'), {
+    ...unit('fr:changed', 'satisfied', 'failed'), verification_reason_codes: ['verification_failed'] }];
+  value.page.total = 2;
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  const spec = { id: 's', edition: 1, version: 1, functional_requirements: [
+    { id: 'stable', text: 'Preserve answered questions' }, { id: 'changed', text: 'Explain ambiguity scores' }] } as Spec;
+  render(<CardDeliveryDoDPanel boardId="b" card={card} spec={spec} canProgress canWaiver />);
+  const stable = await screen.findByRole('row', { name: /Preserve answered questions/ });
+  const failed = screen.getByRole('row', { name: /Explain ambiguity scores/ });
+  expect(within(stable).getByText('Verified')).toBeVisible();
+  expect(stable.querySelector('.lucide-circle-check')).toHaveAttribute('aria-hidden', 'true');
+  expect(stable).not.toHaveTextContent('failed check');
+  expect(within(failed).getByText('Failed')).toBeVisible();
+  expect(failed.querySelector('.lucide-circle-x')).toHaveAttribute('aria-hidden', 'true');
+  expect(failed).toHaveTextContent('verify the corrected version and record the result');
+  // The server percentage is authoritative even when only two rows are visible.
+  expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledOnce();
+  expect(api.getDeliveryReadinessPage).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: 'Verification and pending work' })).not.toBeInTheDocument();
 });
 
-it('does not retain a selected receipt as admissible after it disappears on review', async () => {
-  const view = render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={0} />);
-  await fillRecordingDraft();
-  api.getDeliveryEvidence.mockResolvedValue({ ...projection(), candidates: [] });
-  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={1} />);
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Review latest evidence for this draft' })).toBeEnabled());
-  fireEvent.click(screen.getByRole('button', { name: 'Review latest evidence for this draft' }));
-  expect(screen.getByText(/Some selected obligations or receipts are no longer available/)).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Record delivery evidence' })).toBeDisabled();
-  fireEvent.submit(screen.getByTestId('dod-record-form'));
-  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+it.each([
+  ['missing', 'verification_association_missing', 'link the result to the implementation it verified'],
+  ['missing', 'verification_not_run', 'run the check and record the actual result'],
+  ['conflict', 'verification_conflict', 'identify the result for this delivered version and resolve the ambiguity'],
+  ['stale', 'verification_base_mismatch', 'Link a valid result for the current version or repeat verification against it'],
+  ['unknown', 'assessment_unavailable', 'Restore the missing information or access, then refresh the task'],
+])('renders the server %s diagnosis and next step without loading technical checks', async (state, reason, next) => {
+  const value = projection('verification_pending');
+  value.units = [{ ...unit('fr:item', 'satisfied', state), verification_reason_codes: [reason] }];
+  value.page.total = 1;
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={card} spec={{ id: 's', edition: 1, version: 1,
+    functional_requirements: [{ id: 'item', text: 'Affected requirement' }] } as Spec} />);
+  expect(await screen.findByRole('row', { name: /Affected requirement/ })).toHaveTextContent(next);
+  expect(api.getDeliveryReadinessPage).not.toHaveBeenCalled();
 });
 
-it('ignores an older pending projection after the current revision has loaded', async () => {
-  let resolveOld!: (value: DeliveryEvidenceProjection) => void;
-  api.getDeliveryEvidence.mockReturnValueOnce(new Promise<DeliveryEvidenceProjection>(resolve => { resolveOld = resolve; }));
-  const view = render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={0} />);
-  const current = projection(); current.per_card![0].obligations[0].title = 'Current obligation';
-  api.getDeliveryEvidence.mockResolvedValue(current);
-  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={1} />);
-  expect(await screen.findByText('Current obligation')).toBeVisible();
-  await act(async () => resolveOld(projection()));
-  expect(screen.getByText('Current obligation')).toBeVisible();
-  expect(screen.queryByText('Bindings live on the card ledger')).not.toBeInTheDocument();
+it('does not present previous next steps as current while the projection is unavailable', async () => {
+  const value = projection('verification_failed');
+  value.units = [{ ...unit('fr:item', 'satisfied', 'failed'), verification_reason_codes: ['verification_failed'] }];
+  value.page.total = 1;
+  value.projection.freshness = 'unavailable';
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={card} />);
+  await screen.findByText('Delivery unavailable');
+  expect(screen.queryByText(/verify the corrected version/)).not.toBeInTheDocument();
+  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
 });
 
-it('retries a failed submission with its original receipt key and without requiring a new read', async () => {
-  api.recordCardDeliveryEvidence.mockRejectedValueOnce(new Error('Write interrupted'));
-  render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord />);
-  await fillRecordingDraft();
-  fireEvent.click(screen.getByRole('button', { name: 'Record delivery evidence' }));
-  expect(await screen.findByText('Write interrupted')).toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: 'Retry evidence' })).not.toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Record delivery evidence' })).toBeEnabled();
-  fireEvent.click(screen.getByRole('button', { name: 'Record delivery evidence' }));
-  await waitFor(() => expect(api.recordCardDeliveryEvidence).toHaveBeenCalledTimes(2));
-  expect(api.recordCardDeliveryEvidence.mock.calls[1][3]).toEqual(api.recordCardDeliveryEvidence.mock.calls[0][3]);
+it('shows test scenarios and keeps unknown and non-applicable percentages distinct from zero', async () => {
+  const value = projection('verification_pending');
+  const metrics = value.summaries.find(row => row.card_id === 'c')!;
+  metrics.card_type = 'test';
+  metrics.implementation = { ...metrics.implementation, status: 'not_applicable', percent: null };
+  metrics.verification = { ...metrics.verification, status: 'unknown', percent: null };
+  value.units = [{ ...unit('scenario-1', 'not_applicable', 'unknown'), kind: 'scenario' }];
+  value.page.total = 1;
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={{ ...card, card_type: 'test' }} spec={{ id: 's', edition: 1, version: 1,
+    test_scenarios: [{ id: 'scenario-1', title: 'Reject expired credentials' }] } as Spec} />);
+  await screen.findByText('Awaiting verification');
+  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+  expect(screen.queryByText('0%')).not.toBeInTheDocument();
+  expect(screen.getByRole('row', { name: /Reject expired credentials/ })).toHaveTextContent('Not applicableUnknown');
 });
 
-it('defers both delivery and readiness reads while hidden, then refreshes without losing the draft', async () => {
-  const view = render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord active={false} revision={0} />);
-  expect(api.getDeliveryEvidence).not.toHaveBeenCalled();
-  expect(api.getDeliveryReadiness).not.toHaveBeenCalled();
-  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={0} />);
-  await fillRecordingDraft();
-  const reads = api.getDeliveryEvidence.mock.calls.length;
-  const readinessReads = api.getDeliveryReadiness.mock.calls.length;
-  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord active={false} revision={1} />);
-  fireEvent(window, new Event('pulse:delivery-evidence-changed'));
-  expect(api.getDeliveryEvidence).toHaveBeenCalledTimes(reads);
-  expect(api.getDeliveryReadiness).toHaveBeenCalledTimes(readinessReads);
-  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={1} />);
-  await waitFor(() => expect(api.getDeliveryEvidence).toHaveBeenCalledTimes(reads + 1));
-  await waitFor(() => expect(api.getDeliveryReadiness).toHaveBeenCalledTimes(readinessReads + 1));
-  expect(screen.getByRole('textbox')).toHaveValue('Preserved explanation');
-  expect(screen.getByRole('button', { name: 'Record delivery evidence' })).toBeDisabled();
-  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+it('pages the assigned matrix on demand and returns to the first page on modal refresh', async () => {
+  const first = projection();
+  first.units = Array.from({ length: 20 }, (_, n) => unit(`fr:requirement-${n + 1}`));
+  first.page = { offset: 0, limit: 20, total: 21, has_more: true, next_cursor: 'page-two' };
+  const second = { ...first, units: [unit('fr:requirement-21')], page: { offset: 20, limit: 20, total: 21, has_more: false, next_cursor: null } };
+  api.getPersistedReadinessProjection.mockResolvedValueOnce(first).mockResolvedValueOnce(second).mockResolvedValue(first);
+  const view = render(<CardDeliveryDoDPanel boardId="b" card={card} />);
+  await screen.findByText('1–20 of 21 items');
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Next items' }));
+  await screen.findByText('21–21 of 21 items', {}, { timeout: 2000 });
+  expect(api.getPersistedReadinessProjection.mock.calls[1][2]).toEqual({ cardId: 'c', unitLimit: 20, cursor: 'page-two' });
+  expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');
+  expect(screen.queryByRole('button', { name: 'Next items' })).not.toBeInTheDocument();
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={card} refreshRequest={1} />);
+  await screen.findByText('1–20 of 21 items', {}, { timeout: 2000 });
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(3);
+  expect(api.getPersistedReadinessProjection.mock.calls[2][2]).toEqual({ cardId: 'c', unitLimit: 20 });
 });
 
-it('does not require another review just for returning to unchanged delivery evidence', async () => {
-  const view = render(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={0} />);
-  await fillRecordingDraft();
-  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={0} active={false} />);
-  api.getDeliveryEvidence.mockResolvedValue(projection());
-  view.rerender(<CardDeliveryDoDPanel boardId="b" card={CARD} canRecord revision={0} />);
-  await waitFor(() => expect(screen.getByRole('button', { name: 'Record delivery evidence' })).toBeEnabled());
-  expect(screen.getByRole('textbox')).toHaveValue('Preserved explanation');
-  expect(screen.queryByRole('button', { name: 'Review latest evidence for this draft' })).not.toBeInTheDocument();
-  expect(api.recordCardDeliveryEvidence).not.toHaveBeenCalled();
+it('rejects a matrix from another card instead of showing a false delivery result', async () => {
+  const value = projection('delivered'); value.units = [{ ...unit('fr:foreign'), card_id: 'other' }]; value.page.total = 1;
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={card} />);
+  await screen.findByText('Delivery unavailable');
+  expect(screen.queryByRole('table')).not.toBeInTheDocument();
+  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+});
+
+it('does not mix pages from different assessments or keep green percentages after that conflict', async () => {
+  const first = projection(); first.units = [unit('fr:first')];
+  first.page = { offset: 0, limit: 20, total: 2, has_more: true, next_cursor: 'next' };
+  const next = { ...first, projection: { ...first.projection, generation_id: 'changed' }, units: [unit('fr:second')] };
+  api.getPersistedReadinessProjection.mockResolvedValueOnce(first).mockResolvedValueOnce(next);
+  render(<CardDeliveryDoDPanel boardId="b" card={card} />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Next items' }));
+  await screen.findByText('Delivery unavailable', {}, { timeout: 2000 });
+  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+  expect(screen.queryByText('Implemented')).not.toBeInTheDocument();
+  expect(screen.queryByText('Functional requirement (second)')).not.toBeInTheDocument();
+});
+
+it('reads one scoped projection and loads pending work only inside Details', async () => {
+  render(<CardDeliveryDoDPanel boardId="b" card={card} canProgress />);
+  await screen.findByText('Work remaining');
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(1);
+  expect(api.getPersistedReadinessProjection.mock.calls[0][2]).toEqual({ cardId: 'c', unitLimit: 20 });
+  expect(screen.getByRole('button', { name: 'Show details' })).toHaveAttribute('aria-expanded', 'false');
+  expect(screen.queryByRole('button', { name: /^Refresh$/ })).not.toBeInTheDocument();
+  for (const fn of [api.getBoard, api.getDeliveryEvidence, api.getDeliveryReadinessPage, api.getCardDeliveryLedger, api.getTaskRequirementOptions]) expect(fn).not.toHaveBeenCalled();
+  expect(screen.queryByRole('slider')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+  expect(await screen.findByText('Delivery details')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Hide details' })).toHaveAttribute('aria-expanded', 'true');
+  await screen.findByText(/No pending checks were identified/);
+  expect(api.getDeliveryReadinessPage).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole('button', { name: 'Verification and pending work' })).not.toBeInTheDocument();
+  for (const fn of [api.getBoard, api.getDeliveryEvidence, api.getCardDeliveryLedger, api.getTaskRequirementOptions]) expect(fn).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Hide details' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+  await screen.findByText(/No pending checks were identified/);
+  expect(api.getDeliveryReadinessPage).toHaveBeenCalledTimes(1);
+});
+
+it('waits for the refreshed overview before reading checks and makes only one diagnostic request per refresh', async () => {
+  const view = render(<CardDeliveryDoDPanel boardId="b" card={card} />);
+  await screen.findByText('Work remaining');
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+  await screen.findByText(/No pending checks were identified/);
+  expect(api.getDeliveryReadinessPage).toHaveBeenCalledTimes(1);
+  let finish!: (value: PersistedReadinessProjection) => void;
+  api.getPersistedReadinessProjection.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={card} refreshRequest={1} />);
+  expect(screen.getByRole('status')).toHaveTextContent('Checking delivery');
+  await waitFor(() => expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(2), { timeout: 2000 });
+  expect(api.getDeliveryReadinessPage).toHaveBeenCalledTimes(1);
+  const next = projection(); next.projection.generation_id = 'generation-2';
+  api.getDeliveryReadinessPage.mockResolvedValue({ ...readiness(), projection: {
+    projection_version: 1, generation_id: 'generation-2', snapshot_id: 'a'.repeat(64), freshness: 'current' } });
+  await act(async () => finish(next));
+  await screen.findByText(/No pending checks were identified/);
+  expect(api.getDeliveryReadinessPage).toHaveBeenCalledTimes(2);
+});
+
+it.each([
+  ['updating_or_unknown', 'Delivery not confirmed'], ['needs_attention', 'Needs attention'], ['optional_or_waived', 'Not required'],
+  ['verification_failed', 'Verification failed'], ['historical_done', 'Previously completed'],
+  ['implementation_pending', 'Work remaining'], ['verification_pending', 'Awaiting verification'],
+  ['completion_pending', 'Awaiting completion'], ['delivered', 'Delivered'], ['ready', 'Ready to complete'],
+] as const)('renders the Core state %s without a competing verdict', async (state, title) => {
+  api.getPersistedReadinessProjection.mockResolvedValue(projection(state));
+  render(<CardDeliveryDoDPanel boardId="b" card={card} />);
+  await screen.findByText(title);
+  await screen.findByText(`Canonical reason: ${state}`);
+  if (state === 'delivered' || state === 'verification_failed') expect(document.querySelector(state === 'delivered' ? '.lucide-circle-check' : '.lucide-circle-x')).toBeInTheDocument();
+});
+
+it('fails closed on transport loss and retries only when requested', async () => {
+  api.getPersistedReadinessProjection.mockRejectedValue(new Error('Network unavailable'));
+  render(<CardDeliveryDoDPanel boardId="b" card={card} />);
+  await screen.findByText('Delivery unavailable');
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(1);
+  api.getPersistedReadinessProjection.mockResolvedValue(projection('delivered'));
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Retry delivery assessment' }));
+  await screen.findByText('Delivered');
+});
+
+it.each(['normal', 'bug', 'test'])('shows a single verdict and escapes human content for %s cards', async cardType => {
+  const payload = '<script>window.deliveryInjected=true</script><img src=x onerror=alert(1)>';
+  const value = projection('verification_failed');
+  value.task_delivery!.last_update = { record_id: 'human-record', content: payload, remaining: 'Review required',
+    submitted_at: '2026-11-04T00:00:00Z', origin: 'human_submission', text_truncated: false };
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  const { container } = render(<CardDeliveryDoDPanel boardId="b" card={{ ...card, card_type: cardType }} canProgress />);
+  await screen.findByText('Verification failed');
+  expect(screen.queryByText(payload)).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Show details' })).toHaveAttribute('aria-expanded', 'false');
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+  expect(await screen.findByText(payload)).toBeVisible();
+  expect(screen.getAllByRole('status')).toHaveLength(1);
+  expect(screen.getByRole('status')).toHaveTextContent('Verification failed');
+  expect(container.querySelector('script, img')).toBeNull();
+  expect(container.querySelector('.lucide-circle-x')).toBeInTheDocument();
+  expect(screen.queryByRole('slider')).not.toBeInTheDocument();
+});
+
+it('labels old remaining work as a dated declaration even after delivery is complete', async () => {
+  const value = projection('delivered');
+  value.task_delivery!.last_update = { record_id: 'old-update', content: 'Work was still being collected',
+    remaining: 'Finish the old classifier', submitted_at: '2026-11-01T10:00:00Z',
+    origin: 'technical_checkpoint', text_truncated: false };
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={card} />);
+  await screen.findByText('Delivered');
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+  expect(await screen.findByText('Last recorded update')).toBeVisible();
+  expect(screen.getByText('Work remaining when this update was recorded')).toBeVisible();
+  expect(screen.getByText(/This is a historical declaration/)).toBeVisible();
+  expect(document.querySelector('time')).toHaveAttribute('dateTime', '2026-11-01T10:00:00Z');
+  expect(screen.getByRole('status')).toHaveTextContent('Delivered');
+});
+
+it('does not label an unavailable persisted generation as checking or show cached percentages', async () => {
+  const value = projection('delivered');
+  value.projection.freshness = 'unavailable';
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={card} />);
+  await screen.findByText('Delivery unavailable');
+  expect(screen.queryByText('Checking delivery')).not.toBeInTheDocument();
+  expect(screen.queryByRole('progressbar')).not.toBeInTheDocument();
+});
+
+it('coalesces update bursts and stops polling when the tab is inactive', async () => {
+  vi.useFakeTimers();
+  const pending = projection(); pending.projection.freshness = 'updating';
+  api.getPersistedReadinessProjection.mockResolvedValue(pending);
+  const view = render(<CardDeliveryDoDPanel boardId="b" card={card} />);
+  await act(async () => { await Promise.resolve(); });
+  act(() => { for (let n = 0; n < 30; n++) window.dispatchEvent(new Event('pulse:delivery-evidence-changed')); });
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={card} refreshRequest={1} />);
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={card} refreshRequest={2} />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(999); });
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(1);
+  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(2);
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={card} active={false} />);
+  await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(2);
+});
+
+it('does not replace a human draft when a refreshed projection changes its version', async () => {
+  const view = render(<CardDeliveryDoDPanel boardId="b" card={card} canProgress />);
+  await openProgress();
+  const input = screen.getByLabelText('What was delivered or changed?');
+  fireEvent.change(input, { target: { value: 'My draft' } });
+  const next = projection(); next.task_delivery!.card_version = 2;
+  api.getPersistedReadinessProjection.mockResolvedValue(next);
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={card} canProgress refreshRequest={1} />);
+  await waitFor(() => expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(2), { timeout: 2000 });
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Save update' })).toBeDisabled());
+  expect(input).toHaveValue('My draft');
+  expect(api.submitHumanTask).not.toHaveBeenCalled();
+});
+
+it('keeps the same draft, focus and text selection when Details is toggled', async () => {
+  render(<CardDeliveryDoDPanel boardId="b" card={card} canProgress />);
+  await openProgress();
+  const input = screen.getByLabelText('What was delivered or changed?') as HTMLTextAreaElement;
+  fireEvent.change(input, { target: { value: 'Draft preserved across Details' } });
+  input.focus(); input.setSelectionRange(2, 8);
+  fireEvent.click(screen.getByRole('button', { name: 'Hide details' }));
+  expect(screen.queryByRole('form', { name: 'Task update' })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Show details' }));
+  expect(screen.getByLabelText('What was delivered or changed?')).toBe(input);
+  expect(input).toHaveValue('Draft preserved across Details');
+  expect(input).toHaveFocus();
+  expect([input.selectionStart, input.selectionEnd]).toEqual([2, 8]);
+  expect(api.submitHumanTask).not.toHaveBeenCalled();
+});
+
+it('preserves the draft and Details after a failed refresh, then recovers only on explicit modal refresh', async () => {
+  const view = render(<CardDeliveryDoDPanel boardId="b" card={card} canProgress />);
+  await openProgress();
+  const input = screen.getByLabelText('What was delivered or changed?');
+  fireEvent.change(input, { target: { value: 'Keep my draft even offline' } });
+  api.getPersistedReadinessProjection.mockRejectedValue(new Error('Network unavailable'));
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={card} canProgress refreshRequest={1} />);
+  await screen.findByText('Delivery unavailable', {}, { timeout: 2000 });
+  expect(input).toHaveValue('Keep my draft even offline');
+  expect(screen.getByRole('button', { name: 'Save update' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Hide details' })).toHaveAttribute('aria-expanded', 'true');
+  act(() => { for (let n = 0; n < 30; n++) window.dispatchEvent(new Event('pulse:delivery-evidence-changed')); });
+  await new Promise(resolve => setTimeout(resolve, 1100));
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(2);
+  api.getPersistedReadinessProjection.mockResolvedValue(projection());
+  view.rerender(<CardDeliveryDoDPanel boardId="b" card={card} canProgress refreshRequest={2} />);
+  await screen.findByText('Work remaining');
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(3);
+  expect(screen.getByLabelText('What was delivered or changed?')).toBe(input);
+  expect(input).toHaveValue('Keep my draft even offline');
+  expect(screen.getByRole('button', { name: 'Save update' })).toBeEnabled();
+  expect(api.submitHumanTask).not.toHaveBeenCalled();
 });

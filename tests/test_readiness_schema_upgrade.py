@@ -11,8 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from okto_pulse.community.adapters.current_relational_schema import (
-    APPLICATION_ID, SCHEMA_VERSION, StorageFormatError, current_schema_contract,
-    inspect_current_schema,
+    APPLICATION_ID, StorageFormatError,
 )
 from okto_pulse.community.adapters.readiness_schema_upgrade import (
     PREDECESSOR_SHA256, PREDECESSOR_VERSION, READINESS_V401_SHA256,
@@ -20,15 +19,15 @@ from okto_pulse.community.adapters.readiness_schema_upgrade import (
     READINESS_V403_SHA256, READINESS_V403_VERSION,
     READINESS_V404_SHA256, READINESS_V404_VERSION,
     _fingerprint, upgrade_readiness_schema,
-)
-from okto_pulse.community.adapters.readiness_invalidation_schema import (
+    READINESS_TARGET_VERSION as SCHEMA_VERSION,
+    readiness_schema_contract as current_schema_contract,
+    inspect_readiness_schema as inspect_current_schema,
     readiness_trigger_statements,
+    READINESS_SOURCE_FENCE_VERSION as GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION,
+    READINESS_SOURCE_TRIGGER_MANIFEST_VERSION as GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION,
 )
 from okto_pulse.community.adapters.readiness_rollback_assessment import (
     assess_readiness_rollback, source_inventory,
-)
-from okto_pulse.community.adapters.sqlalchemy_models import (
-    GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION, GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION,
 )
 
 
@@ -99,6 +98,69 @@ def test_upgrade_preserves_source_rows_and_leaves_verified_backup(tmp_path):
         assert {"readiness_scope", "readiness_job", "readiness_generation", "readiness_summary",
             "readiness_diagnostic", "readiness_unit"} <= {
                 row[0] for row in current.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
+
+
+def test_legacy_target_cannot_silently_follow_new_model_changes(tmp_path, monkeypatch):
+    import okto_pulse.community.adapters.readiness_schema_upgrade as upgrade
+    from okto_pulse.community.adapters.current_relational_schema import RelationalSchemaContract
+    path = tmp_path / 'pulse.sqlite3'
+    _predecessor(path)
+    target = current_schema_contract()
+    altered = RelationalSchemaContract((*target.objects,
+        ('table','unexpected','unexpected','CREATE TABLE unexpected (id TEXT)')))
+    monkeypatch.setattr(upgrade, 'historical_schema_contract', lambda _version: altered)
+    with pytest.raises(StorageFormatError, match='readiness_target_contract'):
+        upgrade_readiness_schema(path)
+    with closing(sqlite3.connect(path)) as unchanged:
+        assert unchanged.execute('PRAGMA user_version').fetchone()[0] == PREDECESSOR_VERSION
+        assert _fingerprint(unchanged) == PREDECESSOR_SHA256
+    assert not list(tmp_path.glob('*.bak'))
+
+
+def test_legacy_upgrade_retains405_and_runtime043_requires_explicit_copy(tmp_path):
+    from okto_pulse.community.adapters.current_relational_schema import (
+        current_schema_contract as runtime_contract, inspect_current_schema as inspect_runtime,
+    )
+    from okto_pulse.community.adapters.storage_upgrade_v043 import upgrade_copy_v043
+    from okto_pulse.community.adapters.historical_relational_schema import inspect_historical_schema
+    from okto_pulse.community.adapters.verification_storage_upgrade import upgrade_verification_copy
+    path, output = tmp_path/'legacy.sqlite3', tmp_path/'runtime.sqlite3'
+    _v401_predecessor(path)
+    backup = upgrade_readiness_schema(path)
+    with closing(sqlite3.connect(path)) as legacy:
+        assert legacy.execute('PRAGMA user_version').fetchone()[0] == 405
+        with pytest.raises(StorageFormatError, match='version'):
+            inspect_runtime(legacy.cursor(), runtime_contract())
+        original = source_inventory(legacy)
+    conversion = upgrade_copy_v043(path,output)
+    assert conversion['source_database_unchanged'] and conversion['target_schema_version'] == 406
+    with closing(sqlite3.connect(path)) as legacy, closing(sqlite3.connect(output)) as runtime:
+        assert legacy.execute('PRAGMA user_version').fetchone()[0] == 405
+        assert source_inventory(legacy) == original
+        assert inspect_historical_schema(runtime.cursor()) is False
+        with pytest.raises(StorageFormatError, match='version'):
+            inspect_runtime(runtime.cursor(), runtime_contract())
+        converted = source_inventory(runtime)
+        for table, signature in original.items():
+            if table != 'global_discovery_source_revision':
+                assert converted[table] == signature
+        assert runtime.execute('SELECT count(*) FROM task_requirement_decisions').fetchone() == (0,)
+    newest = tmp_path / 'format407.sqlite3'
+    conversion407 = upgrade_verification_copy(output, newest, evidence_root=tmp_path / 'no-receipts')
+    assert conversion407['target_schema_version'] == 407
+    with closing(sqlite3.connect(newest)) as current:
+        with pytest.raises(StorageFormatError, match='version'):
+            inspect_runtime(current.cursor(), runtime_contract())
+    from okto_pulse.community.adapters.amendment_storage_upgrade import upgrade_amendment_copy
+    runtime408 = tmp_path / 'format408.sqlite3'
+    conversion408 = upgrade_amendment_copy(newest, runtime408)
+    assert conversion408['source_database_unchanged'] and conversion408['target_schema_version'] == 408
+    with closing(sqlite3.connect(runtime408)) as current:
+        assert inspect_runtime(current.cursor(), runtime_contract()) is False
+    assert assess_readiness_rollback(path,backup)['restore_allowed_without_preservation_plan']
+    # The legacy preflight never claims that restoring405 over406 is safe.
+    with pytest.raises(StorageFormatError):
+        assess_readiness_rollback(output,backup)
 
 
 def test_unknown_predecessor_is_refused_without_backup_or_mutation(tmp_path):

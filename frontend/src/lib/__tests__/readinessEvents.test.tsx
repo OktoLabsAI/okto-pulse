@@ -5,9 +5,9 @@ import { READINESS_CHANGED, affectsDeliveryReadiness, notifyReadinessChanged } f
 import { patchBoardSettings } from '@/services/board-settings-api';
 import { useBoardDeliveryReadiness } from '@/components/code-traceability/useBoardDeliveryReadiness';
 import { useDeliveryReadiness } from '@/components/code-traceability/useDeliveryReadiness';
-import { boardSummary, cards, readiness, metric } from '@/components/code-traceability/__tests__/readinessFixture';
+import { persistedProjection, cards, readiness, metric } from '@/components/code-traceability/__tests__/readinessFixture';
 
-const api = vi.hoisted(() => ({ getDeliveryReadinessSummary: vi.fn(), getDeliveryReadiness: vi.fn() }));
+const api = vi.hoisted(() => ({ getPersistedReadinessProjection: vi.fn(), getDeliveryReadiness: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.clearAllMocks(); });
 
@@ -67,25 +67,25 @@ it('coalesces a synchronous burst and includes the direct board-settings client'
 });
 
 it('U07: a Test result mutation refreshes the implementation cover and open Spec without reopening either', async () => {
-  api.getDeliveryReadinessSummary.mockResolvedValue(boardSummary());
+  api.getPersistedReadinessProjection.mockResolvedValue(persistedProjection());
   api.getDeliveryReadiness.mockResolvedValue(readiness(null));
   const view = renderHook(() => ({
     board: useBoardDeliveryReadiness('b', cards, true, '0'),
     spec: useDeliveryReadiness('b', 's'),
   }));
   await waitFor(() => expect(view.result.current.spec.value?.verification.percent).toBe(75));
-  await waitFor(() => expect(view.result.current.board.c.value?.verification.percent).toBe(75));
-  const next = boardSummary();
-  next.cards.forEach(row => { row.delivery_readiness.verification = metric(100, 8); });
-  api.getDeliveryReadinessSummary.mockResolvedValue(next);
+  await waitFor(() => expect(view.result.current.board.c.persisted?.summary?.verification.percent).toBe(75));
+  const next = persistedProjection();
+  next.summaries.forEach(row => { row.verification = metric(100, 8); });
+  api.getPersistedReadinessProjection.mockResolvedValue(next);
   api.getDeliveryReadiness.mockResolvedValue({ ...readiness(null), verification: metric(100, 8) });
   const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}'));
   await act(async () => {
     await new AuthenticatedFetch(async () => null).fetch('/specs/s/scenarios/ts/evidence/reports', { method: 'POST' });
   });
-  await waitFor(() => expect(view.result.current.board.c.value?.verification.percent).toBe(100));
+  await waitFor(() => expect(view.result.current.board.c.persisted?.summary?.verification.percent).toBe(100));
   await waitFor(() => expect(view.result.current.spec.value?.verification.percent).toBe(100));
-  expect(api.getDeliveryReadinessSummary).toHaveBeenCalledTimes(2);
+  expect(api.getPersistedReadinessProjection).toHaveBeenCalledTimes(2);
   expect(api.getDeliveryReadiness).toHaveBeenCalledTimes(2);
   expect(fetch).toHaveBeenCalledTimes(1);
   expect(cards[0].status).toBe('in_progress');

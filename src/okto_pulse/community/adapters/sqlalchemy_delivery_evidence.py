@@ -6,7 +6,7 @@ import re
 import uuid
 
 from sqlalchemy import func, select, update
-from okto_pulse.community.adapters.delivery_verification import native_scenario_run, native_verification_population
+from okto_pulse.community.adapters.delivery_verification import native_verification_population
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     Board,
@@ -46,16 +46,16 @@ from okto_pulse.core.domain.delivery_assessment import MetricStatus, UnitState, 
 from okto_pulse.core.domain.enums import CardType, CardStatus, TestScenarioStatus
 from okto_pulse.core.domain.execution_contract import execution_contract
 from okto_pulse.core.domain.verification_plan import required_verification_scenarios
-from okto_pulse.core.domain.verification_report import (
-    parse_verification_report, verification_report_passing_criteria,
+from okto_pulse.core.domain.delivery_verification import (
+    NativeVerificationPopulation, verification_sources_issue,
+    verification_run_for_receipt, verification_runs_for_sources,
 )
-from okto_pulse.core.domain.delivery_verification import verification_sources_issue
 from okto_pulse.core.domain.effective_delivery_coverage import (
     EffectiveDeliveryContext, EvaluatedDeliverySnapshot, ScopedTestFact, read_scoped_implementation,
     implementation_scope_current,
 )
 from okto_pulse.core.domain.delivery_progress import DeliveryProgress, progress_blocks_execution, require_delivery_progress_mutable
-from okto_pulse.core.domain.delivery_selection import current_delivery_selection, superseded_delivery_selection, seal_delivery_selection, current_delivery_report, report_reuses_impact, submitted_report_receipt
+from okto_pulse.core.domain.delivery_selection import DeliverySelectionScopeChanged, current_delivery_selection, superseded_delivery_selection, seal_delivery_selection, current_delivery_report, report_reuses_impact, submitted_report_receipt
 from okto_pulse.core.domain.delivery_impact import DeliveryImpactClaim, compose_delivery_impact, DeliveryImpactObservation, progress_affects_impact_source, require_impact_observation, reusable_impact_block
 from okto_pulse.core.models.delivery_selection import DeliveryImpactBasis, DeliverySelectionManifest, DeliverySelectionInput
 from okto_pulse.core.models.delivery_evidence import (
@@ -82,6 +82,32 @@ class CommunityDeliveryEvidenceStore:
         self.inventory = inventory if inventory is not None else default_delivery_inventory_policy()
         self._locked = False
 
+    async def record_human_submission(self, command, *, actor_id, actor_kind, report_submitter=None):
+        from .human_task_submissions import CommunityHumanTaskSubmissions
+        return await CommunityHumanTaskSubmissions(self).record(command, actor_id=actor_id,
+            actor_kind=actor_kind, report_submitter=report_submitter)
+
+    async def task_requirement_options(self, command, *, actor_id, allowed_decisions):
+        from okto_pulse.community.adapters.task_requirement_commands import CommunityTaskRequirementCommands
+        return await CommunityTaskRequirementCommands(self).preview(command,
+            actor_id=actor_id, allowed_decisions=allowed_decisions)
+
+    async def task_requirement_history(self, query, *, actor_id):
+        from okto_pulse.community.adapters.task_requirement_commands import CommunityTaskRequirementCommands
+        return await CommunityTaskRequirementCommands(self).history(query)
+
+    async def record_task_requirement_decision(self, command, *, actor_id, actor_kind):
+        from okto_pulse.community.adapters.task_requirement_commands import CommunityTaskRequirementCommands
+        return await CommunityTaskRequirementCommands(self).record(command, actor_id=actor_id, actor_kind=actor_kind)
+
+    async def task_requirement_states(self, board_id, spec_id):
+        spec = await self._spec(board_id, spec_id)
+        plan = await self._execution_plan(spec)
+        return {scope.card_id: dict(decision=resolved.decision,
+            decision_id=resolved.record.id if resolved.record else None,
+            edition=scope.edition, current=resolved.record is not None)
+            for scope, resolved in plan.task_requirements}
+
     async def decision_reviews(self, query, *, actor_id):
         from okto_pulse.community.adapters.sqlalchemy_decision_reviews import CommunityDecisionReviews
         return await CommunityDecisionReviews(self).read(query, actor_id=actor_id)
@@ -94,12 +120,14 @@ class CommunityDeliveryEvidenceStore:
         execution_contract(spec)
         cards = list((await self.session.scalars(select(Card).where(
             Card.board_id == spec.board_id, Card.spec_id == spec.id,
-        ).limit(5001))).all())
+        ).limit(5001).execution_options(populate_existing=True))).all())
         fields = ('id', 'board_id', 'spec_id', 'card_type', 'status', 'archived',
                   'test_scenario_ids', 'title', 'description', 'details')
-        return self.inventory.execution_plan(spec=spec,
-            cards=[{field: getattr(card, field, None) for field in fields} for card in cards],
+        card_facts = [{field: getattr(card, field, None) for field in fields} for card in cards]
+        plan = self.inventory.execution_plan(spec=spec, cards=card_facts,
             admitted_methods=supported_test_verification_methods())
+        from okto_pulse.community.adapters.task_requirement_allocation import apply_task_requirement_allocation
+        return await apply_task_requirement_allocation(self.session, spec=spec, cards=card_facts, plan=plan)
 
     def _planned_obligations(self, spec, plan, card=None):
         rows = plan.inventory.rows if card is None or card.card_type == CardType.TEST else plan.inventory.card_obligations(card.id)
@@ -108,6 +136,8 @@ class CommunityDeliveryEvidenceStore:
             card.title if card is not None else row.binding.obligation_ref)) for row in rows)
 
     def _with_effective_context(self, snapshot, plan, records, spec, card=None, *, native_verification=None):
+        if native_verification is None:
+            native_verification = NativeVerificationPopulation((), False, ('verification_currentness_unavailable',))
         by_id = {record.id: record for record in records}
         inventory = plan.inventory
         if card is not None and card.card_type != CardType.TEST:
@@ -125,23 +155,25 @@ class CommunityDeliveryEvidenceStore:
                 or any(not isinstance(value, str) or not value for value in criteria)):
                 return replace(snapshot, complete=False, effective_context=False)
         tests = []
+        native_runs = {}
+        for run in native_verification.runs:
+            native_runs.setdefault(run.scenario_id, []).append(run)
         for fact in snapshot.tests:
             scenario = scenarios.get(fact.scenario_id, {})
-            evidence = scenario.get('evidence') or {}
             passing = None
-            if isinstance(evidence, dict) and evidence.get('evidence_class') == 'verification_report':
-                passing = ()
-                if fact.current_verified_run:
-                    try:
-                        passing = verification_report_passing_criteria(parse_verification_report(evidence.get('verification_report')))
-                    except (TypeError, ValueError):
-                        pass  # Malformed facts never acquire criterion credit.
+            run = verification_run_for_receipt(tuple(native_runs.get(fact.scenario_id, ())), receipt_id=fact.receipt_id)
+            if run is not None and run.observations:
+                outcomes = {}
+                for observation in run.observations:
+                    outcomes.setdefault(observation.criterion_id, set()).add(observation.outcome)
+                passing = tuple(sorted(key for key, values in outcomes.items() if values == {'passed'})) if fact.current_verified_run else ()
             tests.append(ScopedTestFact(fact, tuple(scenario.get('linked_criteria') or ()),
                 scenario.get('verification_method') or '', passing))
-        return replace(snapshot, complete=snapshot.complete and plan.complete,
+        return replace(snapshot, complete=snapshot.complete and plan.complete and native_verification.complete,
             effective_context=EffectiveDeliveryContext(inventory, scoped, tuple(tests), supported_test_verification_methods(),
                 required_scenarios=required_verification_scenarios(plan.qualification),
-                native_verification=native_verification if native_verification is not None else native_verification_population(spec)))
+                task_requirements=plan.task_requirements,
+                native_verification=native_verification))
 
     async def _get(self, model, identity):
         if identity is None:
@@ -331,6 +363,7 @@ class CommunityDeliveryEvidenceStore:
             *filters, CardRecord.kind == "progress", CardRecord.id.not_in(revoked),
         ).order_by(CardRecord.created_at, CardRecord.id))).all()
         return [(record, declaration) for record in records
+                if record.payload.get("kind") != "human_submission"
                 if (declaration := DeliveryProgress.model_validate(record.payload["progress"])).material_change != "none"]
 
     async def _test(self, record, scope, bindings, spec, *, native_run=None):
@@ -348,8 +381,15 @@ class CommunityDeliveryEvidenceStore:
         scenario = matches[0]
         # The authenticated outcome belongs to the recorded execution.
         recorded_result = payload.get("test_result")
-        evidence = scenario.get("evidence") or {}
-        native_run = native_run if native_run is not None else native_scenario_run(spec, scenario)
+        if native_run is None:
+            population = await native_verification_population(spec, self.session)
+            if not population.complete:
+                return None
+            native_run = verification_run_for_receipt(tuple(run for run in population.runs
+                if run.scenario_id == scenario['id']), receipt_id=payload.get('test_receipt'),
+                accepted_result_id=payload.get('accepted_result_id'))
+        if native_run is None:
+            return None
         reasons = list(native_run.native_reason_codes)
         try:
             current_digest = compute_test_scenario_semantic_sha256(board_id=scope.board_id,
@@ -365,9 +405,10 @@ class CommunityDeliveryEvidenceStore:
             and card.card_type == CardType.TEST
             and scenario["id"] in (card.test_scenario_ids or [])
             and recorded_result in {"passed", "failed"}
-            and scenario.get("status") == recorded_result
-            and isinstance(evidence, dict)
-            and evidence.get("execution_receipt") == payload.get("test_receipt")
+            and native_run.outcome == recorded_result
+            and native_run.current
+            and (payload.get('accepted_result_id') is None or native_run.accepted_result_id == payload['accepted_result_id'])
+            and (payload.get('verification_basis_sha256') is None or native_run.basis_sha256 == payload['verification_basis_sha256'])
             and bool(payload.get("test_receipt"))
             and native_run.authenticated
             and native_run.scope == scope
@@ -514,31 +555,33 @@ class CommunityDeliveryEvidenceStore:
                 )
             )
         ).all()
+        native = snapshot.effective_context.native_verification if snapshot.effective_context else None
+        scenario_names = {s['id']: s.get('title', s['id']) for s in spec.test_scenarios or []}
         for card in test_cards:
-            for scenario in spec.test_scenarios or []:
-                if scenario.get("id") not in (card.test_scenario_ids or []):
+            for run in native.runs if native is not None and native.complete else ():
+                if not run.current or run.scenario_id not in (card.test_scenario_ids or []):
                     continue
                 candidate = CardRecord(
-                    id=card.id + ":" + scenario["id"],
+                    id=card.id + ":" + str(run.accepted_result_id),
                     actor_id="projection",
                     payload={
                         "card_id": card.id,
-                        "scenario_id": scenario["id"],
-                        "test_result": scenario.get("status"),
-                        "test_receipt": (scenario.get("evidence") or {}).get(
-                            "execution_receipt"
-                        ),
+                        "scenario_id": run.scenario_id,
+                        "accepted_result_id": run.accepted_result_id,
+                        "test_result": run.outcome,
+                        "test_receipt": run.receipt_id,
                     },
                 )
-                fact = await self._test(candidate, scope, (), spec)
+                fact = await self._test(candidate, scope, (), spec, native_run=run)
                 if fact and fact.current_verified_run:
                     candidates.append(
                         {
                             "kind": "test",
-                            "id": scenario["id"],
+                            "id": run.scenario_id,
+                            "accepted_result_id": run.accepted_result_id,
                             "card_id": card.id,
                             "card_version": int(card.policy_version or 1),
-                            "label": f"{card.title}: {scenario.get('title', scenario['id'])} · {fact.result.value}",
+                            "label": f"{card.title}: {scenario_names[run.scenario_id]} · {fact.result.value}",
                         }
                     )
         return {
@@ -720,7 +763,7 @@ class CommunityDeliveryEvidenceStore:
             if r.kind == "revoke" and r.actor_kind in {"human", "user"} and isinstance(r.payload, dict)
         }
         plan = plan if plan is not None else await self._execution_plan(spec)
-        native_verification = native_verification if native_verification is not None else native_verification_population(spec)
+        native_verification = native_verification if native_verification is not None else await native_verification_population(spec, self.session)
         if native_runs is None:
             native_runs = {}
             for run in native_verification.runs:
@@ -731,10 +774,16 @@ class CommunityDeliveryEvidenceStore:
             selected = current_delivery_selection(card, scope, obligations=obligations,
                 record_hashes={record.id: self._selection_record_hash(record) for record in records},
                 prospective_report=prospective_report)
+        except DeliverySelectionScopeChanged:
+            # The same edition may gain a standalone Bug or change allocation.
+            # Keep the verified historical report, with zero current credit,
+            # without marking every other Card's evidence unreadable.
+            selected = set()
+            selection_valid = prospective_report is None
         except ValueError:
             # A prior edition's intact frozen selection cannot select any
             # current records. Its absence of credit is a complete projection,
-            # while a malformed or current-edition report remains incomplete.
+            # while a malformed report remains incomplete.
             selected = set()
             selection_valid = prospective_report is None and superseded_delivery_selection(card, scope)
         implementations, tests, rejected_records = [], [], []
@@ -800,12 +849,13 @@ class CommunityDeliveryEvidenceStore:
                 if not isinstance(scenario_id, str) or not scenario_id:
                     reject(record, 'delivery_test_payload_invalid', bindings)
                     continue
-                runs = native_runs.get(scenario_id, ())
-                if len(runs) != 1:
-                    reject(record, 'delivery_scenario_unresolved' if not runs else 'delivery_scenario_ambiguous', bindings)
+                run = verification_run_for_receipt(tuple(native_runs.get(scenario_id, ())),
+                    receipt_id=record.payload.get('test_receipt'), accepted_result_id=record.payload.get('accepted_result_id'))
+                if run is None:
+                    reject(record, 'delivery_current_scenario_binding_invalid', bindings)
                     continue
                 try:
-                    fact = await self._test(record, spec_scope, bindings, spec, native_run=runs[0])
+                    fact = await self._test(record, spec_scope, bindings, spec, native_run=run)
                 except (KeyError, TypeError, ValueError):
                     reject(record, 'delivery_test_payload_invalid', bindings)
                     continue
@@ -820,9 +870,9 @@ class CommunityDeliveryEvidenceStore:
             obligations,
             tuple(implementations),
             tuple(tests),
-            complete=selection_valid,
+            complete=selection_valid and native_verification.complete,
             rejected_records=tuple(rejected_records),
-            facts_complete=selection_valid,
+            facts_complete=selection_valid and native_verification.complete,
         )
         return self._with_effective_context(snapshot, plan, records, spec, card, native_verification=native_verification)
 
@@ -957,7 +1007,7 @@ class CommunityDeliveryEvidenceStore:
     def _impact_claims(self, records):
         claims = []
         for row in records:
-            if row.kind != "progress":
+            if row.kind != "progress" or row.payload.get("kind") == "human_submission":
                 continue
             progress = DeliveryProgress.model_validate(row.payload["progress"])
             if progress.impact_delta is not None:
@@ -1296,10 +1346,42 @@ class CommunityDeliveryEvidenceStore:
             ]
             if len(scenarios) != 1:
                 raise ValueError("delivery_test_scenario_not_found")
-            payload["test_receipt"] = (scenarios[0].get("evidence") or {}).get(
-                "execution_receipt"
-            )
-            payload["test_result"] = scenarios[0].get("status")
+            native_verification = await native_verification_population(spec, self.session,
+                accepted_result_ids=(command.accepted_result_id,) if command.accepted_result_id else ())
+            if not native_verification.complete:
+                raise ValueError('delivery_verification_assessment_unavailable')
+            rollup_snapshot, _ = await self.load_rollup_snapshot(command.board_id, command.spec_id,
+                include_card_summaries=False, native_verification=native_verification)
+            selected_implementations = tuple(i for i in rollup_snapshot.implementations
+                if i.id in command.implementation_ids)
+            if {i.id for i in selected_implementations} != set(command.implementation_ids):
+                raise ValueError('delivery_current_verified_test_and_implementation_required')
+            expected_sources = []
+            selected_bindings = {inventory[ref] for ref in refs}
+            for implementation in selected_implementations:
+                executions = {p.execution_id: p for p in implementation.executions}
+                selected_ids = {identity for contribution in implementation.contributions or ()
+                    if contribution.binding in selected_bindings for identity in contribution.execution_ids}
+                if not selected_ids or any(identity not in executions or not executions[identity].current_accepted_execution
+                    for identity in selected_ids):
+                    raise ValueError('delivery_current_verified_test_and_implementation_required')
+                expected_sources.extend((executions[identity].source_ref, executions[identity].result_revision)
+                    for identity in selected_ids)
+            runs = tuple(run for run in native_verification.runs if run.scenario_id == command.scenario_id)
+            if command.accepted_result_id is not None:
+                runs = tuple(run for run in runs if run.accepted_result_id == command.accepted_result_id)
+                if not runs or not all(run.current for run in runs):
+                    raise ValueError('delivery_accepted_result_not_current')
+            candidates = verification_runs_for_sources(runs, tuple(expected_sources))
+            if not candidates:
+                raise ValueError('delivery_current_verified_test_and_implementation_required')
+            if len(candidates) != 1:
+                raise ValueError('delivery_verification_result_ambiguous')
+            selected_run = candidates[0]
+            payload['accepted_result_id'] = selected_run.accepted_result_id
+            payload['verification_basis_sha256'] = selected_run.basis_sha256
+            payload['test_receipt'] = selected_run.receipt_id
+            payload['test_result'] = selected_run.outcome
         if command.kind == "revoke":
             target = await self.session.get(CardRecord, command.record_id)
             if (
@@ -1349,17 +1431,9 @@ class CommunityDeliveryEvidenceStore:
                 if issue is not None:
                     raise ValueError(issue)
         elif command.kind == "test":
-            fact = await self._test(record, spec_scope, bindings, spec)
+            fact = await self._test(record, spec_scope, bindings, spec, native_run=selected_run)
             # Authenticate and bind the result now; final delivery credit is a
             # separate read predicate and still requires passing + Done.
-            rollup_snapshot, _ = await self.load_rollup_snapshot(
-                command.board_id, command.spec_id
-            )
-            selected_implementations = tuple(
-                i
-                for i in rollup_snapshot.implementations
-                if i.id in command.implementation_ids
-            )
             candidate = DeliveryEvidenceSnapshot(
                 spec_scope,
                 rollup_snapshot.obligations,
@@ -1371,7 +1445,8 @@ class CommunityDeliveryEvidenceStore:
                 CardRecord.board_id == scope.board_id, CardRecord.spec_id == scope.spec_id,
                 CardRecord.spec_edition == scope.spec_edition, CardRecord.id.in_(command.implementation_ids),
             ))).all())
-            candidate = self._with_effective_context(candidate, plan, [*selected_records, record], spec)
+            candidate = self._with_effective_context(candidate, plan, [*selected_records, record], spec,
+                native_verification=native_verification)
             require_test_result_admission(candidate, fact)
         self.session.add(record)
         await self.session.flush()
@@ -1414,6 +1489,7 @@ class CommunityDeliveryEvidenceStore:
 
     async def _progress_summary(self, scope):
         """Bounded history for resumption; currentness reads the full population."""
+        from .delivery_progress_reader import progress_item
         filters = (
             CardRecord.board_id == scope.board_id,
             CardRecord.card_id == scope.card_id,
@@ -1449,21 +1525,7 @@ class CommunityDeliveryEvidenceStore:
             "total": total,
             "truncated": total > len(records),
             "recovery_verified": False,
-            "items": [
-                {
-                    "id": record.id, "actor_id": record.actor_id,
-                    "revoked": record.id in revoked,
-                    "created_at": record.created_at.isoformat(),
-                    "summary": record.payload["justification"][:1000],
-                    "remaining": record.payload["progress"]["remaining"][:1000],
-                    "text_truncated": len(record.payload["justification"]) > 1000 or len(record.payload["progress"]["remaining"]) > 1000,
-                    "source_state": record.payload["progress"]["source_state"],
-                    "material_change": DeliveryProgress.model_validate(record.payload["progress"]).material_change,
-                    "target_ids": record.payload["progress"]["target_ids"][:10],
-                    "targets_truncated": len(record.payload["progress"]["target_ids"]) > 10,
-                }
-                for record in reversed(records)
-            ],
+            "items": [progress_item(record, revoked) for record in reversed(records)],
         }
 
     async def _rollup_waivers(self, scope):
@@ -1498,9 +1560,14 @@ class CommunityDeliveryEvidenceStore:
                 )
         return waivers
 
+    async def amendment_delivery_attribution(self, amendment, confirmation):
+        from .amendment_delivery_attribution import freeze_attribution
+        return await freeze_attribution(self, amendment, confirmation)
+
     async def load_rollup_snapshot(self, board_id, spec_id, *, include_reviews=True,
+                                   include_attributions=True,
                                    include_card_summaries=True,
-                                   prospective_card_id=None, prospective_report=None):
+                                   prospective_card_id=None, prospective_report=None, native_verification=None):
         """Aggregate the card-ledger snapshots of a spec into one snapshot.
 
         Returns ``(DeliveryEvidenceSnapshot, per_card)`` where per_card carries
@@ -1510,12 +1577,18 @@ class CommunityDeliveryEvidenceStore:
         spec = await self._spec(board_id, spec_id)
         scope = DeliveryScope(board_id, spec_id, int(spec.edition))
         plan = await self._execution_plan(spec)
-        native_verification = native_verification_population(spec)
+        native_verification = native_verification if native_verification is not None else await native_verification_population(spec, self.session)
+        native_runs = {}
+        for run in native_verification.runs:
+            native_runs.setdefault(run.scenario_id, []).append(run)
         obligations = self._planned_obligations(spec, plan)
         implementations, tests, per_card, rejected_records = [], [], [], []
         complete = True
         facts_complete = True
         prospective_seen = prospective_card_id is None
+        requirements = {scope.card_id: dict(decision=resolved.decision,
+            decision_id=resolved.record.id if resolved.record else None, edition=scope.edition,
+            current=resolved.record is not None) for scope, resolved in plan.task_requirements}
         for card in await self._linked_cards(board_id, spec_id):
             card_scope = CardDeliveryScope(
                 board_id, card.id, spec_id, int(spec.edition)
@@ -1523,7 +1596,7 @@ class CommunityDeliveryEvidenceStore:
             is_prospective = card.id == prospective_card_id
             prospective_seen = prospective_seen or is_prospective
             snapshot = await self.load_card_snapshot(card_scope, plan=plan,
-                native_verification=native_verification,
+                native_verification=native_verification, native_runs=native_runs,
                 prospective_report=prospective_report if is_prospective else None)
             complete = complete and snapshot.complete is True
             facts_complete = facts_complete and snapshot.facts_complete is True
@@ -1535,6 +1608,8 @@ class CommunityDeliveryEvidenceStore:
                 per_card.append(
                     {
                         "card_id": card.id,
+                        "requirement": requirements.get(card.id, dict(decision='required',
+                            decision_id=None, edition=int(spec.edition), current=False)),
                         "complete": snapshot.complete,
                         "delivery_completeness": None,
                         "title": card.title,
@@ -1593,4 +1668,7 @@ class CommunityDeliveryEvidenceStore:
             for row in per_card:
                 if row["card_type"] == CardType.NORMAL.value:
                     row["delivery_completeness"] = asdict(calculate_delivery_completeness(snapshot, row["card_id"]))
+        if include_attributions:
+            from .amendment_delivery_attribution import load_attributions
+            snapshot = replace(snapshot, amendment_attributions=await load_attributions(self, board_id, spec_id))
         return snapshot, per_card

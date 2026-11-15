@@ -9,7 +9,7 @@ no database session, engine or repository implementation crosses this boundary.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import Depends, HTTPException, Request
 
@@ -42,6 +42,36 @@ async def get_unit_of_work(
     principal: Principal = Depends(require_principal),
 ) -> AsyncIterator[PulseUnitOfWork]:
     """Yield one edition-owned UoW for the complete HTTP request."""
+    # A request without a method (minimal test doubles) is never a write.
+    request_method = str(getattr(request, "method", "") or "").upper()
+    async with _request_unit_of_work(
+        request, principal, write_intent=request_method in WRITE_HTTP_METHODS
+    ) as uow:
+        yield uow
+
+
+async def get_read_unit_of_work(
+    request: Request,
+    principal: Principal = Depends(require_principal),
+) -> AsyncIterator[PulseUnitOfWork]:
+    """Yield a deferred UoW for commands that only read relational state.
+
+    Runtime activation is an explicit POST with graph side effects, but no
+    relational mutation. Its authorization reads must not reserve SQLite's
+    writer slot for the duration of native graph work. Mutating routes retain
+    ``get_unit_of_work`` and its pre-read write admission.
+    """
+    async with _request_unit_of_work(request, principal, write_intent=False) as uow:
+        yield uow
+
+
+@asynccontextmanager
+async def _request_unit_of_work(
+    request: Request,
+    principal: Principal,
+    *,
+    write_intent: bool,
+) -> AsyncIterator[PulseUnitOfWork]:
     factory = get_unit_of_work_factory(request)
     actor = RESTAdapterContract.actor_from_principal(principal)
     async with AsyncExitStack() as stack:
@@ -59,10 +89,7 @@ async def get_unit_of_work(
                 },
             ) from exc
 
-        # A request without a method (minimal test doubles) is never a write:
-        # it keeps the deferred transaction exactly like GET/HEAD/OPTIONS.
-        request_method = str(getattr(request, "method", "") or "").upper()
-        if request_method in WRITE_HTTP_METHODS:
+        if write_intent:
             # Edition-owned concrete UoWs expose ``begin_write``; the public
             # port does not require it, so a foreign UoW simply keeps the
             # deferred transaction (duck-typed, never mandatory).

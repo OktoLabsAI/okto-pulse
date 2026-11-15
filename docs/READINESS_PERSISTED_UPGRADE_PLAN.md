@@ -2,6 +2,23 @@
 
 Estado: revisão antes da janela de migração. Este documento descreve uma operação futura; não executa a migração da instância ativa.
 
+## Destino histórico e conversão para 0.4.3
+
+O procedimento abaixo conserva seu destino **405 / 0.4.2**, inclusive os fingerprints
+de admissão, o backup e o preflight de rollback. O schema corrente406 não redefine
+os formatos históricos. O contrato405 é conferido contra o fingerprint independente
+`9f69fa459c17edd0f0ff2537445fe4d8dc6ed61ff610ccd819b2aa55fb0c4929`;
+qualquer deriva recusa a operação antes do DDL da fonte.
+
+Para usar uma base400–404 com o runtime0.4.3, ensaiar a cadeia em cópias descartáveis:
+primeiro este upgrade até405; depois `okto-pulse storage upgrade-copy --source-db
+BASE_405 --output-db NOVA_BASE_406 --json`. A segunda etapa preserva a base405 e
+publica um arquivo novo. O runtime0.4.3 exige406 e não converte a base ao iniciar.
+O ensaio de backfill/restarts testa essa cadeia completa; não iniciar o novo
+runtime diretamente sobre o intermediário405. O preflight de rollback abaixo
+aplica-se somente ao passo legado; não autoriza restaurar405 sobre406 após writes.
+Revisão do plano e autorização de instalação continuam necessárias para a instância ativa.
+
 ## Escopo e pré-condições
 
 - Binários Core e Community precisam estar no mesmo par de commits validado para o release. A versão local exibida é 0.4.2; o formato SQLite alvo da branch é `user_version=405`.

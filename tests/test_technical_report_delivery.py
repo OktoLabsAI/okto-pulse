@@ -61,12 +61,11 @@ async def test_signed_specialized_report_delivers_technical_requirement_and_fail
     value["observations"][0]["criterion_id"] = criterion["id"]
     digest = compute_test_scenario_semantic_sha256(board_id=board, spec_id=identity,
         scenario=scenario, acceptance_criteria=[criterion])
+    context = await delivery.reserve_verification(session, scenario['id'], actor_id='agent-1')
     issued = await issuer.admit(ReportRequest(board_id=board, spec_id=identity, scenario_id=scenario["id"],
-        scenario_sha256=digest, actor_id="agent-1", report=value))
+        scenario_sha256=digest, actor_id="agent-1", report=value, verification_context=context))
     # Admission/status transport is separately exercised with the same real issuer.
-    await session.execute(update(Spec).where(Spec.id == identity).values(
-        test_scenarios=[{**scenario, "status": "passed", "evidence": dict(issued.evidence)}]))
-    await session.commit()
+    await delivery.publish_verification(session, dict(issued.evidence), 'passed', actor_id='agent-1')
     proof = await delivery.record(store, delivery.command("test", scenario_id=scenario["id"],
         obligation_refs=refs, implementation_ids=[implementation["id"]]))
     await session.commit()
@@ -79,11 +78,10 @@ async def test_signed_specialized_report_delivers_technical_requirement_and_fail
     assert len(history) == 2
     value["result"] = value["observations"][0]["outcome"] = "failed"
     value["observations"][0]["observed"] = "A concrete private adapter import was found"
+    context = await delivery.reserve_verification(session, scenario['id'], actor_id='agent-1')
     failed = await issuer.admit(ReportRequest(board_id=board, spec_id=identity, scenario_id=scenario["id"],
-        scenario_sha256=digest, actor_id="agent-1", report=value))
-    await session.execute(update(Spec).where(Spec.id == identity).values(
-        test_scenarios=[{**scenario, "status": "failed", "evidence": dict(failed.evidence)}]))
-    await session.commit()
+        scenario_sha256=digest, actor_id="agent-1", report=value, verification_context=context))
+    await delivery.publish_verification(session, dict(failed.evidence), 'failed', actor_id='agent-1')
     assert not (await store.projection(board, identity))["allowed"]
     with pytest.raises(ValueError, match="delivery_evidence_incomplete"):
         await require_spec_delivery(session, await session.get(Spec, identity, populate_existing=True))

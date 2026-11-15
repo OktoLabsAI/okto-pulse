@@ -8,7 +8,6 @@ import { useNativeReferenceFocus } from '@/components/shared/useNativeReferenceF
 import { CardScenarioReferenceNotice } from './CardScenarioReferenceNotice';
 import { MissingLinkNotice } from '@/components/shared/MissingLinkNotice';
 import { DeliverySelectionEditor } from '@/components/code-traceability/DeliverySelectionEditor';
-import { DeliveryReportBatchEditor } from '@/components/code-traceability/DeliveryReportBatchEditor';
 import { sameDeliveryBasis } from '@/components/code-traceability/deliveryReportDraft';
 import type { CardDeliveryBatchDraft, CardDeliveryReportInput, DeliverySelectionInput } from '@/types/delivery-evidence';
 import { v4 as uuidv4 } from 'uuid';
@@ -16,6 +15,8 @@ import { X, HelpCircle, Trash2, Clock, Link, Unlink, RefreshCw, FileText, FlaskC
 import toast from 'react-hot-toast';
 import { EntityExportButton } from '@/components/export';
 import { useDashboardApi, type ActivityLogEntry } from '@/services/api';
+import { ChoiceOptionContent } from '@/components/shared/ChoiceOptionContent';
+import { ChoiceQuestionHelp } from '@/components/shared/ChoiceQuestionHelp';
 import {
   useDashboardStore,
   useSelectedCard,
@@ -367,6 +368,7 @@ export function CardModal({
   const [card, setCard] = useState<Card | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [liveRevision, setLiveRevision] = useState(0);
+  const [deliveryRefreshRequest, setDeliveryRefreshRequest] = useState(0);
   const [syncAuthorizing, setSyncAuthorizing] = useState(false);
   const syncGeneration = useRef(0);
   const authorizationRequired = useRef(false);
@@ -417,6 +419,8 @@ export function CardModal({
   const [specKBsFull, setSpecKBsFull] = useState<{ id: string; title: string; description?: string; content: string; mime_type?: string }[]>([]);
   const [knowledgeReaderActive, setKnowledgeReaderActive] = useState(false);
   const [showConclusionPrompt, setShowConclusionPrompt] = useState(false);
+  const [humanReportRequest, setHumanReportRequest] = useState<{ cardId: string; status: 'validation' | 'done'; requestId: string }>();
+  const consumedHumanReportRequest = useRef<string>();
   const [showCancelDialog, setShowCancelDialog] = useState(false);
   const [conclusionTargetStatus, setConclusionTargetStatus] = useState<CardStatus>('done');
   const [conclusionDraft, setConclusionDraft] = useState('');
@@ -650,25 +654,29 @@ export function CardModal({
     return ['not_started', 'in_progress', 'on_hold'].includes(card.status);
   };
 
-  const loseCardAccess = () => {
-    syncGeneration.current += 1;
-    cardLoadGenerationRef.current += 1;
-    cardDataGenerationRef.current += 1;
-    setSyncAuthorizing(false);
-    setCard(null);
+  const clearSpecContext = useCallback(() => {
     setFullSpec(null);
     setParentSpec(null);
-    setSpecKBsFull([]);
-    setDependencies([]);
-    setDependents([]);
-    setSeenStatus({});
-    setBoardMembers([]);
     setSpecScenarios([]);
     setSpecRules([]);
     setSpecContracts([]);
     setSpecIRs([]);
     setSpecORs([]);
     setSpecTRs([]);
+    setSpecKBsFull([]);
+  }, []);
+
+  const loseCardAccess = () => {
+    syncGeneration.current += 1;
+    cardLoadGenerationRef.current += 1;
+    cardDataGenerationRef.current += 1;
+    setSyncAuthorizing(false);
+    setCard(null);
+    clearSpecContext();
+    setDependencies([]);
+    setDependents([]);
+    setSeenStatus({});
+    setBoardMembers([]);
     setShowConclusionPrompt(false);
     setShowCancelDialog(false);
     resetConclusionPrompt();
@@ -687,10 +695,11 @@ export function CardModal({
     const isCurrentLoad = () =>
       isCurrentFullLoad()
       && dataGeneration === cardDataGenerationRef.current;
-    setIsLoading(true);
+    // Refreshing the same card must keep the human submission draft mounted.
+    setIsLoading(card?.id !== cardId);
     setBugRegressionPreview(null);
     setAmendmentRevisions(null);
-    setFullSpec(null);
+    if (card?.id !== cardId) clearSpecContext();
     setSpecKBsFull([]);
     setTaskValidationHierarchy(null);
     setTaskValidationHierarchyLoading(true);
@@ -698,6 +707,9 @@ export function CardModal({
     api.getCard(cardId)
       .then((data) => {
         if (!isCurrentLoad()) return;
+        // A same-card refresh may reassign its Spec. Clear the old context
+        // with the Card update, before the replacement Spec request resolves.
+        if (card?.spec_id !== data.spec_id) clearSpecContext();
         const reconciled = withPreservedOpenQACount(data);
         const projectedStatus = CARD_STATUSES.find((status) =>
           (columns[status] ?? []).some((candidate) => candidate.id === data.id),
@@ -745,15 +757,7 @@ export function CardModal({
             setSpecORs(spec.observability_requirements || []);
             setSpecTRs((spec.technical_requirements || []).map((tr: any, i: number) => typeof tr === 'string' ? { id: `tr_legacy_${i}`, text: tr, linked_task_ids: null } : tr));
           } else {
-            setParentSpec(null);
-            setFullSpec(null);
-            setSpecScenarios([]);
-            setSpecRules([]);
-            setSpecContracts([]);
-            setSpecIRs([]);
-            setSpecORs([]);
-            setSpecTRs([]);
-            setSpecKBsFull([]);
+            clearSpecContext();
           }
           if (spec === undefined || !data.validation_config) {
             setTaskValidationHierarchy(null);
@@ -850,6 +854,7 @@ export function CardModal({
     api.getCard(cardId)
       .then((data) => {
         if (!isCurrentRefresh()) return;
+        if (card?.spec_id !== data.spec_id) clearSpecContext();
         const reconciled = withPreservedOpenQACount(data);
         // Reuse the existing modal refresh cycle for external-agent writes.
         // Verification may change on another Card while this Card stays Done.
@@ -912,14 +917,7 @@ export function CardModal({
             setSpecORs(spec.observability_requirements || []);
             setSpecTRs((spec.technical_requirements || []).map((tr: any, i: number) => typeof tr === 'string' ? { id: `tr_legacy_${i}`, text: tr, linked_task_ids: null } : tr));
           } else {
-            setParentSpec(null);
-            setFullSpec(null);
-            setSpecScenarios([]);
-            setSpecRules([]);
-            setSpecContracts([]);
-            setSpecIRs([]);
-            setSpecORs([]);
-            setSpecTRs([]);
+            clearSpecContext();
           }
           if (spec === undefined || !data.validation_config) {
             setTaskValidationHierarchy(null);
@@ -966,6 +964,8 @@ export function CardModal({
   }, [
     api,
     canReadAmendmentRevisions,
+    card?.spec_id,
+    clearSpecContext,
     isLoading,
     notePolicySubjectChanged,
     onAuthoritativeStatusChange,
@@ -1026,8 +1026,14 @@ export function CardModal({
   }, [selectedCardId, isOpen, canReadAmendmentRevisions, canReadBoardAgents]);
 
   useEffect(() => {
-    if (isOpen && card?.id === selectedCardId && canReadCodeTraceability && cardModalTarget)
+    if (isOpen && card?.id === selectedCardId && canReadCodeTraceability && cardModalTarget) {
       setActiveTab(cardModalTarget.tab);
+      const request = cardModalTarget.humanReport;
+      if (request && consumedHumanReportRequest.current !== request.requestId && card.status === 'in_progress') {
+        consumedHumanReportRequest.current = request.requestId;
+        setHumanReportRequest({ cardId: card.id, ...request });
+      }
+    }
   }, [isOpen, card?.id, selectedCardId, canReadCodeTraceability, cardModalTarget]);
 
   useEffect(() => {
@@ -1199,7 +1205,10 @@ export function CardModal({
   }, [boardId, selectedCardId, isOpen]);
 
   const handleRefresh = () => {
-    if (selectedCardId) loadCard(selectedCardId);
+    if (selectedCardId) {
+      loadCard(selectedCardId);
+      setDeliveryRefreshRequest(request => request + 1);
+    }
   };
 
   const handleClose = () => {
@@ -1236,7 +1245,19 @@ export function CardModal({
       return false;
     }
 
-    // Intercept Validation/Done — require executor report
+    // Human Spec delivery uses one audited application command. Technical
+    // receipt selection and assessment scores belong to the agent workflow.
+    if (card.spec_id && ['normal', 'bug', 'test'].includes(card.card_type || 'normal')
+      && ['validation', 'done'].includes(status) && !conclusion) {
+      setActiveTab('delivery');
+      if (card.status !== 'in_progress') {
+        toast.error('Review the task in Delivery. A new delivery report requires In Progress; existing validation remains authoritative.');
+        return false;
+      }
+      setHumanReportRequest({ cardId: card.id, status: status as 'validation' | 'done', requestId: crypto.randomUUID() });
+      return false;
+    }
+    // Legacy reports for cards outside a Spec.
     if (requiresExecutionReport(status) && !conclusion) {
       setConclusionTargetStatus(status);
       setShowConclusionPrompt(true);
@@ -1539,8 +1560,8 @@ export function CardModal({
       {syncAuthorizing && <PulseLoader label="Checking Card access…" />}
       <div ref={nativeReferenceRoot} style={{ display: syncAuthorizing ? 'none' : undefined }} className={`modal-content ${expanded ? '!max-w-[95vw] !h-[95vh]' : ''}`} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
-        <div className="modal-header">
-          <div className="flex items-center gap-3 flex-1">
+        <div className="modal-header flex-wrap gap-2">
+          <div className="flex min-w-0 basis-full items-center gap-3 sm:basis-0 sm:flex-1">
             <select
               value={card?.status || ''}
               onChange={(e) => handleStatusChange(e.target.value as CardStatus)}
@@ -1586,14 +1607,14 @@ export function CardModal({
           {parentSpec && (
             <button
               onClick={() => setViewingSpecId(parentSpec.id)}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300 hover:ring-2 hover:ring-violet-300 dark:hover:ring-violet-600 transition-all shrink-0"
+              className="inline-flex min-w-0 flex-1 items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-300 hover:ring-2 hover:ring-violet-300 dark:hover:ring-violet-600 transition-all sm:max-w-[13rem] sm:flex-none"
               title="View linked spec"
             >
-              <FileText size={11} />
-              {parentSpec.title.length > 30 ? parentSpec.title.slice(0, 27) + '...' : parentSpec.title}
+              <FileText size={11} className="shrink-0" />
+              <span className="truncate">{parentSpec.title.length > 30 ? parentSpec.title.slice(0, 27) + '...' : parentSpec.title}</span>
             </button>
           )}
-          <div className="flex items-center gap-1">
+          <div className="ml-auto flex shrink-0 items-center gap-1">
             <button
               onClick={() => {
                 if (!card) return;
@@ -1620,7 +1641,7 @@ export function CardModal({
                 entityTitle={card.title}
               />
             )}
-            <button onClick={handleRefresh} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title="Refresh card">
+            <button type="button" onClick={handleRefresh} aria-label="Refresh card" className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title="Refresh card">
               <RefreshCw size={16} className={isLoading ? 'animate-spin' : ''} />
             </button>
             <button onClick={() => setExpanded(!expanded)} className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors" title={expanded ? 'Collapse' : 'Expand'}>
@@ -1921,19 +1942,24 @@ export function CardModal({
                   mount="lazy-keep"
                 >
                   <CardDeliveryDoDPanel
+                    key={card.id}
                     active={activeTab === 'delivery' && !syncAuthorizing}
                     revision={liveRevision}
+                    refreshRequest={deliveryRefreshRequest}
+                    reportRequest={humanReportRequest?.cardId === card.id ? humanReportRequest : undefined}
+                    onReportClosed={() => setHumanReportRequest(undefined)}
                     boardId={card.board_id}
-                    card={{ id: card.id, card_type: card.card_type || 'normal', spec_id: card.spec_id }}
+                    card={{ id: card.id, card_type: card.card_type || 'normal', spec_id: card.spec_id, title: card.title }}
+                    spec={fullSpec}
                     canRecord={perms.has('code_traceability.target.execution_submit')}
                     canProgress={perms.has('card.conclusion.write')}
                     canTest={perms.has('spec.tests.execute')}
-                    canWaiver={perms.has('code_traceability.waiver.create')}
+                    canWaiver={perms.has('code_traceability.waiver.create') || perms.has('code_traceability.waiver.clear')}
                     onOpenTests={canReadTests && card.card_type === 'test' ? () => setActiveTab('tests') : undefined}
                     focusDiagnosis={cardModalTarget?.focusDiagnosis}
                     focusRecordId={cardModalTarget?.recordId}
                     onOpenReadinessCard={openCardModal}
-                    onChanged={() => { void loadCard(card.id); notifyReadinessChanged(); }}
+                    onChanged={() => { toast.success('Task updated'); void loadCard(card.id); notifyReadinessChanged(); }}
                   />
                 </AccessibleTabPanel>
               )}
@@ -2741,16 +2767,6 @@ export function CardModal({
               onChange={setConclusionImpactDraft}
             />}
             {card?.spec_id && <DeliverySelectionEditor key={card.id} boardId={card.board_id} cardId={card.id} specId={card.spec_id} onChange={setConclusionDeliverySelection} onPending={setConclusionSelectionPending} />}
-            {card?.spec_id && conclusionOrigin.current?.status === 'in_progress' && <div className="mt-3 space-y-2">
-              <label><input type="checkbox" checked={conclusionBatchMode} onChange={event => { setConclusionBatchMode(event.target.checked); if (!event.target.checked) setConclusionBatch(undefined); }} /> Save a last batch together with this report</label>
-              {conclusionBatchMode && (!conclusionDeliverySelection
-                ? <p>Enable evidence selection above to prepare the last batch.</p>
-                : <DeliveryReportBatchEditor key={`${card.id}:${card.spec_id}`} boardId={card.board_id}
-                  card={{ id: card.id, card_type: card.card_type || 'normal', spec_id: card.spec_id }}
-                  selection={conclusionDeliverySelection} draft={conclusionBatch} onChange={setConclusionBatch}
-                  canRecord={perms.has('code_traceability.target.execution_submit')} canTest={perms.has('spec.tests.execute')}
-                  canProgress={perms.has('card.conclusion.write')} />)}
-            </div>}
             </fieldset>
             {conclusionGateError && (
               <p
@@ -3739,6 +3755,7 @@ function QATab({
   return (
     <div className="space-y-4">
       {/* Add question */}
+      <ChoiceQuestionHelp />
       {canAsk && (
         <div className="flex gap-2">
           <div className="flex-1">
@@ -4659,6 +4676,7 @@ function ChoiceBoardRenderer({
 
   return (
     <div className="space-y-2">
+      <ChoiceQuestionHelp />
       <p className="font-medium text-sm text-gray-800 dark:text-gray-100">{comment.content}</p>
       <p className="text-xs text-gray-400">{isMulti ? 'Select one or more' : 'Select one'}</p>
 
@@ -4676,6 +4694,7 @@ function ChoiceBoardRenderer({
                 if (canRespond) toggle(opt.id);
               }}
               disabled={!canRespond}
+              aria-pressed={isSelected}
               className={`w-full text-left relative rounded-lg border px-3 py-2 text-sm transition-colors ${
                 isSelected
                   ? 'border-blue-400 bg-blue-50 dark:bg-blue-900/30 dark:border-blue-500/50'
@@ -4696,7 +4715,7 @@ function ChoiceBoardRenderer({
                   }`}>
                     {isSelected && <span className="text-white text-[10px]">✓</span>}
                   </span>
-                  <span className="text-gray-700 dark:text-gray-200">{opt.label}</span>
+                  <ChoiceOptionContent option={opt} />
                 </div>
                 {totalResponses > 0 && (
                   <span className="text-xs text-gray-400">{votes} ({pct}%)</span>

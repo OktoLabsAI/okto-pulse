@@ -1,0 +1,103 @@
+- generic [ref=f2e3]:
+  - banner [ref=f2e4]:
+    - generic [ref=f2e5]:
+      - generic [ref=f2e6]:
+        - button "Hide sidebar" [ref=f2e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f2e12]
+        - generic [ref=f2e31]: / My Board
+      - generic [ref=f2e32]:
+        - button "Refresh board" [ref=f2e33] [cursor=pointer]
+        - button [ref=f2e40] [cursor=pointer]
+  - generic [ref=f2e13]:
+    - complementary [ref=f2e14]:
+      - generic [ref=f2e15]:
+        - generic [ref=f2e17]:
+          - heading "Boards" [level=2] [ref=f2e18]
+          - button "New board" [ref=f2e19] [cursor=pointer]
+        - navigation [ref=f2e21]:
+          - generic [ref=f2e22]:
+            - heading "My Boards" [level=3] [ref=f2e23]
+            - list [ref=f2e44]:
+              - listitem [ref=f2e45]:
+                - button "okto pulse" [ref=f2e46] [cursor=pointer]
+              - listitem [ref=f2e53]:
+                - button "My Board" [ref=f2e54] [cursor=pointer]
+              - listitem [ref=f2e61]:
+                - button "okto-grafx" [ref=f2e62] [cursor=pointer]
+    - main [ref=f2e26]:
+      - group "Board views" [ref=f2e69]:
+        - button "Stories" [ref=f2e70] [cursor=pointer]
+        - button "Ideations" [ref=f2e74] [cursor=pointer]
+        - button "Refinements" [active] [pressed] [ref=f2e77] [cursor=pointer]
+        - button "Specs" [ref=f2e82] [cursor=pointer]
+        - button "Tasks" [ref=f2e87] [cursor=pointer]
+      - generic [ref=f2e2367]:
+        - generic [ref=f2e2368]:
+          - generic [ref=f2e2369]:
+            - heading "Refinements" [level=2] [ref=f2e2370]
+            - generic [ref=f2e2371]: (1 of 1)
+          - generic [ref=f2e2372]:
+            - textbox "Search refinements…" [ref=f2e2374]
+            - group "View mode" [ref=f2e2375]:
+              - button "List view" [pressed] [ref=f2e2376] [cursor=pointer]
+              - button "Grid view" [ref=f2e2378] [cursor=pointer]
+            - button "New Refinement" [ref=f2e2384] [cursor=pointer]
+        - generic [ref=f2e2386]:
+          - button "All" [ref=f2e2387] [cursor=pointer]
+          - button "Draft" [ref=f2e2388] [cursor=pointer]
+          - button "Review" [ref=f2e2389] [cursor=pointer]
+          - button "Approved" [ref=f2e2390] [cursor=pointer]
+          - button "Done" [ref=f2e2391] [cursor=pointer]
+          - button "No derivation" [ref=f2e2392] [cursor=pointer]
+          - button "Show archived" [ref=f2e2397] [cursor=pointer]
+        - generic [ref=f2e2399]:
+          - heading "E2E 0.4.3 — Operational delivery journey" [level=3] [ref=f2e2405]
+          - generic [ref=f2e2408] [cursor=pointer]:
+            - generic [ref=f2e2409]:
+              - generic [ref=f2e2410]:
+                - generic [ref=f2e2411]: Done
+                - generic [ref=f2e2415]: Edition 1
+              - heading "E2E 0.4.3 — Delivery fixture refinement" [level=3] [ref=f2e2416]
+              - paragraph [ref=f2e2417]: "Isolated executable fixture for the authorized My Board operational audit. No production behavior is changed by this fixture. ## Parent Ideation Context - Title: E2E 0.4.3 — Operational delivery journey - Version: 11 ### Description User-authorized test fixture for exercising the full Pulse workflow on My Board. This creates test artifacts, not new production scope. ### Problem Statement The complete 0.4.3 operational journey needs evidence that planning lineage, native gates, delivery proof, human updates and the simplified UI agree. Success means a fully traced fixture reaches verified delivery, expected invalid operations are rejected without false success, and UI state matches authoritative records. ### Proposed Approach Derive one refinement and one Spec for a small isolated delivery-status reference helper. Implement and test it with real local source and execution evidence. Exercise normal, test and bug lifecycles, human progress and requirement choices, current/previous validation, resource propagation and detailed diagnosis. Inspect every primary UI area; keep a coverage matrix and reproducible defects. Preserve existing My Board artifacts and all operational gates. ### Scope Assessment - Domains: 3/5 - Ambiguity: 1/5 - Dependencies: 2/5 - Complexity: large ### Q&A Decisions **Q:** For this E2E fixture, which execution approach preserves meaningful delivery proof while keeping the production application unchanged? **A:** E2E fixture selection under the authorized audit: use real isolated implementation and execution evidence. Synthetic status values must never count as proof."
+              - 'generic "Ambiguity: 1 (0–5) · Edition 1" [ref=f2e2419]':
+                - generic [ref=f2e2420]: Ambiguity
+                - strong [ref=f2e2421]: "1"
+              - generic [ref=f2e2422]:
+                - generic [ref=f2e2423]: e2e-043
+                - generic [ref=f2e2424]: operational-audit
+            - generic [ref=f2e2425]:
+              - button "Open lineage graph" [ref=f2e2426]
+              - button "Archive tree" [ref=f2e2431]
+        - generic [ref=f2e2437]:
+          - status [ref=f2e2438]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=f2e2439]:
+            - generic [ref=f2e2440]:
+              - generic [ref=f2e2441]: Items per page
+              - combobox "Items per page" [ref=f2e2442]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Refinements pagination" [ref=f2e2443]:
+              - generic [ref=f2e2444]:
+                - button "Previous page" [disabled] [ref=f2e2445]: Previous
+                - button "Page 1" [disabled] [ref=f2e2446]: "1"
+                - button "Next page" [disabled] [ref=f2e2447]: Next
+  - 'status "Cognitive pipeline working: 1 running, 0 pending" [ref=f2e2337]':
+    - generic [ref=f2e2348]: 1 running
+  - status [ref=f2e2349]:
+    - generic [ref=f2e2350]:
+      - generic [ref=f2e2351]: Consolidation in progress
+      - generic [ref=f2e2352]: 0%
+    - generic [ref=f2e2354]:
+      - generic [ref=f2e2355]:
+        - generic [ref=f2e2356]: Pending
+        - generic [ref=f2e2357]: "0"
+      - generic [ref=f2e2358]:
+        - generic [ref=f2e2359]: Running
+        - generic [ref=f2e2360]: "1"
+      - generic [ref=f2e2361]:
+        - generic [ref=f2e2362]: Processed
+        - generic [ref=f2e2363]: "0"
+      - generic [ref=f2e2364]:
+        - generic [ref=f2e2365]: Paused
+        - generic [ref=f2e2366]: "0"

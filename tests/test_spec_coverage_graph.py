@@ -10,7 +10,8 @@ from okto_pulse.community.adapters.sqlalchemy_spec_coverage import CommunitySpec
 from okto_pulse.community.adapters.routed_board_graph_facades import CommunityRoutedSemanticGraphStore
 from okto_pulse.community.adapters.grafx_query_execution import CommunityGraphQueryExecution
 from okto_pulse.community.adapters.grafx_graph_store import CommunityGrafxGraphStore
-from okto_pulse.core.kg.interfaces.graph_errors import GraphCapabilityUnavailable, GraphError
+from okto_pulse.community.adapters import graph_operation_guards as guards
+from okto_pulse.core.kg.interfaces.graph_errors import GraphCapabilityUnavailable, GraphError, GraphQueryTimeout
 from okto_pulse.core.ports.spec_coverage_query import SpecCoverageGraphFacts, SpecCoverageGraphScope
 from okto_pulse.core.services.spec_coverage_graph import build_spec_coverage_graph_scope
 from okto_pulse.core.services.spec_coverage_query import project_spec_coverage
@@ -21,7 +22,35 @@ real_store = native.real_store
 ledger = relational.ledger
 
 
-def test_native_read_is_scoped_bounded_and_read_only(real_store):
+def test_coverage_source_lookup_uses_existing_index_without_table_scan(real_store):
+    from okto_pulse.community.adapters.grafx_spec_coverage import read_spec_coverage_graph
+    from okto_pulse.community.adapters.grafx_source_indexes import pulse_source_index_name
+
+    store, database, _, _ = real_store
+    key = ('Requirement', 'spec:indexed-coverage:fr:one')
+    for identity, ref in [('indexed-wanted', key[1]), ('indexed-foreign', 'spec:indexed-other:fr:one')]:
+        store.create_node(native.BOARD_ID, key[0], identity, native._attrs(identity, ref, 'coverage'))
+    assert database.indexes.index(pulse_source_index_name('Requirement')) is not None
+    results = []
+    with database.begin('read') as transaction:
+        class Reader:
+            def execute(self, query, params):
+                result = transaction.execute(query, params)
+                if 'ref' in params:
+                    results.append(result)
+                return result
+
+        observed = read_spec_coverage_graph(Reader(), SpecCoverageGraphScope(
+            (key, ('Requirement', 'spec:indexed-coverage:fr:missing')), ()))
+    assert observed.nodes == (key,)
+    assert observed.relations == ()
+    assert len(results) == 2
+    assert all(result.statistics.get('rows_scanned', 0) == 0 for result in results)
+    assert all(any(node.label == 'IndexSeek' for node in result.plan.walk()) for result in results)
+    assert all(not any(node.label == 'SortRows' for node in result.plan.walk()) for result in results)
+
+
+def test_native_read_is_scoped_bounded_and_read_only(real_store, monkeypatch):
     store, database, _, _ = real_store
     board = native.BOARD_ID
     root = ('Entity', 'spec:coverage')
@@ -36,6 +65,21 @@ def test_native_read_is_scoped_bounded_and_read_only(real_store):
         store.create_edge(board, 'belongs_to', identity, 'coverage-root', {
             'confidence': 1.0, 'rule_id': edge[5], 'layer': edge[6], 'created_by': edge[7],
         }, from_type='Requirement', to_type='Entity')
+    relation_plans = []
+    read = store._read
+
+    def observed_read(board_id, *, operation, callback):
+        def observe(reader):
+            class Reader:
+                def execute(self, query, params):
+                    result = reader.execute(query, params)
+                    if 'targets' in params:
+                        relation_plans.append(result.plan)
+                    return result
+            return callback(Reader())
+        return read(board_id, operation=operation, callback=observe)
+
+    monkeypatch.setattr(store, '_read', observed_read)
     before = database.transactions
     result = store.read_spec_coverage_graph(board, scope)
     assert set(result.nodes) == {root, child}
@@ -44,6 +88,60 @@ def test_native_read_is_scoped_bounded_and_read_only(real_store):
     without_link = store.read_spec_coverage_graph(board, replace(scope, relations=()))
     assert without_link.relations == (edge,)
     assert database.transactions == before
+    assert relation_plans
+    for plan in relation_plans:
+        nodes = tuple(plan.walk())
+        assert any(node.label == 'IndexSeek' and node.variable == 's'
+                   and node.key_columns == ('id',) for node in nodes)
+        assert not any(node.label == 'NodeScan' for node in nodes)
+
+
+@pytest.mark.parametrize('cap,first_rows,last_rows,expected_count,truncated', [
+    (0, 1, 0, 0, True),
+    (1, 1, 0, 1, False),
+    (1, 1, 1, 1, True),
+    (1, 2, 0, 1, True),
+    (2, 1, 1, 2, False),
+])
+def test_relationship_anchor_reads_preserve_global_prefix_and_exact_cap(
+        monkeypatch, cap, first_rows, last_rows, expected_count, truncated):
+    from okto_pulse.community.adapters import grafx_spec_coverage as coverage
+
+    # Source-reference order deliberately differs from native id order.
+    identities = {'spec:bounded:fr:first': ('z', 'Requirement'),
+                  'spec:bounded:fr:last': ('a', 'Requirement'),
+                  'spec:bounded': ('root', 'Entity')}
+    scope = SpecCoverageGraphScope(tuple((kind, ref) for ref, (_, kind) in identities.items()), ())
+    monkeypatch.setattr(coverage, 'MAX_SPEC_COVERAGE_FACTS', cap)
+    monkeypatch.setattr(coverage, 'PULSE_RELATIONSHIP_LAYOUT', SimpleNamespace(entries=(
+        SimpleNamespace(from_type='Requirement', logical_type='belongs_to', to_type='Entity'),)))
+    calls = []
+    edge_rows = [(identity, 'root', f'rule-{i}', 'deterministic', 'worker_layer1')
+                 for identity, count in [('a', first_rows), ('z', last_rows)]
+                 for i in range(count)]
+
+    class Reader:
+        def execute(self, query, params):
+            if 'ref' in params:
+                return SimpleNamespace(rows=((identities[params['ref']][0], params['ref']),))
+            calls.append(params)
+            return SimpleNamespace(rows=tuple(row for row in edge_rows
+                if row[0] == params['source'])[:params['bound']])
+
+    result = coverage.read_spec_coverage_graph(Reader(), scope)
+    refs = {identity: (kind, ref) for ref, (identity, kind) in identities.items()}
+    expected = tuple(sorted((*refs[row[0]], 'belongs_to', *refs[row[1]], *row[2:])
+                            for row in edge_rows[:cap]))
+    assert result.relations == expected
+    assert len(result.relations) == expected_count
+    assert result.truncated is truncated
+    assert all(call['bound'] >= 1 for call in calls)
+    if cap == 0:
+        assert calls == []
+    elif first_rows == cap:
+        # The empty or overflowing last anchor is still observed with LIMIT 1.
+        assert [call['source'] for call in calls] == ['a', 'z']
+        assert calls[-1]['bound'] == 1
 
 
 def test_duplicate_current_identity_fails_instead_of_selecting_an_arbitrary_node(real_store):
@@ -126,6 +224,189 @@ async def test_graph_unavailable_is_not_an_empty_success(ledger):
     assert result['projection_freshness']['state'] == 'unavailable'
     assert result['structure']['summary'] is not None
     assert result['structure']['graph']['observed_nodes'] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source_changed', [False, True])
+async def test_closing_graph_preserves_coverage_and_source_fence(ledger, monkeypatch, source_changed):
+    session, store, _ = ledger
+    implementation = await relational.delivery_fixture.record(store, relational.delivery_fixture.command())
+    await relational.delivery_fixture.record(store, relational.delivery_fixture.command(
+        'test', implementation_ids=[implementation['id']]))
+    await session.commit()
+    query = replace(relational.QUERY, read_graph=True)
+    guard = guards._BoardCloseGuard(query.board_id)
+    monkeypatch.setitem(guards._board_close_guards, query.board_id, guard)
+    monkeypatch.setattr(guards, '_READER_ENTER_TIMEOUT_S', 0.001)
+    route_calls = []
+
+    class Resolver:
+        def acquire_board_route(self, board):
+            route_calls.append(board)
+            raise AssertionError('A closing graph must not acquire a native handle')
+
+    routed = CommunityRoutedSemanticGraphStore(Resolver(), grafx=None,
+        operation_window=guards.board_graph_operation_window)
+    reader = CommunitySpecCoverageReader(session, delivery_store=store,
+        graph_reader=routed, query_execution=CommunityGraphQueryExecution())
+    snapshot = await reader.read(query, timeout_ms=15000)
+    baseline = project_spec_coverage(query, snapshot)
+    scope = build_spec_coverage_graph_scope(snapshot)
+    original_source = reader._source
+    source_reads = 0
+
+    async def read_source(current_query):
+        nonlocal source_reads
+        source_reads += 1
+        if source_changed and source_reads == 2:
+            await session.execute(update(Card).where(Card.id == 'test').values(status='in_progress'))
+            await session.commit()
+        return await original_source(current_query)
+
+    monkeypatch.setattr(reader, '_source', read_source)
+    with guard.closing() as (drained, stuck):
+        assert drained and stuck == 0
+        if source_changed:
+            with pytest.raises(ValueError, match='^spec_coverage_source_changed$'):
+                await reader.read_graph(query, scope, snapshot.source_revision, timeout_ms=15000)
+                await reader.verify_source(query, snapshot.source_revision, timeout_ms=15000)
+        else:
+            graph = await reader.read_graph(query, scope, snapshot.source_revision, timeout_ms=15000)
+            await reader.verify_source(query, snapshot.source_revision, timeout_ms=15000)
+            result = project_spec_coverage(query, replace(snapshot, graph=graph, graph_scope=scope))
+            assert result['projection_freshness']['state'] == 'unavailable'
+            assert result['structure']['graph']['observed_nodes'] is None
+            assert result['structure']['summary'] == baseline['structure']['summary']
+            assert result['delivery'] == baseline['delivery']
+            assert result['delivery']['counts']['verification_proven'] == 2
+        assert guard.readers == 0
+    assert route_calls == []
+    assert source_reads == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('error_type', [RuntimeError, GraphError])
+async def test_graph_corruption_is_not_hidden_as_temporary_unavailability(ledger, error_type):
+    session, _, _ = ledger
+    query = replace(relational.QUERY, read_delivery=False, read_graph=True)
+    failure = error_type('unexpected graph corruption')
+
+    class Reader:
+        def read_spec_coverage_graph(self, *args):
+            raise failure
+
+    reader = CommunitySpecCoverageReader(session, graph_reader=Reader(),
+        query_execution=CommunityGraphQueryExecution())
+    snapshot = await reader.read(query, timeout_ms=15000)
+    with pytest.raises(error_type) as rejected:
+        await reader.read_graph(query, build_spec_coverage_graph_scope(snapshot),
+            snapshot.source_revision, timeout_ms=15000)
+    assert rejected.value is failure
+
+
+@pytest.mark.asyncio
+async def test_rest_real_close_preserves_delivery_and_recovers(ledger, real_store, monkeypatch):
+    from unittest.mock import AsyncMock
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+    from okto_pulse.community.api import analytics
+    from okto_pulse.community.api.auth_deps import require_user
+    from okto_pulse.community.api.deps import get_unit_of_work
+    from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
+    from okto_pulse.core.application.service_catalog import CoreAnalyticsOperations
+    from okto_pulse.core.application.use_cases.base import ActorContext
+    from okto_pulse.core.ports import relational_application
+
+    session, delivery, _ = ledger
+    _, database, fence, _ = real_store
+    implementation = await relational.delivery_fixture.record(delivery, relational.delivery_fixture.command())
+    await relational.delivery_fixture.record(delivery, relational.delivery_fixture.command(
+        'test', implementation_ids=[implementation['id']]))
+    await session.commit()
+    board_id, spec_id = relational.BOARD, relational.SPEC
+    execution = CommunityGraphQueryExecution()
+    graph = CommunityGrafxGraphStore(lambda board: {board_id: database}[board], fence,
+        query_timeout=execution.remaining)
+    route_calls = []
+
+    class Resolver:
+        def acquire_board_route(self, board):
+            route_calls.append(board)
+            return SimpleNamespace(scope='board', scope_id=board, backend='grafx', generation='close-recovery')
+
+    guard = guards._BoardCloseGuard(board_id)
+    monkeypatch.setitem(guards._board_close_guards, board_id, guard)
+    monkeypatch.setattr(guards, '_READER_ENTER_TIMEOUT_S', 0.001)
+    routed = CommunityRoutedSemanticGraphStore(Resolver(), grafx=graph,
+        operation_window=guards.board_graph_operation_window)
+    reader = CommunitySpecCoverageReader(session, delivery_store=delivery,
+        graph_reader=routed, query_execution=execution)
+    # Replace composition only: the route, Core service, SQL and Grafx remain real.
+    monkeypatch.setattr(relational_application, 'require_relational_application_adapter',
+        lambda: SimpleNamespace(spec_coverage_read=lambda context: reader))
+    flags = ['board.read', 'spec.entity.read', 'card.entity.read', 'spec.tests.read',
+        'spec.integration_requirements.read', 'spec.observability_requirements.read',
+        'code_traceability.evidence.read', 'kg.query.related_context']
+    actor = ActorContext('agent', 'mcp', actor_kind='agent', realm_id='local',
+        board_id=board_id, permissions=flags)
+    monkeypatch.setattr(RESTAdapterContract, 'actor', lambda *args, **kwargs: actor)
+    board = SimpleNamespace(id=board_id, owner_id='owner', realm_id='local',
+        settings={'kg_query_timeout_ms': 15000})
+    uow = SimpleNamespace(boards=SimpleNamespace(get=AsyncMock(return_value=board)),
+        services=SimpleNamespace(analytics=CoreAnalyticsOperations(session)))
+    app = FastAPI()
+    app.include_router(analytics.router)
+    app.dependency_overrides[require_user] = lambda: 'user'
+    app.dependency_overrides[get_unit_of_work] = lambda: uow
+    async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
+        async def observe():
+            response = await client.get(f'/boards/{board_id}/specs/{spec_id}/coverage',
+                params={'graph_mode': 'detail', 'timeout_ms': 15000})
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        baseline = await observe()
+        calls_before = len(route_calls)
+        with guard.closing() as (drained, stuck):
+            assert drained and stuck == 0
+            unavailable = await observe()
+            assert len(route_calls) == calls_before
+            assert guard.readers == 0
+            assert unavailable['projection_freshness']['state'] == 'unavailable'
+            assert unavailable['structure']['graph']['observed_nodes'] is None
+            assert unavailable['structure']['summary'] == baseline['structure']['summary']
+            assert unavailable['delivery'] == baseline['delivery']
+        recovered = await observe()
+        assert len(route_calls) > calls_before
+        assert recovered['projection_freshness']['state'] != 'unavailable'
+        assert recovered['structure']['graph']['observed_nodes'] is not None
+        assert recovered['structure']['graph'] == baseline['structure']['graph']
+        assert recovered['delivery'] == baseline['delivery']
+        assert recovered['delivery']['counts']['verification_proven'] == 2
+        assert guard.readers == 0
+
+
+@pytest.mark.asyncio
+async def test_close_fallback_still_obeys_graph_read_deadline(ledger, monkeypatch):
+    from okto_pulse.community.adapters import sqlalchemy_spec_coverage as coverage
+
+    session, _, _ = ledger
+    query = replace(relational.QUERY, read_delivery=False, read_graph=True)
+
+    class Reader:
+        def read_spec_coverage_graph(self, *args):
+            raise guards.BoardCloseInProgressError(query.board_id, 0.001)
+
+    reader = CommunitySpecCoverageReader(session, graph_reader=Reader(),
+        query_execution=CommunityGraphQueryExecution())
+    snapshot = await reader.read(query, timeout_ms=15000)
+    # Deterministic phase expiry before native entry; final source fencing is a
+    # separate call. Replace this adapter's clock, not the event-loop clock.
+    ticks = iter((0.0, 0.0, 0.0, 0.020))
+    monkeypatch.setattr(coverage, 'time', SimpleNamespace(monotonic=lambda: next(ticks)))
+    with pytest.raises(GraphQueryTimeout):
+        await reader.read_graph(query, build_spec_coverage_graph_scope(snapshot),
+            snapshot.source_revision, timeout_ms=10)
 
 
 @pytest.mark.asyncio
@@ -224,9 +505,14 @@ async def test_persisted_native_generation_change_invalidates_next_page(ledger, 
                 physical_path=paths["page-generation-a"], page_size=8192, database=database)
 
         async def observe():
+            # Coverage is existing-only. Explicitly prepare the isolated test
+            # generation through the normal non-Coverage reader path first.
+            with bundle.graph_query_execution.scope(board, timeout_ms=15000):
+                bundle.graph_store.read_spec_coverage_graph(board, SpecCoverageGraphScope((), ()))
             source = await reader.read(query, timeout_ms=15000)
             scope = build_spec_coverage_graph_scope(source)
             graph = await reader.read_graph(query, scope, source.source_revision, timeout_ms=15000)
+            await reader.verify_source(query, source.source_revision, timeout_ms=15000)
             return replace(source, graph=graph, graph_scope=scope)
 
         first_snapshot = await observe()

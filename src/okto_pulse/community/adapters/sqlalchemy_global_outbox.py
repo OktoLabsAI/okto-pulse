@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Sequence
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, event as sqlalchemy_event, func, or_, select, update
 
 from okto_pulse.community.adapters.sqlalchemy_models import (
     GlobalUpdateOutbox,
@@ -21,6 +21,9 @@ from okto_pulse.core.ports.global_outbox import (
     GlobalOutboxEventRecord,
     GlobalOutboxMutationConflict,
     GlobalOutboxNodeRefFact,
+)
+from okto_pulse.core.application.graph_write_contracts import (
+    assert_global_discovery_writer_fence,
 )
 
 
@@ -275,7 +278,32 @@ class CommunitySqlAlchemyGlobalOutboxStore:
             raise
 
     async def commit(self, context: Any) -> None:
-        await context.commit()
+        """Commit delivery outcomes only while the graph writer still owns its lease.
+
+        Session.commit may flush after the processor's final check. Recheck at
+        the connection's commit event, after those writes and before DBAPI commit.
+        This is a pre-commit fence, not a cross-store atomic lease transaction.
+        Manual dead-letter recovery commits its own session, outside this path.
+        """
+        assert_global_discovery_writer_fence()
+        connection = (await context.connection()).sync_connection
+
+        def before_commit(sql_connection: Any) -> None:
+            try:
+                assert_global_discovery_writer_fence()
+            except BaseException as exc:
+                # SQLAlchemy deactivates its RootTransaction even when a commit
+                # listener raises before DBAPI commit. Discard the uncommitted
+                # physical connection so a later session cannot commit these
+                # refused outcomes after a logical rollback/reuse.
+                sql_connection.invalidate(exc)
+                raise
+
+        sqlalchemy_event.listen(connection, "commit", before_commit)
+        try:
+            await context.commit()
+        finally:
+            sqlalchemy_event.remove(connection, "commit", before_commit)
 
 
 __all__ = ["CommunitySqlAlchemyGlobalOutboxStore"]

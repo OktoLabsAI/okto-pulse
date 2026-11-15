@@ -17,6 +17,7 @@ from sqlalchemy import (
     Index,
     Integer,
     LargeBinary,
+    PrimaryKeyConstraint,
     String,
     Text,
     TypeDecorator,
@@ -92,10 +93,12 @@ GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES: tuple[str, ...] = (
     "specs",
     "spec_qa_items",
     "stories",
+    "task_requirement_decision_operations",
+    "task_requirement_decisions",
 )
 GLOBAL_DISCOVERY_SOURCE_REVISION_SCOPE_ID = "_global"
 GLOBAL_DISCOVERY_SOURCE_FENCE_VERSION = "gdsr-fence-v2"
-GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v9"
+GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION = "gdsr-trigger-manifest-v10"
 GLOBAL_DISCOVERY_SOURCE_REVISION_TRIGGER_PREFIX = "trg_global_discovery_source_revision"
 
 
@@ -1440,6 +1443,97 @@ class Spec(Base):
     architecture_designs: Mapped[list["ArchitectureDesign"]] = relationship(
         "ArchitectureDesign", back_populates="spec", cascade="all, delete-orphan"
     )
+
+
+class _VerificationScopeColumns:
+    """Historical scope survives deletion; native readers still require its Spec."""
+
+    board_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    spec_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    spec_edition: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    scenario_id: Mapped[str] = mapped_column(String(255), nullable=False)
+
+
+class VerificationScenarioStateRow(_VerificationScopeColumns, Base):
+    __tablename__ = "verification_scenario_states"
+    __table_args__ = (
+        PrimaryKeyConstraint("board_id", "spec_id", "spec_edition", "scenario_id"),
+        CheckConstraint("spec_edition > 0 AND generation > 0 AND last_ordinal >= 0 "
+                        "AND summary_ordinal >= 0 AND summary_ordinal <= last_ordinal AND revision > 0",
+                        name="ck_verification_state_counters"),
+    )
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_ordinal: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    summary_ordinal: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
+    scenario_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    verification_method: Mapped[str] = mapped_column(String(32), nullable=False)
+    deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class VerificationReservationRow(_VerificationScopeColumns, Base):
+    __tablename__ = "verification_reservations"
+    __table_args__ = (
+        ForeignKeyConstraint(["board_id", "spec_id", "spec_edition", "scenario_id"],
+            ["verification_scenario_states.board_id", "verification_scenario_states.spec_id",
+             "verification_scenario_states.spec_edition", "verification_scenario_states.scenario_id"]),
+        UniqueConstraint("board_id", "spec_id", "spec_edition", "scenario_id", "generation", "ordinal",
+                         name="uq_verification_reservation_order"),
+        CheckConstraint("spec_edition > 0 AND generation > 0 AND ordinal > 0",
+                        name="ck_verification_reservation_counters"),
+    )
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    ordinal: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    context: Mapped[dict] = mapped_column(JSON, nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    actor_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class VerificationAcceptanceRow(_VerificationScopeColumns, Base):
+    __tablename__ = "verification_acceptances"
+    __table_args__ = (
+        UniqueConstraint("reservation_id", name="uq_verification_acceptance_reservation"),
+        UniqueConstraint("receipt_id", name="uq_verification_acceptance_receipt"),
+        Index("ix_verification_acceptance_scope", "board_id", "spec_id", "spec_edition", "scenario_id", "generation", "ordinal"),
+        CheckConstraint("spec_edition > 0 AND generation > 0 AND ordinal > 0",
+                        name="ck_verification_acceptance_counters"),
+        CheckConstraint("(origin='native' AND migration_source_sha256 IS NULL) OR "
+                        "(origin='legacy_seed' AND migration_source_sha256 IS NOT NULL "
+                        "AND length(migration_source_sha256)=64 "
+                        "AND migration_source_sha256 NOT GLOB '*[^0-9a-f]*')",
+                        name="ck_verification_acceptance_origin"),
+    )
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    reservation_id: Mapped[str] = mapped_column(String(255), ForeignKey("verification_reservations.id"), nullable=False)
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    ordinal: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    basis_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    receipt_id: Mapped[str] = mapped_column(String(2048), nullable=False)
+    result: Mapped[dict] = mapped_column(JSON, nullable=False)
+    evidence: Mapped[dict] = mapped_column(JSON, nullable=False)
+    evidence_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    origin: Mapped[str] = mapped_column(String(32), nullable=False, default="native", server_default="native")
+    migration_source_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class VerificationBasisHeadRow(_VerificationScopeColumns, Base):
+    __tablename__ = "verification_basis_heads"
+    __table_args__ = (
+        PrimaryKeyConstraint("board_id", "spec_id", "spec_edition", "scenario_id", "generation", "basis_digest"),
+        ForeignKeyConstraint(["board_id", "spec_id", "spec_edition", "scenario_id"],
+            ["verification_scenario_states.board_id", "verification_scenario_states.spec_id",
+             "verification_scenario_states.spec_edition", "verification_scenario_states.scenario_id"]),
+        UniqueConstraint("accepted_result_id", name="uq_verification_head_acceptance"),
+        CheckConstraint("spec_edition > 0 AND generation > 0 AND ordinal > 0",
+                        name="ck_verification_head_counters"),
+    )
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    basis_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    ordinal: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    accepted_result_id: Mapped[str] = mapped_column(String(255), ForeignKey("verification_acceptances.id"), nullable=False)
 
 
 class SpecHistory(Base):
@@ -11033,3 +11127,55 @@ for _trigger_name, (
         "after_create",
         DDL(_lifecycle_trigger_ddl).execute_if(dialect="sqlite"),
     )
+
+
+class TaskRequirementDecisionOperationRow(Base):
+    """One immutable receipt for an atomic human task-selection decision."""
+    __tablename__ = 'task_requirement_decision_operations'
+    __table_args__ = (
+        UniqueConstraint('board_id', 'spec_id', 'actor_id', 'idempotency_key', name='uq_task_requirement_operation_key'),
+        Index('ix_task_requirement_operation_scope', 'board_id', 'spec_id', 'spec_edition'),
+    )
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    board_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    spec_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    spec_edition: Mapped[int] = mapped_column(Integer, nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    request_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    response: Mapped[dict] = mapped_column(JSON, nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+
+
+class TaskRequirementDecisionRow(Base):
+    """Append-only per-task history, never a mutable lifecycle or proof flag."""
+    __tablename__ = 'task_requirement_decisions'
+    __table_args__ = (
+        UniqueConstraint('board_id', 'spec_id', 'spec_edition', 'card_id', 'revision', name='uq_task_requirement_revision'),
+        Index('ix_task_requirement_card_scope', 'board_id', 'spec_id', 'spec_edition', 'card_id'),
+        CheckConstraint("decision IN ('required', 'optional', 'waived')", name='ck_task_requirement_decision'),
+        CheckConstraint('revision >= 1 AND spec_edition >= 1', name='ck_task_requirement_positive_revision'),
+    )
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    operation_id: Mapped[str] = mapped_column(String(64), ForeignKey('task_requirement_decision_operations.id', ondelete='RESTRICT'), nullable=False)
+    board_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    spec_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    spec_edition: Mapped[int] = mapped_column(Integer, nullable=False)
+    card_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    scope_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
+for _decision_table in (TaskRequirementDecisionOperationRow.__table__, TaskRequirementDecisionRow.__table__):
+    for _decision_action in ('UPDATE', 'DELETE'):
+        _decision_erasure_guard = (
+            f'WHEN NOT EXISTS (SELECT 1 FROM kg_board_erasure_permits WHERE board_id = OLD.board_id) '
+            if _decision_action == 'DELETE' else ''
+        )
+        event.listen(_decision_table, 'after_create', DDL(
+            f'CREATE TRIGGER IF NOT EXISTS immutable_{_decision_table.name}_{_decision_action.lower()} '
+            f'BEFORE {_decision_action} ON {_decision_table.name} {_decision_erasure_guard}BEGIN '
+            "SELECT RAISE(ABORT, 'task_requirement_decision_immutable'); END"
+        ).execute_if(dialect='sqlite'))

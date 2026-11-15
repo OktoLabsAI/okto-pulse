@@ -78,11 +78,11 @@ _NATIVE_DIAGNOSTICS_LOGGER = logging.getLogger(
 )
 _DEFAULT_STARTUP_TIMEOUT_SECONDS = 120.0
 _DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 15.0
-# KGD-01 (TR7): budget próprio do checkpoint+close dos grafos no teardown —
-# MENOR que o force-exit de 15s do _shutdown_server_pair, para que a etapa
-# complete (ou desista logando) antes de qualquer cancel forçado.
+# These application teardown phases run after Uvicorn's HTTP drain. The outer
+# deadline reserves their combined budget, including every active worker family.
 _GRAPH_CLOSE_SHUTDOWN_TIMEOUT_S = 10.0
 _RECOVERY_NATIVE_DRAIN_TIMEOUT_S = 5.0
+_APPLICATION_SHUTDOWN_MARGIN_SECONDS = 5.0
 _DEFAULT_METRICS_BEACON_INTERVAL_SECONDS = 3600.0
 
 
@@ -707,20 +707,13 @@ window.OKTO_PULSE_CONFIG = {{
 
 
 async def _close_graphs_on_teardown() -> None:
-    """KGD-01 (FR2/BR3/TR7): checkpoint+close de todos os board graphs abertos.
+    """Checkpoint and close board graphs after the native workers have drained.
 
-    Roda em ``asyncio.to_thread`` (o close guard drena leitores — bloquear o
-    event loop impediria os próprios leitores de saírem) e é protegido contra
-    cancelamento: o force-exit de 15s do ``_shutdown_server_pair`` cancela a
-    task do servidor — e com ela o teardown do lifespan — mas esta etapa NÃO
-    pode ser abandonada com um CHECKPOINT em curso (escritor stale zera o
-    WAL). O ``asyncio.shield`` mantém a task interna viva através de cancels
-    repetidos, dentro de um budget próprio menor que o force-exit
-    (``_GRAPH_CLOSE_SHUTDOWN_TIMEOUT_S``). Mesmo no pior caso (budget
-    estourado), a worker thread NÃO é abandonada antes do exit do processo:
-    ``asyncio.Runner``/``asyncio.run`` aguardam o default executor no close
-    do loop (``loop.shutdown_default_executor``). Nunca propaga exceção — o
-    teardown segue para o close do SQLite.
+    The close guard drains readers in a thread so the event loop remains free.
+    Shield the checkpoint from repeated cancellation within its own deadline;
+    the outer listener budget reserves this phase separately from HTTP drain.
+    If the deadline expires, the default executor still owns and joins the
+    thread at loop shutdown. A checkpoint is never abandoned midway through I/O.
     """
     from okto_pulse.community.adapters.kg_shutdown import (
         close_all_graphs_on_shutdown,
@@ -1033,6 +1026,33 @@ def create_community_app():
         blocked_families.sort()
         native_drain_incomplete = bool(blocked_families)
         if native_drain_incomplete:
+            from okto_pulse.community.shutdown_ownership import ShutdownOwnership
+
+            ownership = ShutdownOwnership(tuple(blocked_families))
+            app_instance.state.shutdown_ownership = ownership
+
+            async def observe_producers():
+                if not recovery_drained:
+                    # No known completion observer for that separate native
+                    # runtime: preserve the host rather than claim quiescence.
+                    raise RuntimeError("recovery_shutdown_observer_unavailable")
+                if worker_registry is not None:
+                    await worker_registry.observe_stopped(blocked_families)
+
+            async def close_graph_after_failed_deadline():
+                from okto_pulse.community.adapters.kg_shutdown import close_all_graphs_on_shutdown
+
+                # The original deadline is already failed. Observe the actual
+                # native teardown to terminal before database disposal; do not
+                # use the helper which can return with its close thread live.
+                await asyncio.to_thread(close_all_graphs_on_shutdown)
+
+            ownership.start(
+                observe_producers=observe_producers,
+                drain_cleanup=database_runtime.observe_retained_cleanup,
+                close_graph=close_graph_after_failed_deadline,
+                close_database=close_db,
+            )
             _STARTUP_LOGGER.critical(
                 "community.shutdown.native_drain_incomplete "
                 "families=%s graph_close_skipped=true db_close_skipped=true",
@@ -1404,6 +1424,21 @@ def _log_ready_servers(api_port: int, mcp_port: int) -> None:
     _STARTUP_LOGGER.info("Startup complete - The application is ready")
 
 
+def _application_shutdown_budget_seconds(worker_registry) -> float:
+    from okto_pulse.community.adapters.workers import (
+        community_worker_shutdown_budget_seconds,
+    )
+
+    workers = (
+        community_worker_shutdown_budget_seconds(worker_registry)
+        if worker_registry is not None else 0.0
+    )
+    return (
+        workers + _RECOVERY_NATIVE_DRAIN_TIMEOUT_S
+        + _GRAPH_CLOSE_SHUTDOWN_TIMEOUT_S + _APPLICATION_SHUTDOWN_MARGIN_SECONDS
+    )
+
+
 async def _shutdown_server_pair(
     api_server: uvicorn.Server,
     mcp_server: uvicorn.Server,
@@ -1411,23 +1446,35 @@ async def _shutdown_server_pair(
     mcp_task: asyncio.Task[None],
     *,
     timeout_seconds: float | None = None,
+    application_timeout_seconds: float = 0.0,
 ) -> None:
-    """Stop both uvicorn servers without letting open streams hang forever."""
+    """Bound HTTP drain plus application teardown without sharing their deadlines."""
     timeout = (
         _shutdown_timeout_seconds() if timeout_seconds is None else timeout_seconds
     )
+    # Uvicorn rounds the HTTP budget to whole seconds and starts lifespan
+    # shutdown only after draining/cancelling connections. Worker budgets are
+    # sequential, not concurrent; reserve them in addition to HTTP drain.
+    total_timeout = math.ceil(timeout) + application_timeout_seconds + 1.0
     set_shutdown_log_suppression(True)
     try:
         api_server.should_exit = True
         mcp_server.should_exit = True
 
-        _, pending = await asyncio.wait({api_task, mcp_task}, timeout=timeout + 1.0)
+        _, pending = await asyncio.wait({api_task, mcp_task}, timeout=total_timeout)
         if not pending:
             return
 
         _STARTUP_LOGGER.warning(
-            "Shutdown timeout exceeded after %.0fs; forcing API/UI and MCP servers to stop.",
-            timeout,
+            "Shutdown deadline exceeded after %.1fs "
+            "(HTTP %.1fs, application %.1fs); forcing API/UI and MCP servers to stop.",
+            total_timeout, timeout, application_timeout_seconds,
+            extra={
+                "event": "community.shutdown.deadline_exceeded",
+                "http_timeout_seconds": timeout,
+                "application_timeout_seconds": application_timeout_seconds,
+                "total_timeout_seconds": total_timeout,
+            },
         )
 
         api_server.force_exit = True
@@ -1449,6 +1496,7 @@ async def _shutdown_launched_server_tasks(
     mcp_task: asyncio.Task[None] | None,
     *,
     timeout_seconds: float,
+    application_timeout_seconds: float = 0.0,
 ) -> None:
     """Drain a partially launched listener pair without orphaning one task."""
 
@@ -1459,6 +1507,7 @@ async def _shutdown_launched_server_tasks(
             api_task,
             mcp_task,
             timeout_seconds=timeout_seconds,
+            application_timeout_seconds=application_timeout_seconds,
         )
         return
 
@@ -1485,26 +1534,26 @@ async def _shutdown_launched_server_tasks(
 def _install_shutdown_signal_handlers(
     request_shutdown: Callable[[int], None],
 ) -> list[Callable[[], None]]:
-    """KGD-01 (FR2): shutdown ORDENADO também para SIGTERM/SIGBREAK.
+    """Own graceful INT/TERM/BREAK until application shutdown settles.
 
-    A captura de sinais do uvicorn está desabilitada nos dois servidores
-    (dois ``Server`` no mesmo loop — o último sobrescreveria o handler); o
-    SIGINT chega pelo KeyboardInterrupt do ``asyncio.Runner``. Sem este
-    instalador, SIGTERM (POSIX) e CTRL_BREAK_EVENT (Windows) terminavam o
-    processo SEM teardown — nenhum checkpoint/close dos grafos.
+    Uvicorn signal capture is disabled for the two shared-loop servers.
+    Community routes repeated graceful signals to the same shutdown request;
+    Runner's second-SIGINT shortcut must not cancel retained native producers
+    or SQL cleanup. The host restores prior handlers only after ownership has
+    settled and its heartbeat can stop.
 
-    POSIX: ``loop.add_signal_handler(SIGTERM, …)`` dispara o MESMO caminho
-    ordenado do Ctrl+C. Windows: ``add_signal_handler`` não é suportado —
-    usa ``signal.signal(SIGBREAK, …)`` + ``call_soon_threadsafe`` (que
-    acorda o selector bloqueado). Limitações Windows (por design do SO):
-    ``os.kill(pid, SIGTERM)`` vira TerminateProcess e NUNCA é interceptável;
-    o console-close (CTRL_CLOSE) dá ~5s de budget antes do TerminateProcess
-    do console host — o teardown de grafos precisa ser best-effort nesse
-    canal. Retorna callbacks de cleanup que restauram a disposição anterior.
+    POSIX uses loop signal handlers; Windows uses signal.signal with a
+    thread-safe loop callback. Windows TerminateProcess is an explicit abnormal
+    termination and cannot provide this graceful ownership guarantee.
     """
     loop = asyncio.get_running_loop()
     cleanups: list[Callable[[], None]] = []
     candidates: list[signal.Signals] = []
+    # Own graceful Ctrl+C as well as TERM/BREAK until the last producer and
+    # cleanup are terminal. Runner's second-SIGINT shortcut would otherwise
+    # directly cancel every task, including cancellation-protected children.
+    if hasattr(signal, "SIGINT"):
+        candidates.append(signal.SIGINT)
     if hasattr(signal, "SIGTERM"):
         candidates.append(signal.SIGTERM)
     if hasattr(signal, "SIGBREAK"):  # Windows: entregue pelo CTRL_BREAK_EVENT
@@ -1605,8 +1654,8 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
         api_server = uvicorn.Server(api_config)
         # Disable uvicorn's per-server signal capture — with two Servers in the
         # same loop the last one wins the process signal handler, which can leave
-        # the other listener waiting forever. asyncio.Runner cancels _serve_dual on
-        # Ctrl+C; we coordinate both listeners in the except block below.
+        # the other listener waiting forever. Community installs one graceful
+        # signal owner; the except block also handles caller cancellation.
         api_server.capture_signals = contextlib.nullcontext  # type: ignore[method-assign]
 
         mcp_config = uvicorn.Config(
@@ -1693,6 +1742,9 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
             api_task,
             mcp_task,
             timeout_seconds=shutdown_timeout,
+            application_timeout_seconds=_application_shutdown_budget_seconds(
+                composition.worker_registry
+            ),
         )
     except asyncio.CancelledError:
         # Ctrl+C reached the loop before our handler could flip should_exit.
@@ -1705,6 +1757,9 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
                 api_task,
                 mcp_task,
                 timeout_seconds=shutdown_timeout,
+                application_timeout_seconds=_application_shutdown_budget_seconds(
+                    composition.worker_registry
+                ),
             )
         finally:
             transaction.rollback()
@@ -1716,11 +1771,19 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
                 api_task,
                 mcp_task,
                 timeout_seconds=shutdown_timeout,
+                application_timeout_seconds=_application_shutdown_budget_seconds(
+                    composition.worker_registry
+                ),
             )
         finally:
             transaction.rollback()
         raise
     finally:
+        # Keep the heartbeat/serve lock and event loop owned while a failed
+        # shutdown still has live producers or the cleanup they emit late.
+        ownership = getattr(module_app.state, "shutdown_ownership", None)
+        if ownership is not None:
+            await ownership.wait_before_runner_exit()
         for _cleanup in signal_cleanups:
             with contextlib.suppress(Exception):
                 _cleanup()
@@ -1732,6 +1795,10 @@ async def _serve_dual(api_port: int, mcp_port: int) -> None:
                 # Heartbeat failures are already logged inside the loop; we
                 # never let them block shutdown.
                 pass
+        if ownership is not None and ownership.deadline_failed:
+            from okto_pulse.community.shutdown_ownership import ShutdownDeadlineFailed
+
+            raise ShutdownDeadlineFailed("shutdown settled after its deadline failed")
 
 
 async def _lock_heartbeat_loop() -> None:
@@ -1809,9 +1876,14 @@ def run() -> int:
     except ServeAlreadyRunningError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    from okto_pulse.community.shutdown_ownership import ShutdownDeadlineFailed
+
     with serve_lock:
         try:
             run_async_server(_serve_dual(api_port, mcp_port))
+        except ShutdownDeadlineFailed:
+            print("Shutdown deadline failed; retained work subsequently settled.", file=sys.stderr)
+            return 1
         except KeyboardInterrupt:
             # Ctrl+C / SIGINT — shutdown is graceful from here; suppress the
             # default Python traceback for a clean CLI exit.

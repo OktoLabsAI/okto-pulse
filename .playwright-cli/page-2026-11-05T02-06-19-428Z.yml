@@ -1,0 +1,97 @@
+- generic [ref=f1e3]:
+  - banner [ref=f1e4]:
+    - generic [ref=f1e5]:
+      - generic [ref=f1e6]:
+        - button "Hide sidebar" [ref=f1e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f1e12]
+        - generic [ref=f1e31]: / My Board
+      - generic [ref=f1e32]:
+        - button "Refresh board" [ref=f1e33] [cursor=pointer]
+        - button [ref=f1e40] [cursor=pointer]
+  - generic [ref=f1e13]:
+    - complementary [ref=f1e14]:
+      - generic [ref=f1e15]:
+        - generic [ref=f1e17]:
+          - heading "Boards" [level=2] [ref=f1e18]
+          - button "New board" [ref=f1e19] [cursor=pointer]
+        - navigation [ref=f1e21]:
+          - generic [ref=f1e22]:
+            - heading "My Boards" [level=3] [ref=f1e23]
+            - list [ref=f1e44]:
+              - listitem [ref=f1e45]:
+                - button "okto pulse" [ref=f1e46] [cursor=pointer]
+              - listitem [ref=f1e53]:
+                - button "My Board" [active] [ref=f1e54] [cursor=pointer]
+              - listitem [ref=f1e61]:
+                - button "okto-grafx" [ref=f1e62] [cursor=pointer]
+    - main [ref=f1e26]:
+      - group "Board views" [ref=f1e69]:
+        - button "Stories" [pressed] [ref=f1e70] [cursor=pointer]
+        - button "Ideations" [ref=f1e74] [cursor=pointer]
+        - button "Refinements" [ref=f1e77] [cursor=pointer]
+        - button "Specs" [ref=f1e82] [cursor=pointer]
+        - button "Tasks" [ref=f1e87] [cursor=pointer]
+      - generic [ref=f1e186]:
+        - generic [ref=f1e187]:
+          - generic [ref=f1e188]:
+            - heading "Stories" [level=2] [ref=f1e189]
+            - generic [ref=f1e190]: (2 of 2)
+          - generic [ref=f1e191]:
+            - textbox "Search stories..." [ref=f1e193]
+            - group "View mode" [ref=f1e194]:
+              - button "List view" [pressed] [ref=f1e195] [cursor=pointer]
+              - button "Grid view" [ref=f1e197] [cursor=pointer]
+            - button "New Story" [ref=f1e203] [cursor=pointer]
+        - generic [ref=f1e205]:
+          - button "All" [ref=f1e206] [cursor=pointer]
+          - button "Draft" [ref=f1e207] [cursor=pointer]
+          - button "Triage" [ref=f1e208] [cursor=pointer]
+          - button "Ready" [ref=f1e209] [cursor=pointer]
+          - button "Converted" [ref=f1e210] [cursor=pointer]
+          - button "Show archived" [ref=f1e211] [cursor=pointer]
+        - generic [ref=f1e212]:
+          - complementary [ref=f1e213]:
+            - generic [ref=f1e214]:
+              - generic [ref=f1e215]: Topics
+              - button "New Topic" [ref=f1e220] [cursor=pointer]
+            - generic [ref=f1e222]:
+              - button "All topics 2" [ref=f1e223] [cursor=pointer]:
+                - generic [ref=f1e224]: All topics
+                - generic [ref=f1e225]: "2"
+              - generic [ref=f1e226]:
+                - button "E2E 0.4.3 — Operational consistency 2" [ref=f1e227] [cursor=pointer]:
+                  - generic [ref=f1e228]: E2E 0.4.3 — Operational consistency
+                  - generic [ref=f1e229]: "2"
+                - 'button "Topic actions: E2E 0.4.3 — Operational consistency" [ref=f1e230] [cursor=pointer]'
+          - generic [ref=f1e235]:
+            - generic [ref=f1e236]:
+              - generic [ref=f1e239] [cursor=pointer]:
+                - generic [ref=f1e240]:
+                  - generic [ref=f1e241]: Converted
+                  - generic [ref=f1e242]: E2E 0.4.3 — Operational consistency
+                - heading "R4 UI acceptance — persisted Story status and recommendations" [level=3] [ref=f1e243]
+                - paragraph [ref=f1e244]: Isolated My Board acceptance fixture for the installed 0.4.3 UI. Verify saved status while editing, failure rollback, native Ready conversion, one Ideation link, and explicit Recommended choices. No production scope or delivery proof is implied.
+              - generic [ref=f1e253] [cursor=pointer]:
+                - generic [ref=f1e254]:
+                  - generic [ref=f1e255]: Converted
+                  - generic [ref=f1e256]: E2E 0.4.3 — Operational consistency
+                - heading "E2E 0.4.3 — Understand and verify a delivery" [level=3] [ref=f1e257]
+                - paragraph [ref=f1e258]: As a board user, I need to distinguish delivered, pending, failed and waived work and see which requirement each verification impacts, so that I can make a correct delivery decision without entering technical receipts. This is the isolated intake fixture for the authorized operat…
+                - generic [ref=f1e259]:
+                  - generic [ref=f1e260]: "As: Board user"
+                  - generic [ref=f1e261]: "Want: Understand delivery and requirement-level verification"
+                  - generic [ref=f1e262]: "So: Make accurate delivery decisions without technical bookkeeping"
+            - generic [ref=f1e269]:
+              - status [ref=f1e270]: Showing 1–2 of 2 matching. 2 overall. Page 1 of 1.
+              - generic [ref=f1e271]:
+                - generic [ref=f1e272]:
+                  - generic [ref=f1e273]: Items per page
+                  - combobox "Items per page" [ref=f1e274]:
+                    - option "25" [selected]
+                    - option "50"
+                    - option "100"
+                - navigation "Stories pagination" [ref=f1e275]:
+                  - generic [ref=f1e276]:
+                    - button "Previous page" [disabled] [ref=f1e277]: Previous
+                    - button "Page 1" [disabled] [ref=f1e278]: "1"
+                    - button "Next page" [disabled] [ref=f1e279]: Next

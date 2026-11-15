@@ -1,0 +1,90 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - button "Hide sidebar" [ref=e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=e12]
+        - generic [ref=e31]: / My Board
+      - generic [ref=e32]:
+        - button "Refresh board" [ref=e33] [cursor=pointer]
+        - button [ref=e40] [cursor=pointer]
+  - generic [ref=e13]:
+    - complementary [ref=e14]:
+      - generic [ref=e15]:
+        - generic [ref=e17]:
+          - heading "Boards" [level=2] [ref=e18]
+          - button "New board" [ref=e19] [cursor=pointer]
+        - navigation [ref=e21]:
+          - generic [ref=e22]:
+            - heading "My Boards" [level=3] [ref=e23]
+            - list [ref=e44]:
+              - listitem [ref=e45]:
+                - button "okto pulse" [ref=e46] [cursor=pointer]
+              - listitem [ref=e53]:
+                - button "My Board" [ref=e54] [cursor=pointer]
+              - listitem [ref=e61]:
+                - button "okto-grafx" [ref=e62] [cursor=pointer]
+    - main [ref=e26]:
+      - group "Board views" [ref=e69]:
+        - button "Stories" [active] [pressed] [ref=e70] [cursor=pointer]
+        - button "Ideations" [ref=e74] [cursor=pointer]
+        - button "Refinements" [ref=e77] [cursor=pointer]
+        - button "Specs" [ref=e82] [cursor=pointer]
+        - button "Tasks" [ref=e87] [cursor=pointer]
+      - generic [ref=e2942]:
+        - generic [ref=e2943]:
+          - generic [ref=e2944]:
+            - heading "Stories" [level=2] [ref=e2945]
+            - generic [ref=e2946]: (1 of 1)
+          - generic [ref=e2947]:
+            - textbox "Search stories..." [ref=e2949]
+            - group "View mode" [ref=e2950]:
+              - button "List view" [pressed] [ref=e2951] [cursor=pointer]
+              - button "Grid view" [ref=e2953] [cursor=pointer]
+            - button "New Story" [ref=e2959] [cursor=pointer]
+        - generic [ref=e2961]:
+          - button "All" [ref=e2962] [cursor=pointer]
+          - button "Draft" [ref=e2963] [cursor=pointer]
+          - button "Triage" [ref=e2964] [cursor=pointer]
+          - button "Ready" [ref=e2965] [cursor=pointer]
+          - button "Converted" [ref=e2966] [cursor=pointer]
+          - button "Show archived" [ref=e2967] [cursor=pointer]
+        - generic [ref=e2968]:
+          - complementary [ref=e2969]:
+            - generic [ref=e2970]:
+              - generic [ref=e2971]: Topics
+              - button "New Topic" [ref=e2976] [cursor=pointer]
+            - generic [ref=e2978]:
+              - button "All topics 1" [ref=e2979] [cursor=pointer]:
+                - generic [ref=e2980]: All topics
+                - generic [ref=e2981]: "1"
+              - generic [ref=e2982]:
+                - button "E2E 0.4.3 — Operational consistency 1" [ref=e2983] [cursor=pointer]:
+                  - generic [ref=e2984]: E2E 0.4.3 — Operational consistency
+                  - generic [ref=e2985]: "1"
+                - 'button "Topic actions: E2E 0.4.3 — Operational consistency" [ref=e2986] [cursor=pointer]'
+          - generic [ref=e2991]:
+            - generic [ref=e2995] [cursor=pointer]:
+              - generic [ref=e2996]:
+                - generic [ref=e2997]: Converted
+                - generic [ref=e2998]: E2E 0.4.3 — Operational consistency
+              - heading "E2E 0.4.3 — Understand and verify a delivery" [level=3] [ref=e2999]
+              - paragraph [ref=e3000]: As a board user, I need to distinguish delivered, pending, failed and waived work and see which requirement each verification impacts, so that I can make a correct delivery decision without entering technical receipts. This is the isolated intake fixture for the authorized operat…
+              - generic [ref=e3001]:
+                - generic [ref=e3002]: "As: Board user"
+                - generic [ref=e3003]: "Want: Understand delivery and requirement-level verification"
+                - generic [ref=e3004]: "So: Make accurate delivery decisions without technical bookkeeping"
+            - generic [ref=e3011]:
+              - status [ref=e3012]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+              - generic [ref=e3013]:
+                - generic [ref=e3014]:
+                  - generic [ref=e3015]: Items per page
+                  - combobox "Items per page" [ref=e3016]:
+                    - option "25" [selected]
+                    - option "50"
+                    - option "100"
+                - navigation "Stories pagination" [ref=e3017]:
+                  - generic [ref=e3018]:
+                    - button "Previous page" [disabled] [ref=e3019]: Previous
+                    - button "Page 1" [disabled] [ref=e3020]: "1"
+                    - button "Next page" [disabled] [ref=e3021]: Next

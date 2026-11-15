@@ -1,0 +1,78 @@
+- generic [ref=f10e3]:
+  - banner [ref=f10e4]:
+    - generic [ref=f10e5]:
+      - generic [ref=f10e6]:
+        - button "Hide sidebar" [ref=f10e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f10e12]
+        - generic [ref=f10e31]: / My Board
+      - generic [ref=f10e32]:
+        - button "Refresh board" [ref=f10e33] [cursor=pointer]
+        - button [ref=f10e40] [cursor=pointer]
+  - generic [ref=f10e13]:
+    - complementary [ref=f10e14]:
+      - generic [ref=f10e15]:
+        - generic [ref=f10e17]:
+          - heading "Boards" [level=2] [ref=f10e18]
+          - button "New board" [ref=f10e19] [cursor=pointer]
+        - navigation [ref=f10e21]:
+          - generic [ref=f10e22]:
+            - heading "My Boards" [level=3] [ref=f10e23]
+            - list [ref=f10e44]:
+              - listitem [ref=f10e45]:
+                - button "okto pulse" [ref=f10e46] [cursor=pointer]
+              - listitem [ref=f10e53]:
+                - button "My Board" [active] [ref=f10e54] [cursor=pointer]
+              - listitem [ref=f10e61]:
+                - button "okto-grafx" [ref=f10e62] [cursor=pointer]
+    - main [ref=f10e26]:
+      - group "Board views" [ref=f10e69]:
+        - button "Stories" [pressed] [ref=f10e70] [cursor=pointer]
+        - button "Ideations" [ref=f10e74] [cursor=pointer]
+        - button "Refinements" [ref=f10e77] [cursor=pointer]
+        - button "Specs" [ref=f10e82] [cursor=pointer]
+        - button "Tasks" [ref=f10e87] [cursor=pointer]
+      - generic [ref=f10e155]:
+        - generic [ref=f10e156]:
+          - generic [ref=f10e157]:
+            - heading "Stories" [level=2] [ref=f10e158]
+            - generic [ref=f10e159]: (0 of 0)
+          - generic [ref=f10e160]:
+            - textbox "Search stories..." [ref=f10e162]
+            - group "View mode" [ref=f10e163]:
+              - button "List view" [pressed] [ref=f10e164] [cursor=pointer]
+              - button "Grid view" [ref=f10e166] [cursor=pointer]
+            - button "New Story" [ref=f10e172] [cursor=pointer]
+        - generic [ref=f10e174]:
+          - button "All" [ref=f10e175] [cursor=pointer]
+          - button "Draft" [ref=f10e176] [cursor=pointer]
+          - button "Triage" [ref=f10e177] [cursor=pointer]
+          - button "Ready" [ref=f10e178] [cursor=pointer]
+          - button "Converted" [ref=f10e179] [cursor=pointer]
+          - button "Show archived" [ref=f10e180] [cursor=pointer]
+        - generic [ref=f10e181]:
+          - complementary [ref=f10e182]:
+            - generic [ref=f10e183]:
+              - generic [ref=f10e184]: Topics
+              - button "New Topic" [ref=f10e189] [cursor=pointer]
+            - button "All topics 0" [ref=f10e192] [cursor=pointer]:
+              - generic [ref=f10e193]: All topics
+              - generic [ref=f10e194]: "0"
+          - generic [ref=f10e195]:
+            - generic [ref=f10e197]:
+              - paragraph [ref=f10e202]: No topics yet
+              - button "New Topic" [ref=f10e203] [cursor=pointer]
+            - generic [ref=f10e205]:
+              - status [ref=f10e206]:
+                - text: No stories match the active filters.
+                - generic [ref=f10e207]: 0 overall.
+              - generic [ref=f10e208]:
+                - generic [ref=f10e209]:
+                  - generic [ref=f10e210]: Items per page
+                  - combobox "Items per page" [ref=f10e211]:
+                    - option "25" [selected]
+                    - option "50"
+                    - option "100"
+                - navigation "Stories pagination" [ref=f10e212]:
+                  - generic [ref=f10e213]:
+                    - button "Previous page" [disabled] [ref=f10e214]: Previous
+                    - button "Next page" [disabled] [ref=f10e215]: Next

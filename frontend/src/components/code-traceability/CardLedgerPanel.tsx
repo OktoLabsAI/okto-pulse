@@ -3,7 +3,8 @@ import { useDashboardApi } from '@/services/api';
 import type { CardLedgerPage } from '@/types/delivery-evidence';
 import { DeliveryDisclosure, deliveryButton, deliveryError, deliverySection } from './deliveryPresentation';
 
-type Scope = { boardId: string; cardId: string; specId: string; edition: number; initialRecordId?: string };
+type Scope = { boardId: string; cardId: string; specId: string; edition: number; initialRecordId?: string;
+  active?: boolean; onCorrect?: (entry: { submissionId: string; content: string; remaining?: string }) => void };
 
 export function CardLedgerPanel(props: Scope) {
   const [edition, setEdition] = useState(Math.max(1, props.edition - 1));
@@ -24,16 +25,17 @@ export function CardLedgerPanel(props: Scope) {
   </section>;
 }
 
-function LedgerPage({ boardId, cardId, specId, edition, historical = false, initialRecordId }: Scope & { historical?: boolean }) {
+function LedgerPage({ boardId, cardId, specId, edition, historical = false, initialRecordId, active = true, onCorrect }: Scope & { historical?: boolean }) {
   const api = useDashboardApi();
   const [page, setPage] = useState<CardLedgerPage | null>(null);
   const [detail, setDetail] = useState<CardLedgerPage['items'][number] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const pending = useRef<AbortController | null>(null);
+  useEffect(() => { if (!active) { pending.current?.abort(); pending.current = null; setBusy(false); } }, [active]);
   useEffect(() => () => pending.current?.abort(), []);
   const read = useCallback(async (options: { cursor?: string; recordId?: string } = {}) => {
-    if (pending.current) return;
+    if (pending.current || !active) return;
     const controller = new AbortController(); pending.current = controller;
     setBusy(true); setError(''); setDetail(null);
     try {
@@ -53,7 +55,7 @@ function LedgerPage({ boardId, cardId, specId, edition, historical = false, init
     } finally {
       if (!controller.signal.aborted) { pending.current = null; setBusy(false); }
     }
-  }, [api, boardId, cardId, specId, edition]);
+  }, [api, boardId, cardId, specId, edition, active]);
   useEffect(() => {
     if (initialRecordId) void read({ recordId: initialRecordId });
     return () => { pending.current?.abort(); pending.current = null; };
@@ -74,6 +76,15 @@ function LedgerPage({ boardId, cardId, specId, edition, historical = false, init
     {detail && <article data-readiness-ref={`record:${detail.id}`} tabIndex={-1} aria-label="Delivery record detail" className={`${deliverySection} whitespace-pre-wrap break-words focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-500`}>
       <p>{detail.kind} · {detail.actor_id} · {detail.created_at}</p><p>{detail.summary}</p>
       {detail.revoked && <p>Revoked; retained as history.</p>}
+      {detail.payload?.human_submission && <>
+        <p>Human update · the application created this audit record automatically. It is not technical verification.</p>
+        <p>Remaining: {detail.payload.human_submission.remaining || 'Not specified'}</p>
+        <p>Recorded at: {detail.payload.human_submission.receipt.received_at}</p>
+        <p>Audit ID: {detail.payload.human_submission.receipt.id}</p>
+        {detail.payload.human_submission.receipt.supersedes_submission_id && <p>Corrects update: {detail.payload.human_submission.receipt.supersedes_submission_id}</p>}
+        {detail.can_correct && onCorrect && <button type="button" className={deliveryButton}
+          onClick={() => onCorrect({ submissionId: detail.id, content: detail.summary, remaining: detail.payload?.human_submission?.remaining })}>Correct this update</button>}
+      </>}
       {detail.payload?.contributions?.map(row => <p key={row.obligation_ref}>{row.obligation_ref}: declared {row.contribution}.</p>)}
       {detail.payload?.execution_id && <p>Referenced execution: {detail.payload.execution_id}</p>}
       {detail.payload?.scenario_id && <p>Scenario: {detail.payload.scenario_id}. Recorded result: {detail.payload.test_result || 'Unknown'}.</p>}

@@ -207,11 +207,13 @@ class CommunityRoutedGraphLifecycle:
         grafx_purge_unguarded: _PurgeCallback,
         grafx_apply_step_unguarded: _StepCallback,
         grafx_close_all_unguarded: _CloseAllCallback,
+        prepared_reader_observer: Callable[[str], GraphHandle | None] | None = None,
     ) -> None:
         self._resolver = resolver
         self._operation_window = operation_window
         self._mutation_window_unguarded = mutation_window_unguarded
         self._revalidate_write_fence = revalidate_write_fence
+        self._prepared_reader_observer = prepared_reader_observer
         self._grafx = _PhysicalLifecycleCallbacks(
             open_unguarded=grafx_open_unguarded,
             close_unguarded=grafx_close_unguarded,
@@ -220,6 +222,13 @@ class CommunityRoutedGraphLifecycle:
             apply_step_unguarded=grafx_apply_step_unguarded,
             close_all_unguarded=grafx_close_all_unguarded,
         )
+
+    def observe_prepared_reader(self, board_id: str) -> GraphHandle | None:
+        """Delegate to the composed read-only observer, never to open()."""
+        board_id = _require_board_id(board_id)
+        if self._prepared_reader_observer is None:
+            return None
+        return self._prepared_reader_observer(board_id)
 
     def _acquire(
         self,

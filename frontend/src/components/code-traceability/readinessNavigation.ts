@@ -5,6 +5,7 @@ export type ReadinessDestination = {
 export interface ReadinessCardLocation {
   tab: 'delivery' | 'implementation-targets'; focusDiagnosis: boolean;
   focusReference?: string; recordId?: string;
+  humanReport?: { status: 'validation' | 'done'; requestId: string };
 }
 export interface ReadinessNavigator {
   open: (destination: ReadinessDestination) => void;

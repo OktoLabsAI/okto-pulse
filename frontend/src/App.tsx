@@ -32,6 +32,7 @@ import logoDark from '@/assets/logo-dark.png';
 import { CURRENT_METRICS_SCHEMA_VERSION, getMetricsSummary } from '@/services/metrics-api';
 import { showErrorToast } from '@/lib/toastError';
 import { usePermissions } from '@/hooks/usePermissions';
+import { useBoardRuntimeActivation } from '@/hooks/useBoardRuntimeActivation';
 
 const METRICS_PROMPT_DISMISSED_KEY = `okto-pulse:metrics-opt-in-prompt-dismissed:${CURRENT_METRICS_SCHEMA_VERSION}`;
 
@@ -190,6 +191,18 @@ function App() {
   const setColumns = useDashboardStore((s) => s.setColumns);
   const setLoading = useDashboardStore((s) => s.setLoading);
   const setError = useDashboardStore((s) => s.setError);
+  const activateBoardRuntime = useBoardRuntimeActivation(
+    api.activateBoardRuntime,
+    (boardId) => useDashboardStore.getState().currentBoard?.id === boardId,
+    (reason) => toast.error(reason === 'busy'
+      ? 'Graph information is still being updated. You can still use this board. Refresh the board to try again.'
+      : 'Graph information is unavailable. You can still use this board. Refresh the board to try again.'),
+    (boardId, busy) => {
+      const id = `board-runtime-${boardId}`;
+      if (busy) toast.loading('Graph information is being updated. Retrying shortly…', { id });
+      else toast.dismiss(id);
+    },
+  );
 
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [createBoardOpen, setCreateBoardOpen] = useState(false);
@@ -416,6 +429,8 @@ function App() {
     try {
       const board = await api.getBoard(boardId);
       setCurrentBoard(board);
+      // Relational navigation remains usable while the explicit activation runs.
+      void activateBoardRuntime(board.id);
     } catch (error) {
       setError('Failed to load board');
       showErrorToast(error, 'Failed to load board');
@@ -426,12 +441,16 @@ function App() {
 
   const refreshBoard = async () => {
     if (!currentBoard) return;
+    const boardId = currentBoard.id;
     setIsRefreshing(true);
     try {
-      const board = await api.getBoard(currentBoard.id);
+      const board = await api.getBoard(boardId);
+      if (useDashboardStore.getState().currentBoard?.id !== boardId) return;
       setCurrentBoard(board);
+      const graphReady = await activateBoardRuntime(boardId);
+      if (useDashboardStore.getState().currentBoard?.id !== boardId) return;
       setRefreshKey((k) => k + 1);
-      toast.success('Board refreshed!');
+      if (graphReady) toast.success('Board refreshed!');
     } catch (error) {
       showErrorToast(error, 'Failed to refresh board');
     } finally {

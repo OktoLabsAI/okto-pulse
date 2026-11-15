@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from okto_pulse.community.adapters.coordination import CommunityLocalWriteLockPort
 from okto_pulse.community.adapters.current_relational_schema import (
     current_schema_contract, initialize_current_schema,
 )
@@ -34,6 +35,7 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
 from okto_pulse.core.application.processors import global_outbox as worker_module
 from okto_pulse.core.application.processors.global_outbox import GlobalOutboxProcessor
 from okto_pulse.core.events.handlers import kg_decay_tick
+from okto_pulse.core.ports.coordination import register_coordination_providers
 from okto_pulse.core.ports.delivery_ledger import (
     DeliveryAttemptEnvelope,
     DeliveryState,
@@ -87,6 +89,9 @@ async def test_terminal_attempt_zero_tick_redrive_attempt_one_then_delivered(
     install_community_sqlite_pragmas(engine)
     await initialize_current_schema(engine, current_schema_contract())
     sessions = build_community_session_factory(engine)
+    register_coordination_providers(
+        write_lock_port=CommunityLocalWriteLockPort(kg_base_dir=tmp_path / "leases")
+    )
 
     attempt_zero = DeliveryAttemptEnvelope(
         board_id=BOARD_ID,
@@ -137,7 +142,7 @@ async def test_terminal_attempt_zero_tick_redrive_attempt_one_then_delivered(
         clock=_FixedClock(),
         delivery_ledger=ledger,
     )
-    assert await processor._process_once_under_writer() == 0
+    assert await processor.process_once() == 0
 
     async with sessions() as session:
         stored_ledger = await session.get(
@@ -173,7 +178,7 @@ async def test_terminal_attempt_zero_tick_redrive_attempt_one_then_delivered(
         "_verify_processed_batch",
         lambda _self, _processed: ({}, None),
     )
-    assert await processor._process_once_under_writer() == 1
+    assert await processor.process_once() == 1
 
     async with sessions() as session:
         stored_ledger = await session.get(
@@ -246,7 +251,7 @@ async def test_terminal_attempt_zero_tick_redrive_attempt_one_then_delivered(
         delivery_ledger=_CrashBeforeCommitDeliveryLedger(),
     )
     with pytest.raises(RuntimeError, match="crash before relational commit"):
-        await crashing_processor._process_once_under_writer()
+        await crashing_processor.process_once()
 
     async with sessions() as session:
         rollback_ledger = await session.get(

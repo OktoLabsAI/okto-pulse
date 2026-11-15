@@ -8,27 +8,27 @@ describe('driftIconFor', () => {
     expect(driftIconFor(NaN)).toBeNull();
   });
 
-  it('drift < 10 → verde + down + reduziu', () => {
+  it('drift < 10 → verde + down + decreased', () => {
     const v = driftIconFor(5);
     expect(v).not.toBeNull();
     expect(v!.direction).toBe('down');
     expect(v!.color).toBe('green');
-    expect(v!.label).toBe('reduziu');
+    expect(v!.label).toBe('decreased');
   });
 
-  it('drift = 0 → verde + down + reduziu', () => {
+  it('drift = 0 → verde + down + decreased', () => {
     const v = driftIconFor(0);
     expect(v!.color).toBe('green');
   });
 
-  it('drift = 10 (threshold) → cinza + neutral + estável', () => {
+  it('drift = 10 (threshold) → cinza + neutral + stable', () => {
     const v = driftIconFor(DRIFT_GOOD_THRESHOLD);
     expect(v!.direction).toBe('neutral');
     expect(v!.color).toBe('gray');
-    expect(v!.label).toBe('estável');
+    expect(v!.label).toBe('stable');
   });
 
-  it('drift = 20 → cinza + neutral + estável', () => {
+  it('drift = 20 → cinza + neutral + stable', () => {
     const v = driftIconFor(20);
     expect(v!.color).toBe('gray');
   });
@@ -38,11 +38,11 @@ describe('driftIconFor', () => {
     expect(v!.color).toBe('gray');
   });
 
-  it('drift > 30 → vermelho + up + aumentou', () => {
+  it('drift > 30 → vermelho + up + increased', () => {
     const v = driftIconFor(45);
     expect(v!.direction).toBe('up');
     expect(v!.color).toBe('red');
-    expect(v!.label).toBe('aumentou');
+    expect(v!.label).toBe('increased');
   });
 
   it('nenhum estado combina vermelho+down (contra-exemplo do bug)', () => {

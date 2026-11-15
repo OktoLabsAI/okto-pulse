@@ -69,6 +69,8 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     SemanticSubjectVersionRow,
     SpecDependency,
     SpecDependencyOperation,
+    TaskRequirementDecisionRow,
+    TaskRequirementDecisionOperationRow,
     TargetOverlapAcknowledgementRow,
 )
 from okto_pulse.core.ports.kg_governance import BoardErasureJobFact
@@ -267,6 +269,14 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 plan=quality_purge_plan,
                 postcondition=quality_postcondition,
             )
+
+            # Requirement history survives ordinary task edits/deletion. Only
+            # this governed Board erasure may remove it, children before the
+            # immutable operation receipt, under the same transaction permit.
+            await context.execute(delete(TaskRequirementDecisionRow).where(
+                TaskRequirementDecisionRow.board_id == board_id))
+            await context.execute(delete(TaskRequirementDecisionOperationRow).where(
+                TaskRequirementDecisionOperationRow.board_id == board_id))
 
             # Spec precedence edges and their idempotency/result ledger are
             # immutable outside governed erasure.  Purge both explicitly while
@@ -628,6 +638,8 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 CodeTraceabilityWaiverRow,
                 SpecDependency,
                 SpecDependencyOperation,
+                TaskRequirementDecisionRow,
+                TaskRequirementDecisionOperationRow,
             )
             residuals = {
                 model.__tablename__: await _count_where(

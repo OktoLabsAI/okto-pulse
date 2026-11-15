@@ -1,6 +1,7 @@
 """Ideation API endpoints."""
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from okto_pulse.core.domain.pending_qa import PendingQuestionsError
 
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.community.api.deps import get_unit_of_work, get_unit_of_work_factory
@@ -381,7 +382,7 @@ async def move_ideation(
         raise RESTAdapterContract.http_error(e) from e
     except LifecycleTransitionConflictError as e:
         raise RESTAdapterContract.http_error(e) from e
-    except (AmbiguityGateError, EntityNotFoundError) as e:
+    except (AmbiguityGateError, EntityNotFoundError, PendingQuestionsError) as e:
         raise RESTAdapterContract.http_error(
             e, not_found_detail="Ideation not found"
         ) from e
@@ -513,6 +514,8 @@ async def derive_spec(
         await uow.rollback()
         return knowledge_propagation_error_response(error)
     except ValueError as error:
+        if isinstance(error, PendingQuestionsError):
+            raise RESTAdapterContract.http_error(error) from error
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error))
     except EntityNotFoundError:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ideation not found")

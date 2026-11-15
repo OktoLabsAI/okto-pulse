@@ -21,6 +21,7 @@ import os
 import math
 import threading
 import time
+import logging
 from okto_pulse.community.adapters.grafx_read_lanes import GrafxReadLanes
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, nullcontext
@@ -422,6 +423,8 @@ class _GrafxBoardAccess:
     def _refuse_health_mutation(self, board_id: str) -> None:
         if self._health_observation.get() is not None:
             raise _route_failure("graph_health_maintenance_forbidden", board_id=board_id)
+        if self.query_execution.existing_only(board_id):
+            raise GraphCapabilityUnavailable('Coverage cannot perform graph maintenance.')
 
     def health_query_timeout(self, board_id: str) -> float | None:
         deadline = self._health_observation.get()
@@ -451,6 +454,8 @@ class _GrafxBoardAccess:
         return snapshot
 
     def database(self, board_id: str):
+        if self.query_execution.existing_only(board_id):
+            raise GraphCapabilityUnavailable('Coverage cannot open a writable graph participant.')
         if self._health_observation.get() is not None:
             return self.read_database(board_id)
         snapshot = self._snapshot(board_id, require_physical=True)
@@ -470,7 +475,61 @@ class _GrafxBoardAccess:
     def read_database_scope(self, board_id: str) -> Iterator[Any]:
         """Keep scheduling load charged through the caller's complete read."""
         with self._read_lanes.reserve(board_id) as lane:
+            if self.query_execution.existing_only(board_id):
+                # Coverage borrows a prepared participant. It cannot cold-open,
+                # checkpoint, finalize or evict a native handle to satisfy a read.
+                snapshot = self._snapshot(board_id, require_physical=True)
+                self.query_timeout(board_id)
+                if not self.query_pools:
+                    raise GraphCapabilityUnavailable('Prepared graph readers are unavailable.',
+                        details={'reason': 'query_readers_not_configured'})
+                for offset in range(len(self.query_pools)):
+                    pool = self.query_pools[(lane + offset) % len(self.query_pools)]
+                    try:
+                        lease = pool.acquire_existing(snapshot.active_path,
+                            page_size=snapshot.page_size,
+                            deadline=self.query_execution.deadline(board_id))
+                    except GrafxDatabasePoolError as failure:
+                        if failure.reason != 'pool_observation_participant_unavailable':
+                            raise
+                        continue
+                    with lease:
+                        self.query_timeout(board_id)
+                        self.resolver.admit_grafx_route(snapshot, lease.database,
+                            operation='borrow_prepared_coverage_reader')
+                        self.query_timeout(board_id)
+                        yield lease.database
+                    return
+                raise GraphCapabilityUnavailable('Prepared graph readers are unavailable.',
+                    details={'reason': 'prepared_reader_unavailable'})
             yield self.read_database(board_id, _lane=lane)
+
+    def prepare_query_readers(self, board_id: str) -> bool:
+        """Prepare readers and report whether this generation has an open reader.
+
+        This is an observation, not a reservation for a future Coverage query.
+        Coverage must still acquire its own existing-only lease.
+        """
+        if self.query_execution.existing_only(board_id):
+            raise GraphCapabilityUnavailable('Coverage cannot prepare graph readers.')
+        self.write_fence(board_id, 'prepare_query_readers')
+        snapshot = self._snapshot(board_id, require_physical=True)
+        # The fixed configured pool set bounds preparation. A cold reader that
+        # cannot join is left unavailable until a later normal lifecycle step.
+        prepared = False
+        for pool in self.query_pools:
+            self.write_fence(board_id, 'prepare_query_reader')
+            try:
+                database = pool.get(snapshot.active_path, page_size=snapshot.page_size)
+            except GrafxDatabasePoolError as failure:
+                logging.getLogger(__name__).warning(
+                    'coverage.reader_preparation_unavailable board=%s reason=%s',
+                    board_id, failure.reason)
+                continue
+            self.resolver.admit_grafx_route(snapshot, database,
+                operation='prepare_coverage_reader')
+            prepared = prepared or not bool(getattr(database, 'closed', True))
+        return prepared
 
     def read_database(self, board_id: str, *, _lane: int | None = None):
         """Resolve one independent snapshot participant for foreground reads.
@@ -481,6 +540,8 @@ class _GrafxBoardAccess:
         """
 
         self.query_timeout(board_id)
+        if self.query_execution.existing_only(board_id):
+            raise GraphCapabilityUnavailable('Coverage requires a scoped prepared reader lease.')
         snapshot = self._snapshot(board_id, require_physical=True)
         assert snapshot.page_size is not None
         query_active = self.query_execution.remaining(board_id) is not None
@@ -962,9 +1023,11 @@ def build_community_routed_board_graph_composition(
     @contextmanager
     def operation_window(board_id: str) -> Iterator[None]:
         with (
-            kg_runtime.board_graph_operation_window(board_id),
+            kg_runtime.board_graph_operation_window(board_id,
+                deadline=access.query_execution.deadline(board_id)),
             board_route_session(board_id),
         ):
+            access.query_timeout(board_id)
             yield
 
     @contextmanager
@@ -1050,6 +1113,7 @@ def build_community_routed_board_graph_composition(
         access.write_fence,
         admission=access.admission,
         recover_latched_checkpoint=grafx_recovery.recover_wal_only_unguarded,
+        prepare_query_readers=access.prepare_query_readers,
     )
 
     async def grafx_open(snapshot: CommunityGraphRouteSnapshot) -> GraphHandle:
@@ -1066,6 +1130,11 @@ def build_community_routed_board_graph_composition(
                 },
             )
         opened = not bool(getattr(database, "closed", False))
+        readers_prepared = False
+        if opened:
+            # Keep reader preparation in the routed lifecycle's protected
+            # session. Coverage itself may only borrow existing participants.
+            readers_prepared = access.prepare_query_readers(snapshot.scope_id)
         return GraphHandle(
             board_id=snapshot.scope_id,
             storage_ref=grafx_board_storage_ref(snapshot.scope_id),
@@ -1073,6 +1142,7 @@ def build_community_routed_board_graph_composition(
             status="opened" if opened else "absent",
             locked=False,
             quarantined=False,
+            readers_prepared=readers_prepared,
         )
 
     async def grafx_close(snapshot: CommunityGraphRouteSnapshot) -> None:
@@ -1150,6 +1220,26 @@ def build_community_routed_board_graph_composition(
         # thread-neutral physical close guard for their full lifetime.
         operation_window=kg_runtime.board_graph_operation_window,
     )
+    def observe_prepared_reader(board_id: str) -> GraphHandle | None:
+        # Reuse the existing-only participant policy. The shared operation
+        # window pins the native handle and immutable route through inspection.
+        with access.query_execution.scope(board_id, timeout_ms=1000, existing_only=True):
+            with operation_window(board_id):
+                snapshot = resolver.acquire_board_route(board_id)
+                try:
+                    with access.read_database_scope(board_id) as database:
+                        resolver.revalidate_snapshot(snapshot, require_physical=True)
+                        access.query_timeout(board_id)
+                        if bool(getattr(database, "closed", True)):
+                            raise GraphCapabilityUnavailable("Prepared board reader is closed.")
+                        return GraphHandle(board_id, grafx_board_storage_ref(board_id),
+                            True, "opened", False, False, readers_prepared=True)
+                except GraphCapabilityUnavailable as failure:
+                    if failure.details.get("reason") in {
+                            "prepared_reader_unavailable", "query_readers_not_configured"}:
+                        return None
+                    raise
+
     graph_lifecycle = CommunityRoutedGraphLifecycle(
         resolver,
         operation_window=operation_window,
@@ -1161,6 +1251,7 @@ def build_community_routed_board_graph_composition(
         grafx_purge_unguarded=grafx_purge,
         grafx_apply_step_unguarded=grafx_step,
         grafx_close_all_unguarded=grafx_close_all,
+        prepared_reader_observer=observe_prepared_reader,
     )
     graph_runtime_store = CommunityRoutedGraphRuntimeStore(
         resolver,

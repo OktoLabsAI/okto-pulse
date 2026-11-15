@@ -14,6 +14,21 @@ from okto_pulse.core.ports.runtime_workers import (
 )
 
 logger = logging.getLogger("okto_pulse.community.workers")
+POLLING_SHUTDOWN_TIMEOUT_SECONDS = 10.0
+
+
+async def _observe_blocking_execution_idle(execution: BlockingExecutionPort) -> None:
+    """Use Community's explicit observation capability or prove no work remains.
+
+    The generic Core port promises only bounded join; do not silently require
+    a Community-only method from every edition or test implementation.
+    """
+    observer = getattr(execution, "observe_idle", None)
+    if callable(observer):
+        await observer()
+        return
+    if await execution.join(0.0) != 0:
+        raise RuntimeError("worker_blocking_shutdown_observer_unavailable")
 
 
 class UtcWorkerClock:
@@ -98,6 +113,12 @@ class TrackedBlockingExecution(BlockingExecutionPort):
             self._parent_observed_tasks.add(task)
             return result
 
+    async def observe_idle(self) -> None:
+        """Observe retained native calls after admission/producer shutdown."""
+        from okto_pulse.community.shutdown_ownership import observe_cleanup_until_empty
+
+        await observe_cleanup_until_empty(lambda: self._tasks)
+
     @property
     def pending_count(self) -> int:
         return sum(1 for task in self._tasks if not task.done())
@@ -160,6 +181,7 @@ class PollingRunner:
         self._wake_event: asyncio.Event | None = None
         self._notify_loop: asyncio.AbstractEventLoop | None = None
         self._running = False
+        self._stop_deadline: float | None = None
 
     @property
     def is_running(self) -> bool:
@@ -183,10 +205,13 @@ class PollingRunner:
     async def start(self) -> "PollingRunner":
         if self.is_running:
             return self
+        if self._task is not None and not self._task.done():
+            raise RuntimeError("Cannot restart a worker before its previous task has drained.")
         if self._recover is not None:
             await self._recover()
         self._notify_loop = asyncio.get_running_loop()
         self._wake_event = asyncio.Event()
+        self._stop_deadline = None
         self._running = True
         self._task = asyncio.create_task(self.run_forever(), name=self.name)
         return self
@@ -219,35 +244,47 @@ class PollingRunner:
                     pass
                 wake.clear()
         except asyncio.CancelledError:
-            final_iteration_allowed = (
-                self._final_iteration_guard is None or self._final_iteration_guard()
-            )
-            if self._final_iteration and final_iteration_allowed:
-                try:
-                    await self.process_once()
-                except Exception:
-                    logger.exception(
-                        "worker final iteration failed family=%s", self.name
+            if self._final_iteration:
+                # Cancellation-safe native work can settle after stop() has
+                # exhausted its budget. It remains owned, but its completion
+                # must not authorize a fresh batch. Outer Runner cancellation
+                # is likewise not an explicit request for a final iteration.
+                reason: str | None = None
+                if self._stop_deadline is None:
+                    reason = "no_owned_shutdown_request"
+                elif asyncio.get_running_loop().time() >= self._stop_deadline:
+                    reason = "shutdown_deadline_expired"
+                elif self._final_iteration_guard is not None and not self._final_iteration_guard():
+                    reason = "upstream_native_drain_incomplete"
+                if reason is None:
+                    try:
+                        await self.process_once()
+                    except Exception:
+                        logger.exception(
+                            "worker final iteration failed family=%s", self.name
+                        )
+                else:
+                    logger.critical(
+                        "worker final iteration skipped family=%s reason=%s",
+                        self.name,
+                        reason,
+                        extra={
+                            "event": "community.worker.final_iteration_skipped",
+                            "family": self.name,
+                            "reason": reason,
+                        },
                     )
-            elif self._final_iteration:
-                logger.critical(
-                    "worker final iteration skipped family=%s "
-                    "reason=upstream_native_drain_incomplete",
-                    self.name,
-                    extra={
-                        "event": "community.worker.final_iteration_skipped",
-                        "family": self.name,
-                        "reason": "upstream_native_drain_incomplete",
-                    },
-                )
             raise
 
-    async def stop(self, timeout: float = 10.0) -> None:
+    async def stop(self, timeout: float = POLLING_SHUTDOWN_TIMEOUT_SECONDS) -> None:
         self._running = False
         self.notify()
         loop = asyncio.get_running_loop()
         effective_timeout = max(0.0, float(timeout))
         deadline = loop.time() + effective_timeout
+        if self._stop_deadline is not None:
+            deadline = min(deadline, self._stop_deadline)
+        self._stop_deadline = deadline
         task = self._task
         pending_tasks: set[asyncio.Task[None]] = set()
         task_error: Exception | None = None
@@ -300,6 +337,18 @@ class PollingRunner:
         self._notify_loop = None
         if task_error is not None:
             raise task_error
+
+    async def observe_stopped(self) -> None:
+        if self._running:
+            raise RuntimeError("worker_stop_not_requested")
+        from okto_pulse.community.shutdown_ownership import observe_existing_tasks
+
+        await observe_existing_tasks((self._task,) if self._task is not None else ())
+        if self._blocking_execution is not None:
+            await _observe_blocking_execution_idle(self._blocking_execution)
+        self._task = None
+        self._wake_event = None
+        self._notify_loop = None
 
     def snapshot(self, **_: Any) -> dict[str, Any]:
         return {"running": self.is_running}
@@ -467,6 +516,20 @@ class ConsolidationRunner:
                     logger.exception("consolidation stale-claim recovery failed")
         except asyncio.CancelledError:
             raise
+
+    async def observe_stopped(self) -> None:
+        if self._running:
+            raise RuntimeError("worker_stop_not_requested")
+        from okto_pulse.community.shutdown_ownership import observe_existing_tasks
+
+        await observe_existing_tasks(tuple(self._tasks))
+        await _observe_blocking_execution_idle(self._blocking_execution)
+        self._tasks.clear()
+        self._processing_task = None
+        self._recovery_task = None
+        self._wake_event = None
+        self._notify_loop = None
+        self._shutdown_drained = True
 
     async def stop(self, timeout: float | None = None) -> None:
         self._shutdown_drained = False

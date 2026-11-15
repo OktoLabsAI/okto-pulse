@@ -281,7 +281,8 @@ def _observe(profile, revision):
                                            (assertion,), datetime.now(timezone.utc).isoformat())
 
 
-async def execute_external_request(request, *, ledger, scope, status, actor_id, environment):
+async def execute_external_request(request, *, ledger, scope, status, actor_id, environment,
+                                   verification_context=None):
     if not isinstance(request, dict) or set(request) != {"runner_ref", "revision"}:
         _fail("request_requires_runner_ref_and_revision")
     revision = request["revision"]
@@ -312,4 +313,4 @@ async def execute_external_request(request, *, ledger, scope, status, actor_id, 
     return await _execute_validated_manifest_and_build_evidence_v2(
         manifest=manifest, canonical_ref=canonical_ref, normalized_manifest=normalized,
         **scope, status=status, actor_id=actor_id, executor=executor, ledger=ledger,
-        environment=environment, execution_basis=basis)
+        environment=environment, execution_basis=basis, verification_context=verification_context)

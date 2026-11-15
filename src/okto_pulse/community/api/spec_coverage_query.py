@@ -1,5 +1,6 @@
 """Read-only coverage transport; authorization and semantics remain in Core."""
 from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import Literal
 from okto_pulse.community.api.auth_deps import require_user
 from okto_pulse.community.api.deps import get_unit_of_work
 from okto_pulse.community.api.permission_errors import permission_denied_http_error
@@ -19,12 +20,13 @@ async def spec_coverage(
     limit: int = Query(200, ge=1, le=1000),
     cursor: str | None = Query(None, max_length=256),
     timeout_ms: int | None = Query(None, ge=1, le=30000),
+    graph_mode: Literal['summary', 'detail'] = Query('summary'),
     user_id: str = Depends(require_user),
     uow: PulseUnitOfWork = Depends(get_unit_of_work),
 ):
     try:
         return await SpecCoverageUseCase().execute(
-            SpecCoverageCommand(board_id, spec_id, limit, cursor, timeout_ms),
+            SpecCoverageCommand(board_id, spec_id, limit, cursor, timeout_ms, graph_mode),
             actor=RESTAdapterContract.actor(user_id, board_id=board_id), uow=uow)
     except EntityNotFoundError as exc:
         raise HTTPException(404, detail={'code': 'spec_not_found', 'message': 'Spec not found or unavailable'}) from exc

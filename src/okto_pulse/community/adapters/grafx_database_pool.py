@@ -40,6 +40,8 @@ from __future__ import annotations
 
 import os
 import threading
+import time
+import math
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -483,7 +485,8 @@ class CommunityGrafxDatabasePool:
             return GrafxDatabaseLease(self, key, database)
 
     def acquire_existing(
-        self, path: str | os.PathLike[str], *, page_size: int
+        self, path: str | os.PathLike[str], *, page_size: int,
+        deadline: float | None = None,
     ) -> GrafxDatabaseLease:
         """Pin a live participant without opening, finalizing or evicting one.
 
@@ -491,10 +494,29 @@ class CommunityGrafxDatabasePool:
         A cold/terminal participant requires ordinary recovery and is unavailable
         here. Selection and pinning are atomic with close/eviction.
         """
+        from okto_pulse.core.kg.interfaces.graph_errors import GraphQueryTimeout
+
+        if deadline is not None and (type(deadline) not in (int, float) or not math.isfinite(deadline)):
+            raise ValueError('query_deadline_requires_finite_monotonic_time')
+
+        def remaining():
+            if deadline is None:
+                return None
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise GraphQueryTimeout('Graph reader pool admission deadline exceeded.')
+            return left
+
+        remaining()
         configured = validate_grafx_page_size(page_size)
         contained = self._require_contained(Path(os.fspath(path)))
         key = _canonical(contained)
-        with self._lock:
+        left = remaining()
+        acquired = self._lock.acquire() if left is None else self._lock.acquire(timeout=left)
+        if not acquired:
+            raise GraphQueryTimeout('Graph reader pool admission deadline exceeded.')
+        try:
+            remaining()
             entry = self._entries.get(key)
             if entry is None or getattr(entry.database, "closed", False) is True:
                 raise GrafxDatabasePoolError(
@@ -509,6 +531,8 @@ class CommunityGrafxDatabasePool:
             entry.pins += 1
             entry.used_at = self._tick()
             return GrafxDatabaseLease(self, key, entry.database)
+        finally:
+            self._lock.release()
 
     def pin_count(self, path: str | os.PathLike[str]) -> int:
         """How many leases are outstanding on one database."""

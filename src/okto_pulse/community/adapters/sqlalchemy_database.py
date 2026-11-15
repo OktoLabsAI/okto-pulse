@@ -16,6 +16,7 @@ import contextlib
 import logging
 import os
 import time
+import threading
 import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, contextmanager
@@ -214,6 +215,15 @@ class CommunityDatabaseRuntime:
                 )
                 return
 
+    async def observe_retained_cleanup(self) -> None:
+        """Wait final SQL cleanup only after all producer handles are terminal."""
+        from okto_pulse.community.adapters.sqlalchemy_unit_of_work import pending_uow_cleanup_tasks
+        from okto_pulse.community.shutdown_ownership import observe_cleanup_until_empty
+
+        await observe_cleanup_until_empty(
+            lambda: set(self._pending_session_closes) | set(pending_uow_cleanup_tasks())
+        )
+
     async def _session_scope_teardown(
         self,
         session: Any,
@@ -392,6 +402,48 @@ def build_community_session_factory(
     )
 
 
+def _install_aiosqlite_stop_guard(dbapi_connection: Any) -> None:
+    """Share one terminal stop operation across graceful and forced close.
+
+    aiosqlite 0.22.1 can enqueue a second stop sentinel after its worker exits
+    when SQLAlchemy cancellation overlaps graceful close. Guard only this
+    engine's fresh driver connection, never the global driver class. A waiter
+    cannot cancel the retained completion; None is not terminal proof.
+    """
+    connection = getattr(dbapi_connection, "driver_connection", None)
+    if connection is None or getattr(connection, "_pulse_stop_guard_installed", False):
+        return
+    original_stop = getattr(connection, "stop", None)
+    if not callable(original_stop):
+        # Older supported aiosqlite releases lack forced-stop termination.
+        return
+    requested = False
+    completion = None
+    lock = threading.Lock()
+
+    def stop():
+        nonlocal requested, completion
+        with lock:
+            if not requested:
+                completion = original_stop()
+                requested = True
+            retained = completion
+        if retained is None:
+            return None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Destructor ignores the return. Do not construct a task on a
+            # nonexistent/closed event loop and do not enqueue another stop.
+            return retained
+        if retained.get_loop() is not loop:
+            raise RuntimeError('driver_stop_completion_loop_mismatch')
+        return asyncio.shield(retained)
+
+    connection.stop = stop
+    connection._pulse_stop_guard_installed = True
+
+
 def install_community_sqlite_pragmas(engine: AsyncEngine) -> None:
     """Single-owner SQLite PRAGMA listener.
 
@@ -408,17 +460,20 @@ def install_community_sqlite_pragmas(engine: AsyncEngine) -> None:
         require_current_database_file,
     )
     from .sqlite_delivery_contract import install_delivery_contract_function
+    from .sqlite_verification_currentness import install_verification_currentness_functions
 
     contract = current_schema_contract()
     require_current_database_file(str(engine.url), contract)
 
     @event.listens_for(engine.sync_engine, "connect")
     def _set_community_sqlite_pragmas(dbapi_conn, _conn_record):  # noqa: ANN001
+        _install_aiosqlite_stop_guard(dbapi_conn)
         cursor = dbapi_conn.cursor()
         try:
             # No persistent PRAGMA may precede admission of the current format.
             inspect_current_schema(cursor, contract)
             install_delivery_contract_function(dbapi_conn)
+            install_verification_currentness_functions(dbapi_conn)
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA busy_timeout=30000")
             # The source mutation and its durable consolidation intent commit
@@ -659,6 +714,12 @@ def resolve_community_database_runtime() -> CommunityDatabaseRuntime:
     if not isinstance(runtime, CommunityDatabaseRuntime):
         raise RuntimeError("active relational runtime is not Community-owned")
     return runtime
+
+
+async def observe_community_retained_cleanup() -> None:
+    # No unsupported-runtime success: absence of an owned cleanup observer
+    # leaves the enclosing shutdown continuation explicitly failed and live.
+    await resolve_community_database_runtime().observe_retained_cleanup()
 
 
 def get_engine() -> AsyncEngine:

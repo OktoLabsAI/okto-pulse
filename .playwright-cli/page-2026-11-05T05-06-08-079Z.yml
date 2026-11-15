@@ -1,0 +1,160 @@
+- generic [ref=f2e3]:
+  - banner [ref=f2e4]:
+    - generic [ref=f2e5]:
+      - generic [ref=f2e6]:
+        - button "Hide sidebar" [ref=f2e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f2e12]
+        - generic [ref=f2e31]: / My Board
+      - generic [ref=f2e32]:
+        - button "Refresh board" [ref=f2e33] [cursor=pointer]
+        - button [ref=f2e40] [cursor=pointer]
+  - generic [ref=f2e13]:
+    - complementary [ref=f2e14]:
+      - generic [ref=f2e15]:
+        - generic [ref=f2e17]:
+          - heading "Boards" [level=2] [ref=f2e18]
+          - button "New board" [ref=f2e19] [cursor=pointer]
+        - navigation [ref=f2e21]:
+          - generic [ref=f2e22]:
+            - heading "My Boards" [level=3] [ref=f2e23]
+            - list [ref=f2e44]:
+              - listitem [ref=f2e45]:
+                - button "okto pulse" [ref=f2e46] [cursor=pointer]
+              - listitem [ref=f2e53]:
+                - button "My Board" [active] [ref=f2e54] [cursor=pointer]
+              - listitem [ref=f2e61]:
+                - button "okto-grafx" [ref=f2e62] [cursor=pointer]
+    - main [ref=f2e26]:
+      - group "Board views" [ref=f2e69]:
+        - button "Stories" [ref=f2e70] [cursor=pointer]
+        - button "Ideations" [ref=f2e74] [cursor=pointer]
+        - button "Refinements" [ref=f2e77] [cursor=pointer]
+        - button "Specs" [pressed] [ref=f2e82] [cursor=pointer]
+        - button "Tasks" [ref=f2e87] [cursor=pointer]
+      - generic [ref=f2e2149]:
+        - generic [ref=f2e2150]:
+          - generic [ref=f2e2151]:
+            - heading "Specifications" [level=2] [ref=f2e2152]
+            - generic [ref=f2e2153]: (4 of 4)
+          - generic [ref=f2e2154]:
+            - textbox "Search specs…" [ref=f2e2156]
+            - group "View mode" [ref=f2e2157]:
+              - button "List view" [pressed] [ref=f2e2158] [cursor=pointer]
+              - button "Grid view" [ref=f2e2160] [cursor=pointer]
+            - generic [ref=f2e2166]: Group specs
+            - combobox "Group specs" [ref=f2e2172]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=f2e2173] [cursor=pointer]
+        - generic [ref=f2e2175]:
+          - button "All" [ref=f2e2176] [cursor=pointer]
+          - button "Draft" [ref=f2e2177] [cursor=pointer]
+          - button "Review" [ref=f2e2178] [cursor=pointer]
+          - button "Approved" [ref=f2e2179] [cursor=pointer]
+          - button "Validated" [ref=f2e2180] [cursor=pointer]
+          - button "In Progress" [ref=f2e2181] [cursor=pointer]
+          - button "Done" [ref=f2e2182] [cursor=pointer]
+          - button "Show archived" [ref=f2e2183] [cursor=pointer]
+        - generic [ref=f2e2185]:
+          - generic [ref=f2e2186]:
+            - generic [ref=f2e2187] [cursor=pointer]:
+              - 'heading "Refinement: E2E 0.4.3 — Delivery fixture refinement" [level=3] [ref=f2e2194]'
+              - generic [ref=f2e2195]: (1)
+            - generic [ref=f2e2199] [cursor=pointer]:
+              - generic [ref=f2e2200]:
+                - generic [ref=f2e2201]:
+                  - generic [ref=f2e2202]: Done
+                  - generic "Edition 1" [ref=f2e2206]
+                  - status "Pending cognitive consolidation — pending" [ref=f2e2207]:
+                    - generic [ref=f2e2210]: Pending cognitive consolidation
+                - heading "E2E 0.4.3 — Delivery status reference fixture" [level=3] [ref=f2e2211]
+                - paragraph [ref=f2e2212]: Implement and verify an isolated pure Python delivery-status reference function. The fixture provides real evidence for the My Board operational/UI audit; it does not change Pulse production behavior.
+                - 'generic "Requirement lint: 0 (0–32) · Edition 1" [ref=f2e2214]':
+                  - generic [ref=f2e2215]: Requirement lint
+                  - strong [ref=f2e2216]: "0"
+                - generic [ref=f2e2217]:
+                  - generic [ref=f2e2218]: e2e-043
+                  - generic [ref=f2e2219]: operational-audit
+              - generic [ref=f2e2220]:
+                - button "Open lineage graph" [ref=f2e2221]
+                - button "Archive tree" [ref=f2e2226]
+          - generic [ref=f2e2232]:
+            - generic [ref=f2e2235] [cursor=pointer]:
+              - generic [ref=f2e2236]:
+                - generic [ref=f2e2237]:
+                  - generic [ref=f2e2238]: Draft
+                  - generic "Edition 1" [ref=f2e2242]
+                - heading "R4 UI acceptance — unvalidated Spec verdict" [level=3] [ref=f2e2243]
+                - paragraph [ref=f2e2244]: Isolated My Board acceptance fixture for the negative Spec Validation state. This Draft intentionally has no approved planning cycle, implementation allocation or execution tasks. It must display an X and a clear not-validated verdict, with the original validation systems reachab…
+                - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=f2e2246]':
+                  - generic [ref=f2e2247]: Requirement lint
+                  - strong [ref=f2e2248]: Not assessed
+                - generic "1 unanswered question" [ref=f2e2250]: 1 open Q&A
+                - generic [ref=f2e2254]:
+                  - generic [ref=f2e2255]: e2e-043
+                  - generic [ref=f2e2256]: r4-ui-acceptance
+                  - generic [ref=f2e2257]: negative-validation-fixture
+              - generic [ref=f2e2258]:
+                - button "Open lineage graph" [ref=f2e2259]
+                - button "Archive tree" [ref=f2e2264]
+            - generic [ref=f2e2272] [cursor=pointer]:
+              - generic [ref=f2e2273]:
+                - generic [ref=f2e2274]:
+                  - generic [ref=f2e2275]: In Progress
+                  - generic "Edition 3" [ref=f2e2279]
+                - heading "QA 0.4.3 — validação, entregas e dispensa" [level=3] [ref=f2e2280]
+                - paragraph [ref=f2e2281]: "Casos de teste de interface da versão 0.4.3: resumo canônico de validação, detalhes, entregas, dispensa de tarefa e ajuda contextual. Dados de teste no My Board."
+                - 'generic "Requirement lint: 0 (0–16) · Edition 3" [ref=f2e2283]':
+                  - generic [ref=f2e2284]: Requirement lint
+                  - strong [ref=f2e2285]: "0"
+              - generic [ref=f2e2286]:
+                - button "Open lineage graph" [ref=f2e2287]
+                - button "Archive tree" [ref=f2e2292]
+            - generic [ref=f2e2300] [cursor=pointer]:
+              - generic [ref=f2e2301]:
+                - generic [ref=f2e2302]:
+                  - generic [ref=f2e2303]: Draft
+                  - generic "Edition 1" [ref=f2e2307]
+                - heading "QA 0.4.3 — API scenario default" [level=3] [ref=f2e2308]
+                - paragraph [ref=f2e2309]: Fixture de regressão do estado inicial; cenário enviado sem status explícito.
+                - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=f2e2311]':
+                  - generic [ref=f2e2312]: Requirement lint
+                  - strong [ref=f2e2313]: Not assessed
+              - generic [ref=f2e2314]:
+                - button "Open lineage graph" [ref=f2e2315]
+                - button "Archive tree" [ref=f2e2320]
+        - generic [ref=f2e2326]:
+          - status [ref=f2e2327]: Showing 1–4 of 4 matching. 4 overall. Page 1 of 1.
+          - generic [ref=f2e2328]:
+            - generic [ref=f2e2329]:
+              - generic [ref=f2e2330]: Items per page
+              - combobox "Items per page" [ref=f2e2331]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=f2e2332]:
+              - generic [ref=f2e2333]:
+                - button "Previous page" [disabled] [ref=f2e2334]: Previous
+                - button "Page 1" [disabled] [ref=f2e2335]: "1"
+                - button "Next page" [disabled] [ref=f2e2336]: Next
+  - 'status "Cognitive pipeline working: 1 running, 0 pending" [ref=f2e2337]':
+    - generic [ref=f2e2348]: 1 running
+  - status [ref=f2e2349]:
+    - generic [ref=f2e2350]:
+      - generic [ref=f2e2351]: Consolidation in progress
+      - generic [ref=f2e2352]: 0%
+    - generic [ref=f2e2354]:
+      - generic [ref=f2e2355]:
+        - generic [ref=f2e2356]: Pending
+        - generic [ref=f2e2357]: "0"
+      - generic [ref=f2e2358]:
+        - generic [ref=f2e2359]: Running
+        - generic [ref=f2e2360]: "1"
+      - generic [ref=f2e2361]:
+        - generic [ref=f2e2362]: Processed
+        - generic [ref=f2e2363]: "0"
+      - generic [ref=f2e2364]:
+        - generic [ref=f2e2365]: Paused
+        - generic [ref=f2e2366]: "0"

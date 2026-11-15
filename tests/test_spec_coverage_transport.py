@@ -66,7 +66,8 @@ async def api(monkeypatch):
     operation = AsyncMock(side_effect=aggregate)
     uow = SimpleNamespace(boards=SimpleNamespace(get=AsyncMock(return_value=board)),
         services=SimpleNamespace(analytics=SimpleNamespace(spec_coverage=operation)))
-    app = FastAPI(); app.include_router(analytics.router)
+    app = FastAPI()
+    app.include_router(analytics.router)
     app.dependency_overrides[require_user] = lambda: 'user'
     app.dependency_overrides[get_unit_of_work] = lambda: uow
     async with AsyncClient(transport=ASGITransport(app=app), base_url='http://test') as client:
@@ -78,13 +79,33 @@ async def test_shared_authority_typed_response_pagination_and_policy(api):
     response = await api.client.get(URL, params={'limit': 1, 'timeout_ms': 30000})
     assert response.status_code == 200, response.text
     first = response.json()
-    assert api.calls[0][1] == {'timeout_ms': 700}
+    assert api.calls[0][1]['timeout_ms'] == 700
+    assert api.calls[0][1]['deadline'] > 0
+    assert api.calls[0][0].graph_mode == 'summary'
     assert first['authority'] == 'informational'
     assert first['delivery']['counts']['verification_proven'] == 0
     second = await api.client.get(URL, params={'limit': 1, 'cursor': first['next_cursor']})
     assert second.status_code == 200, second.text
     assert second.json()['delivery']['counts']['obligations'] == 2
     assert second.json()['items'][0]['obligation_ref'] != first['items'][0]['obligation_ref']
+
+
+@pytest.mark.asyncio
+async def test_detail_mode_is_explicit_and_cannot_reuse_summary_cursor(api):
+    first = (await api.client.get(URL, params={'limit': 1})).json()
+    stale = await api.client.get(URL, params={'limit': 1,
+        'cursor': first['next_cursor'], 'graph_mode': 'detail'})
+    assert stale.status_code == 409
+    detail = await api.client.get(URL, params={'graph_mode': 'detail'})
+    assert detail.status_code == 200
+    assert api.calls[-1][0].graph_mode == 'detail'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('mode', ['all', '', 'Summary'])
+async def test_invalid_graph_mode_never_reaches_authorized_query(api, mode):
+    assert (await api.client.get(URL, params={'graph_mode': mode})).status_code == 422
+    api.operation.assert_not_called()
 
 
 @pytest.mark.asyncio

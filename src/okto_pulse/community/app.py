@@ -504,6 +504,32 @@ def create_app(
             # the DB close (close_db always runs).
             if not native_drain_incomplete:
                 await shutdown_kg_then_db(close_db, logger=logger)
+            else:
+                from okto_pulse.community.shutdown_ownership import ShutdownOwnership
+                from okto_pulse.community.adapters.sqlalchemy_database import observe_community_retained_cleanup
+
+                ownership = ShutdownOwnership(tuple(blocked_families))
+                app.state.shutdown_ownership = ownership
+
+                async def observe_producers():
+                    await runtime_worker_registry.observe_stopped(blocked_families)
+
+                async def close_graph_after_failed_deadline():
+                    from okto_pulse.community.adapters.kg_shutdown import close_all_graphs_on_shutdown
+
+                    # Observe actual native close to terminal. Database disposal
+                    # is a separate phase owned by the shutdown coordinator.
+                    await asyncio.to_thread(close_all_graphs_on_shutdown)
+
+                ownership.start(
+                    observe_producers=observe_producers,
+                    drain_cleanup=observe_community_retained_cleanup,
+                    close_graph=close_graph_after_failed_deadline,
+                    close_database=close_db,
+                )
+                # The alternate app has no Community CLI host handoff. Its
+                # lifespan itself must retain ownership until settlement.
+                await ownership.wait_before_runner_exit()
 
     app = FastAPI(
         title=settings.app_name,
