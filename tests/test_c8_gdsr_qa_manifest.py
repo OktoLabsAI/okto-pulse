@@ -19,6 +19,9 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES,
     GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION,
 )
+from okto_pulse.community.adapters.sqlite_verification_currentness import (
+    install_verification_currentness_functions,
+)
 
 
 _QA_BINDINGS = (
@@ -66,8 +69,9 @@ def _read_fence(connection: sqlite3.Connection) -> tuple[int, str]:
 
 
 def test_qa_tables_and_normative_columns_are_in_the_closed_source_census() -> None:
+    # v10 retains the governed Q&A census and adds task requirement decisions.
     assert GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION == (
-        "gdsr-trigger-manifest-v9"
+        "gdsr-trigger-manifest-v10"
     )
     for table_name, parent_column, _parent_id in _QA_BINDINGS:
         assert table_name in GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES
@@ -86,6 +90,7 @@ def test_each_qa_insert_update_delete_rotates_revision_and_nonce(
     _initialize_schema(database_path)
 
     connection = sqlite3.connect(database_path)
+    install_verification_currentness_functions(connection)
     connection.execute("PRAGMA foreign_keys = ON")
     try:
         connection.execute(
