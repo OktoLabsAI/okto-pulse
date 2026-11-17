@@ -72,6 +72,10 @@ from okto_pulse.community.adapters.sqlalchemy_models import (
     TaskRequirementDecisionRow,
     TaskRequirementDecisionOperationRow,
     TargetOverlapAcknowledgementRow,
+    VerificationAcceptanceRow,
+    VerificationBasisHeadRow,
+    VerificationReservationRow,
+    VerificationScenarioStateRow,
 )
 from okto_pulse.core.ports.kg_governance import BoardErasureJobFact
 
@@ -269,6 +273,17 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 plan=quality_purge_plan,
                 postcondition=quality_postcondition,
             )
+
+            # Verification history outlives ordinary Spec deletion. Remove its
+            # FK graph explicitly, under the same Board permit, before the
+            # final Board deletion; never rely on an implicit history cascade.
+            for model in (
+                VerificationBasisHeadRow,
+                VerificationAcceptanceRow,
+                VerificationReservationRow,
+                VerificationScenarioStateRow,
+            ):
+                await context.execute(delete(model).where(model.board_id == board_id))
 
             # Requirement history survives ordinary task edits/deletion. Only
             # this governed Board erasure may remove it, children before the
@@ -640,6 +655,10 @@ class CommunitySqlAlchemyKGGovernanceStore:
                 SpecDependencyOperation,
                 TaskRequirementDecisionRow,
                 TaskRequirementDecisionOperationRow,
+                VerificationBasisHeadRow,
+                VerificationAcceptanceRow,
+                VerificationReservationRow,
+                VerificationScenarioStateRow,
             )
             residuals = {
                 model.__tablename__: await _count_where(

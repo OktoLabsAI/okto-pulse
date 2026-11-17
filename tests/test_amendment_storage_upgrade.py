@@ -45,6 +45,17 @@ def test_verified_copy_preserves_all_authoritative_rows_and_invalidates_readines
     with closing(sqlite3.connect(source)) as old, closing(sqlite3.connect(output)) as new:
         inspect_historical_schema(old.cursor(), version=407)
         inspect_current_schema(new.cursor(), current_schema_contract())
+        # Only DELETE gains the existing scoped erasure exception. UPDATE
+        # history stays immutable, and the frozen source DDL is unchanged.
+        for table in ('verification_reservations', 'verification_acceptances'):
+            name = 'trg_' + table + '_immutable_delete'
+            old_sql = old.execute('SELECT sql FROM sqlite_schema WHERE name=?', (name,)).fetchone()[0]
+            new_sql = new.execute('SELECT sql FROM sqlite_schema WHERE name=?', (name,)).fetchone()[0]
+            assert 'kg_board_erasure_permits' not in old_sql
+            assert 'WHERE board_id=OLD.board_id' in new_sql
+            name = 'trg_' + table + '_immutable_update'
+            assert old.execute('SELECT sql FROM sqlite_schema WHERE name=?', (name,)).fetchone() == new.execute(
+                'SELECT sql FROM sqlite_schema WHERE name=?', (name,)).fetchone()
         for table in result['preserved_tables']:
             assert _table_fingerprint(old, table) == _table_fingerprint(new, table)
         assert set(old.execute('SELECT * FROM readiness_source_delta_event')) <= set(new.execute('SELECT * FROM readiness_source_delta_event'))

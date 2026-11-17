@@ -119,8 +119,13 @@ def verification_currentness_trigger_statements():
     ]
     for table in ("verification_reservations", "verification_acceptances"):
         for operation in ("UPDATE", "DELETE"):
+            # History remains immutable during ordinary writes. Only the
+            # existing transaction-scoped permit for this exact Board allows
+            # physical deletion; even a permitted erasure never allows UPDATE.
+            guard = (" WHEN NOT EXISTS (SELECT 1 FROM kg_board_erasure_permits "
+                     "WHERE board_id=OLD.board_id)" if operation == "DELETE" else "")
             statements.append(f"""CREATE TRIGGER trg_{table}_immutable_{operation.lower()}
-              BEFORE {operation} ON {table} BEGIN
+              BEFORE {operation} ON {table}{guard} BEGIN
               SELECT RAISE(ABORT,'verification_history_immutable'); END""")
     return tuple(statements)
 

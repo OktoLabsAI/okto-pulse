@@ -19,6 +19,10 @@ from .sqlite_verification_currentness import install_verification_currentness_fu
 
 DERIVED = frozenset({'readiness_scope', 'readiness_job', 'readiness_source_delta',
     'readiness_source_delta_event'})
+VERIFICATION_ERASURE_TRIGGERS = frozenset({
+    'trg_verification_reservations_immutable_delete',
+    'trg_verification_acceptances_immutable_delete',
+})
 
 
 def _convert_copy(connection, target):
@@ -26,7 +30,9 @@ def _convert_copy(connection, target):
     after = {(r[0], r[1]): r for r in target.objects}
     changed = [r for key, r in after.items() if before.get(key) != r]
     if (not before.keys() <= after.keys() or not changed
-        or any(r[0] != 'trigger' or not r[1].startswith('trg_readiness_') for r in changed)):
+        or any(r[0] != 'trigger' or not (
+            r[1].startswith('trg_readiness_') or r[1] in VERIFICATION_ERASURE_TRIGGERS)
+            for r in changed)):
         raise StorageUpgradeError('unsupported_schema_delta')
     tables = {r[1] for r in before.values() if r[0] == 'table'}
     preserved = {t: _table_fingerprint(connection, t) for t in sorted(tables - DERIVED)}
