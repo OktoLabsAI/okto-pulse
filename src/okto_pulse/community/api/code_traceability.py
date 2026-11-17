@@ -37,7 +37,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, create_model
 
 from okto_pulse.community.api.auth_deps import require_principal
-from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.deps import get_read_unit_of_work, get_unit_of_work
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core import get_settings
 from okto_pulse.core.application.use_cases.base import (
@@ -1271,7 +1271,7 @@ class ReadinessRequeueInput(BaseModel):
 @router.post("/{board_id}/specs/{spec_id}/readiness/requeue", status_code=202)
 async def requeue_persisted_delivery_readiness(board_id: str, spec_id: str,
     body: ReadinessRequeueInput,
-    principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_unit_of_work)):
+    principal: Principal = Depends(require_principal), uow: PulseUnitOfWork = Depends(get_read_unit_of_work)):
     from okto_pulse.core.application.use_cases.delivery_evidence import RequeuePersistedReadinessUseCase
 
     return await _execute(RequeuePersistedReadinessUseCase(),
