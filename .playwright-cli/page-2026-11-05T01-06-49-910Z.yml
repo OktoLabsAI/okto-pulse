@@ -1,0 +1,84 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - button "Hide sidebar" [ref=e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=e12]
+        - generic [ref=e31]: / My Board
+      - generic [ref=e32]:
+        - button "Refresh board" [ref=e33] [cursor=pointer]
+        - button [ref=e40] [cursor=pointer]
+  - generic [ref=e13]:
+    - complementary [ref=e14]:
+      - generic [ref=e15]:
+        - generic [ref=e17]:
+          - heading "Boards" [level=2] [ref=e18]
+          - button "New board" [ref=e19] [cursor=pointer]
+        - navigation [ref=e21]:
+          - generic [ref=e22]:
+            - heading "My Boards" [level=3] [ref=e23]
+            - list [ref=e44]:
+              - listitem [ref=e45]:
+                - button "okto pulse" [ref=e46] [cursor=pointer]
+              - listitem [ref=e53]:
+                - button "My Board" [ref=e54] [cursor=pointer]
+              - listitem [ref=e61]:
+                - button "okto-grafx" [ref=e62] [cursor=pointer]
+    - main [ref=e26]:
+      - group "Board views" [ref=e69]:
+        - button "Stories" [ref=e70] [cursor=pointer]
+        - button "Ideations" [ref=e74] [cursor=pointer]
+        - button "Refinements" [pressed] [ref=e77] [cursor=pointer]
+        - button "Specs" [ref=e82] [cursor=pointer]
+        - button "Tasks" [ref=e87] [cursor=pointer]
+      - generic [ref=e4168]:
+        - generic [ref=e4169]:
+          - generic [ref=e4170]:
+            - heading "Refinements" [level=2] [ref=e4171]
+            - generic [ref=e4172]: (1 of 1)
+          - generic [ref=e4173]:
+            - textbox "Search refinements…" [ref=e4175]
+            - group "View mode" [ref=e4176]:
+              - button "List view" [pressed] [ref=e4177] [cursor=pointer]
+              - button "Grid view" [ref=e4179] [cursor=pointer]
+            - button "New Refinement" [ref=e4185] [cursor=pointer]
+        - generic [ref=e4187]:
+          - button "All" [ref=e4188] [cursor=pointer]
+          - button "Draft" [ref=e4189] [cursor=pointer]
+          - button "Review" [ref=e4190] [cursor=pointer]
+          - button "Approved" [ref=e4191] [cursor=pointer]
+          - button "Done" [ref=e4192] [cursor=pointer]
+          - button "No derivation" [ref=e4193] [cursor=pointer]
+          - button "Show archived" [ref=e4198] [cursor=pointer]
+        - generic [ref=e4200]:
+          - heading "E2E 0.4.3 — Operational delivery journey" [level=3] [ref=e4206]
+          - generic [ref=e4209] [cursor=pointer]:
+            - generic [ref=e4210]:
+              - generic [ref=e4211]:
+                - generic [ref=e4212]: Done
+                - generic [ref=e4216]: Edition 1
+              - heading "E2E 0.4.3 — Delivery fixture refinement" [level=3] [ref=e4217]
+              - paragraph [ref=e4218]: "Isolated executable fixture for the authorized My Board operational audit. No production behavior is changed by this fixture. ## Parent Ideation Context - Title: E2E 0.4.3 — Operational delivery journey - Version: 11 ### Description User-authorized test fixture for exercising the full Pulse workflow on My Board. This creates test artifacts, not new production scope. ### Problem Statement The complete 0.4.3 operational journey needs evidence that planning lineage, native gates, delivery proof, human updates and the simplified UI agree. Success means a fully traced fixture reaches verified delivery, expected invalid operations are rejected without false success, and UI state matches authoritative records. ### Proposed Approach Derive one refinement and one Spec for a small isolated delivery-status reference helper. Implement and test it with real local source and execution evidence. Exercise normal, test and bug lifecycles, human progress and requirement choices, current/previous validation, resource propagation and detailed diagnosis. Inspect every primary UI area; keep a coverage matrix and reproducible defects. Preserve existing My Board artifacts and all operational gates. ### Scope Assessment - Domains: 3/5 - Ambiguity: 1/5 - Dependencies: 2/5 - Complexity: large ### Q&A Decisions **Q:** For this E2E fixture, which execution approach preserves meaningful delivery proof while keeping the production application unchanged? **A:** E2E fixture selection under the authorized audit: use real isolated implementation and execution evidence. Synthetic status values must never count as proof."
+              - 'generic "Ambiguity: 1 (0–5) · Edition 1" [ref=e4220]':
+                - generic [ref=e4221]: Ambiguity
+                - strong [ref=e4222]: "1"
+              - generic [ref=e4223]:
+                - generic [ref=e4224]: e2e-043
+                - generic [ref=e4225]: operational-audit
+            - generic [ref=e4226]:
+              - button "Open lineage graph" [ref=e4227]
+              - button "Archive tree" [ref=e4232]
+        - generic [ref=e4238]:
+          - status [ref=e4239]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+          - generic [ref=e4240]:
+            - generic [ref=e4241]:
+              - generic [ref=e4242]: Items per page
+              - combobox "Items per page" [ref=e4243]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Refinements pagination" [ref=e4244]:
+              - generic [ref=e4245]:
+                - button "Previous page" [disabled] [ref=e4246]: Previous
+                - button "Page 1" [disabled] [ref=e4247]: "1"
+                - button "Next page" [disabled] [ref=e4248]: Next

@@ -37,6 +37,8 @@ def test_incompatible_storage_guidance(tmp_path, command, explicit):
     assert "manually rename the entire data home" in result.stderr
     assert "okto-pulse init" in result.stderr
     assert "storage_format_incompatible:version" in result.stderr
+    assert "storage upgrade-copy --source-db ORIGINAL_DB --output-db NEW_DB" in result.stderr
+    assert "does not switch the active installation" in result.stderr
     assert "Traceback" not in result.stderr
     assert db.read_bytes() == before
     assert not Path(str(db) + "-wal").exists()

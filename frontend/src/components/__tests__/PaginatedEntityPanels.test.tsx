@@ -23,6 +23,7 @@ vi.mock('@/services/api', () => ({
 vi.mock('@/hooks/useCognitivePendingBadges', () => ({
   useCognitivePendingBadges: () => ({ badges: {}, loading: false }),
 }));
+vi.mock('@/hooks/useWorkspaceRevisions', () => ({ useWorkspaceRevisions: () => 'current' }));
 
 vi.mock('@/components/traceability', () => ({
   openLineageGraph: vi.fn(),

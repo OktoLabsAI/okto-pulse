@@ -1,0 +1,147 @@
+- generic [ref=f13e3]:
+  - banner [ref=f13e4]:
+    - generic [ref=f13e5]:
+      - generic [ref=f13e6]:
+        - button "Hide sidebar" [ref=f13e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f13e12]
+        - generic [ref=f13e31]: / My Board
+      - generic [ref=f13e32]:
+        - button "Refresh board" [ref=f13e33] [cursor=pointer]
+        - button [ref=f13e40] [cursor=pointer]
+  - generic [ref=f13e13]:
+    - complementary [ref=f13e14]:
+      - generic [ref=f13e15]:
+        - generic [ref=f13e17]:
+          - heading "Boards" [level=2] [ref=f13e18]
+          - button "New board" [ref=f13e19] [cursor=pointer]
+        - navigation [ref=f13e21]:
+          - generic [ref=f13e22]:
+            - heading "My Boards" [level=3] [ref=f13e23]
+            - list [ref=f13e44]:
+              - listitem [ref=f13e45]:
+                - button "okto pulse" [ref=f13e46] [cursor=pointer]
+              - listitem [ref=f13e53]:
+                - button "My Board" [ref=f13e54] [cursor=pointer]
+              - listitem [ref=f13e61]:
+                - button "okto-grafx" [ref=f13e62] [cursor=pointer]
+    - main [ref=f13e26]:
+      - group "Board views" [ref=f13e69]:
+        - button "Stories" [pressed] [ref=f13e70] [cursor=pointer]
+        - button "Ideations" [ref=f13e74] [cursor=pointer]
+        - button "Refinements" [ref=f13e77] [cursor=pointer]
+        - button "Specs" [ref=f13e82] [cursor=pointer]
+        - button "Tasks" [ref=f13e87] [cursor=pointer]
+      - generic [ref=f13e1123]:
+        - generic [ref=f13e1124]:
+          - generic [ref=f13e1125]:
+            - heading "Stories" [level=2] [ref=f13e1126]
+            - generic [ref=f13e1127]: (1 of 1)
+          - generic [ref=f13e1128]:
+            - textbox "Search stories..." [ref=f13e1130]
+            - group "View mode" [ref=f13e1131]:
+              - button "List view" [pressed] [ref=f13e1132] [cursor=pointer]
+              - button "Grid view" [ref=f13e1134] [cursor=pointer]
+            - button "New Story" [ref=f13e1140] [cursor=pointer]
+        - generic [ref=f13e1142]:
+          - button "All" [ref=f13e1143] [cursor=pointer]
+          - button "Draft" [ref=f13e1144] [cursor=pointer]
+          - button "Triage" [ref=f13e1145] [cursor=pointer]
+          - button "Ready" [ref=f13e1146] [cursor=pointer]
+          - button "Converted" [ref=f13e1147] [cursor=pointer]
+          - button "Show archived" [ref=f13e1148] [cursor=pointer]
+        - generic [ref=f13e1149]:
+          - complementary [ref=f13e1150]:
+            - generic [ref=f13e1151]:
+              - generic [ref=f13e1152]: Topics
+              - button "New Topic" [ref=f13e1157] [cursor=pointer]
+            - generic [ref=f13e1159]:
+              - button "All topics 1" [ref=f13e1160] [cursor=pointer]:
+                - generic [ref=f13e1161]: All topics
+                - generic [ref=f13e1162]: "1"
+              - generic [ref=f13e1163]:
+                - button "E2E 0.4.3 — Operational consistency 1" [ref=f13e1164] [cursor=pointer]:
+                  - generic [ref=f13e1165]: E2E 0.4.3 — Operational consistency
+                  - generic [ref=f13e1166]: "1"
+                - 'button "Topic actions: E2E 0.4.3 — Operational consistency" [ref=f13e1167] [cursor=pointer]'
+          - generic [ref=f13e1172]:
+            - generic [ref=f13e1176] [cursor=pointer]:
+              - generic [ref=f13e1177]:
+                - generic [ref=f13e1178]: Draft
+                - generic [ref=f13e1179]: E2E 0.4.3 — Operational consistency
+              - heading "E2E 0.4.3 — Understand and verify a delivery" [level=3] [ref=f13e1180]
+              - paragraph [ref=f13e1181]: As a board user, I need to distinguish delivered, pending, failed and waived work and see which requirement each verification impacts, so that I can make a correct delivery decision without entering technical receipts. This is the isolated intake fixture for the authorized operat…
+              - generic [ref=f13e1182]:
+                - generic [ref=f13e1183]: "As: Board user"
+                - generic [ref=f13e1184]: "Want: Understand delivery and requirement-level verification"
+                - generic [ref=f13e1185]: "So: Make accurate delivery decisions without technical bookkeeping"
+            - generic [ref=f13e1192]:
+              - status [ref=f13e1193]: Showing 1–1 of 1 matching. 1 overall. Page 1 of 1.
+              - generic [ref=f13e1194]:
+                - generic [ref=f13e1195]:
+                  - generic [ref=f13e1196]: Items per page
+                  - combobox "Items per page" [ref=f13e1197]:
+                    - option "25" [selected]
+                    - option "50"
+                    - option "100"
+                - navigation "Stories pagination" [ref=f13e1198]:
+                  - generic [ref=f13e1199]:
+                    - button "Previous page" [disabled] [ref=f13e1200]: Previous
+                    - button "Page 1" [disabled] [ref=f13e1201]: "1"
+                    - button "Next page" [disabled] [ref=f13e1202]: Next
+        - generic [ref=f13e1204]:
+          - generic [ref=f13e1205]:
+            - generic [ref=f13e1206]:
+              - generic [ref=f13e1207]:
+                - heading "E2E 0.4.3 — Understand and verify a delivery" [level=3] [ref=f13e1210]
+                - generic [ref=f13e1211]: Draft
+              - generic [ref=f13e1212]: E2E 0.4.3 — Operational consistency
+            - generic [ref=f13e1213]:
+              - button "Open lineage graph" [ref=f13e1214] [cursor=pointer]
+              - button "Export report" [ref=f13e1219] [cursor=pointer]
+              - button "Refresh" [ref=f13e1223] [cursor=pointer]
+              - button "Expand" [ref=f13e1229] [cursor=pointer]
+              - button "Close" [ref=f13e1235] [cursor=pointer]
+          - generic [ref=f13e1240]:
+            - button "Details" [ref=f13e1241] [cursor=pointer]
+            - button "Mockups" [ref=f13e1242] [cursor=pointer]
+            - button "Links" [ref=f13e1243] [cursor=pointer]
+            - button "Activity" [ref=f13e1244] [cursor=pointer]
+          - generic [ref=f13e1247]:
+            - generic [ref=f13e1248]:
+              - generic [ref=f13e1249]:
+                - heading "Title" [level=4] [ref=f13e1250]
+                - paragraph [ref=f13e1252] [cursor=pointer]: E2E 0.4.3 — Understand and verify a delivery
+              - generic [ref=f13e1256]:
+                - generic [ref=f13e1257]: Topic *
+                - combobox [ref=f13e1258]:
+                  - option "E2E 0.4.3 — Operational consistency" [selected]
+              - generic [ref=f13e1259]:
+                - generic [ref=f13e1260]: Status
+                - combobox [ref=f13e1261]:
+                  - option "Draft" [selected]
+                  - option "Triage"
+                  - option "Ready"
+                  - option "Converted"
+            - generic [ref=f13e1262]:
+              - heading "Description" [level=4] [ref=f13e1263]
+              - paragraph [ref=f13e1266] [cursor=pointer]: As a board user, I need to distinguish delivered, pending, failed and waived work and see which requirement each verification impacts, so that I can make a correct delivery decision without entering technical receipts. This is the isolated intake fixture for the authorized operational audit.
+            - generic [ref=f13e1270]:
+              - generic [ref=f13e1271]:
+                - heading "Actor" [level=4] [ref=f13e1272]
+                - paragraph [ref=f13e1274] [cursor=pointer]: Board user
+              - generic [ref=f13e1278]:
+                - heading "Goal" [level=4] [ref=f13e1279]
+                - paragraph [ref=f13e1281] [cursor=pointer]: Understand delivery and requirement-level verification
+              - generic [ref=f13e1285]:
+                - heading "Benefit" [level=4] [ref=f13e1286]
+                - paragraph [ref=f13e1288] [cursor=pointer]: Make accurate delivery decisions without technical bookkeeping
+            - generic [ref=f13e1292]:
+              - heading "Labels" [level=4] [ref=f13e1293]
+              - generic [ref=f13e1295] [cursor=pointer]:
+                - generic [ref=f13e1296]: e2e-043
+                - generic [ref=f13e1297]: operational-audit
+          - generic [ref=f13e1301]:
+            - button "Archive story" [ref=f13e1303] [cursor=pointer]
+            - generic [ref=f13e1307]:
+              - button "Close" [ref=f13e1308] [cursor=pointer]
+              - button "Save" [ref=f13e1309] [cursor=pointer]

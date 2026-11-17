@@ -100,7 +100,10 @@ def test_native_revision_model_has_exact_owned_contract() -> None:
     assert table.name in Base.metadata.tables
     assert table.name in GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES
     assert GLOBAL_DISCOVERY_SOURCE_TRIGGER_MANIFEST_VERSION == (
-        "gdsr-trigger-manifest-v9"
+        "gdsr-trigger-manifest-v10"
+    )
+    assert {'task_requirement_decisions', 'task_requirement_decision_operations'} <= set(
+        GLOBAL_DISCOVERY_SOURCE_REVISION_INPUT_TABLES
     )
 
 

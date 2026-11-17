@@ -1,34 +1,20 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { CardDeliveryDoDPanel } from '../CardDeliveryDoDPanel';
-import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
-import { readiness } from './readinessFixture';
-
-const api = vi.hoisted(() => ({ getDeliveryEvidence: vi.fn(), getBoard: vi.fn(), getDeliveryReadiness: vi.fn() }));
+import { persistedProjection, taskDeliverySummary, metric } from './readinessFixture';
+const api = vi.hoisted(() => ({ getPersistedReadinessProjection: vi.fn(), getDeliveryEvidence: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 afterEach(cleanup);
-
-it('U05: pre-Done accepted proof agrees across the row, counter and blocking notice', async () => {
-  const value: DeliveryEvidenceProjection = {
-    board_id: 'b', spec_id: 's', edition: 1, version: 1, status: 'in_progress',
-    allowed: false, complete: true, blockers: ['delivery_implementation_missing'],
-    rejected_record_ids: [], rows: [], tests: [], candidates: [], records: [],
-    implementations: [{ id: 'proof', card_id: 'task', explanation: 'Observed committed implementation',
-      bindings: [{ obligation_ref: 'fr:ports', semantic_sha256: 'a'.repeat(64) }],
-      contributions: [{ binding: { obligation_ref: 'fr:ports', semantic_sha256: 'a'.repeat(64) },
-        contribution: 'complete', execution_ids: ['execution'] }],
-      admitted_obligation_refs: ['fr:ports'], ready_obligation_refs: ['fr:ports'],
-      executions: [{ execution_id: 'execution', target_id: 'target', source_ref: 'repo',
-        relative_path: 'src/ports.py', result_revision: 'a'.repeat(40), current_accepted_execution: true }] }],
-    per_card: [{ card_id: 'task', title: 'Implement public ports', card_type: 'normal',
-      status: 'in_progress', satisfied: false,
-      obligations: [{ ref: 'fr:ports', title: 'Use public ports', implementation_satisfied: false }] }],
-  };
-  api.getDeliveryEvidence.mockResolvedValue(value);
-  api.getDeliveryReadiness.mockResolvedValue(readiness('task'));
-  api.getBoard.mockResolvedValue({ id: 'b', settings: { delivery_evidence_gate: 'blocking' } });
-  render(<CardDeliveryDoDPanel boardId="b" card={{ id: 'task', card_type: 'normal', spec_id: 's' }} />);
-  expect(await screen.findByText('✓ Implementation')).toBeInTheDocument();
-  expect(screen.getByTestId('dod-gate-pill')).toHaveTextContent('0 of 1 unproven');
-  expect(screen.queryByTestId('dod-blocked-banner')).not.toBeInTheDocument();
+it('keeps completion pending even when raw technical metrics are all 100%', async () => {
+  const value = persistedProjection(); value.scope.card_id = 'c';
+  value.task_delivery = { ...taskDeliverySummary(), state: 'completion_pending', reason: 'Independent review is required.' };
+  value.summaries.forEach(row => { row.implementation = metric(100, 8); row.verification = metric(100, 8); });
+  api.getPersistedReadinessProjection.mockResolvedValue(value);
+  render(<CardDeliveryDoDPanel boardId="b" card={{ id: 'c', card_type: 'normal', spec_id: 's' }} />);
+  await screen.findByText('Awaiting completion');
+  expect(screen.getByText('Independent review is required.')).toBeVisible();
+  expect(screen.queryByText('Delivered', { exact: true })).not.toBeInTheDocument();
+  expect(screen.getByRole('progressbar', { name: 'Implementation' })).toHaveAttribute('aria-valuenow', '100');
+  expect(screen.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '100');
+  expect(api.getDeliveryEvidence).not.toHaveBeenCalled();
 });

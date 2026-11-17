@@ -1,4 +1,4 @@
-"""Explicit, one-way upgrade from exact v400 through v404 SQLite formats.
+"""Explicit, one-way upgrade from exact v400 through v404 to frozen v405.
 
 Run only during a service stop. The source is locked, backed up and checked
 before any DDL. Unknown or modified predecessors are refused. A backup is
@@ -19,8 +19,11 @@ from sqlalchemy.dialects.sqlite import dialect
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from .current_relational_schema import (
-    APPLICATION_ID, SCHEMA_VERSION, StorageFormatError, _SCHEMA_QUERY,
-    current_schema_contract, inspect_current_schema,
+    APPLICATION_ID, RelationalSchemaContract, StorageFormatError, _SCHEMA_QUERY,
+)
+from .historical_relational_schema import historical_schema_contract
+from .storage_upgrade_v043 import (
+    SOURCE_SCHEMA_SHA256, SOURCE_SCHEMA_VERSION, StorageUpgradeError, _require_source,
 )
 from .sqlalchemy_models import (
     ReadinessGenerationRow, ReadinessJobRow, ReadinessScopeRow, ReadinessSourceDeltaRow,
@@ -28,7 +31,45 @@ from .sqlalchemy_models import (
     ReadinessSummaryRow, ReadinessDiagnosticRow, ReadinessUnitRow,
     ReadinessOperationAuditRow,
 )
-from .readiness_invalidation_schema import install_readiness_invalidation_triggers
+
+# This stopped-service utility retains its documented historical destination.
+# A separate explicit verified-copy operation converts v405 to runtime v406.
+READINESS_TARGET_VERSION = SOURCE_SCHEMA_VERSION
+READINESS_SOURCE_FENCE_VERSION = 'gdsr-fence-v2'
+READINESS_SOURCE_TRIGGER_MANIFEST_VERSION = 'gdsr-trigger-manifest-v9'
+
+
+def readiness_schema_contract() -> RelationalSchemaContract:
+    """Recover the admitted v0.4.2 shape, guarded by its independent frozen hash.
+
+    The v406 converter admits only an additive delta on the two new task
+    tables. Never let rolling model changes silently redefine a predecessor
+    or the legacy destination: any further drift refuses before source DDL.
+    """
+    contract = historical_schema_contract(405)
+    if contract.sha256 != SOURCE_SCHEMA_SHA256:
+        raise StorageFormatError('readiness_target_contract')
+    return contract
+
+
+def inspect_readiness_schema(cursor, contract=None) -> bool:
+    if contract is not None and contract.sha256 != SOURCE_SCHEMA_SHA256:
+        raise StorageFormatError('readiness_target_contract')
+    try:
+        _require_source(cursor.connection)
+    except StorageUpgradeError as exc:
+        raise StorageFormatError(exc.reason) from exc
+    return False
+
+
+def readiness_trigger_statements():
+    return tuple(row[3] for row in readiness_schema_contract().objects
+        if row[0] == 'trigger' and row[1].startswith('trg_readiness_'))
+
+
+def install_readiness_invalidation_triggers(connection):
+    for statement in readiness_trigger_statements():
+        connection.exec_driver_sql(statement)
 
 PREDECESSOR_VERSION = 400
 PREDECESSOR_SHA256 = "b83a653dfdbe9b1737d62c9f4c8b256eca0c32e076ca37009163625921882e4d"
@@ -99,6 +140,7 @@ def upgrade_readiness_schema(database: Path) -> Path:
     On any error the source transaction rolls back; a successful backup is kept
     for forensics rather than silently restored over possible later writes.
     """
+    target = readiness_schema_contract()
     path = database.resolve(strict=True)
     if not path.is_file() or path.suffix.lower() not in {".db", ".sqlite", ".sqlite3"}:
         raise StorageFormatError("database_path")
@@ -175,9 +217,9 @@ def upgrade_readiness_schema(database: Path) -> Path:
             locked.execute("UPDATE readiness_job SET state='terminal',owner=NULL,"
                 "lease_until=NULL,attempt=0,error_code='scope_tombstoned' "
                 "WHERE scope_id IN (SELECT id FROM readiness_scope WHERE tombstone=1)")
-            locked.execute(f"PRAGMA main.user_version={SCHEMA_VERSION}")
+            locked.execute(f"PRAGMA main.user_version={READINESS_TARGET_VERSION}")
             _check_integrity(locked)
-            inspect_current_schema(locked.cursor(), current_schema_contract())
+            inspect_readiness_schema(locked.cursor(), target)
             locked.commit()
         except BaseException:
             locked.rollback()

@@ -1,0 +1,280 @@
+- generic [ref=f2e31]:
+  - banner [ref=f2e32]:
+    - generic [ref=f2e33]:
+      - generic [ref=f2e34]:
+        - button "Hide sidebar" [ref=f2e35] [cursor=pointer]
+        - img "Okto Pulse" [ref=f2e40]
+        - generic [ref=f2e59]: / My Board
+      - generic [ref=f2e60]:
+        - button "Refresh board" [ref=f2e61] [cursor=pointer]
+        - button [ref=f2e68] [cursor=pointer]
+  - generic [ref=f2e41]:
+    - complementary [ref=f2e42]:
+      - generic [ref=f2e43]:
+        - generic [ref=f2e45]:
+          - heading "Boards" [level=2] [ref=f2e46]
+          - button "New board" [ref=f2e47] [cursor=pointer]
+        - navigation [ref=f2e49]:
+          - generic [ref=f2e50]:
+            - heading "My Boards" [level=3] [ref=f2e51]
+            - list [ref=f2e72]:
+              - listitem [ref=f2e73]:
+                - button "My Board" [ref=f2e74] [cursor=pointer]
+              - listitem [ref=f2e81]:
+                - button "okto pulse" [ref=f2e82] [cursor=pointer]
+              - listitem [ref=f2e89]:
+                - button "okto-grafx" [ref=f2e90] [cursor=pointer]
+    - main [ref=f2e54]:
+      - group "Board views" [ref=f2e97]:
+        - button "Stories" [ref=f2e98] [cursor=pointer]
+        - button "Ideations" [ref=f2e102] [cursor=pointer]
+        - button "Refinements" [ref=f2e105] [cursor=pointer]
+        - button "Specs" [ref=f2e110] [cursor=pointer]
+        - button "Tasks" [pressed] [ref=f2e115] [cursor=pointer]
+      - generic [ref=f2e201]:
+        - generic [ref=f2e202]:
+          - textbox "Search cards…" [ref=f2e204]
+          - button "Unlinked" [ref=f2e207] [cursor=pointer]
+          - button "Filter specs..." [ref=f2e209] [cursor=pointer]
+          - button "Show archived" [ref=f2e213] [cursor=pointer]
+        - generic [ref=f2e214]:
+          - generic [ref=f2e215]:
+            - generic [ref=f2e216]:
+              - generic [ref=f2e218]:
+                - generic [ref=f2e219]:
+                  - generic [ref=f2e220]:
+                    - heading "Not Started" [level=3] [ref=f2e221]
+                    - generic "1 total cards" [ref=f2e222]: "1"
+                  - generic [ref=f2e223]:
+                    - button "0 task cards" [pressed] [ref=f2e224] [cursor=pointer]:
+                      - generic [ref=f2e225]: Task
+                      - generic [ref=f2e230]: "0"
+                    - button "1 test cards" [pressed] [ref=f2e231] [cursor=pointer]:
+                      - generic [ref=f2e232]: Test
+                      - generic [ref=f2e236]: "1"
+                    - button "0 bug cards" [pressed] [ref=f2e237] [cursor=pointer]:
+                      - generic [ref=f2e238]: Bug
+                      - generic [ref=f2e249]: "0"
+                - button "Add card to Not Started" [ref=f2e250] [cursor=pointer]
+              - 'button "test QA 0.4.3 — teste da validação e dispensa spec Teste de interface rastreável no My Board; sem evidência técnica fabricada. Delivery readiness 1 scenario linked C: Owner" [ref=f2e253]':
+                - generic [ref=f2e254]:
+                  - generic "Move card" [ref=f2e255]
+                  - generic [ref=f2e263] [cursor=pointer]:
+                    - generic [ref=f2e264]:
+                      - generic [ref=f2e265]: test
+                      - heading "QA 0.4.3 — teste da validação e dispensa" [level=4] [ref=f2e268]
+                      - generic "Linked to a spec" [ref=f2e269]: spec
+                    - paragraph [ref=f2e273]: Teste de interface rastreável no My Board; sem evidência técnica fabricada.
+                    - region "Delivery readiness" [ref=f2e274]:
+                      - generic [ref=f2e276]:
+                        - generic [ref=f2e277]: Verification
+                        - strong [ref=f2e279]: 0%
+                        - generic [ref=f2e280]:
+                          - progressbar "Verification"
+                      - button "Open delivery details" [ref=f2e281]
+                    - generic [ref=f2e282]: 1 scenario linked
+                    - 'generic "Creator: local-user" [ref=f2e288]': "C: Owner"
+            - generic [ref=f2e289]:
+              - generic [ref=f2e292]:
+                - generic [ref=f2e293]:
+                  - heading "In Progress" [level=3] [ref=f2e294]
+                  - generic "1 total cards" [ref=f2e295]: "1"
+                - generic [ref=f2e296]:
+                  - button "1 task cards" [pressed] [ref=f2e297] [cursor=pointer]:
+                    - generic [ref=f2e298]: Task
+                    - generic [ref=f2e303]: "1"
+                  - button "0 test cards" [pressed] [ref=f2e304] [cursor=pointer]:
+                    - generic [ref=f2e305]: Test
+                    - generic [ref=f2e309]: "0"
+                  - button "0 bug cards" [pressed] [ref=f2e310] [cursor=pointer]:
+                    - generic [ref=f2e311]: Bug
+                    - generic [ref=f2e322]: "0"
+              - 'button "QA 0.4.3 — tarefa de dispensa sem justificativa spec Tarefa de teste de interface para Required → Optional → Waived → Required, sem alterar evidência nem status de execução. Delivery readiness C: Owner A: Codex" [ref=f2e324]':
+                - generic [ref=f2e325]:
+                  - generic "Move card" [ref=f2e326]
+                  - generic [ref=f2e334] [cursor=pointer]:
+                    - generic [ref=f2e335]:
+                      - heading "QA 0.4.3 — tarefa de dispensa sem justificativa" [level=4] [ref=f2e336]
+                      - generic "Linked to a spec" [ref=f2e337]: spec
+                    - paragraph [ref=f2e341]: Tarefa de teste de interface para Required → Optional → Waived → Required, sem alterar evidência nem status de execução.
+                    - region "Delivery readiness" [ref=f2e342]:
+                      - generic [ref=f2e343]:
+                        - generic [ref=f2e344]:
+                          - generic [ref=f2e345]: Implementation
+                          - strong [ref=f2e347]: 0%
+                          - generic [ref=f2e348]:
+                            - progressbar "Implementation"
+                        - generic [ref=f2e349]:
+                          - generic [ref=f2e350]: Verification
+                          - strong [ref=f2e352]: 0%
+                          - generic [ref=f2e353]:
+                            - progressbar "Verification"
+                      - button "Open delivery details" [ref=f2e354]
+                    - generic [ref=f2e356]:
+                      - 'generic "Creator: local-user" [ref=f2e357]': "C: Owner"
+                      - 'generic "Assignee: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=f2e358]': "A: Codex"
+            - generic [ref=f2e359]:
+              - generic [ref=f2e362]:
+                - generic [ref=f2e363]:
+                  - heading "Validation" [level=3] [ref=f2e364]
+                  - generic "0 total cards" [ref=f2e365]: "0"
+                - generic [ref=f2e366]:
+                  - button "0 task cards" [pressed] [ref=f2e367] [cursor=pointer]:
+                    - generic [ref=f2e368]: Task
+                    - generic [ref=f2e373]: "0"
+                  - button "0 test cards" [pressed] [ref=f2e374] [cursor=pointer]:
+                    - generic [ref=f2e375]: Test
+                    - generic [ref=f2e379]: "0"
+                  - button "0 bug cards" [pressed] [ref=f2e380] [cursor=pointer]:
+                    - generic [ref=f2e381]: Bug
+                    - generic [ref=f2e392]: "0"
+              - generic [ref=f2e393]: No cards
+            - generic [ref=f2e395]:
+              - generic [ref=f2e398]:
+                - generic [ref=f2e399]:
+                  - heading "Rejected" [level=3] [ref=f2e400]
+                  - generic "0 total cards" [ref=f2e401]: "0"
+                - generic [ref=f2e402]:
+                  - button "0 task cards" [pressed] [ref=f2e403] [cursor=pointer]:
+                    - generic [ref=f2e404]: Task
+                    - generic [ref=f2e409]: "0"
+                  - button "0 bug cards" [pressed] [ref=f2e410] [cursor=pointer]:
+                    - generic [ref=f2e411]: Bug
+                    - generic [ref=f2e422]: "0"
+              - generic [ref=f2e423]: No cards requiring rework
+            - generic [ref=f2e425]:
+              - generic [ref=f2e428]:
+                - generic [ref=f2e429]:
+                  - heading "On Hold" [level=3] [ref=f2e430]
+                  - generic "0 total cards" [ref=f2e431]: "0"
+                - generic [ref=f2e432]:
+                  - button "0 task cards" [pressed] [ref=f2e433] [cursor=pointer]:
+                    - generic [ref=f2e434]: Task
+                    - generic [ref=f2e439]: "0"
+                  - button "0 test cards" [pressed] [ref=f2e440] [cursor=pointer]:
+                    - generic [ref=f2e441]: Test
+                    - generic [ref=f2e445]: "0"
+                  - button "0 bug cards" [pressed] [ref=f2e446] [cursor=pointer]:
+                    - generic [ref=f2e447]: Bug
+                    - generic [ref=f2e458]: "0"
+              - generic [ref=f2e459]: No cards
+            - generic [ref=f2e461]:
+              - generic [ref=f2e464]:
+                - generic [ref=f2e465]:
+                  - heading "Done" [level=3] [ref=f2e466]
+                  - generic "0 total cards" [ref=f2e467]: "0"
+                - generic [ref=f2e468]:
+                  - button "0 task cards" [pressed] [ref=f2e469] [cursor=pointer]:
+                    - generic [ref=f2e470]: Task
+                    - generic [ref=f2e475]: "0"
+                  - button "0 test cards" [pressed] [ref=f2e476] [cursor=pointer]:
+                    - generic [ref=f2e477]: Test
+                    - generic [ref=f2e481]: "0"
+                  - button "0 bug cards" [pressed] [ref=f2e482] [cursor=pointer]:
+                    - generic [ref=f2e483]: Bug
+                    - generic [ref=f2e494]: "0"
+              - generic [ref=f2e495]: No cards
+            - generic [ref=f2e497]:
+              - generic [ref=f2e500]:
+                - generic [ref=f2e501]:
+                  - heading "Cancelled" [level=3] [ref=f2e502]
+                  - generic "0 total cards" [ref=f2e503]: "0"
+                - generic [ref=f2e504]:
+                  - button "0 task cards" [pressed] [ref=f2e505] [cursor=pointer]:
+                    - generic [ref=f2e506]: Task
+                    - generic [ref=f2e511]: "0"
+                  - button "0 test cards" [pressed] [ref=f2e512] [cursor=pointer]:
+                    - generic [ref=f2e513]: Test
+                    - generic [ref=f2e517]: "0"
+                  - button "0 bug cards" [pressed] [ref=f2e518] [cursor=pointer]:
+                    - generic [ref=f2e519]: Bug
+                    - generic [ref=f2e530]: "0"
+              - generic [ref=f2e531]: No cards
+          - status [ref=f2e533]
+        - generic [ref=f2e535]:
+          - generic [ref=f2e536]:
+            - generic [ref=f2e537]:
+              - combobox "Card status" [ref=f2e538]:
+                - option "In Progress" [selected]
+                - option "Not Started"
+                - option "Validation"
+                - option "On Hold"
+                - option "Cancelled"
+              - heading "QA 0.4.3 — tarefa de dispensa sem justificativa" [level=2] [ref=f2e539]
+            - button "QA 0.4.3 — validação, entre..." [ref=f2e544] [cursor=pointer]
+            - generic [ref=f2e548]:
+              - button "Open lineage graph" [ref=f2e549] [cursor=pointer]
+              - button "Export report" [ref=f2e554] [cursor=pointer]
+              - button "Refresh card" [ref=f2e558] [cursor=pointer]
+              - button "Expand" [ref=f2e564] [cursor=pointer]
+              - button "Close card dialog" [ref=f2e570] [cursor=pointer]
+          - generic [ref=f2e696]:
+            - tablist "Card sections" [ref=f2e697]:
+              - tab "Details" [ref=f2e698] [cursor=pointer]
+              - tab "Implementation Targets" [ref=f2e703] [cursor=pointer]
+              - tab "Delivery" [selected] [ref=f2e709] [cursor=pointer]
+              - tab "Resources" [ref=f2e714] [cursor=pointer]
+              - tab "Q&A" [ref=f2e720] [cursor=pointer]
+              - tab "Comments" [ref=f2e725] [cursor=pointer]
+              - tab "References" [ref=f2e729] [cursor=pointer]
+              - tab "Validation" [ref=f2e734] [cursor=pointer]
+              - tab "Activity" [ref=f2e738] [cursor=pointer]
+            - button "Scroll Card sections right" [ref=f2e744] [cursor=pointer]
+          - tabpanel "Delivery" [ref=f2e748]:
+            - region "Task delivery" [ref=f2e749]:
+              - generic [ref=f2e750]:
+                - heading "Delivery" [level=3] [ref=f2e751]
+                - button "How this works" [ref=f2e752] [cursor=pointer]
+              - generic [ref=f2e760]:
+                - status [ref=f2e761]: Work remaining
+                - paragraph [ref=f2e762]: Ainda há trabalho ou comprovação de implementação pendente.
+              - generic [ref=f2e763]:
+                - heading "Latest update" [level=4] [ref=f2e764]
+                - paragraph [ref=f2e765]: "QA Task Delivery 0.4.3: atualização humana pela interface, sem informar recibo, alvo técnico, impacto ou percentuais."
+                - heading "Remaining" [level=4] [ref=f2e766]
+                - paragraph [ref=f2e767]: Verificar o recibo automático no histórico e a correção imutável. Esta declaração não é uma prova técnica.
+              - button "Registrar progresso" [ref=f2e772] [cursor=pointer]
+              - generic [ref=f2e769]:
+                - button "Details" [expanded] [ref=f2e770] [cursor=pointer]
+                - button "Refresh" [ref=f2e771] [cursor=pointer]
+              - generic [ref=f2e774]:
+                - heading "Delivery details" [level=4] [ref=f2e775]
+                - paragraph [ref=f2e776]: Updates are declarations. Technical verification and completion are assessed separately.
+                - button "Record an update" [ref=f2e777] [cursor=pointer]
+                - button "Verification and pending work" [ref=f2e779] [cursor=pointer]
+                - region "Delivery record history" [ref=f2e780]:
+                  - heading "Delivery record history" [level=4] [ref=f2e781]
+                  - paragraph [ref=f2e782]: Edition 3 · Current
+                  - button "Browse delivery records" [ref=f2e783] [cursor=pointer]
+                  - paragraph [ref=f2e797]: 2 records in edition 3. Current edition. Historical declarations do not establish current proof or completion.
+                  - group [ref=f2e798]:
+                    - 'generic "QA Task Delivery 0.4.3: atualização humana pela interface, sem informar recibo, alvo técnico, impacto ou percentuais. human_submission" [ref=f2e799] [cursor=pointer]':
+                      - 'generic "QA Task Delivery 0.4.3: atualização humana pela interface, sem informar recibo, alvo técnico, impacto ou percentuais." [ref=f2e800]'
+                      - generic [ref=f2e801]: human_submission
+                    - generic [ref=f2e811]:
+                      - paragraph [ref=f2e812]: human_submission · local-user · 2026-11-04T01:31:08.808990+00:00
+                      - paragraph [ref=f2e813]: "QA Task Delivery 0.4.3: atualização humana pela interface, sem informar recibo, alvo técnico, impacto ou percentuais."
+                      - button "Read delivery record human_submission_9e87210203124cea979b73b38323887e" [ref=f2e814] [cursor=pointer]
+                  - group [ref=f2e804]:
+                    - 'generic "QA 0.4.3: conferidos check e X, Details, ajudas, dispensa sem justificativa, restauração e auditoria. Corrigidos o status inicial de cenários e o verificador do processo de projeção; 217 testes relacionados aprovados. progress" [ref=f2e805] [cursor=pointer]':
+                      - 'generic "QA 0.4.3: conferidos check e X, Details, ajudas, dispensa sem justificativa, restauração e auditoria. Corrigidos o status inicial de cenários e o verificador do processo de projeção; 217 testes relacionados aprovados." [ref=f2e806]'
+                      - generic [ref=f2e807]: progress
+                  - paragraph [ref=f2e810]: End of this edition’s delivery records.
+                  - article "Delivery record detail" [ref=f2e815]:
+                    - paragraph [ref=f2e816]: human_submission · local-user · 2026-11-04T01:31:08.808990+00:00
+                    - paragraph [ref=f2e817]: "QA Task Delivery 0.4.3: atualização humana pela interface, sem informar recibo, alvo técnico, impacto ou percentuais."
+                    - paragraph [ref=f2e818]: Human update · the application created this audit record automatically. It is not technical verification.
+                    - paragraph [ref=f2e819]: "Remaining: Verificar o recibo automático no histórico e a correção imutável. Esta declaração não é uma prova técnica."
+                    - paragraph [ref=f2e820]: "Recorded at: 2026-11-04T01:31:08.808990Z"
+                    - paragraph [ref=f2e821]: "Audit ID: human_receipt_7298ff6ecfeb455ab4756eeebeccd2e6"
+                    - button "Correct this update" [ref=f2e822] [cursor=pointer]
+                    - paragraph [ref=f2e823]: Currentness is not evaluated by this historical read. Use current delivery context before relying on a proof.
+                  - group [ref=f2e784]:
+                    - generic "Previous versions 2" [ref=f2e785] [cursor=pointer]:
+                      - generic "Previous versions" [ref=f2e786]
+                      - generic [ref=f2e787]: "2"
+                - region "Task requirement" [ref=f2e790]:
+                  - generic [ref=f2e791]:
+                    - button "Change task requirement" [ref=f2e792] [cursor=pointer]
+                    - button "Task requirement rules" [ref=f2e793] [cursor=pointer]
+          - button "Delete" [ref=f2e650] [cursor=pointer]

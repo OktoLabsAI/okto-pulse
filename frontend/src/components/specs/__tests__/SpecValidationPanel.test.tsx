@@ -3,6 +3,7 @@ import type { ComponentProps } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SpecValidationPanel } from '../SpecValidationPanel';
+import { subscribeContextualHelp } from '@/components/help/contextualHelp';
 
 const apiMock = vi.hoisted(() => ({
   getValidationCycle: vi.fn(),
@@ -208,8 +209,9 @@ const lastTransitionPolicyRejection = {
 
 function renderPanel(
   overrides: Partial<ComponentProps<typeof SpecValidationPanel>> = {},
+  openDetails = true,
 ) {
-  return render(
+  const result = render(
     <SpecValidationPanel
       boardId="board-1"
       specId="spec-1"
@@ -226,6 +228,8 @@ function renderPanel(
       {...overrides}
     />,
   );
+  if (openDetails) fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+  return result;
 }
 
 function summaryState(testId: string): string | null {
@@ -265,6 +269,71 @@ describe('SpecValidationPanel lifecycle edition projection', () => {
       current_validation_id: 'validation-2',
       validations: [],
     });
+  });
+
+  it('loads only the overall summary before Details is opened and preserves drafts when collapsed', async () => {
+    apiMock.getValidationCycle.mockResolvedValue({ ...failedCycle, validation_summary: {
+      contract_version: 'validation-summary/v1', edition: 2, verdict: 'not_validated',
+      planning_state: 'blocked', reason_code: 'decomposition_required', blockers_count: 1,
+      exception_count: 0, next_action: null,
+    } });
+    renderPanel({}, false);
+    expect(await screen.findByText('Spec not yet validated')).toBeInTheDocument();
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument();
+    expect(apiMock.getCurrentSpecValidation).not.toHaveBeenCalled();
+    expect(apiMock.listSpecValidations).not.toHaveBeenCalled();
+    const details = screen.getByRole('button', { name: 'Details' });
+    expect(details).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(details);
+    fireEvent.click(screen.getByRole('tab', { name: 'Checklist' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Cached checklist draft' }), { target: { value: 'Retained draft' } });
+    fireEvent.click(details);
+    expect(details).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument();
+    fireEvent.click(details);
+    expect(screen.getByRole('textbox', { name: 'Cached checklist draft' })).toHaveValue('Retained draft');
+    expect(apiMock.listSpecValidations).not.toHaveBeenCalled();
+  });
+
+  it('never promotes a quality success or an older server response to a global validation verdict', async () => {
+    apiMock.getValidationCycle.mockResolvedValue({ ...failedCycle, current_result: { ...failedCycle.current_result, status: 'success' } });
+    renderPanel({}, false);
+    expect(await screen.findByText('Validation could not be confirmed')).toBeInTheDocument();
+    expect(screen.queryByText('Spec validated')).not.toBeInTheDocument();
+  });
+
+  it('offers contextual help without opening Details or requesting protected assessment history', () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeContextualHelp(listener);
+    renderPanel({ canReadValidation: false, canReadQuality: false, canReadChecklist: false }, false);
+    const help = screen.getByRole('button', { name: 'How validation works' });
+    help.focus();
+    expect(help).toHaveFocus();
+    fireEvent.click(help);
+    expect(listener).toHaveBeenCalledWith({ sectionId: 'spec-validation' });
+    expect(screen.getByRole('button', { name: 'Details' })).toHaveAttribute('aria-expanded', 'false');
+    expect(apiMock.getCurrentSpecValidation).not.toHaveBeenCalled();
+    expect(apiMock.listSpecValidations).not.toHaveBeenCalled();
+    unsubscribe();
+  });
+
+  it('opens the pending section and moves focus to its tab from the single authorized action', async () => {
+    apiMock.getValidationCycle.mockResolvedValue({ ...failedCycle, validation_summary: {
+      contract_version: 'validation-summary/v1', edition: 2, verdict: 'not_validated',
+      planning_state: 'blocked', reason_code: 'checklist_required', blockers_count: 1,
+      exception_count: 0, next_action: 'complete_curated_checklist',
+    }, planning_readiness: { state: 'blocked', components: [{
+      key: 'curated_checklist', state: 'blocked', mode: 'blocking', applicable: true,
+      native_result: 'missing', result_ids: [], reason_codes: [], message: null,
+      next_action: 'complete_curated_checklist',
+    }] } });
+    renderPanel({}, false);
+    fireEvent.click(await screen.findByRole('button', { name: 'Review pending check' }));
+    const tab = screen.getByRole('tab', { name: 'Checklist' });
+    expect(tab).toHaveAttribute('aria-selected', 'true');
+    expect(tab).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Details' })).toHaveAttribute('aria-expanded', 'true');
+    expect(apiMock.getCurrentSpecValidation).not.toHaveBeenCalled();
   });
 
   it('renders the four accessible subtabs in product order and keeps current-edition states', async () => {

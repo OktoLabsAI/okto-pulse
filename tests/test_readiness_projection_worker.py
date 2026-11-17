@@ -16,6 +16,7 @@ import threading
 import time
 from types import SimpleNamespace
 import pytest
+from sqlalchemy.exc import OperationalError
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -23,6 +24,7 @@ from okto_pulse.community.adapters.current_relational_schema import (
     APPLICATION_ID, SCHEMA_VERSION, create_current_schema_objects, seed_current_schema_fences,
 )
 from okto_pulse.community.adapters.readiness_schema_upgrade import upgrade_readiness_schema
+from okto_pulse.community.adapters.storage_upgrade_v043 import upgrade_copy_v043
 from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
 from okto_pulse.community.adapters import readiness_projection_worker as worker_module
 from okto_pulse.community.adapters import sqlalchemy_database as database_module
@@ -35,6 +37,9 @@ from okto_pulse.core.services.persisted_delivery_readiness import (
     ProjectedUnit, build_readiness_generation, readiness_manifest_digest,
 )
 from test_readiness_schema_upgrade import _v401_predecessor
+import test_delivery_evidence_integration as delivery
+
+ledger = delivery.ledger
 
 
 def test_projection_child_reuses_canonical_database_path(tmp_path, monkeypatch):
@@ -53,20 +58,6 @@ def test_projection_child_reuses_canonical_database_path(tmp_path, monkeypatch):
     finally:
         runner.run(engine.dispose())
         runner.close()
-
-
-def _verify_scenario_in_spawned_child(evidence_root, criteria, scenario):
-    from types import SimpleNamespace
-    from okto_pulse.core.ports.test_evidence import resolve_test_evidence_write_verifier
-    from okto_pulse.community.adapters.delivery_verification import native_scenario_run
-    from okto_pulse.community.adapters.readiness_projection_worker import _register_projection_evidence_verifier
-
-    before = resolve_test_evidence_write_verifier()
-    _register_projection_evidence_verifier(evidence_root)
-    spec = SimpleNamespace(board_id='board', id='spec', edition=1,
-        acceptance_criteria=criteria)
-    run = native_scenario_run(spec, scenario)
-    return before is None, run.authenticated, run.native_reason_codes
 
 
 def test_projection_child_does_not_cache_failed_initialization(tmp_path, monkeypatch):
@@ -528,14 +519,15 @@ async def test_pipeline_cancellation_waits_for_both_inflight_calculations(tmp_pa
 
 
 def _seed_migrated_v401_many_specs(database):
-    _v401_predecessor(database)
+    predecessor_path = database.with_name(database.stem + '-legacy405.sqlite3')
+    _v401_predecessor(predecessor_path)
     spec_ids = ['spec', *[f'spec-{number:03d}' for number in range(100)]]
     contracts = [(spec_id, json.dumps({
         'contract_version': 'spec-execution-contract/v1',
         'board_id': 'board', 'spec_id': spec_id,
         'adopted_in_edition': 1, 'actor_id': 'owner', 'origin': 'new_spec',
     })) for spec_id in spec_ids]
-    with closing(sqlite3.connect(database)) as predecessor:
+    with closing(sqlite3.connect(predecessor_path)) as predecessor:
         predecessor.execute("INSERT INTO boards (id,name,owner_id,realm_id) "
                             "VALUES ('board','Test','owner','local')")
         predecessor.executemany(
@@ -543,8 +535,20 @@ def _seed_migrated_v401_many_specs(database):
             "architecture_adoption,execution_contract) "
             "VALUES (?,'board','Spec','in_progress',1,'owner','{}',?)", contracts)
         predecessor.commit()
-    backup = upgrade_readiness_schema(database)
+    backup = upgrade_readiness_schema(predecessor_path)
     assert backup.is_file()
+    # Retain every predecessor through the current runtime's exact format.
+    from okto_pulse.community.adapters.verification_storage_upgrade import upgrade_verification_copy
+    from okto_pulse.community.adapters.amendment_storage_upgrade import upgrade_amendment_copy
+    intermediate = database.with_name(database.stem + '-legacy406.sqlite3')
+    conversion = upgrade_copy_v043(predecessor_path, intermediate)
+    assert conversion['source_database_unchanged'] and conversion['target_schema_version'] == 406
+    published407 = database.with_name(database.stem + '-legacy407.sqlite3')
+    conversion = upgrade_verification_copy(intermediate, published407,
+        evidence_root=database.parent / 'migration-evidence')
+    assert conversion['source_database_unchanged'] and conversion['target_schema_version'] == 407
+    conversion = upgrade_amendment_copy(published407, database)
+    assert conversion['source_database_unchanged'] and conversion['target_schema_version'] == SCHEMA_VERSION
     return backup
 
 
@@ -910,32 +914,108 @@ async def test_process_projects_and_stages_before_parent_publish(tmp_path, caplo
 
 
 @pytest.mark.asyncio
-async def test_spawned_projection_authenticates_native_scenario_evidence(tmp_path):
-    from okto_pulse.community.adapters.test_evidence import (
-        CommunityEvidenceLedger, CommunityTestVerificationReportIssuer,
-    )
-    from okto_pulse.core.ports.test_evidence import TestVerificationReportRequest
-    from okto_pulse.core.services.test_scenario_lifecycle import compute_test_scenario_semantic_sha256
-    from verification_report_fixtures import report
-
+async def test_spawned_projection_uses_installation_verifier_without_creating_ledger(tmp_path):
+    database = tmp_path / 'pulse.sqlite3'
     evidence_root = tmp_path / 'evidence'
-    criteria = [{'id': 'ac-1', 'text': 'Public ports'}]
-    scenario = {'id': 'scenario', 'title': 'Inspect public ports',
-        'scenario_type': 'manual', 'given': 'The component is built',
-        'when': 'The imports are inspected', 'then': 'Imports use public ports',
-        'verification_method': 'inspection', 'linked_criteria': ['ac-1']}
-    digest = compute_test_scenario_semantic_sha256(board_id='board', spec_id='spec',
-        scenario=scenario, acceptance_criteria=criteria)
-    issuer = CommunityTestVerificationReportIssuer(
-        ledger=CommunityEvidenceLedger(evidence_root=evidence_root))
-    issued = await issuer.admit(TestVerificationReportRequest(board_id='board',
-        spec_id='spec', scenario_id='scenario', scenario_sha256=digest,
-        actor_id='reviewer', report=report()))
-    scenario.update(status='passed', evidence=dict(issued.evidence))
+    engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
+    try:
+        await _seed_one_spec(engine)
+        requirements = [dict(id='fr', text='Show the validation result', linked_task_ids=['card'],
+            verification=dict(mode='explicit', required_profiles=['functional']),
+            implementation_plan=dict(contributions=[dict(card_id='card', scope='selected_criteria',
+                criterion_ids=['ac'], summary='Validation result UI')]))]
+        criteria = [dict(id='ac', text='The current verdict is visible', verification_profile='functional',
+            linked_task_ids=['card'], requirement_links=[dict(requirement_type='functional_requirement', requirement_id='fr')])]
+        scenarios = [dict(id='scenario', title='Inspect verdict', status='draft', scenario_type='manual',
+            verification_method='demonstration', linked_criteria=['ac'], linked_task_ids=['test'],
+            given='A current Spec', when='Validation is opened', then='The verdict is visible')]
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(f'PRAGMA main.application_id={APPLICATION_ID}')
+            await connection.exec_driver_sql(f'PRAGMA main.user_version={SCHEMA_VERSION}')
+            await connection.exec_driver_sql("UPDATE specs SET functional_requirements=?, acceptance_criteria=?, test_scenarios=?, technical_requirements='[]', business_rules='[]', api_contracts='[]', integration_requirements='[]', observability_requirements='[]', decisions='[]' WHERE id='spec'",
+                (json.dumps(requirements), json.dumps(criteria), json.dumps(scenarios)))
+            await connection.exec_driver_sql("INSERT INTO cards (id,board_id,spec_id,title,status,position,created_by,card_type) VALUES ('card','board','spec','Work','not_started',0,'owner','normal')")
+            await connection.exec_driver_sql("INSERT INTO cards (id,board_id,spec_id,title,status,position,created_by,card_type,test_scenario_ids) VALUES ('test','board','spec','Verify','not_started',1,'owner','test','[\"scenario\"]')")
+        with ProcessPoolExecutor(max_workers=1, mp_context=get_context('spawn')) as executor:
+            worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution(),
+                full_projection_executor=executor, database_path=database, evidence_root=evidence_root)
+            assert await worker.process_once() == 1
+            visible = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+            assert visible is not None and visible.freshness == 'current'
+            summary = next(row for row in visible.summaries if row['card_id'] is None)
+            assert summary['verification']['status'] == 'known', json.dumps(summary)
+            assert summary['verification']['satisfied'] == 0
+            assert 'delivery_verification_methods_unavailable' not in json.dumps(visible.summaries)
+        assert not evidence_root.exists()
+    finally:
+        await engine.dispose()
+
+
+def _read_spawned_native_authority(database, evidence_root, board_id, spec_id):
+    """Read real accepted results with exactly the projection child's bindings."""
+    from sqlalchemy import event
+    from okto_pulse.core.composition import isolated_runtime_provider_scope
+    from okto_pulse.core.domain.verification_currentness import VerificationCurrentnessError
+    from okto_pulse.core.ports.test_evidence import (
+        resolve_test_evidence_execution_issuer, resolve_test_verification_report_issuer,
+    )
+    from okto_pulse.core.ports.verification_currentness import (
+        require_verification_currentness_store, resolve_verification_reservation_port,
+    )
+    from okto_pulse.community.adapters.delivery_verification import native_verification_population
+    from okto_pulse.community.adapters.sqlalchemy_models import Spec
+
+    async def read():
+        engine = create_async_engine(f'sqlite+aiosqlite:///{database}')
+        statements = []
+
+        @event.listens_for(engine.sync_engine, 'before_cursor_execute')
+        def readonly(_conn, _cursor, statement, _parameters, _context, _many):
+            statements.append(statement)
+            assert statement.lstrip().upper().startswith(('SELECT', 'PRAGMA', 'BEGIN'))
+
+        try:
+            async with database_module.build_community_session_factory(engine)() as session:
+                spec = await session.get(Spec, spec_id)
+                assert spec.board_id == board_id
+                with isolated_runtime_provider_scope():
+                    with pytest.raises(VerificationCurrentnessError):
+                        require_verification_currentness_store(session)
+                    with worker_module._projection_verifier_scope(evidence_root):
+                        assert resolve_test_evidence_execution_issuer() is None
+                        assert resolve_test_verification_report_issuer() is None
+                        assert resolve_verification_reservation_port() is None
+                        population = await native_verification_population(spec, session)
+                    with pytest.raises(VerificationCurrentnessError):
+                        require_verification_currentness_store(session)
+                assert statements
+                return population
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(read())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('ledger', ['native_schema'], indirect=True)
+@pytest.mark.parametrize('ledger_present', [True, False])
+async def test_spawned_projection_reads_native_authority_without_writers(ledger, tmp_path, ledger_present):
+    session, _, evidence = ledger
+    evidence_root = tmp_path / ('evidence' if ledger_present else 'absent-evidence')
     with ProcessPoolExecutor(max_workers=1, mp_context=get_context('spawn')) as executor:
-        fresh_child, authenticated, reasons = await asyncio.get_running_loop().run_in_executor(
-            executor, _verify_scenario_in_spawned_child, evidence_root, criteria, scenario)
-    assert fresh_child and authenticated and reasons == ()
+        population = await asyncio.get_running_loop().run_in_executor(
+            executor, _read_spawned_native_authority, session.bind.url.database,
+            evidence_root, delivery.BOARD_ID, delivery.SPEC_ID)
+    if ledger_present:
+        assert population.complete, population.reason_codes
+        assert len(population.runs) == 1
+        run = population.runs[0]
+        assert run.authenticated and run.current and run.outcome == 'passed'
+        assert run.accepted_result_id and run.receipt_id == evidence['execution_receipt']
+    else:
+        assert not population.complete
+        assert not any(run.authenticated for run in population.runs)
+        assert not evidence_root.exists()
 
 
 @pytest.mark.asyncio
@@ -1751,7 +1831,10 @@ async def test_over_cap_scope_is_unknown_while_healthy_scope_progresses(tmp_path
         async with engine.begin() as connection:
             await connection.exec_driver_sql(
                 "UPDATE specs SET test_scenarios=? WHERE id='spec'",
-                (json.dumps([f'scenario-{index}' for index in range(5001)]),),
+                (json.dumps([dict(id=f'scenario-{index}', title='Bounded scenario',
+                    status='draft', scenario_type='manual', verification_method='inspection',
+                    given='A source scope', when='It is read', then='The cap is enforced',
+                    linked_criteria=[]) for index in range(5001)]),),
             )
             await connection.exec_driver_sql(
                 "INSERT INTO specs (id,board_id,title,status,version,created_by,"
@@ -1772,5 +1855,69 @@ async def test_over_cap_scope_is_unknown_while_healthy_scope_progresses(tmp_path
         assert limited.summaries[0]['verification']['status'] == 'unknown'
         assert limited.units == ()
         assert healthy is not None and healthy.freshness == 'current'
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('error', [
+    OperationalError('DELETE obsolete readiness rows', {}, sqlite3.OperationalError('database is locked')),
+    RuntimeError('retention_unavailable'),
+])
+async def test_gc_failure_preserves_pending_projection_and_retries(tmp_path, monkeypatch, caplog, error):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        original_gc = worker.store.gc_once
+        calls = []
+
+        async def fail_once():
+            calls.append(True)
+            if len(calls) == 1:
+                raise error
+            return await original_gc()
+
+        monkeypatch.setattr(worker.store, 'gc_once', fail_once)
+        with caplog.at_level(logging.WARNING):
+            assert await worker.process_once() == 1
+        result = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert result is not None and result.freshness == 'current'
+        assert 'readiness.gc_deferred' in caplog.text
+        assert len(calls) == 1
+        assert not worker._gc_backlog
+        # Durable cleanup is retried on the normal interval, not discarded
+        # and not retried in a tight loop solely because the last pass failed.
+        worker._last_gc = worker_module.monotonic()
+        assert await worker.process_once() == 0
+        assert len(calls) == 1
+        worker._last_gc -= 6
+        assert await worker.process_once() == 0
+        assert len(calls) == 2
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_gc_cancellation_propagates_before_claim_and_pending_work_survives(tmp_path, monkeypatch):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'pulse.sqlite3'}")
+    try:
+        await _seed_one_spec(engine)
+        worker = ReadinessProjectionProcessor(engine, TrackedBlockingExecution())
+        original_gc = worker.store.gc_once
+
+        async def cancelled():
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(worker.store, 'gc_once', cancelled)
+        with pytest.raises(asyncio.CancelledError):
+            await worker.process_once()
+        pending = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert pending is not None and pending.generation_id is None
+        assert pending.freshness != 'current'
+        monkeypatch.setattr(worker.store, 'gc_once', original_gc)
+        assert await worker.process_once() == 1
+        result = await worker.store.read(board_id='board', spec_id='spec', edition=1)
+        assert result is not None and result.freshness == 'current'
     finally:
         await engine.dispose()

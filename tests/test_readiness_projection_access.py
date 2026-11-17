@@ -12,7 +12,7 @@ from test_delivery_readiness_authorization import ACTOR, setup
 from okto_pulse.community.adapters.readiness_projection_worker import ReadinessProjectionProcessor
 from okto_pulse.community.adapters.sqlalchemy_persisted_readiness import CommunityPersistedReadinessStore
 from okto_pulse.community.adapters.sqlalchemy_delivery_readiness import CommunityDeliveryReadinessReader, CommunityReadinessClock
-from okto_pulse.community.adapters.sqlalchemy_models import AgentBoard, Spec
+from okto_pulse.community.adapters.sqlalchemy_models import AgentBoard, Board, Card, CardDependency, Spec
 from okto_pulse.community.adapters.worker_runners import TrackedBlockingExecution
 from okto_pulse.core.ports.delivery_readiness import (
     ReadinessAccessDenied, ReadinessActor, ReadinessReadError,
@@ -48,6 +48,36 @@ async def test_projection_skips_second_policy_query_without_concurrent_commit(le
             (result.generation_id,))).scalars().all()
     assert len(stored) > 1
     assert result.summaries == tuple(json.loads(payload) for payload in stored)
+
+
+async def test_task_read_re_presents_legacy_summary_without_rewriting_generation(ledger):
+    session, _, _ = ledger
+    await setup(session)
+    worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
+    assert await worker.process_once() == 1
+    reader = CommunityDeliveryReadinessReader(session.bind, clock=CommunityReadinessClock())
+    current, _, _, _ = await reader.load_persisted(board_id=delivery.BOARD_ID,
+        spec_id=delivery.SPEC_ID, actor=ACTOR, card_id='task')
+    expected = current.task_delivery
+    async with session.bind.begin() as connection:
+        raw = (await connection.exec_driver_sql(
+            'SELECT payload FROM readiness_summary WHERE generation_id=? AND card_key=?',
+            (current.generation_id, 'task'))).scalar_one()
+        legacy = json.loads(raw)
+        legacy['task_delivery'].update(state='updating_or_unknown', reason_code='assessment_incomplete',
+            reason='Previous presentation policy')
+        encoded = json.dumps(legacy)
+        await connection.exec_driver_sql(
+            'UPDATE readiness_summary SET payload=? WHERE generation_id=? AND card_key=?',
+            (encoded, current.generation_id, 'task'))
+    result, _, _, _ = await reader.load_persisted(board_id=delivery.BOARD_ID,
+        spec_id=delivery.SPEC_ID, actor=ACTOR, card_id='task')
+    assert result.task_delivery == expected
+    async with session.bind.connect() as connection:
+        unchanged = (await connection.exec_driver_sql(
+            'SELECT payload FROM readiness_summary WHERE generation_id=? AND card_key=?',
+            (current.generation_id, 'task'))).scalar_one()
+    assert unchanged == encoded
 
 
 async def test_projection_pages_are_actor_bound_and_reauthorized(ledger, monkeypatch):
@@ -219,3 +249,220 @@ async def test_projection_cursor_keeps_original_generation_until_retention(ledge
     with pytest.raises(ReadinessReadError, match='readiness_cursor_stale'):
         await reader.load_persisted(board_id=delivery.BOARD_ID,
             spec_id=delivery.SPEC_ID, actor=ACTOR, unit_limit=1, cursor=page['next_cursor'])
+
+
+async def test_delivery_summary_reads_one_generation_and_live_metadata_without_proof_scans(ledger, tmp_path, monkeypatch):
+    from test_execution_contract_integration import adopt_fixture
+    from test_delivery_readiness_authorization import statements
+    from okto_pulse.core.services.delivery_summary import page_delivery_summary
+    session, _, _ = ledger
+    await setup(session)
+    await adopt_fixture(session, tmp_path, monkeypatch)
+    worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
+    assert await worker.process_once() == 1
+    reader = CommunityDeliveryReadinessReader(session.bind, clock=CommunityReadinessClock())
+    async def forbidden(*_args, **_kwargs):
+        pytest.fail('The simple list must not load or evaluate source proof')
+    monkeypatch.setattr(reader, 'load', forbidden)
+    monkeypatch.setattr(delivery.CommunityDeliveryEvidenceStore, 'load_snapshot', forbidden)
+    monkeypatch.setattr(delivery.CommunityDeliveryEvidenceStore, '_execution_plan', forbidden)
+    with statements(session.bind) as sql:
+        population = await reader.load_delivery_summary(board_id=delivery.BOARD_ID,
+            spec_id=delivery.SPEC_ID, actor=ACTOR)
+    assert {item.card_id for item in population.items} == {'task', 'test'}
+    assert population.projection.freshness == 'current'
+    assert all(item.updated_at and item.updated_at.utcoffset() is not None for item in population.items)
+    assert all(statement.lstrip().upper().startswith(('SELECT', 'PRAGMA DATA_VERSION', 'BEGIN')) for statement in sql)
+    result = page_delivery_summary(population)
+    assert 'secret-marker' not in result.model_dump_json() and 'Private agent name' not in result.model_dump_json()
+    assert result.unique_obligation_count == 2 and result.task_count == 2
+
+
+async def test_delivery_summary_rechecks_revoked_authority_instead_of_returning_an_empty_list(ledger, monkeypatch):
+    session, _, _ = ledger
+    await setup(session)
+    original = CommunityPersistedReadinessStore.read
+    async def revoke(store, **kwargs):
+        result = await original(store, **kwargs)
+        flags = registered_permission_flags()
+        flags['card']['entity']['read'] = False
+        async with session.bind.begin() as connection:
+            await connection.execute(update(AgentBoard).where(AgentBoard.agent_id == ACTOR.actor_id)
+                .values(permission_overrides=flags))
+        return result
+    monkeypatch.setattr(CommunityPersistedReadinessStore, 'read', revoke)
+    reader = CommunityDeliveryReadinessReader(session.bind, clock=CommunityReadinessClock())
+    with pytest.raises(ReadinessAccessDenied):
+        await reader.load_delivery_summary(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID, actor=ACTOR)
+
+
+async def test_delivery_summary_retries_a_concurrent_metadata_change_and_preserves_new_title(ledger, monkeypatch):
+    session, _, _ = ledger
+    await setup(session)
+    worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
+    assert await worker.process_once() == 1
+    original = CommunityPersistedReadinessStore.read
+    calls = 0
+    async def change(store, **kwargs):
+        nonlocal calls
+        result = await original(store, **kwargs)
+        calls += 1
+        if calls == 1:
+            async with session.bind.begin() as connection:
+                await connection.execute(update(Card).where(Card.id == 'task').values(title='Current task title'))
+        return result
+    monkeypatch.setattr(CommunityPersistedReadinessStore, 'read', change)
+    reader = CommunityDeliveryReadinessReader(session.bind, clock=CommunityReadinessClock())
+    result = await reader.load_delivery_summary(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID, actor=ACTOR)
+    assert calls == 2
+    assert next(row.title for row in result.items if row.card_id == 'task') == 'Current task title'
+    assert not result.complete and result.projection.freshness == 'updating'
+
+
+async def test_delivery_summary_metadata_capacity_is_unknown_and_never_changes_the_denominator(ledger, monkeypatch):
+    from okto_pulse.core.services.delivery_summary import page_delivery_summary
+    session, _, _ = ledger
+    await setup(session)
+    worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
+    assert await worker.process_once() == 1
+    monkeypatch.setattr('okto_pulse.community.adapters.sqlalchemy_delivery_readiness.MAX_CARDS', 1)
+    reader = CommunityDeliveryReadinessReader(session.bind, clock=CommunityReadinessClock())
+    population = await reader.load_delivery_summary(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID, actor=ACTOR)
+    assert len(population.items) == 1 and not population.complete
+    result = page_delivery_summary(population)
+    assert result.task_count is None and result.unique_obligation_count is None
+    assert all(group.count is None for group in result.groups)
+
+
+async def test_summary_dependency_reason_matches_native_closed_states_and_hides_foreign_status(ledger):
+    session, _, _ = ledger
+    await setup(session)
+    await session.execute(update(Card).where(Card.id == 'task').values(status='not_started'))
+    await session.execute(update(Card).where(Card.id == 'test').values(status='in_progress'))
+    session.add(CardDependency(id='dependency', card_id='task', depends_on_id='test'))
+    await session.commit()
+    reader = CommunityDeliveryReadinessReader(session.bind, clock=CommunityReadinessClock())
+    async def metadata():
+        *_, cards, _complete = await reader.load_persisted(board_id=delivery.BOARD_ID,
+            spec_id=delivery.SPEC_ID, actor=ACTOR, include_summary_cards=True)
+        return next(row for row in cards if row.card_id == 'task')
+    assert (await metadata()).dependency_blocked is True
+    for status in ('done', 'cancelled'):
+        await session.execute(update(Card).where(Card.id == 'test').values(status=status))
+        await session.commit()
+        assert (await metadata()).dependency_blocked is False
+    session.add(Board(id='foreign-board', name='Hidden board', owner_id='someone', realm_id='local'))
+    await session.flush()
+    session.add(Card(id='foreign-task', board_id='foreign-board', title='Hidden title',
+        card_type='normal', status='done', position=0, created_by='someone'))
+    await session.flush()
+    session.add(CardDependency(id='foreign-dependency', card_id='task', depends_on_id='foreign-task'))
+    await session.commit()
+    result = await metadata()
+    assert result.dependency_blocked is None
+    assert 'Hidden title' not in result.model_dump_json()
+
+
+async def test_summary_captures_human_requirement_and_restores_it_with_the_exact_generation_manifest(ledger, tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+    from test_execution_contract_integration import adopt_fixture
+    from okto_pulse.core.application.use_cases.base import ActorContext
+    from okto_pulse.core.application.use_cases.task_requirement_decision import (
+        GetTaskRequirementOptionsUseCase, RecordTaskRequirementDecisionUseCase,
+    )
+    from okto_pulse.core.models.task_requirement_decision import TaskRequirementDecisionCommand, TaskRequirementOptionsQuery
+    session, store, _ = ledger
+    await setup(session)
+    await adopt_fixture(session, tmp_path, monkeypatch)
+    await session.execute(update(Card).where(Card.id == 'task').values(status='in_progress'))
+    await session.commit()
+    human = ActorContext(actor_id='owner', actor_kind='human', source='system', board_id=delivery.BOARD_ID,
+        permissions=['spec.entity.read', 'card.entity.read', 'code_traceability.evidence.read',
+                     'code_traceability.waiver.create', 'code_traceability.waiver.clear'])
+    unit = SimpleNamespace(services=SimpleNamespace(delivery_evidence=store), commit=AsyncMock(side_effect=session.commit))
+    preview = await GetTaskRequirementOptionsUseCase().execute(TaskRequirementOptionsQuery(
+        board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID, card_ids=['task']), actor=human, uow=unit)
+    decision = await RecordTaskRequirementDecisionUseCase().execute(TaskRequirementDecisionCommand(
+        board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID, contract_version='task-requirement-decision/v1',
+        card_ids=['task'], decision='waived', basis=preview['basis'], idempotency_key='summary-captured-choice'),
+        actor=human, uow=unit)
+    worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
+    assert await worker.process_once() == 1
+    reader = CommunityDeliveryReadinessReader(session.bind, clock=CommunityReadinessClock())
+    population = await reader.load_delivery_summary(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID, actor=ACTOR)
+    task = next(row for row in population.items if row.card_id == 'task')
+    assert task.group == 'optional_or_waived' and task.requirement == 'waived'
+    assert task.status == 'in_progress' and not task.historical_done
+    visible = await worker.store.read(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID, edition=1)
+    cold = await CommunityPersistedReadinessStore(session.bind).load_verified_predecessor(
+        scope_id=delivery.SPEC_ID + ':1', board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID,
+        edition=1, expected_revision=visible.captured_revision)
+    assert cold is not None
+    captured = next(row for row in cold.summaries if row.card_id == 'task').requirement
+    assert captured.decision == 'waived' and captured.current
+    assert captured.decision_id == decision['decision_ids'][0]
+    from okto_pulse.core.services.persisted_delivery_readiness import readiness_manifest_digest
+    assert readiness_manifest_digest(board_id=cold.board_id, spec_id=cold.spec_id, edition=cold.spec_edition,
+        captured_revision=cold.captured_revision, source_snapshot_id=cold.source_snapshot_id,
+        evaluator_version=cold.evaluator_version, summaries=[row.payload() for row in cold.summaries],
+        units=[row.row() for row in cold.units], diagnostics=[row.row() for row in cold.diagnostics]) == cold.manifest_sha256
+    preview = await GetTaskRequirementOptionsUseCase().execute(TaskRequirementOptionsQuery(
+        board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID, card_ids=['task']), actor=human, uow=unit)
+    await RecordTaskRequirementDecisionUseCase().execute(TaskRequirementDecisionCommand(
+        board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID, contract_version='task-requirement-decision/v1',
+        card_ids=['task'], decision='required', basis=preview['basis'], idempotency_key='summary-restored-choice'),
+        actor=human, uow=unit)
+    updating = await reader.load_delivery_summary(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID, actor=ACTOR)
+    assert updating.projection.freshness == 'updating' and not updating.complete
+    assert next(row for row in updating.items if row.card_id == 'task').requirement == 'unknown'
+    await asyncio.sleep(.06)
+    assert await worker.process_once() == 1
+    restored = await reader.load_delivery_summary(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID, actor=ACTOR)
+    task = next(row for row in restored.items if row.card_id == 'task')
+    assert task.requirement == 'required' and task.group == 'in_progress'
+    assert task.group != 'delivered'
+
+
+async def test_summary_signed_pages_reauthorize_and_refuse_live_metadata_changes_within_one_generation(ledger, monkeypatch):
+    from okto_pulse.community.adapters.delivery_readiness_cursor import CommunityReadinessCursorCodec
+    from okto_pulse.core.models.delivery_summary import DeliverySummaryQuery
+    from okto_pulse.core.services.delivery_readiness import DeliveryReadinessService
+    session, _, _ = ledger
+    await setup(session)
+    await session.execute(update(Card).where(Card.id.in_(['task','test'])).values(status='in_progress'))
+    await session.commit()
+    worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
+    assert await worker.process_once() == 1
+    reader = CommunityDeliveryReadinessReader(session.bind, clock=CommunityReadinessClock())
+    async def forbidden(*args, **kwargs):
+        pytest.fail('Summary pagination must not evaluate proof')
+    monkeypatch.setattr(reader, 'load', forbidden)
+    service = DeliveryReadinessService(reader, CommunityReadinessCursorCodec(b'summary-test-installation-key-0000000'))
+    query = DeliverySummaryQuery(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID, group='in_progress', limit=1)
+    first = await service.delivery_summary(query, actor=ACTOR)
+    token = first['groups'][1]['next_cursor']
+    assert token and len(first['groups'][1]['items']) == 1
+    second = await service.delivery_summary(query.model_copy(update={'cursor':token}), actor=ACTOR)
+    assert first['population_id'] == second['population_id']
+    assert first['groups'][1]['items'][0]['card_id'] != second['groups'][1]['items'][0]['card_id']
+
+    # Two successive live edits use the same retained generation. The second
+    # must invalidate a cursor already bound to an updating first edit, too.
+    for title in ('First changed title','Second changed title'):
+        await session.execute(update(Card).where(Card.id=='task').values(title=title))
+        await session.commit()
+        with pytest.raises(ReadinessReadError, match='readiness_cursor_stale'):
+            await service.delivery_summary(query.model_copy(update={'cursor':token}), actor=ACTOR)
+        fresh = await service.delivery_summary(query, actor=ACTOR)
+        assert fresh['projection']['generation_id'] == first['projection']['generation_id']
+        assert fresh['projection']['freshness'] == 'updating'
+        assert fresh['task_count'] is None
+        token = fresh['groups'][1]['next_cursor']
+        assert token
+
+    flags = registered_permission_flags()
+    flags['card']['entity']['read'] = False
+    await session.execute(update(AgentBoard).where(AgentBoard.agent_id==ACTOR.actor_id).values(permission_overrides=flags))
+    await session.commit()
+    with pytest.raises(ReadinessAccessDenied):
+        await service.delivery_summary(query.model_copy(update={'cursor':token}), actor=ACTOR)

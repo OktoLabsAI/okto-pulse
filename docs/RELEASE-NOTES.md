@@ -2,6 +2,24 @@
 
 Changeset per version, newest first.
 
+### 0.4.3 — in development
+
+Spec validation has one canonical result with detailed assessments in Details.
+Humans can choose Required, Optional or Waived for selected task contributions,
+with an optional note and immutable history. Central and contextual Help describe
+the rules; mobile Help uses a compact topic selector.
+
+SQLite format 406 is admitted strictly at startup. To preserve an exact 0.4.2
+database in format 405, use `okto-pulse storage upgrade-copy --source-db ORIGINAL_DB
+--output-db NEW_DB --json`. The command adds the new tables/guards on a private
+copy, compares source row counts and hashes, verifies the resulting format and
+integrity, and publishes only a complete new file. It does not replace the source
+or switch the installation. Keep all associated graph, upload and metrics data.
+Unknown formats and changed schemas are refused; the pre-0.4.0 boundary remains.
+
+Implementation and native acceptance verification are still in progress. This
+entry does not announce distribution publication or upgrade the active service.
+
 
 ### 0.4.0 — 2026-10-16
 

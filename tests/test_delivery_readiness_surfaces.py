@@ -90,13 +90,16 @@ async def test_persisted_rest_reads_published_generation_with_current_authorizat
     assert result['page']['limit'] == 2
 
 
-async def test_incompatible_persisted_generation_is_unavailable_without_actions(ledger, monkeypatch):
+@pytest.mark.parametrize('evaluator_version', [
+    'delivery-readiness-evaluator/v7', 'delivery-readiness-evaluator/future',
+])
+async def test_incompatible_persisted_generation_is_unavailable_without_actions(ledger, monkeypatch, evaluator_version):
     session, _, _ = ledger
     rest, tool, _ = await surfaces(session, monkeypatch, persisted=True)
     worker = ReadinessProjectionProcessor(session.bind, TrackedBlockingExecution())
     assert await worker.process_once() == 1
     await session.execute(update(ReadinessGenerationRow).values(
-        evaluator_version='delivery-readiness-evaluator/future'))
+        evaluator_version=evaluator_version))
     await session.commit()
 
     path = url().replace('/delivery-evidence', '/delivery-readiness-projection')

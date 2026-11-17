@@ -1,0 +1,50 @@
+- main [ref=e2]:
+  - generic [ref=e3]: Proposed acceptance state · illustrative data
+  - generic [ref=e4]:
+    - generic [ref=e5]:
+      - heading "Delivery" [level=1] [ref=e6]
+      - paragraph [ref=e7]: Track what was delivered and what needs attention.
+    - generic [ref=e8]: Verification needs attention
+  - generic [ref=e9]:
+    - generic [ref=e10]:
+      - text: Implementation
+      - strong [ref=e11]: 100%
+      - text: 2 of 2 requirements implemented
+    - generic [ref=e14]:
+      - text: Verification
+      - strong [ref=e15]: 50%
+      - text: 1 of 2 requirements verified
+  - table "Implementation and verification" [ref=e18]:
+    - rowgroup [ref=e19]:
+      - row [ref=e20]:
+        - columnheader "Requirement / objective" [ref=e21]
+        - columnheader "Implementation" [ref=e22]
+        - columnheader "Verification and next step" [ref=e23]
+    - rowgroup [ref=e24]:
+      - row [ref=e25]:
+        - cell "Preserve answered questions Keep answers and frozen history intact." [ref=e26]:
+          - strong [ref=e27]: Preserve answered questions
+          - generic [ref=e28]: Keep answers and frozen history intact.
+        - cell "Implemented" [ref=e29]
+        - cell "Verified The check passed for the delivered implementation." [ref=e32]:
+          - generic [ref=e33]: Verified
+          - generic [ref=e36]: The check passed for the delivered implementation.
+      - row [ref=e37]:
+        - cell "Explain ambiguity scores Help must match the accepted scoring range." [ref=e38]:
+          - strong [ref=e39]: Explain ambiguity scores
+          - generic [ref=e40]: Help must match the accepted scoring range.
+        - cell "Implemented" [ref=e41]
+        - cell "Verification failed The installed help shows the wrong minimum score. Correct the help, then verify it again." [ref=e44]:
+          - generic [ref=e45]: Verification failed
+          - generic [ref=e48]: The installed help shows the wrong minimum score. Correct the help, then verify it again.
+  - generic [ref=e49]:
+    - group [ref=e50]:
+      - button "Hide details" [active] [ref=e56] [cursor=pointer]
+      - generic [ref=e57]:
+        - strong [ref=e58]: Verification history
+        - paragraph [ref=e59]: The first requirement was checked against its delivered revision. The failed check belongs to the second requirement's delivered revision. These independent checks do not replace one another.
+        - paragraph [ref=e60]: "Technical view: requirement → implementation record → exact source revision → authenticated run. A reset or changed requirement requires fresh verification. Old records remain in history and do not automatically regain credit."
+    - button "Change task requirements" [ref=e52] [cursor=pointer]
+  - complementary [ref=e53]:
+    - heading "How verification works" [level=2] [ref=e54]
+    - paragraph [ref=e55]: Each requirement shows the result for what was delivered. When a check fails or the delivered work changes, follow that row's next step and verify again. You submit your delivery normally; the application records its traceability.

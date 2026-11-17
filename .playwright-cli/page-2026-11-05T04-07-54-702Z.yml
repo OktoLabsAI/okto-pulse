@@ -1,0 +1,206 @@
+- generic [ref=f1e3]:
+  - banner [ref=f1e4]:
+    - generic [ref=f1e5]:
+      - generic [ref=f1e6]:
+        - button "Hide sidebar" [ref=f1e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f1e12]
+        - generic [ref=f1e31]: / My Board
+      - generic [ref=f1e32]:
+        - button "Refresh board" [ref=f1e33] [cursor=pointer]
+        - button [ref=f1e40] [cursor=pointer]
+  - generic [ref=f1e13]:
+    - complementary [ref=f1e14]:
+      - generic [ref=f1e15]:
+        - generic [ref=f1e17]:
+          - heading "Boards" [level=2] [ref=f1e18]
+          - button "New board" [ref=f1e19] [cursor=pointer]
+        - navigation [ref=f1e21]:
+          - generic [ref=f1e22]:
+            - heading "My Boards" [level=3] [ref=f1e23]
+            - list [ref=f1e44]:
+              - listitem [ref=f1e45]:
+                - button "okto pulse" [ref=f1e46] [cursor=pointer]
+              - listitem [ref=f1e53]:
+                - button "My Board" [ref=f1e54] [cursor=pointer]
+              - listitem [ref=f1e61]:
+                - button "okto-grafx" [ref=f1e62] [cursor=pointer]
+    - main [ref=f1e26]:
+      - group "Board views" [ref=f1e69]:
+        - button "Stories" [ref=f1e70] [cursor=pointer]
+        - button "Ideations" [ref=f1e74] [cursor=pointer]
+        - button "Refinements" [ref=f1e77] [cursor=pointer]
+        - button "Specs" [pressed] [ref=f1e82] [cursor=pointer]
+        - button "Tasks" [ref=f1e87] [cursor=pointer]
+      - generic [ref=f1e6105]:
+        - generic [ref=f1e6106]:
+          - generic [ref=f1e6107]:
+            - heading "Specifications" [level=2] [ref=f1e6108]
+            - generic [ref=f1e6109]: (4 of 4)
+          - generic [ref=f1e6110]:
+            - textbox "Search specs…" [ref=f1e6112]
+            - group "View mode" [ref=f1e6113]:
+              - button "List view" [pressed] [ref=f1e6114] [cursor=pointer]
+              - button "Grid view" [ref=f1e6116] [cursor=pointer]
+            - generic [ref=f1e6122]: Group specs
+            - combobox "Group specs" [ref=f1e6128]:
+              - option "None"
+              - option "Ideation"
+              - option "Refinement"
+              - option "Parents" [selected]
+            - button "New Spec" [ref=f1e6129] [cursor=pointer]
+        - generic [ref=f1e6131]:
+          - button "All" [ref=f1e6132] [cursor=pointer]
+          - button "Draft" [ref=f1e6133] [cursor=pointer]
+          - button "Review" [ref=f1e6134] [cursor=pointer]
+          - button "Approved" [ref=f1e6135] [cursor=pointer]
+          - button "Validated" [ref=f1e6136] [cursor=pointer]
+          - button "In Progress" [ref=f1e6137] [cursor=pointer]
+          - button "Done" [ref=f1e6138] [cursor=pointer]
+          - button "Show archived" [ref=f1e6139] [cursor=pointer]
+        - generic [ref=f1e6141]:
+          - generic [ref=f1e6142]:
+            - generic [ref=f1e6143] [cursor=pointer]:
+              - 'heading "Refinement: E2E 0.4.3 — Delivery fixture refinement" [level=3] [ref=f1e6150]'
+              - generic [ref=f1e6151]: (1)
+            - generic [ref=f1e6155] [cursor=pointer]:
+              - generic [ref=f1e6156]:
+                - generic [ref=f1e6157]:
+                  - generic [ref=f1e6158]: Done
+                  - generic "Edition 1" [ref=f1e6162]
+                  - status "Pending cognitive consolidation — pending" [ref=f1e6163]:
+                    - generic [ref=f1e6166]: Pending cognitive consolidation
+                - heading "E2E 0.4.3 — Delivery status reference fixture" [level=3] [ref=f1e6167]
+                - paragraph [ref=f1e6168]: Implement and verify an isolated pure Python delivery-status reference function. The fixture provides real evidence for the My Board operational/UI audit; it does not change Pulse production behavior.
+                - 'generic "Requirement lint: 0 (0–32) · Edition 1" [ref=f1e6170]':
+                  - generic [ref=f1e6171]: Requirement lint
+                  - strong [ref=f1e6172]: "0"
+                - generic [ref=f1e6173]:
+                  - generic [ref=f1e6174]: e2e-043
+                  - generic [ref=f1e6175]: operational-audit
+              - generic [ref=f1e6176]:
+                - button "Open lineage graph" [ref=f1e6177]
+                - button "Archive tree" [ref=f1e6182]
+          - generic [ref=f1e6188]:
+            - generic [ref=f1e6191] [cursor=pointer]:
+              - generic [ref=f1e6192]:
+                - generic [ref=f1e6193]:
+                  - generic [ref=f1e6194]: Draft
+                  - generic "Edition 1" [ref=f1e6198]
+                - heading "R4 UI acceptance — unvalidated Spec verdict" [level=3] [ref=f1e6199]
+                - paragraph [ref=f1e6200]: Isolated My Board acceptance fixture for the negative Spec Validation state. This Draft intentionally has no approved planning cycle, implementation allocation or execution tasks. It must display an X and a clear not-validated verdict, with the original validation systems reachab…
+                - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=f1e6202]':
+                  - generic [ref=f1e6203]: Requirement lint
+                  - strong [ref=f1e6204]: Not assessed
+                - generic [ref=f1e6205]:
+                  - generic [ref=f1e6206]: e2e-043
+                  - generic [ref=f1e6207]: r4-ui-acceptance
+                  - generic [ref=f1e6208]: negative-validation-fixture
+              - generic [ref=f1e6209]:
+                - button "Open lineage graph" [ref=f1e6210]
+                - button "Archive tree" [ref=f1e6215]
+            - generic [ref=f1e6223] [cursor=pointer]:
+              - generic [ref=f1e6224]:
+                - generic [ref=f1e6225]:
+                  - generic [ref=f1e6226]: Draft
+                  - generic "Edition 1" [ref=f1e6230]
+                - heading "QA 0.4.3 — API scenario default" [level=3] [ref=f1e6231]
+                - paragraph [ref=f1e6232]: Fixture de regressão do estado inicial; cenário enviado sem status explícito.
+                - 'generic "Requirement lint: no current result · Edition 1; 0 previous results" [ref=f1e6234]':
+                  - generic [ref=f1e6235]: Requirement lint
+                  - strong [ref=f1e6236]: Not assessed
+              - generic [ref=f1e6237]:
+                - button "Open lineage graph" [ref=f1e6238]
+                - button "Archive tree" [ref=f1e6243]
+            - generic [ref=f1e6251] [cursor=pointer]:
+              - generic [ref=f1e6252]:
+                - generic [ref=f1e6253]:
+                  - generic [ref=f1e6254]: In Progress
+                  - generic "Edition 3" [ref=f1e6258]
+                - heading "QA 0.4.3 — validação, entregas e dispensa" [level=3] [ref=f1e6259]
+                - paragraph [ref=f1e6260]: "Casos de teste de interface da versão 0.4.3: resumo canônico de validação, detalhes, entregas, dispensa de tarefa e ajuda contextual. Dados de teste no My Board."
+                - 'generic "Requirement lint: 0 (0–16) · Edition 3" [ref=f1e6262]':
+                  - generic [ref=f1e6263]: Requirement lint
+                  - strong [ref=f1e6264]: "0"
+              - generic [ref=f1e6265]:
+                - button "Open lineage graph" [ref=f1e6266]
+                - button "Archive tree" [ref=f1e6271]
+        - generic [ref=f1e6277]:
+          - status [ref=f1e6278]: Showing 1–4 of 4 matching. 4 overall. Page 1 of 1.
+          - generic [ref=f1e6279]:
+            - generic [ref=f1e6280]:
+              - generic [ref=f1e6281]: Items per page
+              - combobox "Items per page" [ref=f1e6282]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Specifications pagination" [ref=f1e6283]:
+              - generic [ref=f1e6284]:
+                - button "Previous page" [disabled] [ref=f1e6285]: Previous
+                - button "Page 1" [disabled] [ref=f1e6286]: "1"
+                - button "Next page" [disabled] [ref=f1e6287]: Next
+        - dialog [ref=f1e6289]:
+          - generic [ref=f1e6290]:
+            - generic [ref=f1e6291]:
+              - generic [ref=f1e6292]: Draft
+              - heading "R4 UI acceptance — unvalidated Spec verdict" [level=2] [ref=f1e6296]
+              - generic "Edition 1" [ref=f1e6297]
+            - generic [ref=f1e6298]:
+              - button "Open lineage graph" [ref=f1e6299] [cursor=pointer]
+              - button "Export report" [ref=f1e6304] [cursor=pointer]
+              - button "Refresh" [ref=f1e6308] [cursor=pointer]
+              - button "Expand" [ref=f1e6314] [cursor=pointer]
+              - button "Close spec" [ref=f1e6320] [cursor=pointer]
+          - generic [ref=f1e6324]:
+            - generic [ref=f1e6325]: "Move to:"
+            - button "Review" [ref=f1e6326] [cursor=pointer]
+            - button "Cancelled" [ref=f1e6329] [cursor=pointer]
+          - generic [ref=f1e6333]:
+            - tablist "Spec sections" [ref=f1e6334]:
+              - tab "Details" [selected] [ref=f1e6335] [cursor=pointer]
+              - tab "Coverage" [ref=f1e6340] [cursor=pointer]
+              - tab "Project Structure" [ref=f1e6346] [cursor=pointer]
+              - tab "Code Evidence Matrix" [ref=f1e6353] [cursor=pointer]
+              - tab "Resources" [ref=f1e6357] [cursor=pointer]
+              - tab "Requirements & Decisions" [ref=f1e6361] [cursor=pointer]
+              - tab "Tests & Verifications" [ref=f1e6366] [cursor=pointer]
+              - tab "Q&A" [ref=f1e6370] [cursor=pointer]
+              - tab "Dependencies" [ref=f1e6375] [cursor=pointer]
+              - tab "References 2" [ref=f1e6381] [cursor=pointer]:
+                - generic [ref=f1e6385]: References
+                - generic [ref=f1e6386]: "2"
+              - tab "KG Graph" [ref=f1e6387] [cursor=pointer]
+              - tab "Validation" [ref=f1e6394] [cursor=pointer]
+              - tab "Activity" [ref=f1e6399] [cursor=pointer]
+            - button "Scroll Spec sections right" [ref=f1e6405] [cursor=pointer]
+          - tabpanel "Details" [ref=f1e6409]:
+            - tabpanel [ref=f1e6410]:
+              - generic [ref=f1e6411]:
+                - generic [ref=f1e6412]:
+                  - heading "Description" [level=4] [ref=f1e6413]
+                  - paragraph [ref=f1e6415]: Isolated My Board acceptance fixture for the negative Spec Validation state. This Draft intentionally has no approved planning cycle, implementation allocation or execution tasks. It must display an X and a clear not-validated verdict, with the original validation systems reachable through Details. It is not a delivery or implementation claim.
+                - generic [ref=f1e6416]:
+                  - heading "Context" [level=4] [ref=f1e6417]
+                  - paragraph [ref=f1e6419]: "Retain this clearly labeled Draft as UI acceptance evidence. Project Structure: not applicable — this fixture tests the unvalidated UI state and requests no implementation. No existing approved Spec or evidence is modified."
+                - generic [ref=f1e6420]:
+                  - generic [ref=f1e6421]: e2e-043
+                  - generic [ref=f1e6422]: r4-ui-acceptance
+                  - generic [ref=f1e6423]: negative-validation-fixture
+                - region "Task Validation Gate" [ref=f1e6424]:
+                  - heading "Task Validation Gate" [level=4] [ref=f1e6425]
+                  - paragraph [ref=f1e6426]: Controls whether cards derived from this spec must pass Task Validation. These settings do not change the Spec Validation Gate.
+                  - generic [ref=f1e6427]:
+                    - generic [ref=f1e6428]:
+                      - term [ref=f1e6429]: Validation
+                      - definition [ref=f1e6430]: Board default
+                    - generic [ref=f1e6431]:
+                      - term [ref=f1e6432]: Minimum confidence
+                      - definition [ref=f1e6433]: Board default
+                    - generic [ref=f1e6434]:
+                      - term [ref=f1e6435]: Minimum completeness
+                      - definition [ref=f1e6436]: Board default
+                    - generic [ref=f1e6437]:
+                      - term [ref=f1e6438]: Maximum drift
+                      - definition [ref=f1e6439]: Board default
+          - generic [ref=f1e6440]:
+            - button "Delete spec" [ref=f1e6441] [cursor=pointer]
+            - button "Close" [ref=f1e6443] [cursor=pointer]

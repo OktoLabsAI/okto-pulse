@@ -1,13 +1,22 @@
-from verification_report_fixtures import bind_report_sources, report
 """Real signed external reports share the scoped scenario and delivery trust path."""
 from copy import deepcopy
 import json
+from types import SimpleNamespace
+
+from verification_report_fixtures import bind_report_sources, report
 
 import httpx
 import pytest
+import pytest_asyncio
 from sqlalchemy import update
 
+from okto_pulse.community.adapters.sqlalchemy_database import build_community_session_factory
 from okto_pulse.community.adapters.sqlalchemy_models import Spec
+from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWorkFactory
+from okto_pulse.community.adapters.sqlalchemy_verification_currentness import (
+    CommunityVerificationCurrentnessStore,
+    CommunityVerificationReservationPort,
+)
 from okto_pulse.community.adapters.test_evidence import CommunityEvidenceLedger, CommunityTestVerificationReportIssuer, CommunityTestEvidenceWriteVerifier
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
 from okto_pulse.core.mcp import server
@@ -16,15 +25,39 @@ from okto_pulse.core.models.schemas import SpecCreate, SpecUpdate
 from okto_pulse.core.services.main import SpecService
 from okto_pulse.core.ports.permission_policy import set_permission_flag
 from okto_pulse.core.ports.test_evidence import register_test_verification_report_issuer, register_test_evidence_write_verifier, reset_test_verification_report_issuer_for_tests, reset_test_evidence_write_verifier_for_tests
+from okto_pulse.core.ports.verification_currentness import (
+    register_verification_currentness_store_factory,
+    register_verification_reservation_port,
+    reset_verification_currentness_store_factory_for_tests,
+    reset_verification_reservation_port_for_tests,
+)
 from okto_pulse.core.services.test_scenario_lifecycle import scenario_has_authenticated_required_evidence
 
 import test_scenario_verification_method as methods
 import test_delivery_evidence_integration as delivery
 
-adopted_context = methods.adopted_context
 classified_context = methods.classified_context
-ledger = delivery.ledger
 CRITERIA = [{'id': 'ac-1', 'text': 'Public ports only'}]
+
+
+@pytest_asyncio.fixture(params=['native_schema'])
+async def adopted_context(tmp_path, request):
+    # Generation/state creation must run through the actual format-407 hooks.
+    async for db in methods.adopted_context.__wrapped__(tmp_path, request):
+        yield db
+
+
+@pytest_asyncio.fixture(params=['native_schema'])
+async def ledger(tmp_path, request):
+    async for value in delivery.ledger.__wrapped__(tmp_path, request):
+        yield value
+
+
+def compose_verification(db):
+    factory = build_community_session_factory(db.bind)
+    register_verification_reservation_port(CommunityVerificationReservationPort(factory))
+    register_verification_currentness_store_factory(CommunityVerificationCurrentnessStore)
+    return factory
 
 
 
@@ -32,13 +65,19 @@ CRITERIA = [{'id': 'ac-1', 'text': 'Public ports only'}]
 @pytest.fixture(autouse=True)
 def reset():
     reset_test_verification_report_issuer_for_tests()
+    reset_verification_currentness_store_factory_for_tests()
+    reset_verification_reservation_port_for_tests()
     yield
     reset_test_verification_report_issuer_for_tests()
     reset_test_evidence_write_verifier_for_tests()
+    reset_verification_currentness_store_factory_for_tests()
+    reset_verification_reservation_port_for_tests()
 
 
 async def setup(db, monkeypatch, tmp_path, method):
     app, scenario = await methods.setup(db, monkeypatch, method=method)
+    factory = compose_verification(db)
+    app.state.runtime_composition = SimpleNamespace(uow_factory=CommunityUnitOfWorkFactory(factory))
     scenario['linked_criteria'] = ['ac-1']
     await db.execute(update(Spec).where(Spec.id == 'spec').values(test_scenarios=[scenario], acceptance_criteria=CRITERIA))
     # Criteria and links were changed after the base fixture sealed its heads.
@@ -201,25 +240,67 @@ async def test_bulk_ready_report_writes_cannot_bypass_authentication(classified_
 @pytest.mark.asyncio
 @pytest.mark.parametrize('method', ['inspection', 'static_analysis', 'demonstration'])
 async def test_report_reuses_test_card_delivery_chain_and_revokes_stale_credit(ledger, tmp_path, method):
-    from okto_pulse.core.ports.test_evidence import TestVerificationReportRequest as ReportRequest
-    from okto_pulse.core.services.test_scenario_lifecycle import compute_test_scenario_semantic_sha256
+    from datetime import datetime, timezone
+    from okto_pulse.community.adapters.relational_application import CommunityRelationalApplicationAdapter
+    from okto_pulse.community.adapters.sqlalchemy_semantic_guideline_assessment import CommunitySqlAlchemySemanticGuidelineAssessment
+    from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWork
+    from okto_pulse.core.application.use_cases.base import ActorContext
+    from okto_pulse.core.application.use_cases.spec_crud import (
+        AdmitTestVerificationReportCommand, AdmitTestVerificationReportUseCase,
+        SetTestScenarioStatusCommand, SetTestScenarioStatusUseCase,
+    )
+    from okto_pulse.core.domain.permissions import PermissionSet
+    from okto_pulse.core.domain.guideline_policy import PolicyEntityType
+    from okto_pulse.core.domain.quality_canonicalization import canonical_sha256
+    from okto_pulse.core.domain.verification_report import parse_verification_report, verification_report_scenario_status
+    from okto_pulse.core.ports.relational_application import register_relational_application_adapter
+
     session, store, _ = ledger
-    spec = await session.get(Spec, delivery.SPEC_ID)
-    scenario = {**delivery.SCENARIO, 'verification_method': method}
-    digest = compute_test_scenario_semantic_sha256(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID,
-        scenario=scenario, acceptance_criteria=spec.acceptance_criteria)
+    factory = compose_verification(session)
+    register_relational_application_adapter(CommunityRelationalApplicationAdapter())
+    scenario = {**delivery.SCENARIO, 'verification_method': method, 'status': 'ready'}
+    await session.execute(update(Spec).where(Spec.id == delivery.SPEC_ID).values(test_scenarios=[scenario]))
+    # The shared fixture began with an automated-test scenario. Seal the actual
+    # replacement semantics through the native policy owner before publication.
+    for kind, identity in [(PolicyEntityType.SPEC, delivery.SPEC_ID),
+                           (PolicyEntityType.TEST_SCENARIO, scenario['id'])]:
+        await CommunitySqlAlchemySemanticGuidelineAssessment(session).record_semantic_subject_mutation(
+            board_id=delivery.BOARD_ID, entity_type=kind, subject_id=identity, actor_id='agent-1',
+            idempotency_key='report-chain-method-' + identity,
+            request_digest=canonical_sha256({'scenario': scenario}), changed_at=datetime.now(timezone.utc))
+    await session.commit()
     value = report(method)
     value['observations'][0]['criterion_id'] = 'ac-about'
+    value['observed_at'] = datetime.now(timezone.utc).isoformat()
     await bind_report_sources(session, value)
-    mixed_ledger = CommunityEvidenceLedger(evidence_root=tmp_path / 'evidence')
-    issuer = CommunityTestVerificationReportIssuer(ledger=mixed_ledger)
-    # Validates retained automated-test receipts before adding another schema.
-    issued = await issuer.admit(ReportRequest(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID,
-        scenario_id=scenario['id'], scenario_sha256=digest, actor_id='agent-1', report=value))
-    evidence = dict(issued.evidence)
-    await session.execute(update(Spec).where(Spec.id == delivery.SPEC_ID).values(
-        test_scenarios=[{**scenario, 'status': 'passed', 'evidence': evidence}]))
     await session.commit()
+    mixed_ledger = CommunityEvidenceLedger(evidence_root=tmp_path / 'evidence')
+    register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(ledger=mixed_ledger))
+    register_test_verification_report_issuer(CommunityTestVerificationReportIssuer(ledger=mixed_ledger))
+    actor = ActorContext('agent-1', 'mcp', actor_kind='agent', board_id=delivery.BOARD_ID,
+        realm_id='local', permissions=PermissionSet({
+            'spec': {'tests': {'execute': True, 'update_status': True}, 'interact_in': {'in_progress': True}},
+            'test_scenario': {'interact_in': {'ready': True, 'passed': True, 'failed': True}},
+        }))
+
+    async def admit_and_publish(observation):
+        # Both allocation and publication use the production use cases and
+        # isolated native transactions; a signed report alone is not accepted.
+        async with CommunityUnitOfWork(factory(), actor=actor) as uow:
+            issued = await AdmitTestVerificationReportUseCase().execute(
+                AdmitTestVerificationReportCommand(delivery.SPEC_ID, scenario['id'], observation),
+                actor=actor, uow=uow)
+        status = verification_report_scenario_status(parse_verification_report(observation))
+        async with CommunityUnitOfWork(factory(), actor=actor) as uow:
+            accepted = await SetTestScenarioStatusUseCase().execute(
+                SetTestScenarioStatusCommand(delivery.SPEC_ID, scenario['id'], status, issued.evidence),
+                actor=actor, uow=uow)
+        assert accepted.result['verification_current'] and accepted.result['accepted_result_id']
+        session.expire_all()
+        return accepted.result
+
+    # Admission also validates retained automated receipts before adding reports.
+    await admit_and_publish(value)
     implementation = await delivery.record(store, delivery.command())
     result = await delivery.record(store, delivery.command('test', implementation_ids=[implementation['id']]))
     await session.commit()
@@ -228,11 +309,8 @@ async def test_report_reuses_test_card_delivery_chain_and_revokes_stale_credit(l
     assert (await session.get(Spec, delivery.SPEC_ID)).status.value == 'in_progress'
     # A newly signed old observation cannot qualify a newer implementation.
     stale_value = {**value, 'observed_at': '2026-07-13T14:00:00Z'}
-    stale = await issuer.admit(ReportRequest(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID,
-        scenario_id=scenario['id'], scenario_sha256=digest, actor_id='agent-1', report=stale_value))
-    await session.execute(update(Spec).where(Spec.id == delivery.SPEC_ID).values(
-        test_scenarios=[{**scenario, 'status': 'passed', 'evidence': dict(stale.evidence)}]))
-    await session.commit()
+    await session.rollback()
+    await admit_and_publish(stale_value)
     with pytest.raises(ValueError, match='current_verified_test'):
         await delivery.record(store, delivery.command('test', idempotency_key='stale-report', implementation_ids=[implementation['id']]))
     await session.rollback()
@@ -240,11 +318,8 @@ async def test_report_reuses_test_card_delivery_chain_and_revokes_stale_credit(l
     for outcome in ('inconclusive', 'aborted', 'unavailable'):
         pending_value = deepcopy(value)
         pending_value['result'] = pending_value['observations'][0]['outcome'] = outcome
-        pending = await issuer.admit(ReportRequest(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID,
-            scenario_id=scenario['id'], scenario_sha256=digest, actor_id='agent-1', report=pending_value))
-        await session.execute(update(Spec).where(Spec.id == delivery.SPEC_ID).values(
-            test_scenarios=[{**scenario, 'status': 'ready', 'evidence': dict(pending.evidence)}]))
-        await session.commit()
+        await session.rollback()
+        await admit_and_publish(pending_value)
         assert not (await store.projection(delivery.BOARD_ID, delivery.SPEC_ID))['allowed']
         with pytest.raises(ValueError, match='current_verified_test'):
             await delivery.record(store, delivery.command('test', idempotency_key=f'pending-{outcome}',
@@ -253,9 +328,6 @@ async def test_report_reuses_test_card_delivery_chain_and_revokes_stale_credit(l
     # An external report never closes a Spec, and a failed fresh report removes coverage.
     value['result'] = 'failed'
     value['observations'][0]['outcome'] = 'failed'
-    failed = await issuer.admit(ReportRequest(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID,
-        scenario_id=scenario['id'], scenario_sha256=digest, actor_id='agent-1', report=value))
-    await session.execute(update(Spec).where(Spec.id == delivery.SPEC_ID).values(
-        test_scenarios=[{**scenario, 'status': 'failed', 'evidence': dict(failed.evidence)}]))
-    await session.commit()
+    await session.rollback()
+    await admit_and_publish(value)
     assert not (await store.projection(delivery.BOARD_ID, delivery.SPEC_ID))['allowed']

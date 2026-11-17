@@ -1,5 +1,6 @@
 export type CoverageSection = 'tests' | 'rules' | 'contracts' | 'trs' | 'decisions' | 'irs' | 'ors';
-export type CoverageQuery = { limit?: number; cursor?: string | null; timeout_ms?: number };
+export type CoverageGraphMode = 'summary' | 'detail';
+export type CoverageQuery = { graph_mode?: CoverageGraphMode; limit?: number; cursor?: string | null; timeout_ms?: number };
 export type ProofStatus = 'unknown' | 'proven' | 'partial' | 'missing' | 'satisfied_with_waiver' | 'not_applicable';
 export type CoverageItem = {
   kind: 'delivery'; obligation_ref: string; semantic_sha256: string; title: string;

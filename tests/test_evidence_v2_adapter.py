@@ -369,7 +369,14 @@ async def test_content_addressed_manifest_remains_verifiable_after_write_roundtr
 
 @pytest.mark.asyncio
 async def test_community_port_issuer_accepts_transport_neutral_inline_mapping(tmp_path):
+    from okto_pulse.core.domain.verification_currentness import VerificationContext
+
     ledger = CommunityEvidenceLedger(evidence_root=tmp_path / "evidence")
+    # This adapter test supplies the typed port input, not native acceptance.
+    context = VerificationContext(board_id=BOARD_ID, spec_id=SPEC_ID, spec_edition=1,
+        scenario_id=SCENARIO_ID, scenario_sha256=SCENARIO_SHA256.removeprefix("sha256:"),
+        verification_method="automated_test", generation=1, ordinal=1,
+        reservation_id="inline-adapter-fixture")
 
     async def executor(_manifest, _manifest_ref):
         return ProductExecutionObservation(
@@ -400,11 +407,13 @@ async def test_community_port_issuer_accepts_transport_neutral_inline_mapping(tm
             actor_id=ACTOR_ID,
             scenario_sha256=SCENARIO_SHA256,
             inline_replay=json.loads(_inline_replay()),
+            verification_context=context,
         )
     )
 
     assert result.evidence["manifest_ref"].startswith("inline-")
     assert result.evidence["execution_receipt"].startswith("ev2r.")
+    assert result.evidence["verification_context"] == context.model_dump(mode="json")
 
 
 @pytest.mark.asyncio

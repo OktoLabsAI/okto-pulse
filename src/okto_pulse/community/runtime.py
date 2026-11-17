@@ -18,6 +18,7 @@ _SHUTDOWN_LOG_SUPPRESSION = False
 _MATERIALIZATION_HEALTH_LOGGER = (
     "okto_pulse.kg.materialization_health.observability"
 )
+_OUTBOX_OPERATION_LOGGER = "okto_pulse.kg.global_discovery.outbox"
 _REDACTED_QUERY_VALUE = b"[REDACTED]"
 _REDACTED_MALFORMED_QUERY = b"[REDACTED_MALFORMED_QUERY]"
 _QUERY_COMPONENT_SEPARATOR = re.compile(br"([&;])")
@@ -299,11 +300,12 @@ def build_uvicorn_log_config() -> dict[str, Any]:
     # logger. Uvicorn's default config only wires the ``uvicorn.*`` family, so
     # the Community host must explicitly project the INFO-level receipts onto
     # the installed process's default handler.
-    log_config.setdefault("loggers", {})[_MATERIALIZATION_HEALTH_LOGGER] = {
-        "handlers": ["default"],
-        "level": "INFO",
-        "propagate": False,
-    }
+    for name in (_MATERIALIZATION_HEALTH_LOGGER, _OUTBOX_OPERATION_LOGGER):
+        log_config.setdefault("loggers", {})[name] = {
+            "handlers": ["default"],
+            "level": "INFO",
+            "propagate": False,
+        }
     return log_config
 
 

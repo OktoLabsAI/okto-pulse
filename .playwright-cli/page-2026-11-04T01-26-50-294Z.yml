@@ -1,0 +1,43 @@
+- generic [ref=f2e2]:
+  - dialog [ref=f2e3]:
+    - generic [ref=f2e4]:
+      - banner [ref=f2e5]:
+        - generic [ref=f2e6]: 01 / 04 · Onboarding
+        - generic [ref=f2e7]:
+          - button "Switch to dark theme" [ref=f2e8] [cursor=pointer]
+          - button "Close onboarding" [ref=f2e11] [cursor=pointer]
+      - main [ref=f2e15]:
+        - generic [ref=f2e16]:
+          - generic [ref=f2e17]: OktoLabs · Product no. 01
+          - heading "Welcome to Okto Pulse" [level=1] [ref=f2e18]
+          - paragraph [ref=f2e19]: Spec-driven project management for the Agentic Development Life Cycle — where humans and AI agents plan, refine, and ship together on the same board.
+          - generic [ref=f2e20]: ADLC · Ideation → Refinement → Spec → Tasks
+      - contentinfo [ref=f2e22]:
+        - tablist "Slide indicator" [ref=f2e23]:
+          - tab "Slide 1 (current)" [selected] [ref=f2e24]
+          - tab "Slide 2" [ref=f2e25]
+          - tab "Slide 3" [ref=f2e26]
+          - tab "Slide 4" [ref=f2e27]
+        - button "Next →" [ref=f2e29] [cursor=pointer]
+      - status [ref=f2e30]
+  - generic [ref=f2e31]:
+    - banner [ref=f2e32]:
+      - generic [ref=f2e34]:
+        - button "Hide sidebar" [ref=f2e35] [cursor=pointer]
+        - img "Okto Pulse" [ref=f2e40]
+    - generic [ref=f2e41]:
+      - complementary [ref=f2e42]:
+        - generic [ref=f2e43]:
+          - generic [ref=f2e45]:
+            - heading "Boards" [level=2] [ref=f2e46]
+            - button "New board" [disabled] [ref=f2e47]
+          - navigation [ref=f2e49]:
+            - generic [ref=f2e50]:
+              - heading "My Boards" [level=3] [ref=f2e51]
+              - generic [ref=f2e52]:
+                - text: No boards created
+                - button "Create first board" [disabled] [ref=f2e53]
+      - main [ref=f2e54]:
+        - generic [ref=f2e56]:
+          - paragraph [ref=f2e57]: Select or create a board to get started
+          - button "Create Board" [disabled] [ref=f2e58]

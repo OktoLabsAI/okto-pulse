@@ -77,14 +77,16 @@ async def prepare_reports(ledger, tmp_path, method, outcomes, *, mismatch=None):
         value["observations"][0].update(criterion_id=criterion["id"], outcome=outcome)
         digest = compute_test_scenario_semantic_sha256(board_id=board, spec_id=identity,
             scenario=scenario, acceptance_criteria=[criterion])
+        context = await delivery.reserve_verification(session, scenario['id'], actor_id='agent-1')
         issued = await issuer.admit(ReportRequest(board_id=board, spec_id=identity,
-            scenario_id=scenario["id"], scenario_sha256=digest, actor_id="agent-1", report=value))
+            scenario_id=scenario["id"], scenario_sha256=digest, actor_id="agent-1", report=value,
+            verification_context=context))
         evidence = dict(issued.evidence)
         native_status = verification_report_scenario_status(parse_verification_report(value))
         assert verifier.verify(board_id=board, spec_id=identity, scenario_id=scenario["id"],
             scenario_sha256=digest, actor_id=None, status=native_status, evidence=evidence).verified
         issued_scenarios.append({**scenario, "status": native_status, "evidence": evidence})
-    await session.execute(update(Spec).where(Spec.id == identity).values(test_scenarios=issued_scenarios))
+        await delivery.publish_verification(session, evidence, native_status, actor_id='agent-1')
     await session.commit()
     return session, store, refs, implementation, scenarios
 
@@ -201,26 +203,27 @@ async def test_unbound_current_results_are_authenticated_and_classified(ledger, 
         assert bool(findings[0]['reason']['source_ids']) == (outcome is not None)
     snapshot, _ = await store.load_rollup_snapshot(delivery.BOARD_ID, delivery.SPEC_ID)
     native = snapshot.effective_context.native_verification
-    assert native.complete and len(native.runs) == 2
-    assert native.runs[1].authenticated == (outcome is not None)
-    assert native.runs[1].outcome == outcome
+    assert native.complete and len(native.runs) == (1 if outcome is None else 2)
+    runs = [run for run in native.runs if run.scenario_id == scenarios[1]['id']]
+    assert not runs if outcome is None else runs[0].authenticated and runs[0].outcome == outcome
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('ledger', ['native_schema'], indirect=True)
 async def test_invalid_unbound_receipt_keeps_native_rejection_without_claiming_failure(ledger, tmp_path):
+    import json
     session, store, _, _, _ = await prepare_reports(ledger, tmp_path, 'inspection', ['failed'])
-    spec = await session.get(Spec, delivery.SPEC_ID, populate_existing=True)
-    from copy import deepcopy
-    scenarios = deepcopy(spec.test_scenarios)
-    scenarios[0]['evidence']['verification_report']['conclusion'] = 'Unsigned change'
-    await session.execute(update(Spec).where(Spec.id == spec.id).values(test_scenarios=scenarios))
-    await session.commit()
+    evidence_ledger = CommunityEvidenceLedger(evidence_root=tmp_path / 'readiness-evidence')
+    receipt = next(evidence_ledger.receipt_root.glob('*.json'))
+    corrupted = json.loads(receipt.read_text(encoding='utf-8'))
+    corrupted['signature'] = '0' * 64
+    receipt.write_text(json.dumps(corrupted), encoding='utf-8')
     projected = await store.projection(delivery.BOARD_ID, delivery.SPEC_ID)
+    assert not projected['complete'] and not projected['allowed']
     for row in projected['rows']:
         reason = row['scenario_findings'][0]['reason']
-        assert reason['code'] == 'verification_receipt_invalid'
-        assert reason['native_reason_codes']
+        assert reason['code'] == 'assessment_unavailable'
+        assert 'verification_receipt_invalid' in reason['native_reason_codes']
 
 
 @pytest.mark.asyncio
@@ -269,15 +272,27 @@ async def test_automated_authentication_does_not_prove_an_absent_or_incompatible
         basis['source_ref'] = 'repo:unrelated'
     elif damage == 'revision':
         basis['revision'] = 'b' * 40
-    evidence_ledger, _, evidence = await _produce(tmp_path / 'incompatible',
-        executed_at=(datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat(),
-        execution_basis=None if damage == 'missing' else basis)
-    register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger))
+    # An explicit reset retires the fixture's valid A head before observing B.
     await session.execute(update(Spec).where(Spec.id == delivery.SPEC_ID).values(
-        test_scenarios=[{**SCENARIO, 'status': 'passed', 'evidence': evidence}]))
+        test_scenarios=[{**SCENARIO, 'status': 'ready'}]))
     await session.commit()
+    if damage == 'missing':
+        evidence_ledger, _, evidence = await _produce(tmp_path / 'incompatible',
+            executed_at=(datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat())
+        verifier = CommunityTestEvidenceWriteVerifier(ledger=evidence_ledger)
+        register_test_evidence_write_verifier(verifier)
+        from test_evidence_v2_adapter import SCENARIO_SHA256
+        assert verifier.verify(board_id=delivery.BOARD_ID, spec_id=delivery.SPEC_ID,
+            scenario_id=SCENARIO['id'], scenario_sha256=SCENARIO_SHA256, actor_id=None,
+            status='passed', evidence=evidence).verified
+        # A signed envelope without a reserved exact basis cannot create authority.
+        with pytest.raises(ValueError, match='verification_result_invalid'):
+            await delivery.publish_verification(session, evidence, 'passed')
+    else:
+        await delivery.issue_runner_verification(session, tmp_path, source_ref=basis['source_ref'],
+            revision=basis['revision'], executed_at=(datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat())
     projected = await store.projection(delivery.BOARD_ID, delivery.SPEC_ID)
-    expected = 'verification_base_unresolved' if damage == 'missing' else 'verification_base_mismatch'
+    expected = 'verification_not_run' if damage == 'missing' else 'verification_base_mismatch'
     assert all(row['scenario_findings'][0]['reason']['code'] == expected for row in projected['rows'])
     with pytest.raises(ValueError, match='delivery_current_verified_test_and_implementation_required'):
         await delivery.record(store, delivery.command('test', implementation_ids=[implementation['id']]))
@@ -308,6 +323,7 @@ async def test_authenticated_paired_run_observes_both_committed_sources(tmp_path
     register_test_evidence_write_verifier(verifier)
     try:
         run = native_scenario_run(spec, scenario, verifier=verifier)
+        assert not run.current and run.accepted_result_id is None
         assert run.authenticated
         observed = tuple((source.source_ref, source.revision) for source in run.sources)
         assert observed == (core, community)

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import asyncio
+import threading
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -13,7 +15,7 @@ from okto_pulse.core.ports.runtime_workers import (
 )
 
 
-def test_lifespan_skips_graph_and_db_close_when_native_drain_is_incomplete(
+def test_lifespan_retains_host_until_explicit_completion_observer_settles(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -41,6 +43,23 @@ def test_lifespan_skips_graph_and_db_close_when_native_drain_is_incomplete(
             close_calls.append("runtime.close")
 
     handle = object()
+    observer_entered = threading.Event()
+    release_owner = threading.Event()
+    graph_entered, release_graph = threading.Event(), threading.Event()
+    observer_loops = []
+    errors = []
+
+    async def _observe(_handle):
+        assert _handle is handle
+        observer_loops.append(asyncio.get_running_loop())
+        observer_entered.set()
+        await asyncio.to_thread(release_owner.wait)
+
+    async def _cleanup_observer():
+        close_calls.append("cleanup_drained")
+
+    from okto_pulse.community.adapters import sqlalchemy_database as community_database
+    monkeypatch.setattr(community_database, "observe_community_retained_cleanup", _cleanup_observer)
 
     async def _stop(_handle: object) -> None:
         raise WorkerDrainIncomplete(
@@ -57,6 +76,7 @@ def test_lifespan_skips_graph_and_db_close_when_native_drain_is_incomplete(
                 family="consolidation_worker",
                 start=lambda: handle,
                 stop=_stop,
+                observe_stopped=_observe,
             ),
         )
     )
@@ -76,16 +96,24 @@ def test_lifespan_skips_graph_and_db_close_when_native_drain_is_incomplete(
         original_runtime = None
 
     monkeypatch.setenv("KG_DAILY_TICK_DISABLED", "1")
-    database_mod.configure_database_runtime(runtime=_Runtime())
+    runtime = _Runtime()
+    database_mod.configure_database_runtime(runtime=runtime)
+    # This lifespan unit fixture owns a fake relational adapter; bind its
+    # explicit close rather than invoking Community's concrete-type resolver.
+    monkeypatch.setattr(app_mod, "close_db", runtime.close)
 
     async def _noop_init_db() -> None:
         return None
 
-    async def _close_graph_and_db(*_args, **_kwargs) -> None:
-        close_calls.append("shutdown_kg_then_db")
+    def _close_graph() -> None:
+        close_calls.append("graph_started")
+        graph_entered.set()
+        release_graph.wait()
+        close_calls.append("graph_terminal")
 
+    from okto_pulse.community.adapters import kg_shutdown
     monkeypatch.setattr(app_mod, "init_db", _noop_init_db)
-    monkeypatch.setattr(app_mod, "shutdown_kg_then_db", _close_graph_and_db)
+    monkeypatch.setattr(kg_shutdown, "close_all_graphs_on_shutdown", _close_graph)
 
     settings = SimpleNamespace(
         app_name="Fail-closed Worker Lifespan",
@@ -101,11 +129,48 @@ def test_lifespan_skips_graph_and_db_close_when_native_drain_is_incomplete(
                 object(),
                 runtime_worker_registry=registry,
             )
-            with TestClient(app) as client:
-                assert client.get("/health").status_code == 200
+            def use_client():
+                try:
+                    with TestClient(app) as client:
+                        assert client.get("/health").status_code == 200
+                except BaseException as exc:
+                    errors.append(exc)
 
-        assert close_calls == []
-        assert registry.get_handle("consolidation_worker") is handle
+            host = threading.Thread(target=use_client, name="retained-host-test")
+            host.start()
+            try:
+                assert observer_entered.wait(10), errors
+                assert host.is_alive()
+                assert close_calls == []
+                assert registry.get_handle("consolidation_worker") is handle
+                assert app.state.shutdown_ownership.state == "shutdown_incomplete"
+                assert app.state.shutdown_ownership.deadline_failed is True
+                release_owner.set()
+                assert graph_entered.wait(10), errors
+
+                async def cancel_coordinator_twice():
+                    app.state.shutdown_ownership.task.cancel()
+                    await asyncio.sleep(0)
+                    app.state.shutdown_ownership.task.cancel()
+                    await asyncio.sleep(0)
+
+                asyncio.run_coroutine_threadsafe(
+                    cancel_coordinator_twice(), observer_loops[0],
+                ).result(timeout=10)
+                assert host.is_alive()
+                assert close_calls == ["cleanup_drained", "graph_started"]
+                assert app.state.shutdown_ownership.deadline_failed is True
+            finally:
+                release_owner.set()
+                release_graph.set()
+                host.join(10)
+            assert not host.is_alive()
+            assert not errors
+
+        assert close_calls == ["cleanup_drained", "graph_started", "graph_terminal", "runtime.close"]
+        assert registry.get_handle("consolidation_worker") is None
+        assert app.state.shutdown_ownership.state == "settled_after_failed_deadline"
+        assert app.state.shutdown_ownership.deadline_failed is True
         fatal = [
             record
             for record in caplog.records

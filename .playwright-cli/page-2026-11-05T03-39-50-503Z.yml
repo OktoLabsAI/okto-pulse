@@ -1,0 +1,198 @@
+- generic [ref=f1e3]:
+  - banner [ref=f1e4]:
+    - generic [ref=f1e5]:
+      - generic [ref=f1e6]:
+        - button "Hide sidebar" [ref=f1e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f1e12]
+        - generic [ref=f1e31]: / My Board
+      - generic [ref=f1e32]:
+        - button "Refresh board" [ref=f1e33] [cursor=pointer]
+        - button [ref=f1e40] [cursor=pointer]
+  - generic [ref=f1e13]:
+    - complementary [ref=f1e14]:
+      - generic [ref=f1e15]:
+        - generic [ref=f1e17]:
+          - heading "Boards" [level=2] [ref=f1e18]
+          - button "New board" [ref=f1e19] [cursor=pointer]
+        - navigation [ref=f1e21]:
+          - generic [ref=f1e22]:
+            - heading "My Boards" [level=3] [ref=f1e23]
+            - list [ref=f1e44]:
+              - listitem [ref=f1e45]:
+                - button "okto pulse" [ref=f1e46] [cursor=pointer]
+              - listitem [ref=f1e53]:
+                - button "My Board" [ref=f1e54] [cursor=pointer]
+              - listitem [ref=f1e61]:
+                - button "okto-grafx" [ref=f1e62] [cursor=pointer]
+    - main [ref=f1e26]:
+      - group "Board views" [ref=f1e69]:
+        - button "Stories" [ref=f1e70] [cursor=pointer]
+        - button "Ideations" [pressed] [ref=f1e74] [cursor=pointer]
+        - button "Refinements" [ref=f1e77] [cursor=pointer]
+        - button "Specs" [ref=f1e82] [cursor=pointer]
+        - button "Tasks" [ref=f1e87] [cursor=pointer]
+      - generic [ref=f1e2533]:
+        - generic [ref=f1e2534]:
+          - generic [ref=f1e2535]:
+            - heading "Ideations" [level=2] [ref=f1e2536]
+            - generic [ref=f1e2537]: (3 of 3)
+          - generic [ref=f1e2538]:
+            - textbox "Search ideations…" [ref=f1e2540]
+            - group "View mode" [ref=f1e2541]:
+              - button "List view" [pressed] [ref=f1e2542] [cursor=pointer]
+              - button "Grid view" [ref=f1e2544] [cursor=pointer]
+            - button "New Ideation" [ref=f1e2550] [cursor=pointer]
+        - generic [ref=f1e2552]:
+          - button "All" [ref=f1e2553] [cursor=pointer]
+          - button "Draft" [ref=f1e2554] [cursor=pointer]
+          - button "Review" [ref=f1e2555] [cursor=pointer]
+          - button "Approved" [ref=f1e2556] [cursor=pointer]
+          - button "Evaluating" [ref=f1e2557] [cursor=pointer]
+          - button "Done" [ref=f1e2558] [cursor=pointer]
+          - button "No derivation" [ref=f1e2559] [cursor=pointer]
+          - button "Show archived" [ref=f1e2564] [cursor=pointer]
+        - generic [ref=f1e2565]:
+          - generic [ref=f1e2567] [cursor=pointer]:
+            - generic [ref=f1e2568]:
+              - generic [ref=f1e2569]:
+                - generic [ref=f1e2570]: Draft
+                - generic [ref=f1e2573]: Edition 1
+              - heading "R4c installed acceptance — persisted Story and recommendation controls" [level=3] [ref=f1e2574]
+              - paragraph [ref=f1e2575]: "Selected Stories: - R4c installed acceptance — persisted Story and recommendation controls (topic: E2E 0.4.3 — Operational consistency)"
+              - 'generic "Ambiguity: no current result · Edition 1; 0 previous results" [ref=f1e2577]':
+                - generic [ref=f1e2578]: Ambiguity
+                - strong [ref=f1e2579]: Not assessed
+              - generic "1 unanswered question" [ref=f1e2581]: 1 open Q&A
+            - generic [ref=f1e2585]:
+              - button "Open lineage graph" [ref=f1e2586]
+              - button "Archive tree" [ref=f1e2591]
+          - generic [ref=f1e2598] [cursor=pointer]:
+            - generic [ref=f1e2599]:
+              - generic [ref=f1e2600]:
+                - generic [ref=f1e2601]: Draft
+                - generic [ref=f1e2604]: Edition 1
+              - heading "R4 UI acceptance — persisted Story status and recommendations" [level=3] [ref=f1e2605]
+              - paragraph [ref=f1e2606]: "Selected Stories: - R4 UI acceptance — persisted Story status and recommendations (topic: E2E 0.4.3 — Operational consistency)"
+              - 'generic "Ambiguity: no current result · Edition 1; 0 previous results" [ref=f1e2608]':
+                - generic [ref=f1e2609]: Ambiguity
+                - strong [ref=f1e2610]: Not assessed
+              - generic [ref=f1e2611]:
+                - generic [ref=f1e2612]: e2e-043
+                - generic [ref=f1e2613]: r4-ui-acceptance
+            - generic [ref=f1e2614]:
+              - button "Open lineage graph" [ref=f1e2615]
+              - button "Archive tree" [ref=f1e2620]
+          - generic [ref=f1e2627] [cursor=pointer]:
+            - generic [ref=f1e2628]:
+              - generic [ref=f1e2629]:
+                - generic [ref=f1e2630]: Done
+                - generic [ref=f1e2634]: Large
+                - generic [ref=f1e2635]: Edition 1
+              - heading "E2E 0.4.3 — Operational delivery journey" [level=3] [ref=f1e2636]
+              - paragraph [ref=f1e2637]: The complete 0.4.3 operational journey needs evidence that planning lineage, native gates, delivery proof, human updates and the simplified UI agree. Success means a fully traced fixture reaches verified delivery, expected invalid operations are rejected without false success, an…
+              - generic [ref=f1e2638]:
+                - 'generic "Domains score: 3/5" [ref=f1e2639]':
+                  - text: Domains
+                  - generic [ref=f1e2640]: "3"
+                - 'generic "Dependencies score: 2/5" [ref=f1e2641]':
+                  - text: Dependencies
+                  - generic [ref=f1e2642]: "2"
+              - 'generic "Ambiguity: 1 (0–5) · Edition 1" [ref=f1e2644]':
+                - generic [ref=f1e2645]: Ambiguity
+                - strong [ref=f1e2646]: "1"
+              - generic "1 unanswered question" [ref=f1e2648]: 1 open Q&A
+              - generic [ref=f1e2652]:
+                - generic [ref=f1e2653]: e2e-043
+                - generic [ref=f1e2654]: operational-audit
+            - generic [ref=f1e2655]:
+              - button "Open lineage graph" [ref=f1e2656]
+              - button "Archive tree" [ref=f1e2661]
+        - generic [ref=f1e2667]:
+          - status [ref=f1e2668]: Showing 1–3 of 3 matching. 3 overall. Page 1 of 1.
+          - generic [ref=f1e2669]:
+            - generic [ref=f1e2670]:
+              - generic [ref=f1e2671]: Items per page
+              - combobox "Items per page" [ref=f1e2672]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Ideations pagination" [ref=f1e2673]:
+              - generic [ref=f1e2674]:
+                - button "Previous page" [disabled] [ref=f1e2675]: Previous
+                - button "Page 1" [disabled] [ref=f1e2676]: "1"
+                - button "Next page" [disabled] [ref=f1e2677]: Next
+        - generic [ref=f1e2679]:
+          - generic [ref=f1e2680]:
+            - generic [ref=f1e2681]:
+              - generic [ref=f1e2682]: Draft
+              - heading "R4c installed acceptance — persisted Story and recommendation controls" [level=2] [ref=f1e2685]
+              - generic [ref=f1e2686]: Edition 1
+            - generic [ref=f1e2687]:
+              - button "Open lineage graph" [ref=f1e2688] [cursor=pointer]
+              - button "Export report" [ref=f1e2693] [cursor=pointer]
+              - button "Refresh" [ref=f1e2697] [cursor=pointer]
+              - button "Expand" [ref=f1e2703] [cursor=pointer]
+              - button [ref=f1e2709] [cursor=pointer]
+          - generic [ref=f1e2713]:
+            - generic [ref=f1e2714]: "Move to:"
+            - button "Review" [ref=f1e2715] [cursor=pointer]
+            - button "Cancelled" [ref=f1e2718] [cursor=pointer]
+          - generic [ref=f1e2722]:
+            - tablist "Ideation sections" [ref=f1e2723]:
+              - tab "Details" [ref=f1e2724] [cursor=pointer]
+              - tab "Resources" [ref=f1e2729] [cursor=pointer]
+              - tab "Q&A 1" [selected] [ref=f1e2733] [cursor=pointer]:
+                - generic [ref=f1e2737]: Q&A
+                - generic [ref=f1e2738]: "1"
+              - tab "Evaluation" [ref=f1e2739] [cursor=pointer]
+              - tab "References 1" [ref=f1e2744] [cursor=pointer]:
+                - generic [ref=f1e2748]: References
+                - generic [ref=f1e2749]: "1"
+              - tab "Versions" [ref=f1e2750] [cursor=pointer]
+              - tab "Activity" [ref=f1e2755] [cursor=pointer]
+            - button "Scroll Ideation sections right" [ref=f1e2761] [cursor=pointer]
+          - tabpanel "Q&A 1" [ref=f1e2796]:
+            - generic [ref=f1e2797]:
+              - button "How recommendations work" [ref=f1e2799] [cursor=pointer]
+              - generic [ref=f1e2803]:
+                - generic [ref=f1e2804]:
+                  - button "Free Text" [ref=f1e2805] [cursor=pointer]
+                  - button "Choice / Form" [ref=f1e2806] [cursor=pointer]
+                - generic [ref=f1e2807]:
+                  - textbox "Ask a question... (type @ to mention)" [ref=f1e2809]
+                  - button "Ask" [disabled] [ref=f1e2810]
+              - generic [ref=f1e2814]:
+                - heading "Unanswered (1)" [level=4] [ref=f1e2815]
+                - generic [ref=f1e2817]:
+                  - generic [ref=f1e2818]:
+                    - generic [ref=f1e2819]:
+                      - generic [ref=f1e2820]:
+                        - paragraph [ref=f1e2821]: "R4c acceptance: how should a recommended option affect a user's answer?"
+                        - generic [ref=f1e2822]: single-select
+                      - generic [ref=f1e2823]:
+                        - generic [ref=f1e2825]:
+                          - text: Show the recommendation and wait for an explicit selection
+                          - generic [ref=f1e2826]: Recommended
+                          - generic [ref=f1e2827]: Explains the preferred choice while preserving the user's control and audit of the submitted answer.
+                        - generic [ref=f1e2829]:
+                          - text: Select and submit the recommended option automatically
+                          - generic [ref=f1e2830]: Removes an interaction but would incorrectly treat a recommendation as the user's decision.
+                      - generic [ref=f1e2831]: Asked by e7090eed-0fa... · 05/11/2026
+                    - button [ref=f1e2832] [cursor=pointer]
+                  - generic [ref=f1e2837]:
+                    - generic [ref=f1e2838]:
+                      - button "Show the recommendation and wait for an explicit selection Recommended Explains the preferred choice while preserving the user's control and audit of the submitted answer." [ref=f1e2839] [cursor=pointer]:
+                        - generic [ref=f1e2841]:
+                          - text: Show the recommendation and wait for an explicit selection
+                          - generic [ref=f1e2842]: Recommended
+                          - generic [ref=f1e2843]: Explains the preferred choice while preserving the user's control and audit of the submitted answer.
+                      - button "Select and submit the recommended option automatically Removes an interaction but would incorrectly treat a recommendation as the user's decision." [ref=f1e2844] [cursor=pointer]:
+                        - generic [ref=f1e2846]:
+                          - text: Select and submit the recommended option automatically
+                          - generic [ref=f1e2847]: Removes an interaction but would incorrectly treat a recommendation as the user's decision.
+                    - generic [ref=f1e2848]:
+                      - button "Cancel" [ref=f1e2849] [cursor=pointer]
+                      - button "Submit" [disabled] [ref=f1e2850]
+          - generic [ref=f1e2792]:
+            - button "Delete ideation" [ref=f1e2793] [cursor=pointer]
+            - button "Close" [ref=f1e2795] [cursor=pointer]

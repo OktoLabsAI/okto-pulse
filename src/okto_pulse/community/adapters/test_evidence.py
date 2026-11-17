@@ -17,6 +17,8 @@ __test__ = False
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import ctypes
+import errno
 import hashlib
 import hmac
 import inspect
@@ -27,13 +29,22 @@ from pathlib import Path, PurePosixPath
 import re
 import secrets
 import stat
+import sys
+import tempfile
 from typing import Any, Awaitable, Callable, Mapping
 from urllib.parse import urlsplit
 
 from okto_pulse.community import __version__ as community_code_version
+from okto_pulse.core.domain.verification_currentness import (
+    VerificationContext,
+    VerificationScope,
+    canonical_scenario_sha256,
+    require_current_verification_context,
+)
 from okto_pulse.core.ports.test_evidence import (
     TestEvidenceExecutionRequest,
     TestEvidenceExecutionResult,
+    TestEvidenceLedgerBusyError,
     TestEvidenceWriteVerification,
 )
 from okto_pulse.core.services.test_scenario_lifecycle import (
@@ -51,6 +62,7 @@ COMMUNITY_MANIFEST_PURPOSE = "test_scenario_evidence"
 COMMUNITY_RECEIPT_SCHEMA = "okto-pulse-evidence-receipt/v1"
 COMMUNITY_REPORT_RECEIPT_SCHEMA = "okto-pulse-verification-receipt/v1"
 COMMUNITY_MAX_LEDGER_RECEIPTS = 10_000
+COMMUNITY_LEDGER_OBSERVATION_ATTEMPTS = 3
 COMMUNITY_MAX_MANIFEST_BYTES = 1024 * 1024
 _RECEIPT_RE = re.compile(r"^ev2r\.([0-9a-f]{32})\.([0-9a-f]{64})$")
 _RECEIPT_FILE_RE = re.compile(r"^[0-9a-f]{32}\.json$")
@@ -85,6 +97,15 @@ _REPORT_RECEIPT_RECORD_KEYS = (_RECEIPT_RECORD_KEYS - {
 
 class CommunityTestEvidenceError(ValueError):
     """Raised when Community cannot produce or authenticate a proof."""
+
+    @property
+    def retryable(self) -> bool:
+        """Only ledger observation may be retried; never repeat execution."""
+        return str(self) == "evidence_v2.receipt_ledger_busy"
+
+
+class CommunityReceiptLedgerBusyError(CommunityTestEvidenceError, TestEvidenceLedgerBusyError):
+    """Keep the Community validation type and expose the shared execution boundary."""
 
 
 class _DuplicateJsonKeyError(ValueError):
@@ -190,6 +211,93 @@ def _write_all(fd: int, payload: bytes) -> None:
         view = view[written:]
 
 
+def _fsync_evidence_file(fd: int) -> None:
+    os.fsync(fd)
+
+
+def _rename_no_replace(source: Path, destination: Path) -> None:
+    """Publish one name atomically, without an overwrite or hard-link window.
+
+    Fail closed on filesystems/platforms lacking exclusive rename. Source and
+    destination are in the same private evidence root; copying is forbidden.
+    """
+    if os.name == "nt":
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        move = kernel32.MoveFileExW
+        move.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD)
+        move.restype = wintypes.BOOL
+        # WRITE_THROUGH only: neither REPLACE_EXISTING nor COPY_ALLOWED.
+        if not move(str(source), str(destination), 0x8):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return
+    libc = ctypes.CDLL(None, use_errno=True)
+    if sys.platform.startswith("linux"):
+        rename = getattr(libc, "renameat2", None)
+        if rename is None:
+            raise CommunityTestEvidenceError("evidence_v2.atomic_publication_unsupported")
+        rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+        rename.restype = ctypes.c_int
+        result = rename(-100, os.fsencode(source), -100, os.fsencode(destination), 1)
+    elif sys.platform == "darwin":
+        rename = getattr(libc, "renamex_np", None)
+        if rename is None:
+            raise CommunityTestEvidenceError("evidence_v2.atomic_publication_unsupported")
+        rename.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+        rename.restype = ctypes.c_int
+        result = rename(os.fsencode(source), os.fsencode(destination), 0x4)
+    else:
+        raise CommunityTestEvidenceError("evidence_v2.atomic_publication_unsupported")
+    if result != 0:
+        error = ctypes.get_errno()
+        if error in (errno.ENOSYS, errno.EINVAL, errno.EOPNOTSUPP):
+            raise CommunityTestEvidenceError("evidence_v2.atomic_publication_unsupported")
+        raise OSError(error, os.strerror(error), str(destination))
+
+
+def _publish_immutable_payload(staging_root: Path, target: Path, payload: bytes) -> None:
+    """Write and sync outside the scanned ledger, then publish one complete file."""
+    _assert_no_reparse_chain(staging_root, allow_missing=True)
+    staging_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _assert_no_reparse_chain(staging_root, allow_missing=False)
+    if os.name != "nt" and stat.S_IMODE(staging_root.stat().st_mode) & 0o077:
+        raise CommunityTestEvidenceError("evidence_v2.staging_permissions_invalid")
+    fd, name = tempfile.mkstemp(prefix="receipt-", suffix=".tmp", dir=staging_root)
+    staged = Path(name)
+    created = os.fstat(fd)
+    try:
+        try:
+            _assert_no_reparse_chain(staged, allow_missing=False)
+            _write_all(fd, payload)
+            _fsync_evidence_file(fd)
+        finally:
+            os.close(fd)
+        persisted = _read_regular_file_secure(
+            staged, max_bytes=len(payload), require_single_link=True,
+            missing_code="evidence_v2.receipt_persist_failed",
+            invalid_code="evidence_v2.receipt_persist_failed",
+        )
+        if not hmac.compare_digest(payload, persisted):
+            raise CommunityTestEvidenceError("evidence_v2.receipt_changed_during_persist")
+        _assert_no_reparse_chain(target, allow_missing=True)
+        _rename_no_replace(staged, target)
+        _fsync_directory(target.parent)
+        _fsync_directory(staging_root)
+    finally:
+        # Clean up this call's private file only. Never sweep another writer's
+        # staging files or delete a path whose identity changed underneath us.
+        try:
+            _assert_no_reparse_chain(staging_root, allow_missing=False)
+            current = os.lstat(staged)
+        except (OSError, CommunityTestEvidenceError):
+            pass
+        else:
+            if (not _is_reparse_stat(current) and stat.S_ISREG(current.st_mode)
+                    and (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino)):
+                staged.unlink(missing_ok=True)
+
+
 def _is_reparse_stat(value: os.stat_result) -> bool:
     """Detect POSIX symlinks and Windows reparse points/junctions."""
 
@@ -243,6 +351,7 @@ def _read_regular_file_secure(
     max_bytes: int,
     missing_code: str,
     invalid_code: str,
+    require_single_link: bool = False,
 ) -> bytes:
     """Read a bounded regular file from one stable, no-follow handle."""
 
@@ -264,6 +373,8 @@ def _read_regular_file_secure(
         raise CommunityTestEvidenceError(invalid_code) from exc
     try:
         opened = os.fstat(fd)
+        if require_single_link and int(opened.st_nlink) != 1:
+            raise CommunityTestEvidenceError("evidence_v2.receipt_hardlink_forbidden")
         if (
             _is_reparse_stat(opened)
             or not stat.S_ISREG(opened.st_mode)
@@ -290,6 +401,8 @@ def _read_regular_file_secure(
                     f"evidence_v2.secure_file_too_large:{max_bytes}"
                 )
         after = os.fstat(fd)
+        if require_single_link and int(after.st_nlink) != 1:
+            raise CommunityTestEvidenceError("evidence_v2.receipt_hardlink_forbidden")
         if _file_identity(opened) != _file_identity(after):
             raise CommunityTestEvidenceError(
                 "evidence_v2.secure_file_changed_during_read"
@@ -303,6 +416,8 @@ def _read_regular_file_secure(
             "evidence_v2.secure_file_path_changed"
         ) from exc
     _assert_no_reparse_chain(path, allow_missing=False)
+    if require_single_link and int(final_path.st_nlink) != 1:
+        raise CommunityTestEvidenceError("evidence_v2.receipt_hardlink_forbidden")
     if _file_identity(before) != _file_identity(final_path):
         raise CommunityTestEvidenceError("evidence_v2.secure_file_path_changed")
     return b"".join(chunks)
@@ -689,6 +804,7 @@ class CommunityEvidenceLedger:
         self.manifest_root = self.evidence_root / "manifests"
         self.receipt_root = self.evidence_root / "receipts"
         self.secret_path = self.evidence_root / "receipt.key"
+        self.staging_root = self.evidence_root / ".receipt-staging"
         # A cache hit still requires a stable directory scan. It only avoids
         # reparsing and re-HMACing every immutable receipt when every entry's
         # name, identity, size and timestamps remain identical.
@@ -702,7 +818,7 @@ class CommunityEvidenceLedger:
 
     def _assert_secure_layout(self) -> None:
         _assert_no_reparse_chain(self.evidence_root, allow_missing=True)
-        for path in (self.manifest_root, self.receipt_root, self.secret_path):
+        for path in (self.manifest_root, self.receipt_root, self.secret_path, self.staging_root):
             _assert_no_reparse_chain(path, allow_missing=True)
 
     def _receipt_history_fingerprint(
@@ -738,14 +854,23 @@ class CommunityEvidenceLedger:
                         raise CommunityTestEvidenceError(
                             "evidence_v2.receipt_ledger_noncanonical_entry"
                         )
-                    current = entry.stat(follow_symlinks=False)
+                    # Windows DirEntry.stat() may report zero for inode/device/
+                    # link count. A native lstat is required for the security
+                    # checks and for the same identity used by secure reads.
+                    current = os.lstat(entry.path)
                     if _is_reparse_stat(current) or not stat.S_ISREG(current.st_mode):
                         raise CommunityTestEvidenceError(
                             "evidence_v2.receipt_ledger_nonregular_entry"
                         )
+                    if int(current.st_nlink) != 1:
+                        raise CommunityTestEvidenceError("evidence_v2.receipt_hardlink_forbidden")
                     entries.append((entry.name, _file_identity(current)))
         except CommunityTestEvidenceError:
             raise
+        except FileNotFoundError as exc:
+            raise CommunityTestEvidenceError(
+                "evidence_v2.receipt_ledger_changed_during_scan"
+            ) from exc
         except OSError as exc:
             raise CommunityTestEvidenceError(
                 "evidence_v2.receipt_ledger_corrupt"
@@ -823,6 +948,22 @@ class CommunityEvidenceLedger:
     def _validate_existing_receipts(
         self, key: bytes
     ) -> tuple[tuple[str, tuple[int, int, int, int, int]], ...]:
+        """Retry only unstable, read-only observation; never test execution."""
+        for _attempt in range(COMMUNITY_LEDGER_OBSERVATION_ATTEMPTS):
+            try:
+                return self._validate_existing_receipts_once(key)
+            except CommunityTestEvidenceError as exc:
+                if str(exc) not in {
+                    "evidence_v2.receipt_ledger_changed_during_scan",
+                    "evidence_v2.receipt_ledger_changed_during_validation",
+                }:
+                    raise
+                self._validated_history_cache = None
+        raise CommunityReceiptLedgerBusyError()
+
+    def _validate_existing_receipts_once(
+        self, key: bytes
+    ) -> tuple[tuple[str, tuple[int, int, int, int, int]], ...]:
         """Authenticate the complete immutable history before appending.
 
         Every record must satisfy the current contract, including its scenario
@@ -838,6 +979,7 @@ class CommunityEvidenceLedger:
         seen_ids: set[str] = set()
         rotation_detected = False
         first_error: CommunityTestEvidenceError | None = None
+        observation_changed = False
         for filename, _identity in fingerprint:
             path = self.receipt_root / filename
             try:
@@ -846,13 +988,14 @@ class CommunityEvidenceLedger:
                     max_bytes=64 * 1024,
                     missing_code="evidence_v2.receipt_ledger_changed_during_scan",
                     invalid_code="evidence_v2.receipt_ledger_corrupt",
+                    require_single_link=True,
                 )
             except (CommunityTestEvidenceError,) as exc:
+                if str(exc) == "evidence_v2.receipt_ledger_changed_during_scan":
+                    observation_changed = True
+                    continue
                 if first_error is None:
-                    first_error = CommunityTestEvidenceError(
-                        "evidence_v2.receipt_ledger_corrupt"
-                    )
-                    first_error.__cause__ = exc
+                    first_error = exc
                 continue
             try:
                 record = _decode_receipt_json(raw)
@@ -912,6 +1055,8 @@ class CommunityEvidenceLedger:
             raise CommunityTestEvidenceError("evidence_v2.receipt_secret_rotated")
         if first_error is not None:
             raise first_error
+        if observation_changed:
+            raise CommunityTestEvidenceError("evidence_v2.receipt_ledger_changed_during_scan")
         final_fingerprint = self._receipt_history_fingerprint(allow_missing=False)
         if final_fingerprint != fingerprint:
             raise CommunityTestEvidenceError(
@@ -935,19 +1080,14 @@ class CommunityEvidenceLedger:
             if not create:
                 raise
             if self._receipt_history_fingerprint(allow_missing=True):
-                raise CommunityTestEvidenceError("evidence_v2.receipt_secret_missing")
+                # Another first issuer may have published both key and receipt
+                # since the missing read. Re-read once, never regenerate a key
+                # when history exists; a genuinely missing key still fails.
+                return self._secret(create=False)
             _ensure_secure_directory(self.evidence_root)
             value = secrets.token_bytes(32)
             try:
-                fd = os.open(
-                    self.secret_path,
-                    os.O_WRONLY
-                    | os.O_CREAT
-                    | os.O_EXCL
-                    | getattr(os, "O_NOFOLLOW", 0)
-                    | getattr(os, "O_BINARY", 0),
-                    0o600,
-                )
+                _publish_immutable_payload(self.staging_root, self.secret_path, value)
             except FileExistsError:
                 value = _read_regular_file_secure(
                     self.secret_path,
@@ -956,11 +1096,6 @@ class CommunityEvidenceLedger:
                     invalid_code="evidence_v2.receipt_secret_invalid",
                 )
             else:
-                try:
-                    _write_all(fd, value)
-                    os.fsync(fd)
-                finally:
-                    os.close(fd)
                 persisted = _read_regular_file_secure(
                     self.secret_path,
                     max_bytes=32,
@@ -1062,29 +1197,17 @@ class CommunityEvidenceLedger:
             signature = self._sign(record, key)
             record["signature"] = signature
             target = self.receipt_root / f"{receipt_id}.json"
+            payload = _canonical_json(record).encode("utf-8")
             try:
-                fd = os.open(
-                    target,
-                    os.O_WRONLY
-                    | os.O_CREAT
-                    | os.O_EXCL
-                    | getattr(os, "O_NOFOLLOW", 0)
-                    | getattr(os, "O_BINARY", 0),
-                    0o600,
-                )
+                _publish_immutable_payload(self.staging_root, target, payload)
             except FileExistsError:
                 continue
-            try:
-                payload = _canonical_json(record).encode("utf-8")
-                _write_all(fd, payload)
-                os.fsync(fd)
-            finally:
-                os.close(fd)
             persisted = _read_regular_file_secure(
                 target,
                 max_bytes=64 * 1024,
                 missing_code="evidence_v2.receipt_persist_failed",
                 invalid_code="evidence_v2.receipt_persist_failed",
+                require_single_link=True,
             )
             if not hmac.compare_digest(payload, persisted):
                 raise CommunityTestEvidenceError(
@@ -1104,6 +1227,29 @@ class CommunityEvidenceLedger:
                 )
             return f"ev2r.{receipt_id}.{signature}"
         raise CommunityTestEvidenceError("evidence_v2.receipt_id_collision")
+
+    def authenticated_actor_id(self, *, board_id, spec_id, scenario_id, scenario_sha256, status, evidence):
+        """Read a legacy actor claim, then bind it through native authentication.
+
+        Conversion cannot infer a human/agent kind that old receipts never
+        signed. No key, directory or receipt is created by this read.
+        """
+        receipt = evidence.get("execution_receipt")
+        match = _RECEIPT_RE.fullmatch(receipt) if isinstance(receipt, str) else None
+        if match is None:
+            raise CommunityTestEvidenceError("evidence_v2.execution_receipt_invalid")
+        record = _decode_receipt_json(_read_regular_file_secure(
+            self.receipt_root / (match.group(1) + ".json"), max_bytes=64 * 1024,
+            missing_code="evidence_v2.receipt_not_registered", invalid_code="evidence_v2.receipt_ledger_corrupt",
+            require_single_link=True))
+        actor = record.get("actor_id") if isinstance(record, dict) else None
+        if not isinstance(actor, str) or not actor.strip():
+            raise CommunityTestEvidenceError("evidence_v2.receipt_actor_id_binding_mismatch")
+        reasons = self.verify(board_id=board_id, spec_id=spec_id, scenario_id=scenario_id,
+            scenario_sha256=scenario_sha256, status=status, actor_id=actor, evidence=evidence)
+        if reasons:
+            raise CommunityTestEvidenceError(reasons[0])
+        return actor
 
     def verify(
         self,
@@ -1128,6 +1274,7 @@ class CommunityEvidenceLedger:
                 max_bytes=64 * 1024,
                 missing_code="evidence_v2.receipt_not_registered",
                 invalid_code="evidence_v2.receipt_ledger_corrupt",
+                require_single_link=True,
             )
         except CommunityTestEvidenceError as exc:
             return (str(exc),)
@@ -1392,6 +1539,7 @@ async def run_manifest_and_build_evidence_v2(
     executor: RuntimeExecutor,
     ledger: CommunityEvidenceLedger,
     environment: str = "local",
+    verification_context: VerificationContext | None = None,
 ) -> dict[str, Any]:
     """Execute a valid real-runtime manifest, then durably issue its receipt."""
 
@@ -1419,6 +1567,7 @@ async def run_manifest_and_build_evidence_v2(
         executor=executor,
         ledger=ledger,
         environment=environment,
+        verification_context=verification_context,
     )
 
 
@@ -1434,6 +1583,7 @@ async def run_inline_replay_and_build_evidence_v2(
     executor: RuntimeExecutor,
     ledger: CommunityEvidenceLedger,
     environment: str = "local",
+    verification_context: VerificationContext | None = None,
 ) -> dict[str, Any]:
     """Materialize, execute and receipt an MCP-only replay description."""
 
@@ -1461,7 +1611,8 @@ async def run_inline_replay_and_build_evidence_v2(
         return await execute_external_request(dict(decoded), ledger=ledger,
             scope=dict(board_id=board_id, spec_id=spec_id, scenario_id=scenario_id,
                        scenario_sha256=scenario_sha256),
-            status=status, actor_id=actor_id, environment=environment)
+            status=status, actor_id=actor_id, environment=environment,
+            verification_context=verification_context)
     normalized_manifest = build_inline_replay_manifest(
         decoded,
         board_id=board_id,
@@ -1485,6 +1636,7 @@ async def run_inline_replay_and_build_evidence_v2(
         executor=executor,
         ledger=ledger,
         environment=environment,
+        verification_context=verification_context,
     )
 
 
@@ -1503,9 +1655,17 @@ async def _execute_validated_manifest_and_build_evidence_v2(
     ledger: CommunityEvidenceLedger,
     environment: str,
     execution_basis: Mapping[str, Any] | None = None,
+    verification_context: VerificationContext | None = None,
 ) -> dict[str, Any]:
     """Execute already-validated bytes and append an authenticated receipt."""
 
+    context_payload = None
+    if verification_context is not None:
+        context_payload = _verification_context_payload(
+            verification_context, board_id=board_id, spec_id=spec_id,
+            scenario_id=scenario_id, scenario_sha256=scenario_sha256,
+            verification_method="automated_test",
+        )
     try:
         observed = executor(normalized_manifest, canonical_ref)
         if inspect.isawaitable(observed):
@@ -1528,6 +1688,8 @@ async def _execute_validated_manifest_and_build_evidence_v2(
         observation=observed,
         environment=environment,
     )
+    if context_payload is not None:
+        evidence["verification_context"] = context_payload
     if execution_basis is not None:
         evidence["execution_attestation"]["execution_basis"] = dict(execution_basis)
         evidence["execution_attestation"]["attestation_sha256"] = compute_execution_attestation_sha256(
@@ -1689,6 +1851,32 @@ class CommunityTestEvidenceWriteVerifier:
         )
 
 
+def _verification_context_payload(
+    context, *, board_id, spec_id, scenario_id, scenario_sha256, verification_method,
+):
+    """Bind a typed server reservation to issuance; never assert DB currentness.
+
+    The reservation owner has already authorized and persisted it. A reset while
+    execution is running is enforced again at native acceptance; signing old
+    context cannot resurrect its authority. Low-level legacy history helpers may
+    omit a context, but the two production issuers cannot.
+    """
+    if not isinstance(context, VerificationContext):
+        raise CommunityTestEvidenceError("verification_reservation_invalid")
+    try:
+        require_current_verification_context(
+            context,
+            scope=VerificationScope(board_id=board_id, spec_id=spec_id,
+                                    spec_edition=context.spec_edition, scenario_id=scenario_id),
+            generation=context.generation,
+            scenario_sha256=canonical_scenario_sha256(scenario_sha256),
+            verification_method=verification_method,
+        )
+    except ValueError as exc:
+        raise CommunityTestEvidenceError("verification_reservation_invalid") from exc
+    return context.model_dump(mode="json")
+
+
 class CommunityTestVerificationReportIssuer:
     """Sign an external submission using the same installation's evidence ledger.
 
@@ -1701,11 +1889,17 @@ class CommunityTestVerificationReportIssuer:
     async def admit(self, request):
         from okto_pulse.core.domain.verification_report import parse_verification_report, VerificationReportEvidence, verification_report_scenario_status
         report = parse_verification_report(request.report)
+        context_payload = _verification_context_payload(
+            request.verification_context, board_id=request.board_id, spec_id=request.spec_id,
+            scenario_id=request.scenario_id, scenario_sha256=request.scenario_sha256,
+            verification_method=report.method,
+        )
         evidence = {
             "evidence_class": "verification_report",
             "verification_report": report.model_dump(mode="json"),
             "report_author_id": request.actor_id,
             "scenario_sha256": request.scenario_sha256,
+            "verification_context": context_payload,
         }
         # Validate the complete envelope before touching the key or ledger.
         VerificationReportEvidence.model_validate({**evidence, "execution_receipt": "ev2r." + "0" * 32 + "." + "0" * 64})
@@ -1732,6 +1926,11 @@ class CommunityTestEvidenceExecutionIssuer:
     async def execute(
         self, request: TestEvidenceExecutionRequest
     ) -> TestEvidenceExecutionResult:
+        _verification_context_payload(
+            request.verification_context, board_id=request.board_id, spec_id=request.spec_id,
+            scenario_id=request.scenario_id, scenario_sha256=request.scenario_sha256,
+            verification_method="automated_test",
+        )
         has_manifest_ref = bool(request.manifest_ref and request.manifest_ref.strip())
         has_inline_replay = request.inline_replay is not None and not (
             isinstance(request.inline_replay, str) and not request.inline_replay.strip()
@@ -1750,6 +1949,7 @@ class CommunityTestEvidenceExecutionIssuer:
             "executor": self._executor,
             "ledger": self._ledger,
             "environment": self._environment,
+            "verification_context": request.verification_context,
         }
         if has_inline_replay:
             evidence = await run_inline_replay_and_build_evidence_v2(

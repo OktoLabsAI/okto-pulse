@@ -1,5 +1,6 @@
 """Bounded real SQL plus the same authenticated rollup consumed by the gate."""
 import asyncio
+from contextlib import nullcontext
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -9,9 +10,10 @@ from sqlalchemy import event, select, update
 
 from okto_pulse.community.adapters.sqlalchemy_models import Card, Spec
 from okto_pulse.community.adapters.sqlalchemy_spec_coverage import CommunitySpecCoverageReader
+from okto_pulse.community.adapters.graph_operation_guards import BoardCloseInProgressError
 from okto_pulse.core.application.use_cases.base import EntityNotFoundError
 from okto_pulse.core.domain.delivery_evidence import evaluate_delivery_coverage
-from okto_pulse.core.kg.interfaces.graph_errors import GraphQueryTimeout
+from okto_pulse.core.kg.interfaces.graph_errors import GraphQueryTimeout, GraphCapabilityUnavailable, GraphUnavailable
 from okto_pulse.core.ports.spec_coverage_query import SpecCoverageQuery
 from okto_pulse.core.models.spec_coverage_query import SpecCoverageResponse
 from okto_pulse.core.services.spec_coverage_query import project_spec_coverage
@@ -23,6 +25,124 @@ ledger = delivery_fixture.ledger
 BOARD = delivery_fixture.BOARD_ID
 SPEC = delivery_fixture.SPEC_ID
 QUERY = SpecCoverageQuery(BOARD, SPEC, 'authorized-actor')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase', ['source_read', 'proof_bound', 'proof_load',
+                                  'source_recheck', 'savepoint_cleanup'])
+@pytest.mark.parametrize('failure_type', [TimeoutError, GraphQueryTimeout])
+async def test_required_timeout_logs_only_sanitized_phase(monkeypatch, caplog, phase, failure_type):
+    failure = failure_type('SELECT private_secret FROM /private/path')
+
+    class Savepoint:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            if phase == 'savepoint_cleanup':
+                raise failure
+
+    store = SimpleNamespace(load_rollup_snapshot=AsyncMock(return_value=(None, None)))
+    reader = CommunitySpecCoverageReader(SimpleNamespace(begin_nested=Savepoint), delivery_store=store)
+    source = {'edition': 1}
+    calls = 0
+
+    async def read_source(_):
+        nonlocal calls
+        calls += 1
+        if (phase == 'source_read' and calls == 1) or (phase == 'source_recheck' and calls == 2):
+            raise failure
+        return source, []
+
+    monkeypatch.setattr(reader, '_source', read_source)
+    monkeypatch.setattr(reader, '_proof_bound', AsyncMock(
+        side_effect=failure if phase == 'proof_bound' else None))
+    if phase == 'proof_load':
+        store.load_rollup_snapshot.side_effect = failure
+    with pytest.raises(GraphQueryTimeout) as caught:
+        await reader.read(replace(QUERY, read_delivery=True), timeout_ms=15000)
+    if failure_type is GraphQueryTimeout:
+        assert caught.value is failure
+    else:
+        assert caught.value.__cause__ is failure
+    messages = [r.getMessage() for r in caplog.records if 'spec_coverage.read_timeout' in r.getMessage()]
+    assert len(messages) == 1 and f'stage={phase}' in messages[0]
+    assert 'private' not in caplog.text and 'SELECT' not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_caller_cancel_is_not_logged_as_required_timeout(monkeypatch, caplog):
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def savepoint():
+        yield
+
+    reader = CommunitySpecCoverageReader(SimpleNamespace(begin_nested=savepoint), delivery_store=object())
+    failure = asyncio.CancelledError()
+    monkeypatch.setattr(reader, '_source', AsyncMock(side_effect=failure))
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await reader.read(QUERY, timeout_ms=15000)
+    assert caught.value is failure
+    assert 'spec_coverage.read_timeout' not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('failure', 'reason'), [
+    (BoardCloseInProgressError('private board', 1), 'board_close_in_progress'),
+    (GraphCapabilityUnavailable('private path', details={'reason': 'prepared_reader_unavailable'}),
+     'prepared_reader_unavailable'),
+    (GraphCapabilityUnavailable('private path', details={'reason': 'query_readers_not_configured'}),
+     'query_readers_not_configured'),
+    (GraphCapabilityUnavailable('private path', details={'reason': 'secret\nforged-log-entry',
+        'backend_error_type': 'secret', 'query': 'private query'}), 'graph_capability_unavailable'),
+    (GraphUnavailable('private path', details={'secret': 'private query'}), 'graph_unavailable'),
+    (GraphQueryTimeout('private path'), 'graph_query_timeout'),
+])
+async def test_graph_refusal_diagnostics_preserve_behavior_and_hide_native_content(
+        monkeypatch, caplog, failure, reason):
+    def fail(*args):
+        raise failure
+    execution = SimpleNamespace(scope=lambda *args, **kwargs: nullcontext())
+    reader = CommunitySpecCoverageReader(None,
+        graph_reader=SimpleNamespace(read_spec_coverage_graph=fail), query_execution=execution)
+    monkeypatch.setattr(reader, 'verify_source', AsyncMock())
+    if isinstance(failure, GraphQueryTimeout):
+        with pytest.raises(GraphQueryTimeout) as raised:
+            await reader.read_graph(replace(QUERY, read_graph=True), None, 'revision', timeout_ms=15000)
+        assert raised.value is failure
+    else:
+        result = await reader.read_graph(replace(QUERY, read_graph=True), None, 'revision', timeout_ms=15000)
+        assert result.state == 'unavailable'
+    assert f'board={BOARD} spec={SPEC} stage=graph_observation reason={reason}' in caplog.text
+    assert not any(value in caplog.text for value in ('private', 'secret', 'forged-log-entry'))
+
+
+@pytest.mark.asyncio
+async def test_initial_fence_timeout_is_distinguished_and_never_enters_graph(monkeypatch, caplog):
+    reader = CommunitySpecCoverageReader(None)
+    failure = GraphQueryTimeout('private source details')
+    monkeypatch.setattr(reader, 'verify_source', AsyncMock(side_effect=failure))
+    with pytest.raises(GraphQueryTimeout) as raised:
+        await reader.read_graph(replace(QUERY, read_graph=True), None, 'revision', timeout_ms=15000)
+    assert raised.value is failure
+    assert 'stage=initial_source_fence reason=graph_query_timeout' in caplog.text
+    assert 'private' not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_unrelated_graph_failure_propagates_without_unavailable_diagnostic(monkeypatch, caplog):
+    failure = RuntimeError('unexpected implementation failure')
+    def fail(*args):
+        raise failure
+    reader = CommunitySpecCoverageReader(None,
+        graph_reader=SimpleNamespace(read_spec_coverage_graph=fail),
+        query_execution=SimpleNamespace(scope=lambda *args, **kwargs: nullcontext()))
+    monkeypatch.setattr(reader, 'verify_source', AsyncMock())
+    with pytest.raises(RuntimeError) as raised:
+        await reader.read_graph(replace(QUERY, read_graph=True), None, 'revision', timeout_ms=15000)
+    assert raised.value is failure
+    assert 'spec_coverage.graph_observation_unavailable' not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -84,6 +204,32 @@ async def test_linked_test_card_without_ledger_proof_stays_missing(ledger):
 
 
 @pytest.mark.asyncio
+async def test_coverage_preserves_signed_snapshot_without_unused_card_summaries(ledger, monkeypatch):
+    session, store, _ = ledger
+    implementation = await delivery_fixture.record(store, delivery_fixture.command())
+    await delivery_fixture.record(store, delivery_fixture.command(
+        'test', implementation_ids=[implementation['id']]))
+    await session.commit()
+    expected, per_card = await store.load_rollup_snapshot(BOARD, SPEC)
+    assert per_card
+    assert evaluate_delivery_coverage(expected).allowed
+    # These presentation-only reads must not make required Coverage proof
+    # unavailable. The real authenticated rollup and its fences still execute.
+    for name in ('_selection_summary', '_accumulated_impact',
+                 'report_impact_status', '_progress_summary'):
+        monkeypatch.setattr(store, name, AsyncMock(
+            side_effect=AssertionError('Coverage must not load discarded card summaries')))
+    rollup = AsyncMock(wraps=store.load_rollup_snapshot)
+    monkeypatch.setattr(store, 'load_rollup_snapshot', rollup)
+    observed = await CommunitySpecCoverageReader(session, delivery_store=store).read(
+        QUERY, timeout_ms=15000)
+    rollup.assert_awaited_once_with(BOARD, SPEC, include_card_summaries=False)
+    assert observed.delivery == expected
+    assert evaluate_delivery_coverage(observed.delivery) == evaluate_delivery_coverage(expected)
+    assert not session.in_nested_transaction()
+
+
+@pytest.mark.asyncio
 async def test_signed_proof_matches_gate_rollup_without_write_or_hidden_paths(ledger):
     session, store, _ = ledger
     implementation = await delivery_fixture.record(store, delivery_fixture.command())
@@ -93,7 +239,8 @@ async def test_signed_proof_matches_gate_rollup_without_write_or_hidden_paths(le
     evaluated = evaluate_delivery_coverage(expected)
     assert evaluated.allowed
     statements = []
-    listener = lambda conn, cursor, statement, *args: statements.append(statement)
+    def listener(conn, cursor, statement, *args):
+        statements.append(statement)
     event.listen(session.bind.sync_engine, 'before_cursor_execute', listener)
     try:
         observed = await CommunitySpecCoverageReader(session, delivery_store=store).read(QUERY, timeout_ms=15000)
@@ -114,7 +261,8 @@ async def test_restricted_proof_is_not_even_read_or_counted(ledger):
     session, _, _ = ledger
     proof = SimpleNamespace(load_rollup_snapshot=AsyncMock(side_effect=AssertionError('private proof read')))
     statements = []
-    listener = lambda conn, cursor, statement, *args: statements.append(statement)
+    def listener(conn, cursor, statement, *args):
+        statements.append(statement)
     event.listen(session.bind.sync_engine, 'before_cursor_execute', listener)
     try:
         observed = await CommunitySpecCoverageReader(session, delivery_store=proof).read(replace(QUERY, read_delivery=False), timeout_ms=15000)
@@ -154,7 +302,7 @@ async def test_timeout_drains_read_scope_before_returning(ledger):
     session, _, _ = ledger
     cleaned = False
 
-    async def slow(*args):
+    async def slow(*args, **kwargs):
         nonlocal cleaned
         try:
             await asyncio.sleep(5)
@@ -168,3 +316,41 @@ async def test_timeout_drains_read_scope_before_returning(ledger):
     assert cleaned
     assert not session.in_nested_transaction()
     assert await session.scalar(select(Card.id).where(Card.id == 'test')) == 'test'
+
+
+@pytest.mark.asyncio
+async def test_expired_absolute_deadline_never_reads_or_starts_savepoint(ledger, monkeypatch):
+    import time
+    session, _, _ = ledger
+    reader = CommunitySpecCoverageReader(session)
+    source = AsyncMock(side_effect=AssertionError('expired source read'))
+    monkeypatch.setattr(reader, '_source', source)
+    for operation in (lambda: reader.read(QUERY, timeout_ms=15000, deadline=time.monotonic() - 1),
+                      lambda: reader.verify_source(QUERY, 'old', timeout_ms=15000,
+                                                   deadline=time.monotonic() - 1)):
+        with pytest.raises(GraphQueryTimeout):
+            await operation()
+    source.assert_not_called()
+    assert not session.in_nested_transaction()
+
+
+@pytest.mark.asyncio
+async def test_mandatory_final_fence_detects_source_change_and_drains_timeout(ledger, monkeypatch):
+    session, _, _ = ledger
+    query = replace(QUERY, read_delivery=False)
+    reader = CommunitySpecCoverageReader(session)
+    snapshot = await reader.read(query, timeout_ms=15000)
+    await session.execute(update(Card).where(Card.id == 'test').values(status='in_progress'))
+    await session.commit()
+    with pytest.raises(ValueError, match='source_changed'):
+        await reader.verify_source(query, snapshot.source_revision, timeout_ms=15000)
+    cleaned = []
+    async def slow(_query):
+        try:
+            await asyncio.sleep(5)
+        finally:
+            cleaned.append(True)
+    monkeypatch.setattr(reader, '_source', slow)
+    with pytest.raises(GraphQueryTimeout):
+        await reader.verify_source(query, snapshot.source_revision, timeout_ms=10)
+    assert cleaned == [True]

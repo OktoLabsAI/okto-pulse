@@ -1,0 +1,202 @@
+- generic [ref=f2e3]:
+  - banner [ref=f2e4]:
+    - generic [ref=f2e5]:
+      - generic [ref=f2e6]:
+        - button "Hide sidebar" [ref=f2e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=f2e12]
+        - generic [ref=f2e31]: / My Board
+      - generic [ref=f2e32]:
+        - button "Refresh board" [ref=f2e33] [cursor=pointer]
+        - button [ref=f2e40] [cursor=pointer]
+  - generic [ref=f2e13]:
+    - complementary [ref=f2e14]:
+      - generic [ref=f2e15]:
+        - generic [ref=f2e17]:
+          - heading "Boards" [level=2] [ref=f2e18]
+          - button "New board" [ref=f2e19] [cursor=pointer]
+        - navigation [ref=f2e21]:
+          - generic [ref=f2e22]:
+            - heading "My Boards" [level=3] [ref=f2e23]
+            - list [ref=f2e44]:
+              - listitem [ref=f2e45]:
+                - button "okto pulse" [ref=f2e46] [cursor=pointer]
+              - listitem [ref=f2e53]:
+                - button "My Board" [ref=f2e54] [cursor=pointer]
+              - listitem [ref=f2e61]:
+                - button "okto-grafx" [ref=f2e62] [cursor=pointer]
+    - main [ref=f2e26]:
+      - group "Board views" [ref=f2e69]:
+        - button "Stories" [ref=f2e70] [cursor=pointer]
+        - button "Ideations" [ref=f2e74] [cursor=pointer]
+        - button "Refinements" [pressed] [ref=f2e77] [cursor=pointer]
+        - button "Specs" [ref=f2e82] [cursor=pointer]
+        - button "Tasks" [ref=f2e87] [cursor=pointer]
+      - generic [ref=f2e3031]:
+        - generic [ref=f2e3032]:
+          - generic [ref=f2e3033]:
+            - heading "Refinements" [level=2] [ref=f2e3034]
+            - generic [ref=f2e3035]: (2 of 2)
+          - generic [ref=f2e3036]:
+            - textbox "Search refinements…" [ref=f2e3038]
+            - group "View mode" [ref=f2e3039]:
+              - button "List view" [pressed] [ref=f2e3040] [cursor=pointer]
+              - button "Grid view" [ref=f2e3042] [cursor=pointer]
+            - button "New Refinement" [ref=f2e3048] [cursor=pointer]
+        - generic [ref=f2e3050]:
+          - button "All" [ref=f2e3051] [cursor=pointer]
+          - button "Draft" [ref=f2e3052] [cursor=pointer]
+          - button "Review" [ref=f2e3053] [cursor=pointer]
+          - button "Approved" [ref=f2e3054] [cursor=pointer]
+          - button "Done" [ref=f2e3055] [cursor=pointer]
+          - button "No derivation" [ref=f2e3056] [cursor=pointer]
+          - button "Show archived" [ref=f2e3061] [cursor=pointer]
+        - generic [ref=f2e3062]:
+          - generic [ref=f2e3063]:
+            - heading "R4c installed acceptance — persisted Story and recommendation controls" [level=3] [ref=f2e3069]
+            - generic [ref=f2e3072] [cursor=pointer]:
+              - generic [ref=f2e3073]:
+                - generic [ref=f2e3074]:
+                  - generic [ref=f2e3075]: Draft
+                  - generic [ref=f2e3079]: Edition 1
+                - heading "R4e UI acceptance — editable Refinement recommendations" [level=3] [ref=f2e3080]
+                - paragraph [ref=f2e3081]: "My Board test fixture for installed 0.4.3 Refinement Q&A preview, explicit answer and persisted read views. The original completed refinement and snapshot remain unchanged. This Draft does not authorize product implementation or claim delivery proof. ## Parent Ideation Context - Title: R4c installed acceptance — persisted Story and recommendation controls - Version: 15 ### Description Isolated My Board UI acceptance fixture under the user's authorized end-to-end campaign. It originated from Story 144c58d5-02a5-40db-b324-2f4fe6e6855d through the real native conversion. Its existing answered choice confirms explicit selection of a recommendation. This fixture authorizes test data and browser observations only, not product changes or delivery credit. ### Problem Statement The installed 0.4.3 UI must consistently display native recommendation/tradeoff metadata in preview, explicit answer and saved views. The original completed Refinement is immutable and correctly rejects new questions; use a separate editable refinement to exercise the remaining interaction without reopening historical artifacts. ### Proposed Approach Derive one Draft Refinement dedicated to this UI test. Ask an explicitly labelled acceptance question with one recommended choice and tradeoffs, verify neither choice is selected automatically, choose and submit via the actual UI, and verify the persisted result. Retain the test fixture as Draft and retain all receipts/screenshots. No Spec or implementation tasks are derived from this test-only child. Stage 1 KG queries executed on 2026-11-05: no similar Decisions or bug learnings; global canonical hits entity_0a3813a3d15c99cf14aaa233 and entity_313ce14250b7ae92a58d6927 identify the existing completed Delivery fixture refinement, which remains unchanged; entity_c77948e02a57aef0cc110d6c is the existing validation-icon QA target. This is a new test fixture decision, not a reused product architecture decision. ### Scope Assessment - Domains: 1/5 - Ambiguity: 1/5 - Dependencies: 1/5 - Complexity: small ### Q&A Decisions **Q:** R4c acceptance: how should a recommended option affect a user's answer? **A:** opt_0"
+                - 'generic "Ambiguity: no current result · Edition 1; 0 previous results" [ref=f2e3083]':
+                  - generic [ref=f2e3084]: Ambiguity
+                  - strong [ref=f2e3085]: Not assessed
+                - generic "1 unanswered question" [ref=f2e3087]: 1 open Q&A
+                - generic [ref=f2e3091]:
+                  - generic [ref=f2e3092]: e2e-043
+                  - generic [ref=f2e3093]: r4-ui-acceptance
+              - generic [ref=f2e3094]:
+                - button "Open lineage graph" [ref=f2e3095]
+                - button "Archive tree" [ref=f2e3100]
+          - generic [ref=f2e3106]:
+            - heading "E2E 0.4.3 — Operational delivery journey" [level=3] [ref=f2e3112]
+            - generic [ref=f2e3115] [cursor=pointer]:
+              - generic [ref=f2e3116]:
+                - generic [ref=f2e3117]:
+                  - generic [ref=f2e3118]: Done
+                  - generic [ref=f2e3122]: Edition 1
+                - heading "E2E 0.4.3 — Delivery fixture refinement" [level=3] [ref=f2e3123]
+                - paragraph [ref=f2e3124]: "Isolated executable fixture for the authorized My Board operational audit. No production behavior is changed by this fixture. ## Parent Ideation Context - Title: E2E 0.4.3 — Operational delivery journey - Version: 11 ### Description User-authorized test fixture for exercising the full Pulse workflow on My Board. This creates test artifacts, not new production scope. ### Problem Statement The complete 0.4.3 operational journey needs evidence that planning lineage, native gates, delivery proof, human updates and the simplified UI agree. Success means a fully traced fixture reaches verified delivery, expected invalid operations are rejected without false success, and UI state matches authoritative records. ### Proposed Approach Derive one refinement and one Spec for a small isolated delivery-status reference helper. Implement and test it with real local source and execution evidence. Exercise normal, test and bug lifecycles, human progress and requirement choices, current/previous validation, resource propagation and detailed diagnosis. Inspect every primary UI area; keep a coverage matrix and reproducible defects. Preserve existing My Board artifacts and all operational gates. ### Scope Assessment - Domains: 3/5 - Ambiguity: 1/5 - Dependencies: 2/5 - Complexity: large ### Q&A Decisions **Q:** For this E2E fixture, which execution approach preserves meaningful delivery proof while keeping the production application unchanged? **A:** E2E fixture selection under the authorized audit: use real isolated implementation and execution evidence. Synthetic status values must never count as proof."
+                - 'generic "Ambiguity: 1 (0–5) · Edition 1" [ref=f2e3126]':
+                  - generic [ref=f2e3127]: Ambiguity
+                  - strong [ref=f2e3128]: "1"
+                - generic [ref=f2e3129]:
+                  - generic [ref=f2e3130]: e2e-043
+                  - generic [ref=f2e3131]: operational-audit
+              - generic [ref=f2e3132]:
+                - button "Open lineage graph" [ref=f2e3133]
+                - button "Archive tree" [ref=f2e3138]
+        - generic [ref=f2e3144]:
+          - status [ref=f2e3145]: Showing 1–2 of 2 matching. 2 overall. Page 1 of 1.
+          - generic [ref=f2e3146]:
+            - generic [ref=f2e3147]:
+              - generic [ref=f2e3148]: Items per page
+              - combobox "Items per page" [ref=f2e3149]:
+                - option "25" [selected]
+                - option "50"
+                - option "100"
+            - navigation "Refinements pagination" [ref=f2e3150]:
+              - generic [ref=f2e3151]:
+                - button "Previous page" [disabled] [ref=f2e3152]: Previous
+                - button "Page 1" [disabled] [ref=f2e3153]: "1"
+                - button "Next page" [disabled] [ref=f2e3154]: Next
+        - generic [ref=f2e3156]:
+          - generic [ref=f2e3157]:
+            - generic [ref=f2e3158]:
+              - generic [ref=f2e3159]: Draft
+              - heading "R4e UI acceptance — editable Refinement recommendations" [level=2] [ref=f2e3163]
+              - generic [ref=f2e3164]: Edition 1
+            - generic [ref=f2e3165]:
+              - button "Open lineage graph" [ref=f2e3166] [cursor=pointer]
+              - button "Export report" [ref=f2e3171] [cursor=pointer]
+              - button "Refresh" [ref=f2e3175] [cursor=pointer]
+              - button "Expand" [ref=f2e3181] [cursor=pointer]
+              - button [ref=f2e3187] [cursor=pointer]
+          - generic [ref=f2e3191]:
+            - generic [ref=f2e3192]: "Move to:"
+            - button "Review" [ref=f2e3193] [cursor=pointer]
+            - button "Cancelled" [ref=f2e3196] [cursor=pointer]
+          - generic [ref=f2e3199]:
+            - generic [ref=f2e3200]:
+              - generic [ref=f2e3201]: "From:"
+              - button "Open ideation R4c installed acceptance — persisted Story and recommendation controls" [ref=f2e3202] [cursor=pointer]:
+                - generic [ref=f2e3205]: R4c installed acceptance — persisted Story and recommendation controls
+                - generic [ref=f2e3206]: v15
+            - generic [ref=f2e3207]:
+              - generic [ref=f2e3208]: "To:"
+              - generic [ref=f2e3209]: Not derived
+          - generic [ref=f2e3211]:
+            - tablist "Refinement sections" [ref=f2e3212]:
+              - tab "Details" [selected] [ref=f2e3213] [cursor=pointer]
+              - tab "Research decisions" [ref=f2e3218] [cursor=pointer]
+              - tab "Code Evidence" [ref=f2e3222] [cursor=pointer]
+              - tab "Resources" [ref=f2e3233] [cursor=pointer]
+              - tab "Q&A 2" [ref=f2e3239] [cursor=pointer]:
+                - generic [ref=f2e3243]: Q&A
+                - generic [ref=f2e3244]: "2"
+              - tab "References" [ref=f2e3245] [cursor=pointer]
+              - tab "Validation" [ref=f2e3250] [cursor=pointer]
+              - tab "Versions" [ref=f2e3254] [cursor=pointer]
+              - tab "Activity" [ref=f2e3259] [cursor=pointer]
+            - button "Scroll Refinement sections right" [ref=f2e3265] [cursor=pointer]
+          - tabpanel "Details" [ref=f2e3269]:
+            - generic [ref=f2e3270]:
+              - generic [ref=f2e3271]:
+                - heading "Description" [level=4] [ref=f2e3272]
+                - generic [ref=f2e3274] [cursor=pointer]:
+                  - paragraph [ref=f2e3275]: My Board test fixture for installed 0.4.3 Refinement Q&A preview, explicit answer and persisted read views. The original completed refinement and snapshot remain unchanged. This Draft does not authorize product implementation or claim delivery proof.
+                  - heading "Parent Ideation Context" [level=2] [ref=f2e3276]
+                  - list [ref=f2e3277]:
+                    - listitem [ref=f2e3278]: "Title: R4c installed acceptance — persisted Story and recommendation controls"
+                    - listitem [ref=f2e3279]: "Version: 15"
+                  - heading "Description" [level=3] [ref=f2e3280]
+                  - paragraph [ref=f2e3281]: Isolated My Board UI acceptance fixture under the user's authorized end-to-end campaign. It originated from Story 144c58d5-02a5-40db-b324-2f4fe6e6855d through the real native conversion. Its existing answered choice confirms explicit selection of a recommendation. This fixture authorizes test data and browser observations only, not product changes or delivery credit.
+                  - heading "Problem Statement" [level=3] [ref=f2e3282]
+                  - paragraph [ref=f2e3283]: The installed 0.4.3 UI must consistently display native recommendation/tradeoff metadata in preview, explicit answer and saved views. The original completed Refinement is immutable and correctly rejects new questions; use a separate editable refinement to exercise the remaining interaction without reopening historical artifacts.
+                  - heading "Proposed Approach" [level=3] [ref=f2e3284]
+                  - paragraph [ref=f2e3285]: "Derive one Draft Refinement dedicated to this UI test. Ask an explicitly labelled acceptance question with one recommended choice and tradeoffs, verify neither choice is selected automatically, choose and submit via the actual UI, and verify the persisted result. Retain the test fixture as Draft and retain all receipts/screenshots. No Spec or implementation tasks are derived from this test-only child. Stage 1 KG queries executed on 2026-11-05: no similar Decisions or bug learnings; global canonical hits entity_0a3813a3d15c99cf14aaa233 and entity_313ce14250b7ae92a58d6927 identify the existing completed Delivery fixture refinement, which remains unchanged; entity_c77948e02a57aef0cc110d6c is the existing validation-icon QA target. This is a new test fixture decision, not a reused product architecture decision."
+                  - heading "Scope Assessment" [level=3] [ref=f2e3286]
+                  - list [ref=f2e3287]:
+                    - listitem [ref=f2e3288]: "Domains: 1/5"
+                    - listitem [ref=f2e3289]: "Ambiguity: 1/5"
+                    - listitem [ref=f2e3290]: "Dependencies: 1/5"
+                    - listitem [ref=f2e3291]: "Complexity: small"
+                  - heading "Q&A Decisions" [level=3] [ref=f2e3292]
+                  - paragraph [ref=f2e3293]:
+                    - strong [ref=f2e3294]: "Q:"
+                    - text: "R4c acceptance: how should a recommended option affect a user's answer?"
+                    - strong [ref=f2e3295]: "A:"
+                    - text: opt_0
+              - generic [ref=f2e3299]:
+                - generic [ref=f2e3300]:
+                  - heading "In Scope (1)" [level=4] [ref=f2e3301]:
+                    - text: In Scope
+                    - generic [ref=f2e3302]: (1)
+                  - button "Add" [ref=f2e3303] [cursor=pointer]
+                - list [ref=f2e3305]:
+                  - listitem [ref=f2e3306]:
+                    - generic [ref=f2e3307]: "1."
+                    - generic [ref=f2e3308]: Exercise native recommended/tradeoff choice metadata in the editable Refinement UI.
+                    - button [ref=f2e3309] [cursor=pointer]
+              - generic [ref=f2e3313]:
+                - generic [ref=f2e3314]:
+                  - heading "Out of Scope (1)" [level=4] [ref=f2e3315]:
+                    - text: Out of Scope
+                    - generic [ref=f2e3316]: (1)
+                  - button "Add" [ref=f2e3317] [cursor=pointer]
+                - list [ref=f2e3319]:
+                  - listitem [ref=f2e3320]:
+                    - generic [ref=f2e3321]: "1."
+                    - generic [ref=f2e3322]: Changing completed fixture snapshots or deriving production work.
+                    - button [ref=f2e3323] [cursor=pointer]
+              - generic [ref=f2e3327]:
+                - heading "Analysis" [level=4] [ref=f2e3328]
+                - paragraph [ref=f2e3330] [cursor=pointer]: No analysis
+              - generic [ref=f2e3334]:
+                - generic [ref=f2e3335]: e2e-043
+                - generic [ref=f2e3336]: r4-ui-acceptance
+          - generic [ref=f2e3337]:
+            - button "Delete refinement" [ref=f2e3338] [cursor=pointer]
+            - button "Close" [ref=f2e3340] [cursor=pointer]

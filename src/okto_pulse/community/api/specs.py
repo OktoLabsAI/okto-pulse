@@ -1,6 +1,7 @@
 """Spec API endpoints."""
 
 from collections.abc import Awaitable, Callable
+from okto_pulse.core.domain.pending_qa import PendingQuestionsError
 from okto_pulse.core.ports.spec_planning_manifest import SpecPlanningManifestUnavailable
 from datetime import datetime
 from typing import Any, Literal
@@ -9,10 +10,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from okto_pulse.community.api.auth_deps import require_user
-from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.deps import get_unit_of_work, get_unit_of_work_factory
 from okto_pulse.community.api.knowledge_governance import (
     KnowledgeGovernanceInvalidMetadata,
     knowledge_governance_error_response,
@@ -163,7 +164,7 @@ from okto_pulse.core.application.use_cases import (
     UpdateSpecUseCase,
 )
 from okto_pulse.community.inbound.rest_adapter import RESTAdapterContract
-from okto_pulse.core.repositories import PulseUnitOfWork
+from okto_pulse.core.repositories import PulseUnitOfWork, UnitOfWorkFactory
 from okto_pulse.core.models.schemas import (
     PageEnvelope,
     LookupResponse,
@@ -764,10 +765,28 @@ async def update_scenario_verification_method(
 
 
 class ScenarioEvidenceExecutionRequest(BaseModel):
-    """Run a server-owned replay; this endpoint does not mutate the scenario."""
+    """Select a manifest or a locally registered runner, never execution code."""
 
+    model_config = ConfigDict(extra="forbid")
     status: Literal["automated", "passed", "failed"]
-    manifest_ref: str = Field(..., min_length=1)
+    manifest_ref: str | None = Field(default=None, min_length=1, strict=True)
+    runner_ref: str | None = Field(
+        default=None, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$", strict=True,
+    )
+    revision: str | None = Field(
+        default=None, pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$", strict=True,
+    )
+
+    @model_validator(mode="after")
+    def require_one_execution_source(self) -> "ScenarioEvidenceExecutionRequest":
+        if self.manifest_ref is not None:
+            if not self.manifest_ref.strip():
+                raise ValueError("manifest_ref must not be blank")
+            if self.runner_ref is not None or self.revision is not None:
+                raise ValueError("manifest_ref and runner selection are mutually exclusive")
+        elif self.runner_ref is None or self.revision is None:
+            raise ValueError("provide manifest_ref or both runner_ref and revision")
+        return self
 
 
 class ScenarioVerificationReportRequest(BaseModel):
@@ -1124,6 +1143,8 @@ async def create_spec(
             status_code=status.HTTP_409_CONFLICT,
             detail=exc.to_error_dict(),
         ) from exc
+    except PendingQuestionsError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except (
         ResourceLineageResolutionError,
         SpecLineagePreflightError,
@@ -1328,6 +1349,55 @@ async def get_requirement_verification(
         raise HTTPException(status_code=403, detail=exc.message) from exc
     except RequirementVerificationReadError as exc:
         raise HTTPException(status_code=503 if str(exc) == "verification_snapshot_unavailable" else 422, detail=str(exc)) from exc
+
+
+class BugAllocationRepairRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_spec_version: int = Field(ge=1, strict=True)
+    expected_scope_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    selected_link_ids: list[str] = Field(min_length=1, max_length=200)
+    idempotency_key: str = Field(min_length=1, max_length=160)
+
+
+async def _bug_allocation_repair(board_id, spec_id, bug_id, user_id, uow, body=None):
+    from okto_pulse.core.application.use_cases.bug_allocation_repair import (
+        BugAllocationRepairCommand, BugAllocationRepairUseCase,
+    )
+    from okto_pulse.core.services.bug_allocation_repair import BugAllocationRepairError
+
+    values = body.model_dump() if body is not None else {}
+    try:
+        return await BugAllocationRepairUseCase().execute(
+            BugAllocationRepairCommand(board_id, spec_id, bug_id, **values),
+            actor=RESTAdapterContract.actor(user_id, board_id=board_id),
+            uow=uow, apply=body is not None,
+        )
+    except EntityNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Repair subjects not found") from exc
+    except PermissionDeniedError as exc:
+        raise HTTPException(status_code=403, detail=exc.message) from exc
+    except BugAllocationRepairError as exc:
+        code = 404 if exc.code == "repair_subject_not_found" else 422 if exc.code in {
+            "repair_selection_invalid", "repair_preview_required"} else 409
+        raise HTTPException(status_code=code, detail=exc.to_dict()) from exc
+
+
+@router.get("/boards/{board_id}/specs/{spec_id}/bugs/{bug_id}/allocation-repair")
+async def preview_bug_allocation_repair(
+    board_id: str, spec_id: str, bug_id: str,
+    user_id: str = Depends(require_user), uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Read proven legacy automatic allocations without changing scope."""
+    return await _bug_allocation_repair(board_id, spec_id, bug_id, user_id, uow)
+
+
+@router.post("/boards/{board_id}/specs/{spec_id}/bugs/{bug_id}/allocation-repair")
+async def apply_bug_allocation_repair(
+    board_id: str, spec_id: str, bug_id: str, body: BugAllocationRepairRequest,
+    user_id: str = Depends(require_user), uow: PulseUnitOfWork = Depends(get_unit_of_work),
+):
+    """Apply one unchanged, selected repair through the same owner as MCP."""
+    return await _bug_allocation_repair(board_id, spec_id, bug_id, user_id, uow, body)
 
 
 @router.get("/boards/{board_id}/specs/{spec_id}/architecture-candidates")
@@ -1582,6 +1652,8 @@ async def update_spec(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=exc.to_error_dict(),
         ) from exc
+    except PendingQuestionsError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except SubjectEditRequiresDraftError as e:
         raise RESTAdapterContract.http_error(e) from e
     except LifecycleTransitionConflictError as e:
@@ -2150,21 +2222,32 @@ async def execute_test_scenario_evidence(
     scenario_id: str,
     body: ScenarioEvidenceExecutionRequest,
     user_id: str = Depends(require_user),
-    uow: PulseUnitOfWork = Depends(get_unit_of_work),
+    factory: UnitOfWorkFactory = Depends(get_unit_of_work_factory),
 ):
     """Execute an allowlisted local replay and return signed V2 evidence."""
 
+    from okto_pulse.core.ports.test_evidence import TestEvidenceLedgerBusyError
+
     try:
-        result = await ExecuteTestScenarioEvidenceUseCase().execute(
-            ExecuteTestScenarioEvidenceCommand(
-                spec_id,
-                scenario_id,
-                body.status,
-                body.manifest_ref,
-            ),
-            actor=RESTAdapterContract.actor(user_id),
-            uow=uow,
-        )
+        actor = RESTAdapterContract.actor(user_id)
+        # Issuance reads scope/authorization but does not publish scenario state.
+        # Its reservation owns a separate, short writer transaction. Acquiring
+        # the generic POST writer here would block that reservation against us.
+        async with factory(realm_scope=factory.resolve_realm_scope(), actor=actor) as uow:
+            result = await ExecuteTestScenarioEvidenceUseCase().execute(
+                ExecuteTestScenarioEvidenceCommand(
+                    spec_id,
+                    scenario_id,
+                    body.status,
+                    body.manifest_ref or "",
+                    inline_replay=(
+                        {"runner_ref": body.runner_ref, "revision": body.revision}
+                        if body.runner_ref is not None else None
+                    ),
+                ),
+                actor=actor,
+                uow=uow,
+            )
     except EntityNotFoundError as exc:
         detail = "Spec not found" if exc.entity_type == "spec" else "Scenario not found"
         raise HTTPException(
@@ -2173,6 +2256,8 @@ async def execute_test_scenario_evidence(
         ) from exc
     except SubjectEditRequiresDraftError as exc:
         raise RESTAdapterContract.http_error(exc) from exc
+    except TestEvidenceLedgerBusyError as exc:
+        raise HTTPException(status_code=503, detail=exc.execution_failure()) from exc
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -2184,14 +2269,19 @@ async def execute_test_scenario_evidence(
 @router.post("/specs/{spec_id}/scenarios/{scenario_id}/evidence/reports", status_code=200)
 async def admit_test_verification_report(
     spec_id: str, scenario_id: str, body: ScenarioVerificationReportRequest,
-    user_id: str = Depends(require_user), uow: PulseUnitOfWork = Depends(get_unit_of_work),
+    user_id: str = Depends(require_user),
+    factory: UnitOfWorkFactory = Depends(get_unit_of_work_factory),
 ):
     """Authenticate a supplied observation; does not execute or change scenario state."""
     from okto_pulse.core.application.use_cases.spec_crud import AdmitTestVerificationReportCommand, AdmitTestVerificationReportUseCase
     try:
-        result = await AdmitTestVerificationReportUseCase().execute(
-            AdmitTestVerificationReportCommand(spec_id, scenario_id, body.report.model_dump(mode="json")),
-            actor=RESTAdapterContract.actor(user_id), uow=uow)
+        actor = RESTAdapterContract.actor(user_id)
+        # As for replay issuance, only the reservation acquires a writer;
+        # publication remains a separate, serialized status mutation.
+        async with factory(realm_scope=factory.resolve_realm_scope(), actor=actor) as uow:
+            result = await AdmitTestVerificationReportUseCase().execute(
+                AdmitTestVerificationReportCommand(spec_id, scenario_id, body.report.model_dump(mode="json")),
+                actor=actor, uow=uow)
     except EntityNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Spec not found" if exc.entity_type == "spec" else "Scenario not found") from exc
     except PermissionDeniedError as exc:
@@ -2237,6 +2327,8 @@ async def update_test_scenario_status(
             actor=RESTAdapterContract.actor(user_id),
             uow=uow,
         )
+    except PermissionDeniedError as exc:
+        raise RESTAdapterContract.http_error(exc) from exc
     except StatusNotMutableError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     except PolicyTransitionRejected as exc:

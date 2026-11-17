@@ -97,3 +97,19 @@ def test_vector_index_and_exact_fallback_share_remaining_budget(monkeypatch):
 def test_invalid_scope_timeout_does_not_enter(timeout):
     with pytest.raises(ValueError), CommunityGraphQueryExecution().scope('b', timeout_ms=timeout):
         pytest.fail('invalid scope entered')
+
+
+def test_absolute_deadline_and_existing_policy_cannot_be_relaxed(monkeypatch):
+    now = [10.0]
+    monkeypatch.setattr(module, 'time', SimpleNamespace(monotonic=lambda: now[0]))
+    execution = CommunityGraphQueryExecution()
+    with execution.scope('b', timeout_ms=30000, deadline=10.5, existing_only=True):
+        assert execution.deadline('b') == 10.5
+        with execution.scope('b', timeout_ms=30000, deadline=40, existing_only=False):
+            assert execution.existing_only('b')
+            assert execution.remaining('b') == 0.5
+        assert execution.existing_only('b')
+    assert not execution.existing_only('b')
+    with pytest.raises(GraphQueryTimeout), execution.scope('b', timeout_ms=500, deadline=9):
+        pytest.fail('expired scope reached its body')
+    assert execution.deadline('b') is None

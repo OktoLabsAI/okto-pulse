@@ -1,4 +1,7 @@
-"""Apply the fenced v400/v401/v402→v403 SQLite upgrade while Pulse is stopped."""
+"""Apply the fenced v400–v404 to v405 SQLite upgrade while Pulse is stopped.
+
+For runtime0.4.3, follow with the explicit storage upgrade-copy405→406 command.
+"""
 
 from __future__ import annotations
 

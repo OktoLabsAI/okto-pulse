@@ -6,7 +6,7 @@ export const DRIFT_BAD_THRESHOLD = 30;
 
 export type DriftDirection = 'down' | 'neutral' | 'up';
 export type DriftColor = 'green' | 'gray' | 'red';
-export type DriftLabel = 'reduziu' | 'estável' | 'aumentou';
+export type DriftLabel = 'decreased' | 'stable' | 'increased';
 
 export interface DriftVisual {
   direction: DriftDirection;
@@ -24,7 +24,7 @@ export function driftIconFor(value: number | null | undefined): DriftVisual | nu
     return {
       direction: 'down',
       color: 'green',
-      label: 'reduziu',
+      label: 'decreased',
       icon: ArrowDown,
       colorClass: 'text-green-500 dark:text-green-400',
     };
@@ -33,7 +33,7 @@ export function driftIconFor(value: number | null | undefined): DriftVisual | nu
     return {
       direction: 'neutral',
       color: 'gray',
-      label: 'estável',
+      label: 'stable',
       icon: Minus,
       colorClass: 'text-gray-400 dark:text-gray-500',
     };
@@ -41,7 +41,7 @@ export function driftIconFor(value: number | null | undefined): DriftVisual | nu
   return {
     direction: 'up',
     color: 'red',
-    label: 'aumentou',
+    label: 'increased',
     icon: ArrowUp,
     colorClass: 'text-red-500 dark:text-red-400',
   };

@@ -22,6 +22,7 @@ from okto_pulse.core.ports.runtime_workers import (
     RuntimeWorkerSpec,
 )
 from okto_pulse.community.adapters.worker_runners import (
+    POLLING_SHUTDOWN_TIMEOUT_SECONDS,
     ConsolidationRunner,
     PollingRunner,
     TrackedBlockingExecution,
@@ -49,6 +50,26 @@ COMMUNITY_WORKER_CAPABLE_FAMILIES: tuple[str, ...] = (
     "cognitive_closeout_worker",
     "schema_sweep",
 )
+READINESS_SHUTDOWN_TIMEOUT_SECONDS = 45.0
+
+
+def community_worker_shutdown_budget_seconds(registry: RuntimeWorkerRegistry) -> float:
+    """Reserve the sequential drain budgets of this composition's active runners.
+
+    Readiness runners stop concurrently inside one family. Consolidation may
+    configure its own join timeout; the remaining families use PollingRunner's
+    shared default. The outer listener deadline must not cut these drains short.
+    """
+    budget = 0.0
+    for family in registry.active_families:
+        handle = registry.get_handle(family)
+        if family == "readiness_projection_worker":
+            budget += READINESS_SHUTDOWN_TIMEOUT_SECONDS
+        elif isinstance(handle, ConsolidationRunner):
+            budget += max(0.0, float(handle.join_timeout))
+        else:
+            budget += POLLING_SHUTDOWN_TIMEOUT_SECONDS
+    return budget
 
 
 def _cancel_safe_scope_factory(session_factory: Any):
@@ -78,9 +99,9 @@ def build_community_worker_registry(
 
     cancel_safe_relational_scope = _cancel_safe_scope_factory(session_factory)
     clock = UtcWorkerClock()
-    # Keep shutdown ownership disjoint. Consolidation must prove its own native
-    # operations quiescent before the outbox performs its final iteration; a
-    # shared task set could otherwise miss late submissions from either family.
+    # Keep shutdown ownership disjoint. Consolidation and outbox each prove
+    # their own native operations quiescent; a shared task set could otherwise
+    # miss late submissions from either family.
     consolidation_blocking_execution = TrackedBlockingExecution()
     outbox_blocking_execution = TrackedBlockingExecution()
     readiness_blocking_execution = TrackedBlockingExecution()
@@ -114,7 +135,7 @@ def build_community_worker_registry(
                 started.append(runner)
         except BaseException:
             for runner in reversed(started):
-                await runner.stop(timeout=45.0)
+                await runner.stop(timeout=READINESS_SHUTDOWN_TIMEOUT_SECONDS)
             if readiness_pool is not None:
                 await asyncio.to_thread(readiness_pool.shutdown, wait=True,
                     cancel_futures=True)
@@ -123,7 +144,7 @@ def build_community_worker_registry(
 
     async def stop_readiness(_runner):
         outcomes = await asyncio.gather(
-            *(runner.stop(timeout=45.0) for runner in readiness_runners),
+            *(runner.stop(timeout=READINESS_SHUTDOWN_TIMEOUT_SECONDS) for runner in readiness_runners),
             return_exceptions=True)
         failures = [outcome for outcome in outcomes if isinstance(outcome, BaseException)]
         if failures:
@@ -131,6 +152,16 @@ def build_community_worker_registry(
         if readiness_pool is not None:
             await asyncio.to_thread(readiness_pool.shutdown, wait=True,
                 cancel_futures=True)
+
+    async def observe_readiness_stopped(_runner):
+        for runner in readiness_runners:
+            await runner.observe_stopped()
+        if readiness_pool is not None:
+            await asyncio.to_thread(readiness_pool.shutdown, wait=True,
+                                    cancel_futures=True)
+
+    async def observe_runner_stopped(runner):
+        await runner.observe_stopped()
 
     event_processor = DomainEventDeliveryProcessor(
         CommunitySqlAlchemyDomainEventDeliveryStore(
@@ -190,9 +221,10 @@ def build_community_worker_registry(
         name="community.kg.outbox_runner",
         interval_seconds=5.0,
         operation_name="process_once",
-        final_iteration=True,
+        # Durable outbox intents remain queued for the next startup. Shutdown
+        # drains owned work but must not claim another batch after stop.
+        final_iteration=False,
         blocking_execution=outbox_blocking_execution,
-        final_iteration_guard=lambda: consolidation_runner.shutdown_drained,
     )
     registry = RuntimeWorkerRegistry()
     registry.register(
@@ -200,6 +232,7 @@ def build_community_worker_registry(
             family="readiness_projection_worker",
             start=start_readiness,
             stop=stop_readiness,
+            observe_stopped=observe_readiness_stopped,
             stop_priority=225,
         )
     )
@@ -208,6 +241,7 @@ def build_community_worker_registry(
             family="event_dispatcher",
             start=lambda: start_runner(event_runner),
             stop=stop_runner,
+            observe_stopped=observe_runner_stopped,
             stop_priority=300,
         )
     )
@@ -216,6 +250,7 @@ def build_community_worker_registry(
             family="board_erasure_worker",
             start=lambda: start_runner(board_erasure_runner),
             stop=stop_runner,
+            observe_stopped=observe_runner_stopped,
             stop_priority=275,
         )
     )
@@ -225,6 +260,7 @@ def build_community_worker_registry(
                 family="cleanup_worker",
                 start=lambda: start_runner(cleanup_runner),
                 stop=stop_runner,
+            observe_stopped=observe_runner_stopped,
                 stop_priority=100,
             )
         )
@@ -233,8 +269,9 @@ def build_community_worker_registry(
             family="consolidation_worker",
             start=lambda: start_runner(consolidation_runner),
             stop=stop_runner,
+            observe_stopped=observe_runner_stopped,
             # Join every in-flight consolidation/native graph write before
-            # the outbox runner performs its shutdown final iteration.
+            # draining the outbox runner's already-owned work.
             stop_priority=250,
         )
     )
@@ -243,6 +280,7 @@ def build_community_worker_registry(
             family="outbox_worker",
             start=lambda: start_runner(outbox_runner),
             stop=stop_runner,
+            observe_stopped=observe_runner_stopped,
             stop_priority=200,
         )
     )
@@ -253,4 +291,5 @@ __all__ = [
     "COMMUNITY_WORKER_BASELINE_FAMILIES",
     "COMMUNITY_WORKER_CAPABLE_FAMILIES",
     "build_community_worker_registry",
+    "community_worker_shutdown_budget_seconds",
 ]

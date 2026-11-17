@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 from concurrent.futures.process import BrokenProcessPool
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 import gc
 import hashlib
@@ -151,19 +151,40 @@ def _build_with_predecessor(snapshot, revision, deadline, candidate, *, phase_me
     return generation, "full"
 
 
-def _register_projection_evidence_verifier(evidence_root):
-    """Use the installation's durable evidence ledger in a spawned child."""
-    if evidence_root is not None:
-        from okto_pulse.core.ports.test_evidence import register_test_evidence_write_verifier
-        from .test_evidence import CommunityEvidenceLedger, CommunityTestEvidenceWriteVerifier
+@contextmanager
+def _projection_verifier_scope(evidence_root):
+    """Bind verification reads in a spawned process, without evidence issuers.
+
+    Spawn does not inherit the API's ContextVars. The parent supplies the
+    installation ledger location; clients cannot declare verifier capability.
+    Constructing the ledger is read-only, including when its key is absent.
+    """
+    if evidence_root is None:
+        yield
+        return
+    from okto_pulse.core.composition import isolated_runtime_provider_scope
+    from okto_pulse.core.ports.application_persistence import register_application_persistence_port
+    from okto_pulse.core.ports.test_evidence import register_test_evidence_write_verifier
+    from okto_pulse.core.ports.verification_currentness import (
+        register_verification_currentness_store_factory,
+    )
+    from .sqlalchemy_verification_currentness import CommunityVerificationCurrentnessStore
+    from .sqlalchemy_application_persistence import CommunitySqlAlchemyApplicationPersistence
+    from .test_evidence import CommunityEvidenceLedger, CommunityTestEvidenceWriteVerifier
+
+    with isolated_runtime_provider_scope():
+        # Amendment attribution resolves its exact regression basis through the
+        # application port. Spawn has no API composition to supply that reader.
+        register_application_persistence_port(CommunitySqlAlchemyApplicationPersistence())
+        register_verification_currentness_store_factory(CommunityVerificationCurrentnessStore)
         register_test_evidence_write_verifier(CommunityTestEvidenceWriteVerifier(
             ledger=CommunityEvidenceLedger(evidence_root=Path(evidence_root))))
+        yield
 
 
 def _project_and_stage_from_database(database_path, claim, deadline, evidence_root=None):
     """Keep the large generation in one child until its rows are durable."""
     from .worker_runners import TrackedBlockingExecution
-    _register_projection_evidence_verifier(evidence_root)
 
     runner, engine = _projection_child_runtime(database_path)
     global _process_reader, _process_store
@@ -239,9 +260,13 @@ def _project_and_stage_from_database(database_path, claim, deadline, evidence_ro
             predecessor_ms, compute_ms, stage_ms, projection_mode,
             snapshot_phases, phases)
 
+    async def project_with_verifier():
+        with _projection_verifier_scope(evidence_root):
+            return await project_and_stage()
+
     gc.callbacks.append(observe_gc)
     try:
-        result = runner.run(project_and_stage())
+        result = runner.run(project_with_verifier())
     finally:
         gc.callbacks.remove(observe_gc)
     snapshot_phases = result[8]
@@ -266,7 +291,8 @@ def _stage_from_database(database_path, claim, generation):
 
 class ReadinessProjectionProcessor:
     def __init__(self, engine, blocking_execution, *, full_projection_executor=None,
-                 database_path=None, evidence_root=None, maintenance_enabled=True, max_inflight=1):
+                 database_path=None, maintenance_enabled=True, max_inflight=1,
+                 evidence_root=None):
         self.store = CommunityPersistedReadinessStore(engine)
         self.reader = CommunityDeliveryReadinessReader(engine, clock=CommunityReadinessClock())
         self.blocking_execution = blocking_execution
@@ -383,7 +409,15 @@ class ReadinessProjectionProcessor:
                 self._last_lag_warning = 0.0
         if self._gc_backlog or monotonic() - self._last_gc >= 5:
             phase_started = monotonic()
-            self._gc_backlog = await self.store.gc_once()
+            try:
+                self._gc_backlog = await self.store.gc_once()
+            except Exception as exc:
+                # Retention is optional for publishing current generations.
+                # Its transaction rolls back on failure; retry on the normal
+                # maintenance interval without starving pending projections.
+                # CancelledError must still leave the worker immediately.
+                self._gc_backlog = False
+                logger.warning('readiness.gc_deferred code=%s', _error_code(exc))
             gc_ms = (monotonic() - phase_started) * 1000
             self._last_gc = monotonic()
         if reconcile_ms or queue_ms or gc_ms:

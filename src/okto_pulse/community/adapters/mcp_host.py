@@ -13,10 +13,11 @@ import functools
 import inspect
 import json
 import logging
+import sqlite3
 import time
 from collections.abc import Mapping
 from types import MappingProxyType
-from typing import Any
+from typing import Any, get_args
 
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_http_request
@@ -29,6 +30,8 @@ from mcp.types import (
     TextContent,
 )
 from pydantic import ValidationError
+from pydantic_core import ErrorType
+from sqlalchemy.exc import OperationalError
 from starlette.requests import Request
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -346,6 +349,30 @@ def _project_transport_tool_result(
     )
 
 
+def _sqlite_contention_outcome(exc: OperationalError) -> McpToolOutcome | None:
+    """Sanitize known SQLite contention without promising safe mutation replay."""
+    original = exc.orig
+    if not isinstance(original, sqlite3.OperationalError):
+        return None
+    code = getattr(original, "sqlite_errorcode", None)
+    if isinstance(code, int):
+        busy = code & 0xFF in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+    else:
+        busy = str(original).strip().casefold() in {
+            "database is locked", "database table is locked", "sqlite_busy", "sqlite_locked",
+        }
+    if not busy:
+        return None
+    # The handler has unwound, but may have committed an earlier effect. Do not
+    # claim rollback/no mutation, mark it safe to replay, or retry it here.
+    return McpToolOutcome.error(
+        code="persistence_busy",
+        message="Database is busy. Check the current state before retrying this operation.",
+        retryable=False,
+        next_action={"rel": "verify_current_state_before_retry"},
+    )
+
+
 def _transport_tool(fn: Any, *, tool_name: str):
     """Adapt a Core semantic outcome to a concrete MCP ``CallToolResult``.
 
@@ -357,9 +384,15 @@ def _transport_tool(fn: Any, *, tool_name: str):
 
     @functools.wraps(fn)
     async def invoke(*args: Any, **kwargs: Any) -> _OutcomeToolResult:
-        result = fn(*args, **kwargs)
-        if inspect.isawaitable(result):
-            result = await result
+        try:
+            result = fn(*args, **kwargs)
+            if inspect.isawaitable(result):
+                result = await result
+        except OperationalError as exc:
+            result = _sqlite_contention_outcome(exc)
+            if result is None:
+                raise
+            logger.warning("mcp.persistence_busy tool=%s", tool_name)
         return await asyncio.to_thread(
             _project_transport_tool_result,
             result,
@@ -395,28 +428,85 @@ class _OutcomeToolResult(ToolResult):
 class _OutcomeValidationMiddleware(Middleware):
     """Turn FastMCP/Pydantic argument failures into the same V2 envelope."""
 
-    def __init__(self, *, board_id_bounded_tools: frozenset[str]) -> None:
+    def __init__(self, *, board_id_bounded_tools: frozenset[str],
+                 schemas: Mapping[str, dict[str, Any]] | None = None) -> None:
         self._board_id_bounded_tools = board_id_bounded_tools
+        self._location_fields: dict[str, frozenset[str]] = {}
+        for tool_name, schema in (schemas or {}).items():
+            fields = {"profile", "board_id"}
+            pending = [schema]
+            while pending:
+                node = pending.pop()
+                if isinstance(node, dict):
+                    properties = node.get("properties")
+                    if isinstance(properties, dict):
+                        fields.update(properties)
+                    pending.extend(node.values())
+                elif isinstance(node, list):
+                    pending.extend(node)
+            self._location_fields[tool_name] = frozenset(fields)
 
-    @staticmethod
     def _validation_result(
+        self,
         *,
         tool_name: str,
         arguments: dict[str, Any],
         issues: list[dict[str, Any]],
     ) -> ToolResult:
-        outcome = McpToolOutcome.error(
-            code="validation_failed",
-            message="Invalid tool arguments",
-            payload={"issues": issues},
-            details={"issues": issues},
-        )
-        structured = outcome.structured_content(tool_name=tool_name)
+        # Pydantic ctx can contain exceptions, and even msg/type/loc can echo
+        # submitted secrets. Project only schema-owned field names, positional
+        # indexes, known error codes and fixed English messages.
+        fields = self._location_fields.get(tool_name, frozenset({"profile", "board_id"}))
+        known_types = frozenset(get_args(ErrorType)) | {"unsupported_projection"}
+        safe_issues = []
+        truncated = len(issues) > 25
+        messages = {
+            "missing": "Field is required.",
+            "missing_argument": "Argument is required.",
+            "missing_keyword_only_argument": "Argument is required.",
+            "extra_forbidden": "Unexpected field; remove it from the request.",
+            "unsupported_projection": "Unsupported projection profile: legacy",
+        }
+        for issue in issues[:25]:
+            location = issue.get("loc", ())
+            truncated |= len(location) > 12
+            safe_location = []
+            for segment in location[:12]:
+                if type(segment) is str and segment in fields:
+                    # Bound escaped Unicode as well as characters so one
+                    # diagnostic can always fit the wire budget.
+                    if len(json.dumps(segment).encode("utf-8")) > 128:
+                        truncated = True
+                        safe_location.append("<field>")
+                    else:
+                        safe_location.append(segment)
+                elif type(segment) is int and 0 <= segment < 1_000_000:
+                    safe_location.append(segment)
+                else:
+                    safe_location.append("<item>")
+            code = issue.get("type")
+            code = code if type(code) is str and code in known_types else "custom_validation"
+            safe_issues.append({"loc": safe_location, "type": code,
+                "msg": messages.get(code, "Value does not satisfy this field's validation rules.")})
+        # Count both copies in the actual MCP envelope: text content and
+        # structuredContent. Keep the legacy data/details shape compatible.
+        while True:
+            payload = {"issues": safe_issues, "total_issues": len(issues), "issues_truncated": truncated}
+            outcome = McpToolOutcome.error(code="validation_failed", message="Invalid tool arguments",
+                                            payload=payload, details=payload)
+            structured = outcome.structured_content(tool_name=tool_name[:128])
+            encoded = json.dumps(structured, separators=(",", ":"))
+            wire = json.dumps({"content": [{"type": "text", "text": encoded}],
+                               "structuredContent": structured, "isError": True}, separators=(",", ":"))
+            if len(wire.encode("utf-8")) <= 16 * 1024 or not safe_issues:
+                break
+            safe_issues.pop()
+            truncated = True
         return _OutcomeToolResult(
             content=[
                 TextContent(
                     type="text",
-                    text=json.dumps(structured, separators=(",", ":")),
+                    text=encoded,
                 )
             ],
             structured_content=structured,
@@ -448,7 +538,7 @@ class _OutcomeValidationMiddleware(Middleware):
             try:
                 validate_community_board_id(arguments["board_id"])
             except ValidationError as exc:
-                issues = exc.errors(include_url=False, include_input=False)
+                issues = exc.errors(include_url=False, include_input=False, include_context=False)
                 for issue in issues:
                     issue["loc"] = ("board_id", *issue.get("loc", ()))
                 return self._validation_result(
@@ -470,7 +560,7 @@ class _OutcomeValidationMiddleware(Middleware):
                     {"success": False, **projected.payload(), "status_code": projected.status_code},
                     tool_name=tool_name,
                 )
-            issues = exc.errors(include_url=False, include_input=False)
+            issues = exc.errors(include_url=False, include_input=False, include_context=False)
             return self._validation_result(
                 tool_name=tool_name,
                 arguments=arguments,
@@ -748,6 +838,7 @@ class CommunityMcpHostProvider:
         host.add_middleware(
             _OutcomeValidationMiddleware(
                 board_id_bounded_tools=board_id_bounded_tools,
+                schemas={tool.name: tool.parameters for tool in catalog_tools},
             )
         )
         admission_controller = McpAdmissionController(self._admission_policy)

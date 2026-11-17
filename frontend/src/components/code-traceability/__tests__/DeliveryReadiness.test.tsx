@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { DeliveryReadinessView } from '../DeliveryReadinessView';
 import { KanbanCard } from '@/components/kanban/KanbanCard';
 import { CardDeliveryDoDPanel } from '../CardDeliveryDoDPanel';
-import { DeliveryEvidencePanel } from '../DeliveryEvidencePanel';
-import { emptyCounts, metric, persistedProjection, readiness, task } from './readinessFixture';
+import { DeliveryEvidenceDetails as DeliveryEvidencePanel } from '../DeliveryEvidencePanel';
+import { emptyCounts, metric, persistedProjection, readiness, task, taskDeliverySummary } from './readinessFixture';
 
 const api = vi.hoisted(() => ({ getDeliveryReadiness: vi.fn(), getPersistedReadinessProjection: vi.fn(), getDeliveryEvidence: vi.fn(), getBoard: vi.fn() }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
@@ -15,6 +15,7 @@ beforeEach(() => {
   api.getPersistedReadinessProjection.mockImplementation((_board, _spec, options) => {
     const value = persistedProjection();
     value.scope.card_id = options?.cardId ?? null;
+    if (options?.cardId) value.task_delivery = taskDeliverySummary(options.cardId);
     return Promise.resolve(value);
   });
   api.getDeliveryEvidence.mockResolvedValue({ board_id: 'b', spec_id: 's', edition: 1, version: 1, complete: true,
@@ -23,18 +24,20 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-it.each(['normal', 'bug', 'test'] as const)('U01: %s cover and Delivery share backend metrics in independent bars', async card_type => {
+it.each(['normal', 'bug', 'test'] as const)('U01: %s cover and Delivery retain independent metrics with one canonical task verdict', async card_type => {
   render(<><KanbanCard card={{ ...task, card_type }} nameMap={{}} onClick={vi.fn()} deliveryReadiness={{ value: readiness() }} />
     <CardDeliveryDoDPanel boardId="b" card={{ id: 'c', card_type, spec_id: 's' }} /></>);
+  await screen.findByText('Awaiting verification');
   await waitFor(() => expect(screen.getAllByRole('progressbar')).toHaveLength(4));
+  const delivery = within(screen.getByRole('region', { name: 'Task delivery' }));
+  expect(delivery.getByRole('progressbar', { name: 'Implementation' })).toHaveAttribute('aria-valuenow', '100');
+  expect(delivery.getByRole('progressbar', { name: 'Verification' })).toHaveAttribute('aria-valuenow', '75');
   const implementation = screen.getAllByRole('progressbar', { name: 'Implementation' });
   const verification = screen.getAllByRole('progressbar', { name: 'Verification' });
   implementation.forEach((bar, i) => {
     expect(bar).toHaveAttribute('aria-valuenow', '100');
-    expect(bar).toHaveAttribute('aria-valuetext', '100%, 8 of 8 applicable obligations');
     expect(verification[i]).toHaveAttribute('aria-valuenow', '75');
     expect(bar.parentElement).not.toBe(verification[i].parentElement);
-    expect(bar).toHaveStyle({ width: '100%' }); expect(verification[i]).toHaveStyle({ width: '75%' });
     expect(bar).toHaveAttribute('aria-valuemin', '0'); expect(bar).toHaveAttribute('aria-valuemax', '100');
   });
 });

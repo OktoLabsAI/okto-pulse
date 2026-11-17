@@ -149,9 +149,10 @@ async def composed(db, request):
         publish_domain_event=publish,
         agents=SimpleNamespace(agent_has_board_access=AsyncMock(return_value=True)),
     )
-    uow = SimpleNamespace(
-        services=services, commit=AsyncMock(side_effect=session.commit)
-    )
+    from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWork
+    transaction = CommunityUnitOfWork(session)
+    uow = SimpleNamespace(services=services, begin_write=transaction.begin_write,
+        commit=AsyncMock(side_effect=transaction.commit), rollback=AsyncMock(side_effect=transaction.rollback))
     origin = SubmitImplementationTargetExecutionUseCase(
         CodeInvestigationService(), ImplementationTargetService()
     )

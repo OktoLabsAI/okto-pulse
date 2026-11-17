@@ -12,7 +12,15 @@ from okto_pulse.community.adapters.test_evidence import (
     CommunityTestEvidenceWriteVerifier, CommunityTestEvidenceError,
 )
 from okto_pulse.core.models.schemas import TestScenarioEvidence as Evidence
+from okto_pulse.core.domain.verification_currentness import VerificationContext
 from okto_pulse.core.ports.test_evidence import TestEvidenceExecutionRequest as Request
+
+
+def issuance_context(*, board_id="board"):
+    """Typed input at the issuer boundary; this fixture grants no native authority."""
+    return VerificationContext(board_id=board_id, spec_id="spec", spec_edition=1,
+        scenario_id="scenario", scenario_sha256="a" * 64, verification_method="automated_test",
+        generation=1, ordinal=1, reservation_id="external-runner-adapter-fixture")
 
 
 @pytest.fixture
@@ -50,6 +58,7 @@ def setup(tmp_path, project, test="test_pass", timeout=60):
     issuer = CommunityTestEvidenceExecutionIssuer(ledger=ledger, executor=no_http)
     request = Request(board_id="board", spec_id="spec", scenario_id="scenario", status="passed",
         manifest_ref=None, actor_id="agent", scenario_sha256="sha256:" + "a" * 64,
+        verification_context=issuance_context(),
         inline_replay={"runner_ref": "example", "revision": revision})
     return ledger, issuer, request
 
@@ -68,6 +77,7 @@ async def test_real_external_run_receipt_and_typed_roundtrip(tmp_path, project):
     result = await issuer.execute(request)
     evidence = Evidence.model_validate(result.evidence).model_dump(exclude_none=True)
     assert verify(ledger, request, evidence).verified
+    assert evidence["verification_context"] == request.verification_context.model_dump(mode="json")
     basis = evidence["execution_attestation"]["execution_basis"]
     assert basis["revision"] == project[1]
     assert basis["source_ref"] == "source-example"
@@ -86,7 +96,9 @@ async def test_real_external_run_receipt_and_typed_roundtrip(tmp_path, project):
 @pytest.mark.parametrize("test,reason", [("test_skip", "incomplete_run"), ("missing", "runner_setup_failed"),
                                       ("test_fail", "invalid_execution_observation"), ("test_timeout", "timeout_no_receipt")])
 async def test_nonpassing_never_receives_passed_receipt(tmp_path, project, test, reason):
-    ledger, issuer, request = setup(tmp_path, project, test, timeout=1)
+    # Only the timeout case needs a one-second deadline. Other cases must reach
+    # their intended observation even when Windows process startup is slow.
+    ledger, issuer, request = setup(tmp_path, project, test, timeout=1 if test == "test_timeout" else 60)
     with pytest.raises(CommunityTestEvidenceError, match=reason):
         await issuer.execute(request)
     assert not ledger.receipt_root.exists()
@@ -119,7 +131,8 @@ async def test_profile_cannot_be_used_by_another_scope(tmp_path, project):
     from dataclasses import replace
     ledger, issuer, request = setup(tmp_path, project)
     with pytest.raises(CommunityTestEvidenceError, match="profile_scope_mismatch"):
-        await issuer.execute(replace(request, board_id="other"))
+        await issuer.execute(replace(request, board_id="other",
+            verification_context=issuance_context(board_id="other")))
     assert not ledger.receipt_root.exists()
 
 
@@ -171,6 +184,7 @@ async def test_long_profile_runs_real_subprocess_and_remote_cannot_extend_it(tmp
     issuer = CommunityTestEvidenceExecutionIssuer(ledger=ledger, executor=lambda *_: None)
     request = Request(board_id="board", spec_id="spec", scenario_id="scenario", status="passed",
                       manifest_ref=None, actor_id="agent", scenario_sha256="sha256:" + "a" * 64,
+                      verification_context=issuance_context(),
                       inline_replay={"runner_ref": "long", "revision": revision})
     for forbidden in ({"timeout_seconds": 3600}, {"timeout_authorization": "local-long-running/v1"}):
         with pytest.raises(CommunityTestEvidenceError, match="request_requires"):
@@ -229,6 +243,7 @@ class PairedCases(unittest.TestCase):
     issuer = CommunityTestEvidenceExecutionIssuer(ledger=ledger, executor=lambda *_: None)
     request = Request(board_id="board", spec_id="spec", scenario_id="scenario", status="passed",
         manifest_ref=None, actor_id="agent", scenario_sha256="sha256:" + "a" * 64,
+        verification_context=issuance_context(),
         inline_replay={"runner_ref": "paired", "revision": primary_revision})
     result = await issuer.execute(request)
     evidence = Evidence.model_validate(result.evidence).model_dump(exclude_none=True)

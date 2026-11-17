@@ -1,6 +1,6 @@
 [project]
 name = "okto-pulse"
-version = "0.4.2"
+version = "0.4.3"
 description = "Okto Pulse — spec-driven project management with AI agents via MCP. Local-first, single command setup."
 requires-python = ">=3.11"
 license = {text = "Elastic-2.0"}
@@ -26,12 +26,13 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-    "okto-pulse-core==0.4.2",
+    "okto-pulse-core==0.4.3",
     "orjson>=3.11.0,<4.0.0",
     # 0.137.0 regressed include_router for empty collection paths; 0.137.1 fixed it.
     "fastapi>=0.109.0,!=0.137.0,<1.0.0",
     "starlette>=0.35.0,<2.0.0",
     "pydantic>=2.12.0,<2.14",
+    "pydantic-core>=2.14.1,<3.0.0",
     "pydantic-settings>=2.1.0,<3.0.0",
     "python-multipart>=0.0.6,<1.0.0",
     # Emergency recovery fingerprints require the vetted release build exactly.
@@ -82,7 +83,7 @@ okto-pulse-saas-closure = "okto_pulse.community.saas_closure:main"
 
 [tool.uv.sources]
 # Resolve the sibling source tree during paired local development. Release wheels
-# retain the exact okto-pulse-core==0.4.2 dependency declared above.
+# retain the exact okto-pulse-core==0.4.3 dependency declared above.
 okto-pulse-core = { path = "../okto-pulse-core", editable = true }
 
 [build-system]

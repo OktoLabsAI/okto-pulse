@@ -66,6 +66,7 @@ from okto_pulse.community.api.validation_cycles import (
 )
 from okto_pulse.community.api.resource_gate import router as resource_gate_router
 from okto_pulse.community.api.entity_exports import router as entity_exports_router
+from okto_pulse.community.api.task_requirement_decisions import router as task_requirement_decisions_router
 
 api_router = APIRouter(prefix="/api/v1")
 
@@ -79,6 +80,7 @@ api_router.include_router(checklists_router, tags=["checklists"])
 api_router.include_router(quality_assessments_router, tags=["quality-assessments"])
 api_router.include_router(validation_cycles_router, tags=["validation-cycles"])
 api_router.include_router(entity_exports_router, tags=["entity-exports"])
+api_router.include_router(task_requirement_decisions_router, tags=['task-requirements'])
 api_router.include_router(allowed_transitions_router, tags=["allowed-transitions"])
 # `default_board_config_router` MUST be registered before `guidelines_router`: it owns
 # the literal GET /guidelines/default-candidates, which would otherwise be shadowed by

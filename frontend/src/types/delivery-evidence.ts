@@ -44,6 +44,7 @@ export interface DeliveryEvidenceProjection {
     implementation_ids: string[]; test_ids: string[];
     implementation_waiver_ids: string[]; test_waiver_ids: string[];
     implementation_satisfied: boolean; test_satisfied: boolean;
+    not_required?: boolean;
     decision_verification_status?: string | null;
     decision_review_ids?: string[];
     required_card_ids?: string[];
@@ -163,16 +164,22 @@ export interface CardLedgerPage {
   current_edition: number; historical: boolean; total: number;
   next_cursor: string | null;
   items: Array<{ id: string; kind: string; actor_id: string; created_at: string;
+    can_correct?: boolean;
     revoked: boolean; summary: string; text_truncated: boolean;
     obligation_refs: string[]; obligations_truncated: boolean;
     currentness: 'not_evaluated';
     payload?: { contributions?: Array<{ obligation_ref: string; contribution: string }>;
+      human_submission?: { remaining?: string; action: string; receipt: {
+        id: string; received_at: string; content_sha256: string; supersedes_submission_id?: string | null;
+      } };
       execution_id?: string; scenario_id?: string; test_result?: string;
       progress?: { remaining: string; source_state: { workspace_state: string; recoverability: string } } };
   }>;
 }
 
 export interface DeliveryPerCard {
+  requirement?: { decision: import('./task-requirement').TaskRequirementChoice;
+    decision_id: string | null; edition: number; current: boolean };
   complete?: boolean;
   delivery_completeness?: DeliveryCompleteness | null;
   card_id: string;

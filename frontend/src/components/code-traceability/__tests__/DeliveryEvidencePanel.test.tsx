@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { DeliveryEvidencePanel } from '../DeliveryEvidencePanel';
+// Detailed evidence remains independently covered behind the new summary.
+import { DeliveryEvidenceDetails as DeliveryEvidencePanel } from '../DeliveryEvidencePanel';
 import type { DeliveryEvidenceProjection } from '@/types/delivery-evidence';
 import { persistedProjection, readiness } from './readinessFixture';
 import { AuthenticatedFetchError } from '@/lib/authFetch';
@@ -12,6 +13,8 @@ const api = vi.hoisted(() => ({
   recordDeliveryEvidence: vi.fn(),
   recordCardDeliveryEvidence: vi.fn(),
   getBoard: vi.fn(),
+  getTaskRequirementOptions: vi.fn(),
+  applyTaskRequirementDecision: vi.fn(),
 }));
 vi.mock('@/services/api', () => ({ useDashboardApi: () => api }));
 
@@ -38,14 +41,49 @@ beforeEach(() => {
   api.getPersistedReadinessProjection.mockResolvedValue(persistedProjection());
   api.getDeliveryReadiness.mockResolvedValue(readiness(null));
   api.getBoard.mockResolvedValue({ id: 'b', settings: { delivery_evidence_gate: 'blocking' } });
+  api.getTaskRequirementOptions.mockImplementation((_b, _s, ids) => Promise.resolve({
+    contract_version: 'task-requirement-options/v1', board_id: 'b', spec_id: 's',
+    basis: 'a'.repeat(64), can_apply: true, allowed_decisions: ['required', 'optional', 'waived'],
+    cards: ids.map((id: string) => ({ card_id: id, title: id, decision: 'required', mutable: true })),
+    effects: { dependent_tasks: [], test_scenarios_remain_governed: false } }));
+  api.applyTaskRequirementDecision.mockImplementation((_b, _s, body) => Promise.resolve({
+    contract_version: 'task-requirement-operation/v1', status: 'applied', decision: body.decision,
+    affected_cards: body.card_ids, replayed: false }));
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 function renderDetailed(view: React.ReactElement) {
   const result = render(view);
   fireEvent.click(screen.getByRole('button', { name: 'Show detailed evidence' }));
   return result;
 }
+
+it('selects several tasks directly from the Spec entry without opening evidence Details', async () => {
+  const options = api.getTaskRequirementOptions.getMockImplementation()!;
+  const lookups: Array<() => Promise<void>> = [];
+  api.getTaskRequirementOptions.mockImplementation((...args) => new Promise(resolve => {
+    lookups.push(async () => { resolve(await options(...args)); });
+  }));
+  render(<DeliveryEvidencePanel boardId="b" specId="s" canManageTaskRequirements />);
+  expect(api.getDeliveryEvidence).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Change task requirements' }));
+  fireEvent.click(await screen.findByRole('checkbox', { name: 'TASK-142 — Re-anchor delivery bindings' }));
+  fireEvent.click(screen.getByRole('checkbox', { name: 'TASK-143 — Rollup aggregation query' }));
+  expect(lookups).toHaveLength(2);
+  // Settle the selected pair first, then the aborted single-task lookup.
+  // This explicitly exercises async isolation without timing assumptions.
+  await act(async () => { await lookups[1](); await lookups[0](); });
+  await waitFor(() => expect(screen.getByLabelText('Requirement')).toBeEnabled());
+  fireEvent.change(screen.getByLabelText('Requirement'), { target: { value: 'waived' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Save task requirement' }));
+  await screen.findByText('Task requirement saved. Work status and proof are unchanged.');
+  expect(api.applyTaskRequirementDecision).toHaveBeenCalledOnce();
+  expect(api.applyTaskRequirementDecision.mock.calls[0][2]).toMatchObject({ card_ids: ['task-1', 'task-2'], decision: 'waived', note: null });
+  // Refreshing the delivery projection keeps the accepted form mounted. It
+  // does not perform another requirement lookup just to confirm the write.
+  expect(api.getTaskRequirementOptions).toHaveBeenCalledTimes(2);
+  expect(screen.getByRole('button', { name: 'Show detailed evidence' })).toBeInTheDocument();
+});
 
 it('supports the operator legacy read mode in the same binary', async () => {
   vi.stubGlobal('OKTO_PULSE_CONFIG', { READINESS_READ_MODE: 'legacy' });
@@ -447,4 +485,55 @@ it('clears the previous gate mode when a different Board cannot be read', async 
   await waitFor(() => expect(api.getBoard).toHaveBeenLastCalledWith('other'));
   expect(await screen.findByText(/Unknown/)).toBeInTheDocument();
   expect(screen.queryByText(/Advisory/)).not.toBeInTheDocument();
+});
+
+it('reuses the Coverage assessment with no duplicate refresh, polling or focus reads', async () => {
+  vi.useFakeTimers();
+  const value = persistedProjection(); value.projection.freshness = 'updating';
+  render(<DeliveryEvidencePanel boardId="b" specId="s" revision="1"
+    externalRead={{ projection: value, loading: false, onChanged: vi.fn() }} />);
+  await act(async () => { await Promise.resolve(); });
+  expect(screen.queryByRole('button', { name: /refresh/i })).not.toBeInTheDocument();
+  await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+  fireEvent(window, new Event('focus')); fireEvent(document, new Event('visibilitychange'));
+  expect(api.getPersistedReadinessProjection).not.toHaveBeenCalled();
+  expect(api.getDeliveryReadiness).not.toHaveBeenCalled();
+  expect(api.getDeliveryEvidence).not.toHaveBeenCalled();
+  expect(api.getBoard).toHaveBeenCalledOnce();
+});
+
+it('keeps explicit evidence available while the modal owns assessment refresh', async () => {
+  const current = persistedProjection();
+  const externalRead = { projection: current, loading: false, onChanged: vi.fn() };
+  const view = render(<DeliveryEvidencePanel boardId="b" specId="s" revision="1" externalRead={externalRead} />);
+  await screen.findByText(/Gate: Blocking/);
+  fireEvent.click(screen.getByRole('button', { name: 'Show detailed evidence' }));
+  await screen.findByTestId('delivery-detailed-coverage-table');
+  expect(api.getDeliveryEvidence).toHaveBeenCalledOnce();
+  expect(api.getBoard).toHaveBeenCalledOnce();
+  expect(api.getPersistedReadinessProjection).not.toHaveBeenCalled();
+  const next = persistedProjection(); next.projection.generation_id = 'new-generation';
+  view.rerender(<DeliveryEvidencePanel boardId="b" specId="s" revision="2"
+    externalRead={{ ...externalRead, projection: next }} />);
+  await waitFor(() => expect(api.getDeliveryEvidence).toHaveBeenCalledTimes(2));
+  expect(api.getPersistedReadinessProjection).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: /refresh/i })).not.toBeInTheDocument();
+});
+
+it('loads diagnostics once on demand and reports a generation conflict without an automatic retry', async () => {
+  vi.useFakeTimers();
+  const detail = readiness(null);
+  detail.projection = { projection_version: 1, generation_id: 'changed-generation', snapshot_id: 'a'.repeat(64) };
+  api.getDeliveryReadiness.mockResolvedValue(detail);
+  render(<DeliveryEvidencePanel boardId="b" specId="s" revision="1"
+    externalRead={{ projection: persistedProjection(), loading: false, onChanged: vi.fn() }} />);
+  await act(async () => { await Promise.resolve(); });
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'What is missing?' })));
+  expect(api.getDeliveryReadiness).toHaveBeenCalledOnce();
+  expect(screen.getByText('The assessment changed. Use Refresh in the Spec modal.')).toBeVisible();
+  await act(async () => { await vi.advanceTimersByTimeAsync(60000); });
+  fireEvent(window, new Event('focus'));
+  expect(api.getDeliveryReadiness).toHaveBeenCalledOnce();
+  expect(api.getPersistedReadinessProjection).not.toHaveBeenCalled();
+  expect(api.getDeliveryEvidence).not.toHaveBeenCalled();
 });

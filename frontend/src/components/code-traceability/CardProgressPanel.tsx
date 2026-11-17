@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useDashboardApi } from '@/services/api';
 import { CardProgressHistory } from './CardProgressHistory';
 import { CardResumePanel } from './CardResumePanel';
+import { ContextualHelpLink } from '@/components/help/ContextualHelpLink';
 import { DeliveryDisclosure, deliveryButton, deliveryError, deliveryField, deliveryNotice, deliverySection } from './deliveryPresentation';
 import type { CardDeliveryBatchInput, CardDeliveryBatchDraft, DeliveryPerCard } from '@/types/delivery-evidence';
 
@@ -57,6 +58,7 @@ export function CardProgressPanel({ boardId, specId, edition, card, canWrite, re
   }
 
   return <section aria-label="Recorded progress" className="space-y-4">
+    <ContextualHelpLink sectionId="delivery-progress" className="text-xs">How task progress works</ContextualHelpLink>
     <div><h3 className="text-sm font-semibold text-gray-800 dark:text-gray-100">Recorded progress</h3>
     <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Declared work does not complete this card or satisfy delivery gates. Recovery is limited to confirmed records and material you can access.</p></div>
     {!onStage && !card.progress?.items.length && <div className="rounded-lg border border-dashed border-gray-300 p-5 text-center text-xs text-gray-500 dark:border-gray-600 dark:text-gray-400">No progress checkpoints recorded yet.</div>}

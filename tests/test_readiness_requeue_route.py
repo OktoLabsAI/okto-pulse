@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from okto_pulse.community.api import code_traceability
 from okto_pulse.community.api.auth_deps import require_principal
-from okto_pulse.community.api.deps import get_unit_of_work
+from okto_pulse.community.api.deps import get_read_unit_of_work, get_unit_of_work
 from okto_pulse.core.models.delivery_evidence import ReadinessRequeueCommand
 from okto_pulse.core.ports.authentication import Principal
 from okto_pulse.core.ports.delivery_readiness import ReadinessReadError
@@ -17,6 +17,7 @@ def _client():
     app.dependency_overrides[require_principal] = lambda: Principal(
         subject="owner", realm_id="local")
     app.dependency_overrides[get_unit_of_work] = lambda: object()
+    app.dependency_overrides[get_read_unit_of_work] = lambda: object()
     return TestClient(app)
 
 
@@ -49,3 +50,15 @@ def test_requeue_conflict_is_http_409():
     error = code_traceability._http_error(ReadinessReadError("readiness_requeue_conflict"))
     assert error.status_code == 409
     assert error.detail["code"] == "readiness_requeue_conflict"
+
+
+def test_both_requeue_routes_leave_writer_admission_to_the_atomic_store():
+    # The store opens its own BEGIN IMMEDIATE connection. A request writer
+    # reservation would deadlock it against the handler's own transaction.
+    routes = [route for route in code_traceability.router.routes
+              if route.path.endswith(('/readiness/requeue', '/delivery-readiness-projection/requeue'))]
+    assert len(routes) == 2
+    for route in routes:
+        dependencies = {dependency.call for dependency in route.dependant.dependencies}
+        assert get_read_unit_of_work in dependencies
+        assert get_unit_of_work not in dependencies

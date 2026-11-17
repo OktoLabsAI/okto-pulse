@@ -2069,6 +2069,7 @@ class CommunitySqlAlchemyValidationCycleReader:
         status = _value(subject.status)
         any_started = any(item.status not in {"not_started", "off"} for item in checks)
         planning = None
+        validation_summary = None
         if include_planning:
             # The public catalog binds native judgments to this read snapshot.
             # It does not create a UoW, register providers or own this transaction.
@@ -2077,6 +2078,21 @@ class CommunitySqlAlchemyValidationCycleReader:
             native_board = await services.boards.get_board(subject.board_id)
             planning = await services.specs.get_planning_readiness(
                 native_spec, native_board, can_read=access.has, can_act=access.has,
+            )
+            from okto_pulse.core.domain.spec_planning_readiness import build_spec_validation_summary
+            from okto_pulse.core.services.spec_planning_readiness import count_effective_planning_exceptions
+
+            policy_check = next((item for item in checks if item.result_type is ValidationCycleResultType.POLICY_COMPLIANCE), None)
+            policy_counts = None if policy_check is None else policy_check.details.get("counts")
+            validation_summary = build_spec_validation_summary(
+                planning=planning, edition=edition, subject_status=status,
+                current_validation_edition=None if current is None else current.subject_edition,
+                current_validation_outcome=None if current is None else current.status,
+                exception_count=count_effective_planning_exceptions(
+                    spec=native_spec, board=native_board, planning=planning,
+                    policy_counts=policy_counts, can_read_waivers=access.has("guidelines.waiver.read"),
+                ),
+                can_conclude=access.has("spec.validation.submit"),
             )
         manifest = None
         if validation_visible:
@@ -2124,6 +2140,7 @@ class CommunitySqlAlchemyValidationCycleReader:
             visible_sections=access.visible_sections,
             planning_manifest=manifest,
             planning_readiness=planning,
+            validation_summary=validation_summary,
         )
 
     async def _batch_spec_checks(

@@ -1,0 +1,111 @@
+- generic [ref=e1]:
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - generic [ref=e5]:
+        - generic [ref=e6]:
+          - button "Hide sidebar" [ref=e7] [cursor=pointer]
+          - img "Okto Pulse" [ref=e12]
+          - generic [ref=e77]: / okto pulse
+        - generic [ref=e78]:
+          - button "Refresh board" [ref=e79] [cursor=pointer]
+          - button [ref=e86] [cursor=pointer]
+    - generic [ref=e13]:
+      - complementary [ref=e14]:
+        - generic [ref=e15]:
+          - generic [ref=e17]:
+            - heading "Boards" [level=2] [ref=e18]
+            - button "New board" [ref=e19] [cursor=pointer]
+          - navigation [ref=e21]:
+            - generic [ref=e22]:
+              - heading "My Boards" [level=3] [ref=e23]
+              - list [ref=e90]:
+                - listitem [ref=e91]:
+                  - button "okto pulse" [ref=e92] [cursor=pointer]
+                - listitem [ref=e99]:
+                  - button "My Board" [ref=e100] [cursor=pointer]
+                - listitem [ref=e107]:
+                  - button "okto-grafx" [ref=e108] [cursor=pointer]
+      - main [ref=e26]:
+        - group "Board views" [ref=e115]:
+          - button "Stories" [pressed] [ref=e116] [cursor=pointer]
+          - button "Ideations" [ref=e120] [cursor=pointer]
+          - button "Refinements" [ref=e123] [cursor=pointer]
+          - button "Specs" [ref=e128] [cursor=pointer]
+          - button "Tasks" [ref=e133] [cursor=pointer]
+        - generic [ref=e140]:
+          - generic [ref=e141]:
+            - generic [ref=e142]:
+              - heading "Stories" [level=2] [ref=e143]
+              - generic [ref=e144]: (0 of 0)
+            - generic [ref=e145]:
+              - textbox "Search stories..." [ref=e147]
+              - group "View mode" [ref=e148]:
+                - button "List view" [pressed] [ref=e149] [cursor=pointer]
+                - button "Grid view" [ref=e151] [cursor=pointer]
+              - button "New Story" [ref=e157] [cursor=pointer]
+          - generic [ref=e159]:
+            - button "All" [ref=e160] [cursor=pointer]
+            - button "Draft" [ref=e161] [cursor=pointer]
+            - button "Triage" [ref=e162] [cursor=pointer]
+            - button "Ready" [ref=e163] [cursor=pointer]
+            - button "Converted" [ref=e164] [cursor=pointer]
+            - button "Show archived" [ref=e165] [cursor=pointer]
+          - generic [ref=e166]:
+            - complementary [ref=e167]:
+              - generic [ref=e168]:
+                - generic [ref=e169]: Topics
+                - button "New Topic" [ref=e174] [cursor=pointer]
+              - button "All topics 0" [ref=e177] [cursor=pointer]:
+                - generic [ref=e178]: All topics
+                - generic [ref=e179]: "0"
+            - generic [ref=e180]:
+              - generic [ref=e182]:
+                - paragraph [ref=e187]: No topics yet
+                - button "New Topic" [ref=e188] [cursor=pointer]
+              - generic [ref=e190]:
+                - status [ref=e191]:
+                  - text: No stories match the active filters.
+                  - generic [ref=e192]: 0 overall.
+                - generic [ref=e193]:
+                  - generic [ref=e194]:
+                    - generic [ref=e195]: Items per page
+                    - combobox "Items per page" [ref=e196]:
+                      - option "25" [selected]
+                      - option "50"
+                      - option "100"
+                  - navigation "Stories pagination" [ref=e197]:
+                    - generic [ref=e198]:
+                      - button "Previous page" [disabled] [ref=e199]: Previous
+                      - button "Next page" [disabled] [ref=e200]: Next
+    - 'status "Cognitive pipeline working: 1 running, 19 pending" [ref=e201]':
+      - generic [ref=e212]: 1 running · 19 pending
+    - status [ref=e213]:
+      - generic [ref=e214]:
+        - generic [ref=e215]: Consolidation in progress
+        - generic [ref=e216]: 0%
+      - generic [ref=e218]:
+        - generic [ref=e219]:
+          - generic [ref=e220]: Pending
+          - generic [ref=e221]: "19"
+        - generic [ref=e222]:
+          - generic [ref=e223]: Running
+          - generic [ref=e224]: "1"
+        - generic [ref=e225]:
+          - generic [ref=e226]: Processed
+          - generic [ref=e227]: "0"
+        - generic [ref=e228]:
+          - generic [ref=e229]: Paused
+          - generic [ref=e230]: "0"
+  - dialog [ref=e231]:
+    - generic [ref=e233]:
+      - paragraph [ref=e234]: Guided help
+      - paragraph [ref=e235]: 1 / 2
+    - heading "Move across work areas" [level=2] [ref=e236]
+    - paragraph [ref=e237]: Use the main tabs to switch between stories, ideations, refinements, specs, and task execution.
+    - generic [ref=e238]:
+      - generic [ref=e239]:
+        - button "Back" [disabled] [ref=e240]
+        - button "Skip step" [ref=e243] [cursor=pointer]
+      - generic [ref=e244]:
+        - button "Skip all" [ref=e245] [cursor=pointer]
+        - button "Next" [active] [ref=e246] [cursor=pointer]

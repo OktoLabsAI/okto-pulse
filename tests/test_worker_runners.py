@@ -496,7 +496,7 @@ async def test_consolidation_timeout_preserves_runner_and_native_handles() -> No
 
 
 @pytest.mark.asyncio
-async def test_polling_runner_propagates_cancelled_after_final_iteration() -> None:
+async def test_polling_runner_outer_cancellation_does_not_start_final_iteration() -> None:
     processor = _Processor()
     runner = PollingRunner(
         processor,
@@ -514,7 +514,95 @@ async def test_polling_runner_propagates_cancelled_after_final_iteration() -> No
     with pytest.raises(asyncio.CancelledError):
         await task
 
+    assert processor.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repeat_stop", [False, True])
+async def test_polling_runner_does_not_start_new_work_after_drain_deadline(
+    repeat_stop: bool,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    executor = TrackedBlockingExecution()
+    native_started = threading.Event()
+    native_release = threading.Event()
+    native_finished = threading.Event()
+
+    class _HeldNativeProcessor(_Processor):
+        async def process_once(self) -> int:
+            self.calls += 1
+            if self.calls == 1:
+                def native_operation() -> None:
+                    native_started.set()
+                    assert native_release.wait(timeout=5)
+                    native_finished.set()
+
+                await executor.run(native_operation)
+            return 0
+
+    processor = _HeldNativeProcessor()
+    runner = PollingRunner(
+        processor,
+        name="test.expired_final_iteration",
+        interval_seconds=60,
+        operation_name="process_once",
+        final_iteration=True,
+        blocking_execution=executor,
+    )
+    await runner.start()
+    task = runner._task
+    assert task is not None
+    try:
+        assert await asyncio.to_thread(native_started.wait, 1)
+        with pytest.raises(WorkerDrainIncomplete):
+            await runner.stop(timeout=0)
+        assert not task.done()
+        assert not native_finished.is_set()
+        assert executor.pending_count == 1
+        with pytest.raises(RuntimeError, match="previous task has drained"):
+            await runner.start()
+        assert runner._task is task
+        if repeat_stop:
+            # A second caller cannot give this already-expired stop a new
+            # final-work budget. The native operation stays owned throughout.
+            with pytest.raises(WorkerDrainIncomplete):
+                await asyncio.wait_for(runner.stop(timeout=1), timeout=0.5)
+        with caplog.at_level(logging.CRITICAL, logger="okto_pulse.community.workers"):
+            native_release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(asyncio.shield(task), timeout=1)
+        assert native_finished.is_set()
+        assert processor.calls == 1
+        assert await executor.join(1) == 0
+        assert any(
+            getattr(record, "reason", "") == "shutdown_deadline_expired"
+            for record in caplog.records
+        )
+    finally:
+        native_release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await executor.join(1)
+
+
+@pytest.mark.asyncio
+async def test_polling_runner_restart_receives_a_new_owned_stop_budget() -> None:
+    processor = _Processor()
+    runner = PollingRunner(
+        processor,
+        name="test.restart_final_iteration",
+        interval_seconds=60,
+        operation_name="process_once",
+        final_iteration=True,
+    )
+    await runner.start()
+    await asyncio.wait_for(processor.first_call.wait(), timeout=1)
+    await runner.stop(timeout=0.5)
     assert processor.calls == 2
+    processor.first_call.clear()
+    await runner.start()
+    await asyncio.wait_for(processor.first_call.wait(), timeout=1)
+    await runner.stop(timeout=0.5)
+    assert processor.calls == 4
 
 
 @pytest.mark.asyncio

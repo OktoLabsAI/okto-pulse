@@ -1,0 +1,292 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - generic [ref=e6]:
+        - button "Hide sidebar" [ref=e7] [cursor=pointer]
+        - img "Okto Pulse" [ref=e12]
+        - generic [ref=e31]: / My Board
+      - generic [ref=e32]:
+        - button "Refresh board" [ref=e33] [cursor=pointer]
+        - button [ref=e40] [cursor=pointer]
+  - generic [ref=e13]:
+    - complementary [ref=e14]:
+      - generic [ref=e15]:
+        - generic [ref=e17]:
+          - heading "Boards" [level=2] [ref=e18]
+          - button "New board" [ref=e19] [cursor=pointer]
+        - navigation [ref=e21]:
+          - generic [ref=e22]:
+            - heading "My Boards" [level=3] [ref=e23]
+            - list [ref=e44]:
+              - listitem [ref=e45]:
+                - button "okto pulse" [ref=e46] [cursor=pointer]
+              - listitem [ref=e53]:
+                - button "My Board" [ref=e54] [cursor=pointer]
+              - listitem [ref=e61]:
+                - button "okto-grafx" [ref=e62] [cursor=pointer]
+    - main [ref=e26]:
+      - group "Board views" [ref=e69]:
+        - button "Stories" [ref=e70] [cursor=pointer]
+        - button "Ideations" [ref=e74] [cursor=pointer]
+        - button "Refinements" [ref=e77] [cursor=pointer]
+        - button "Specs" [ref=e82] [cursor=pointer]
+        - button "Tasks" [pressed] [ref=e87] [cursor=pointer]
+      - generic [ref=e5031]:
+        - generic [ref=e5032]:
+          - textbox "Search cards…" [ref=e5034]
+          - button "Unlinked" [ref=e5037] [cursor=pointer]
+          - button "Filter specs..." [ref=e5039] [cursor=pointer]
+          - button "Show archived" [ref=e5043] [cursor=pointer]
+        - generic [ref=e5044]:
+          - generic [ref=e5045]:
+            - generic [ref=e5046]:
+              - generic [ref=e5048]:
+                - generic [ref=e5049]:
+                  - generic [ref=e5050]:
+                    - heading "Not Started" [level=3] [ref=e5051]
+                    - generic "0 total cards" [ref=e5052]: "0"
+                  - generic [ref=e5053]:
+                    - button "0 task cards" [pressed] [ref=e5054] [cursor=pointer]:
+                      - generic [ref=e5055]: Task
+                      - generic [ref=e5060]: "0"
+                    - button "0 test cards" [pressed] [ref=e5061] [cursor=pointer]:
+                      - generic [ref=e5062]: Test
+                      - generic [ref=e5066]: "0"
+                    - button "0 bug cards" [pressed] [ref=e5067] [cursor=pointer]:
+                      - generic [ref=e5068]: Bug
+                      - generic [ref=e5079]: "0"
+                - button "Add card to Not Started" [ref=e5080] [cursor=pointer]
+              - generic [ref=e5082]: No cards
+            - generic [ref=e5084]:
+              - generic [ref=e5087]:
+                - generic [ref=e5088]:
+                  - heading "In Progress" [level=3] [ref=e5089]
+                  - generic "2 total cards" [ref=e5090]: "2"
+                - generic [ref=e5091]:
+                  - button "1 task cards" [pressed] [ref=e5092] [cursor=pointer]:
+                    - generic [ref=e5093]: Task
+                    - generic [ref=e5098]: "1"
+                  - button "1 test cards" [pressed] [ref=e5099] [cursor=pointer]:
+                    - generic [ref=e5100]: Test
+                    - generic [ref=e5104]: "1"
+                  - button "0 bug cards" [pressed] [ref=e5105] [cursor=pointer]:
+                    - generic [ref=e5106]: Bug
+                    - generic [ref=e5117]: "0"
+              - generic [ref=e5118]:
+                - 'button "QA 0.4.3 — tarefa de dispensa sem justificativa spec Tarefa de teste de interface para Required → Optional → Waived → Required, sem alterar evidência nem status de execução. C: Owner A: Codex" [ref=e5539]':
+                  - generic [ref=e5120]:
+                    - generic "Move card" [ref=e5121]
+                    - generic [ref=e5129] [cursor=pointer]:
+                      - generic [ref=e5130]:
+                        - heading "QA 0.4.3 — tarefa de dispensa sem justificativa" [level=4] [ref=e5131]
+                        - generic "Linked to a spec" [ref=e5132]: spec
+                      - paragraph [ref=e5136]: Tarefa de teste de interface para Required → Optional → Waived → Required, sem alterar evidência nem status de execução.
+                      - generic [ref=e5151]:
+                        - 'generic "Creator: local-user" [ref=e5152]': "C: Owner"
+                        - 'generic "Assignee: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=e5153]': "A: Codex"
+                - 'button "test QA 0.4.3 — teste da validação e dispensa spec Teste de interface rastreável no My Board; sem evidência técnica fabricada. 1 scenario linked C: Owner" [ref=e5540]':
+                  - generic [ref=e5155]:
+                    - generic "Move card" [ref=e5156]
+                    - generic [ref=e5164] [cursor=pointer]:
+                      - generic [ref=e5165]:
+                        - generic [ref=e5166]: test
+                        - heading "QA 0.4.3 — teste da validação e dispensa" [level=4] [ref=e5169]
+                        - generic "Linked to a spec" [ref=e5170]: spec
+                      - paragraph [ref=e5174]: Teste de interface rastreável no My Board; sem evidência técnica fabricada.
+                      - generic [ref=e5183]: 1 scenario linked
+                      - 'generic "Creator: local-user" [ref=e5189]': "C: Owner"
+            - generic [ref=e5190]:
+              - generic [ref=e5193]:
+                - generic [ref=e5194]:
+                  - heading "Validation" [level=3] [ref=e5195]
+                  - generic "0 total cards" [ref=e5196]: "0"
+                - generic [ref=e5197]:
+                  - button "0 task cards" [pressed] [ref=e5198] [cursor=pointer]:
+                    - generic [ref=e5199]: Task
+                    - generic [ref=e5204]: "0"
+                  - button "0 test cards" [pressed] [ref=e5205] [cursor=pointer]:
+                    - generic [ref=e5206]: Test
+                    - generic [ref=e5210]: "0"
+                  - button "0 bug cards" [pressed] [ref=e5211] [cursor=pointer]:
+                    - generic [ref=e5212]: Bug
+                    - generic [ref=e5223]: "0"
+              - generic [ref=e5224]: No cards
+            - generic [ref=e5226]:
+              - generic [ref=e5229]:
+                - generic [ref=e5230]:
+                  - heading "Rejected" [level=3] [ref=e5231]
+                  - generic "0 total cards" [ref=e5232]: "0"
+                - generic [ref=e5233]:
+                  - button "0 task cards" [pressed] [ref=e5234] [cursor=pointer]:
+                    - generic [ref=e5235]: Task
+                    - generic [ref=e5240]: "0"
+                  - button "0 bug cards" [pressed] [ref=e5241] [cursor=pointer]:
+                    - generic [ref=e5242]: Bug
+                    - generic [ref=e5253]: "0"
+              - generic [ref=e5254]: No cards requiring rework
+            - generic [ref=e5256]:
+              - generic [ref=e5259]:
+                - generic [ref=e5260]:
+                  - heading "On Hold" [level=3] [ref=e5261]
+                  - generic "0 total cards" [ref=e5262]: "0"
+                - generic [ref=e5263]:
+                  - button "0 task cards" [pressed] [ref=e5264] [cursor=pointer]:
+                    - generic [ref=e5265]: Task
+                    - generic [ref=e5270]: "0"
+                  - button "0 test cards" [pressed] [ref=e5271] [cursor=pointer]:
+                    - generic [ref=e5272]: Test
+                    - generic [ref=e5276]: "0"
+                  - button "0 bug cards" [pressed] [ref=e5277] [cursor=pointer]:
+                    - generic [ref=e5278]: Bug
+                    - generic [ref=e5289]: "0"
+              - generic [ref=e5290]: No cards
+            - generic [ref=e5292]:
+              - generic [ref=e5295]:
+                - generic [ref=e5296]:
+                  - heading "Done" [level=3] [ref=e5297]
+                  - generic "2 total cards" [ref=e5298]: "2"
+                - generic [ref=e5299]:
+                  - button "1 task cards" [pressed] [ref=e5300] [cursor=pointer]:
+                    - generic [ref=e5301]: Task
+                    - generic [ref=e5306]: "1"
+                  - button "1 test cards" [pressed] [ref=e5307] [cursor=pointer]:
+                    - generic [ref=e5308]: Test
+                    - generic [ref=e5312]: "1"
+                  - button "0 bug cards" [pressed] [ref=e5313] [cursor=pointer]:
+                    - generic [ref=e5314]: Bug
+                    - generic [ref=e5325]: "0"
+              - generic [ref=e5326]:
+                - 'button "test [TEST] E2E 0.4.3 — Verify delivery status and isolation spec Implement test_delivery_status.py using unittest. Execute ts_4e90347d and ts_22468e79 against the exact committed helper revision: exhaustive 18 combinations, invalid enums, non-bool flags and AST no-import isolation. Preserve failed run evidence and rerun after correction. Record authenticated results and associate only the implementation actually tested. Then compare the real Pulse Delivery matrix and percentages with the authoritative projection. e2e-043 2 scenarios linked Execution report: 100% 0% drift C: Codex" [ref=e5541]':
+                  - generic [ref=e5328]:
+                    - generic "Move card" [ref=e5329]
+                    - generic [ref=e5337] [cursor=pointer]:
+                      - generic [ref=e5338]:
+                        - generic [ref=e5339]: test
+                        - heading "[TEST] E2E 0.4.3 — Verify delivery status and isolation" [level=4] [ref=e5342]
+                        - generic "Linked to a spec" [ref=e5343]: spec
+                      - paragraph [ref=e5347]: "Implement test_delivery_status.py using unittest. Execute ts_4e90347d and ts_22468e79 against the exact committed helper revision: exhaustive 18 combinations, invalid enums, non-bool flags and AST no-import isolation. Preserve failed run evidence and rerun after correction. Record authenticated results and associate only the implementation actually tested. Then compare the real Pulse Delivery matrix and percentages with the authoritative projection."
+                      - generic [ref=e5348]: e2e-043
+                      - generic [ref=e5359]: 2 scenarios linked
+                      - generic [ref=e5363]:
+                        - 'generic "Executor-reported completeness: 100%. Delivery verification is separate." [ref=e5364]': "Execution report: 100%"
+                        - 'generic "Drift: 0%" [ref=e5365]': 0% drift
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=e5368]': "C: Codex"
+                - 'button "E2E 0.4.3 — Implement isolated delivery classifier spec Create delivery_status.py in the isolated fixture workspace after native execution admission. Implement fr_e2e_classify, tr_e2e_isolation and br_8bb896ec, covering ac_e2e_states and ac_e2e_isolation. Validate enums and bool before applying exact precedence. No imports or side effects. Commit the actual implementation, record target execution and bind proof to the five obligations. Verification is performed by the separate Test Card; progress text never counts as proof. e2e-043 Execution report: 100% 0% drift C: Codex" [ref=e5542]':
+                  - generic [ref=e5370]:
+                    - generic "Move card" [ref=e5371]
+                    - generic [ref=e5379] [cursor=pointer]:
+                      - generic [ref=e5380]:
+                        - heading "E2E 0.4.3 — Implement isolated delivery classifier" [level=4] [ref=e5381]
+                        - generic "Linked to a spec" [ref=e5382]: spec
+                      - paragraph [ref=e5386]: Create delivery_status.py in the isolated fixture workspace after native execution admission. Implement fr_e2e_classify, tr_e2e_isolation and br_8bb896ec, covering ac_e2e_states and ac_e2e_isolation. Validate enums and bool before applying exact precedence. No imports or side effects. Commit the actual implementation, record target execution and bind proof to the five obligations. Verification is performed by the separate Test Card; progress text never counts as proof.
+                      - generic [ref=e5387]: e2e-043
+                      - generic [ref=e5404]:
+                        - 'generic "Executor-reported completeness: 100%. Delivery verification is separate." [ref=e5405]': "Execution report: 100%"
+                        - 'generic "Drift: 0%" [ref=e5406]': 0% drift
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=e5409]': "C: Codex"
+            - generic [ref=e5410]:
+              - generic [ref=e5413]:
+                - generic [ref=e5414]:
+                  - heading "Cancelled" [level=3] [ref=e5415]
+                  - generic "2 total cards" [ref=e5416]: "2"
+                - generic [ref=e5417]:
+                  - button "0 task cards" [pressed] [ref=e5418] [cursor=pointer]:
+                    - generic [ref=e5419]: Task
+                    - generic [ref=e5424]: "0"
+                  - button "1 test cards" [pressed] [ref=e5425] [cursor=pointer]:
+                    - generic [ref=e5426]: Test
+                    - generic [ref=e5430]: "1"
+                  - button "1 bug cards" [pressed] [ref=e5431] [cursor=pointer]:
+                    - generic [ref=e5432]: Bug
+                    - generic [ref=e5443]: "1"
+              - generic [ref=e5444]:
+                - 'button "test E2E 0.4.3 — Fresh regression gate probe test spec Explicit operational probe of fresh post-bug Test Card lineage. No additional test result will be fabricated; the corrected fixture has already passed. Cancel this probe after verifying eligibility and dependency controls. e2e-043 gate-probe 1 scenario linked C: Codex" [ref=e5543]':
+                  - generic [ref=e5446]:
+                    - generic "Move card" [ref=e5447]
+                    - generic [ref=e5455] [cursor=pointer]:
+                      - generic [ref=e5456]:
+                        - generic [ref=e5457]: test
+                        - heading "E2E 0.4.3 — Fresh regression gate probe test" [level=4] [ref=e5460]
+                        - generic "Linked to a spec" [ref=e5461]: spec
+                      - paragraph [ref=e5465]: Explicit operational probe of fresh post-bug Test Card lineage. No additional test result will be fabricated; the corrected fixture has already passed. Cancel this probe after verifying eligibility and dependency controls.
+                      - generic [ref=e5466]:
+                        - generic [ref=e5467]: e2e-043
+                        - generic [ref=e5468]: gate-probe
+                      - generic [ref=e5477]: 1 scenario linked
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=e5483]': "C: Codex"
+                - 'button "bug E2E 0.4.3 — Controlled bug regression gate probe spec Operational test only, not an outstanding product defect. Exercise post-delivery bug creation, eligible scenario lineage, fresh regression Test Card gate and cancellation. The real controlled fixture defect was already fixed in 8cf8509; no further implementation is planned. Minor e2e-043 gate-probe 1 test task linked C: Codex" [ref=e5544]':
+                  - generic [ref=e5485]:
+                    - generic "Move card" [ref=e5486]
+                    - generic [ref=e5494] [cursor=pointer]:
+                      - generic [ref=e5495]:
+                        - generic [ref=e5496]: bug
+                        - heading "E2E 0.4.3 — Controlled bug regression gate probe" [level=4] [ref=e5506]
+                        - generic "Linked to a spec" [ref=e5507]: spec
+                      - paragraph [ref=e5511]: Operational test only, not an outstanding product defect. Exercise post-delivery bug creation, eligible scenario lineage, fresh regression Test Card gate and cancellation. The real controlled fixture defect was already fixed in 8cf8509; no further implementation is planned.
+                      - generic [ref=e5512]:
+                        - generic [ref=e5513]: Minor
+                        - generic [ref=e5514]: e2e-043
+                        - generic [ref=e5515]: gate-probe
+                      - generic [ref=e5531]: 1 test task linked
+                      - 'generic "Creator: e7090eed-0fad-4019-b41d-a4e75677c92d" [ref=e5537]': "C: Codex"
+          - status [ref=e5538]
+        - generic [ref=e5546]:
+          - generic [ref=e5547]:
+            - generic [ref=e5548]:
+              - combobox "Card status" [ref=e5549]:
+                - option "In Progress" [selected]
+                - option "Not Started"
+                - option "Validation"
+                - option "On Hold"
+                - option "Cancelled"
+              - heading "QA 0.4.3 — tarefa de dispensa sem justificativa" [level=2] [ref=e5550]
+            - button "QA 0.4.3 — validação, entre..." [ref=e5742] [cursor=pointer]
+            - generic [ref=e5555]:
+              - button "Open lineage graph" [ref=e5556] [cursor=pointer]
+              - button "Export report" [ref=e5561] [cursor=pointer]
+              - button "Refresh card" [ref=e5565] [cursor=pointer]
+              - button "Expand" [ref=e5571] [cursor=pointer]
+              - button "Close card dialog" [ref=e5577] [cursor=pointer]
+          - generic [ref=e5581]:
+            - tablist "Card sections" [ref=e5582]:
+              - tab "Details" [ref=e5583] [cursor=pointer]
+              - tab "Implementation Targets" [ref=e5588] [cursor=pointer]
+              - tab "Delivery" [ref=e5594] [cursor=pointer]
+              - tab "Resources" [ref=e5599] [cursor=pointer]
+              - tab "Q&A" [ref=e5605] [cursor=pointer]
+              - tab "Comments 1" [active] [selected] [ref=e5610] [cursor=pointer]:
+                - generic [ref=e5613]: Comments
+                - generic [ref=e5614]: "1"
+              - tab "References" [ref=e5615] [cursor=pointer]
+              - tab "Validation" [ref=e5620] [cursor=pointer]
+              - tab "Activity" [ref=e5624] [cursor=pointer]
+            - button "Scroll Card sections right" [ref=e5630] [cursor=pointer]
+          - tabpanel "Comments 1" [ref=e5747]:
+            - generic [ref=e5748]:
+              - generic [ref=e5749]:
+                - button "Text" [ref=e5750] [cursor=pointer]
+                - button "Single Choice" [ref=e5751] [cursor=pointer]
+                - button "Multi Choice" [ref=e5752] [cursor=pointer]
+              - generic [ref=e5753]:
+                - textbox "Write a comment... (use @ to mention)" [ref=e5755]
+                - button "Comment" [ref=e5757] [cursor=pointer]
+              - generic [ref=e5759]:
+                - generic [ref=e5760]:
+                  - generic [ref=e5761]: Codex
+                  - generic [ref=e5762]: Nov 05, 12:51 AM
+                - generic [ref=e5763]:
+                  - button "How recommendations work" [ref=e5765] [cursor=pointer]
+                  - paragraph [ref=e5769]: "R4 UI acceptance: how should this task distinguish an update from verified delivery?"
+                  - paragraph [ref=e5770]: Select one
+                  - generic [ref=e5771]:
+                    - button "Keep updates separate from implementation and verification proof Recommended Preserves traceability and prevents a human note from implying completion." [ref=e5772] [cursor=pointer]:
+                      - generic [ref=e5776]:
+                        - text: Keep updates separate from implementation and verification proof
+                        - generic [ref=e5777]: Recommended
+                        - generic [ref=e5778]: Preserves traceability and prevents a human note from implying completion.
+                    - button "Treat any saved update as a completed delivery Would hide missing implementation and failed or pending verification; included only as a rejected test alternative." [ref=e5779] [cursor=pointer]:
+                      - generic [ref=e5783]:
+                        - text: Treat any saved update as a completed delivery
+                        - generic [ref=e5784]: Would hide missing implementation and failed or pending verification; included only as a rejected test alternative.
+                  - button "Submit Response" [disabled] [ref=e5785]
+          - button "Delete" [ref=e5738] [cursor=pointer]

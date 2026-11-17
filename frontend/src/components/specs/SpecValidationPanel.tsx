@@ -7,7 +7,6 @@ import {
   type ReactNode,
 } from 'react';
 import {
-  CheckCircle2,
   FileCheck2,
   RefreshCw,
 } from 'lucide-react';
@@ -44,7 +43,8 @@ import type {
 } from '@/types';
 
 import { SpecChecklistPanel } from './SpecChecklistPanel';
-import { SpecPlanningSummary } from './SpecPlanningSummary';
+import { SpecPlanningSummary, SpecValidationSummaryCard } from './SpecPlanningSummary';
+import { ContextualHelpLink } from '@/components/help/ContextualHelpLink';
 import { SpecDecompositionPanel } from './SpecDecompositionPanel';
 import { SpecValidationHistoryPanel } from './SpecValidationHistoryPanel';
 import { resolveSpecSemanticAnchor } from './specSemanticAnchors';
@@ -406,6 +406,20 @@ export function SpecValidationPanel({
     () => tabs[0]?.id ?? 'spec-validation',
   );
   const [previousExpanded, setPreviousExpanded] = useState(false);
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
+  const [detailsVisited, setDetailsVisited] = useState(false);
+  const detailsRef = useRef<HTMLDivElement>(null);
+  const focusReviewRef = useRef(false);
+  useEffect(() => {
+    setDetailsExpanded(false);
+    setDetailsVisited(false);
+  }, [specId, specEdition]);
+  useEffect(() => {
+    if (detailsExpanded && focusReviewRef.current) {
+      detailsRef.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.focus();
+      focusReviewRef.current = false;
+    }
+  }, [detailsExpanded, activeTab]);
   const [technicalAuditExpanded, setTechnicalAuditExpanded] = useState(false);
   const [cycleSummary, setCycleSummary] =
     useState<SpecValidationCycleSummary | null>(null);
@@ -524,6 +538,27 @@ export function SpecValidationPanel({
     refreshCycle();
     setWorkspaceReloadKey(value => value + 1);
   };
+  const summary = cycleSummary?.subject_id === specId && cycleSummary.edition === specEdition
+    ? cycleSummary.validation_summary : undefined;
+  const canConclude = summary?.next_action === 'submit_spec_validation' && canSubmitValidation && !!onSubmitValidation;
+  const pendingComponent = summary?.next_action
+    ? cycleSummary?.planning_readiness?.components.find(item => item.next_action === summary.next_action)
+    : undefined;
+  const sectionByComponent: Record<string, ValidationSubTab> = {
+    spec_validation: 'spec-validation', decomposition: 'decomposition', curated_checklist: 'checklist',
+    requirement_lint: 'requirement-lint', policy_compliance: 'policy-compliance',
+  };
+  const pendingSection = pendingComponent && sectionByComponent[pendingComponent.key];
+  const canReviewPending = pendingSection
+    ? tabs.some(tab => tab.id === pendingSection) : !!pendingComponent && !!onReviewPlanningComponent;
+  const reviewPending = () => {
+    if (pendingSection) {
+      focusReviewRef.current = true;
+      setActiveTab(pendingSection);
+      setDetailsVisited(true);
+      setDetailsExpanded(true);
+    } else if (pendingComponent) onReviewPlanningComponent?.(pendingComponent.key);
+  };
   const currentHeadline = validationState === 'not_started'
     ? `No result for Edition ${specEdition}`
     : cycleLoading
@@ -612,16 +647,6 @@ export function SpecValidationPanel({
               <RefreshCw size={14} className={cycleLoading ? 'animate-spin' : ''} aria-hidden="true" />
               Refresh
             </button>
-            {canSubmitValidation && onSubmitValidation && (
-              <button
-                type="button"
-                onClick={onSubmitValidation}
-                className="inline-flex min-h-9 items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-violet-700"
-              >
-                <CheckCircle2 size={14} aria-hidden="true" />
-                Conclude planning validation
-              </button>
-            )}
           </span>
         )}
       />
@@ -635,6 +660,21 @@ export function SpecValidationPanel({
         </p>
       )}
 
+      <SpecValidationSummaryCard summary={summary} edition={specEdition} loading={cycleLoading}
+        actionLabel={canConclude ? 'Conclude planning validation' : 'Review pending check'}
+        onAction={canConclude ? onSubmitValidation : canReviewPending ? reviewPending : undefined}
+      />
+
+      <button type="button" aria-expanded={detailsExpanded} aria-controls={`${tabIdPrefix}-details`}
+        className="btn btn-secondary text-sm" onClick={() => {
+          setDetailsVisited(true);
+          setDetailsExpanded(value => !value);
+        }}>Details</button>
+      <ContextualHelpLink sectionId="spec-validation" className="ml-3 text-sm">How validation works</ContextualHelpLink>
+      <div id={`${tabIdPrefix}-details`} ref={detailsRef} hidden={!detailsExpanded} className="space-y-4">
+      {detailsVisited && <>
+      {!summary && canSubmitValidation && onSubmitValidation && <button type="button" onClick={onSubmitValidation}
+        className="btn btn-primary text-sm">Conclude planning validation</button>}
       <SpecPlanningSummary readiness={cycleSummary?.planning_readiness} loading={cycleLoading}
         onReview={{
           ...(canReadValidation ? { spec_validation: () => setActiveTab('spec-validation') } : {}),
@@ -773,7 +813,7 @@ export function SpecValidationPanel({
           </div>
           <SpecChecklistPanel
             refreshKey={validationHistoryRefreshKey + workspaceReloadKey}
-            active={activeTab === 'checklist'}
+            active={detailsExpanded && activeTab === 'checklist'}
             boardId={boardId}
             specId={specId}
             expectedSpecVersion={specVersion}
@@ -860,6 +900,8 @@ export function SpecValidationPanel({
           />
         </AccessibleTabPanel>
       )}
+      </>}
+      </div>
     </div>
   );
 }

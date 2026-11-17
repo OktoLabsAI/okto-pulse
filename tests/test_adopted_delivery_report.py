@@ -76,12 +76,15 @@ async def setup(ledger, tmp_path, monkeypatch, *, adopted=True, gate_mode="block
 
 
 def unit_of_work(session):
+    from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWork
+    transaction = CommunityUnitOfWork(session)
     async def board(identity):
         return await session.get(Board, identity)
 
     return SimpleNamespace(services=SimpleNamespace(delivery_evidence=CommunityDeliveryEvidenceStore(session), cards=CardService(session),
         boards=SimpleNamespace(get_board=board), agents=SimpleNamespace(agent_has_board_access=AsyncMock(return_value=True))),
-        commit=AsyncMock(side_effect=session.commit), rollback=AsyncMock(side_effect=session.rollback))
+        begin_write=transaction.begin_write,
+        commit=AsyncMock(side_effect=transaction.commit), rollback=AsyncMock(side_effect=transaction.rollback))
 
 
 def request(contribution, **extra):
@@ -116,19 +119,19 @@ async def test_atomic_done_cannot_commit_without_complete_selected_contribution(
 
 
 @pytest.mark.asyncio
-async def test_atomic_done_uses_its_last_complete_binding_without_granting_spec_test_credit(ledger, tmp_path, monkeypatch):
-    session, uow, actor = await setup(ledger, tmp_path, monkeypatch, gate_mode="advisory")
+async def test_atomic_done_rejects_unverified_last_complete_binding(ledger, tmp_path, monkeypatch):
+    session, uow, actor = await setup(ledger, tmp_path, monkeypatch)
     try:
         command = request("complete")
-        result = await RecordCardDeliveryEvidenceUseCase().execute(command, actor=actor, uow=uow)
+        with pytest.raises(ValueError, match='verification_not_run'):
+            await RecordCardDeliveryEvidenceUseCase().execute(command, actor=actor, uow=uow)
+        await session.commit()
         card = await session.get(Card, "task")
-        assert card.status == "done"
-        assert card.conclusions[-1]["delivery_manifest"]["records"][0]["id"] == result["entries"][0]["id"]
+        assert card.status == "in_progress" and not card.conclusions
+        assert await session.scalar(select(func.count()).select_from(Record)) == 0
         projection = await uow.services.delivery_evidence.projection(BOARD, SPEC)
-        assert not projection["allowed"] and all(row["implementation_satisfied"] for row in projection["rows"])
+        assert not projection["allowed"]
         assert not any(row["test_satisfied"] for row in projection["rows"])
-        replay = await RecordCardDeliveryEvidenceUseCase().execute(command, actor=actor, uow=uow)
-        assert replay == {**result, "replayed": True}
     finally:
         await session.close()
 
@@ -140,8 +143,19 @@ async def test_report_cannot_borrow_complete_proof_outside_its_selection(ledger,
         gate_mode="advisory" if select_existing else "blocking")
     try:
         proof = await contract.delivery.record(uow.services.delivery_evidence, contract.implementation())
+        # Adoption changes the verification basis after the ledger's initial run.
+        # Publish a fresh native run before selecting the already verified proof.
+        basis = ledger[2]["execution_attestation"]["execution_basis"]
+        await contract.delivery.issue_runner_verification(session, tmp_path / "selected-proof",
+            source_ref=basis["source_ref"], revision=basis["revision"],
+            executed_at=datetime.now(timezone.utc).isoformat())
+        await contract.delivery.record(uow.services.delivery_evidence, contract.delivery.command(
+            'test', obligation_refs=['fr:fr', 'ac:ac-about'], implementation_ids=[proof['id']],
+        ))
         await session.commit()
-        command = request("partial", existing_record_ids=[proof["id"]] if select_existing else [])
+        # A newly created complete/partial record has not yet been tested.
+        # Close out with a progress event plus selected, already verified proof.
+        command = request("missing" if select_existing else "partial", existing_record_ids=[proof["id"]] if select_existing else [])
         command = command.model_copy(update={"batch": command.batch.model_copy(update={"expected_delivery_revision": 1})})
         if select_existing:
             result = await RecordCardDeliveryEvidenceUseCase().execute(command, actor=actor, uow=uow)
@@ -156,7 +170,8 @@ async def test_report_cannot_borrow_complete_proof_outside_its_selection(ledger,
             await session.commit()
             card = await session.get(Card, "task")
             assert card.status == "in_progress" and not card.conclusions
-            assert list(await session.scalars(select(Record.id))) == [proof["id"]]
+            assert await session.scalar(select(func.count()).select_from(Record)) == 2
+            assert await session.get(Record, proof['id']) is not None
             assert await session.scalar(select(func.count()).select_from(DomainEventRow)) == 0
     finally:
         await session.close()
@@ -196,14 +211,26 @@ async def test_concurrent_adopted_done_submissions_share_one_report(ledger, tmp_
     second = async_sessionmaker(first.bind, sync_session_class=CommunitySemanticSession,
         expire_on_commit=False, info={"realm_scope": RealmScope.local()})()
     try:
-        command = request("complete")
+        proof = await contract.delivery.record(left.services.delivery_evidence, contract.implementation())
+        # The adopted contract needs a run reserved against its current basis,
+        # before both concurrent reports select this verified implementation.
+        basis = ledger[2]["execution_attestation"]["execution_basis"]
+        await contract.delivery.issue_runner_verification(first, tmp_path / "concurrent-proof",
+            source_ref=basis["source_ref"], revision=basis["revision"],
+            executed_at=datetime.now(timezone.utc).isoformat())
+        await contract.delivery.record(left.services.delivery_evidence, contract.delivery.command(
+            'test', obligation_refs=['fr:fr', 'ac:ac-about'], implementation_ids=[proof['id']],
+        ))
+        await first.commit()
+        command = request("missing", existing_record_ids=[proof['id']])
+        command = command.model_copy(update={"batch": command.batch.model_copy(update={"expected_delivery_revision": 1})})
         use_case = RecordCardDeliveryEvidenceUseCase()
         results = await asyncio.gather(use_case.execute(command, actor=actor, uow=left),
             use_case.execute(command, actor=actor, uow=unit_of_work(second)))
         assert {result["replayed"] for result in results} == {False, True}
         assert results[0]["entries"] == results[1]["entries"]
         assert results[0]["report"] == results[1]["report"]
-        assert await first.scalar(select(func.count()).select_from(Record)) == 1
+        assert await first.scalar(select(func.count()).select_from(Record)) == 3
         card = await first.get(Card, "task")
         await first.refresh(card)
         assert card.status == "done" and len(card.conclusions) == 1

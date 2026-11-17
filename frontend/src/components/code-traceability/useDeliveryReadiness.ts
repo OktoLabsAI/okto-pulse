@@ -5,10 +5,11 @@ import type { DeliveryReadinessState } from './DeliveryReadinessView';
 import { isRetriableReadinessError, ReadinessContractError } from './readinessTransport';
 
 export function useDeliveryReadiness(boardId: string, specId: string, cardId?: string, revision?: string | number,
-  enabled = true, mode: 'diagnostic' | 'projection' = 'diagnostic'): DeliveryReadinessState {
+  enabled = true, mode: 'diagnostic' | 'projection' = 'diagnostic', manualRefresh = false): DeliveryReadinessState {
   const api = useDashboardApi();
   const [refresh, setRefresh] = useState(0);
   useEffect(() => {
+    if (manualRefresh) return;
     const changed = () => setRefresh(value => value + 1);
     const visible = () => { if (document.visibilityState === 'visible') changed(); };
     window.addEventListener('pulse:delivery-evidence-changed', changed);
@@ -19,7 +20,7 @@ export function useDeliveryReadiness(boardId: string, specId: string, cardId?: s
       window.removeEventListener('focus', changed);
       document.removeEventListener('visibilitychange', visible);
     };
-  }, []);
+  }, [manualRefresh]);
   const scopeKey = JSON.stringify([boardId, specId, cardId, mode]);
   const [result, setResult] = useState<{ api: typeof api; key: string; state: DeliveryReadinessState }>();
   useEffect(() => {
@@ -31,7 +32,7 @@ export function useDeliveryReadiness(boardId: string, specId: string, cardId?: s
     void (async () => {
       let backoff = 1000;
       while (!controller.signal.aborted) {
-        if (document.visibilityState !== 'visible') {
+        if (!manualRefresh && document.visibilityState !== 'visible') {
           await new Promise(resolve => setTimeout(resolve, 500));
           continue;
         }
@@ -50,7 +51,7 @@ export function useDeliveryReadiness(boardId: string, specId: string, cardId?: s
               generationId: projected.projection.generation_id,
               errorCode: projected.projection.error_code } } });
             backoff = 1000;
-            if (!['updating', 'pending_initial'].includes(projected.projection.freshness)) return;
+            if (manualRefresh || !['updating', 'pending_initial'].includes(projected.projection.freshness)) return;
             await new Promise(resolve => setTimeout(resolve, 500));
             continue;
           }
@@ -67,13 +68,13 @@ export function useDeliveryReadiness(boardId: string, specId: string, cardId?: s
               ? { persisted: { ...previous.state.persisted!, freshness: 'unavailable', errorCode: 'transport_error' } }
               : { error: error instanceof Error ? error.message : 'Readiness could not be loaded.' } };
           });
-          if (mode === 'diagnostic' || !isRetriableReadinessError(error)) return;
+          if (manualRefresh || mode === 'diagnostic' || !isRetriableReadinessError(error)) return;
           await new Promise(resolve => setTimeout(resolve, backoff));
           backoff = backoff === 1000 ? 2000 : 5000;
         }
       }
     })();
     return () => controller.abort();
-  }, [api, boardId, specId, cardId, scopeKey, revision, refresh, enabled, mode]);
+  }, [api, boardId, specId, cardId, scopeKey, revision, refresh, enabled, mode, manualRefresh]);
   return !enabled ? {} : result?.api === api && result.key === scopeKey ? result.state : { loading: true };
 }

@@ -124,6 +124,45 @@ def test_materialization_logger_key_matches_the_core_logger_object():
     )
 
 
+def test_installed_outbox_logger_keeps_bounded_diagnostics_after_dual_config():
+    script = r'''
+import io
+import json
+import logging
+import logging.config
+from okto_pulse.community.runtime import build_uvicorn_log_config
+from okto_pulse.core.application.processors.global_outbox import _emit_observation
+
+stream = io.StringIO()
+config = build_uvicorn_log_config()
+config["handlers"]["default"] = {
+    "class": "logging.StreamHandler", "level": "INFO", "stream": stream,
+}
+logging.config.dictConfig(config)
+logging.config.dictConfig(config)
+_emit_observation({"stage": "sql_ack", "outcome": "completed", "elapsed_ms": 1.25,
+                   "ack_state": "committed", "claim_row_id": "claim-1"})
+logger = logging.getLogger("okto_pulse.kg.global_discovery.outbox")
+print(json.dumps({"handlers": len(logger.handlers), "lines": stream.getvalue().splitlines()}))
+'''
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        value for value in (str(REPO_SRC), env.get("PYTHONPATH", "")) if value
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script], check=True, capture_output=True, text=True, env=env,
+    )
+    result = json.loads(completed.stdout)
+    assert result["handlers"] == 1
+    assert len(result["lines"]) == 1
+    prefix, payload = result["lines"][0].split(" ", 1)
+    assert prefix == "outbox.operation"
+    assert json.loads(payload) == {
+        "stage": "sql_ack", "outcome": "completed", "elapsed_ms": 1.25,
+        "ack_state": "committed", "claim_row_id": "claim-1",
+    }
+
+
 def test_uvicorn_log_config_suppresses_expected_shutdown_noise_only_while_stopping():
     from okto_pulse.community.runtime import (
         SuppressExpectedShutdownNoise,

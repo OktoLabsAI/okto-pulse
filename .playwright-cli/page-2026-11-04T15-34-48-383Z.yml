@@ -1,0 +1,108 @@
+- generic [ref=f1e3]:
+  - banner [ref=f1e4]:
+    - paragraph [ref=f1e5]: OKTO PULSE · 0.4.3 REMEDIATION
+    - heading "Clear status. Traceable decisions." [level=1] [ref=f1e6]
+    - paragraph [ref=f1e7]: Acceptance examples for the corrected interface. Sample requirements are illustrative.
+  - generic [ref=f1e8]:
+    - generic [ref=f1e9]:
+      - generic [ref=f1e10]:
+        - paragraph [ref=f1e11]: TASK · DELIVERY
+        - heading "Delivery needs attention" [level=2] [ref=f1e12]
+        - paragraph [ref=f1e13]: Responsibility for 1 requirement must be reviewed.
+      - button "How this works" [ref=f1e14] [cursor=pointer]
+    - generic [ref=f1e15]:
+      - paragraph [ref=f1e17]:
+        - text: Implementation
+        - strong [ref=f1e18]: 75%
+      - paragraph [ref=f1e22]:
+        - text: Verification
+        - strong [ref=f1e23]: 50%
+    - table [ref=f1e26]:
+      - caption [ref=f1e27]: Implementation and verification
+      - rowgroup [ref=f1e28]:
+        - row [ref=f1e29]:
+          - columnheader "Requirement / objective" [ref=f1e30]
+          - columnheader "Implementation" [ref=f1e31]
+          - columnheader "Verification" [ref=f1e32]
+      - rowgroup [ref=f1e33]:
+        - row [ref=f1e34]:
+          - cell "Preserve approved task responsibilities" [ref=f1e35]
+          - cell "✓ Implemented" [ref=f1e36]
+          - cell "✓ Verified" [ref=f1e37]
+        - row [ref=f1e38]:
+          - cell "Return the persisted validation version" [ref=f1e39]
+          - cell "✓ Implemented" [ref=f1e40]
+          - cell "Awaiting verification" [ref=f1e41]
+        - row [ref=f1e42]:
+          - cell "Keep Bug origin links separate from scope" [ref=f1e43]
+          - cell "Responsibility needs review" [ref=f1e44]
+          - cell "Responsibility needs review" [ref=f1e45]
+        - row [ref=f1e46]:
+          - cell "Show recommended Q&A choices" [ref=f1e47]
+          - cell "✓ Implemented" [ref=f1e48]
+          - cell "✓ Verified" [ref=f1e49]
+    - generic [ref=f1e50]:
+      - button "Hide details" [ref=f1e51] [cursor=pointer]
+      - button "Change task requirements" [ref=f1e52] [cursor=pointer]
+    - generic [ref=f1e53]:
+      - heading "What needs attention" [level=3] [ref=f1e54]
+      - table [ref=f1e55]:
+        - rowgroup [ref=f1e56]:
+          - row [ref=f1e57]:
+            - columnheader "Requirement" [ref=f1e58]
+            - columnheader "Affected phase" [ref=f1e59]
+            - columnheader "Problem" [ref=f1e60]
+            - columnheader "Next action" [ref=f1e61]
+        - rowgroup [ref=f1e62]:
+          - row [ref=f1e63]:
+            - cell "Return the persisted validation version" [ref=f1e64]
+            - cell "Verification" [ref=f1e65]
+            - cell "The implementation is recorded; its verification has not completed." [ref=f1e66]
+            - cell "Run the assigned verification task." [ref=f1e67]
+          - row [ref=f1e68]:
+            - cell "Keep Bug origin links separate from scope" [ref=f1e69]
+            - cell "Implementation and verification" [ref=f1e70]
+            - cell "A linked task has no assigned contribution for this requirement." [ref=f1e71]
+            - cell "Review requirement responsibilities." [ref=f1e72]
+    - paragraph [ref=f1e73]: Use Refresh in the task header to update this view. Audit records remain available below Details; no receipt entry is required.
+  - generic [ref=f1e74]:
+    - generic [ref=f1e75]:
+      - paragraph [ref=f1e76]: STORY · DETAILS
+      - generic [ref=f1e77]:
+        - heading "Reliable delivery review" [level=2] [ref=f1e78]
+        - generic [ref=f1e79]: Ready
+      - generic [ref=f1e80]:
+        - text: Status
+        - combobox "Status" [ref=f1e81]:
+          - option "Ready" [selected]
+          - option "Triage"
+          - option "Draft"
+      - paragraph [ref=f1e82]: Converted is set after an ideation is created.
+      - button "Create ideation" [ref=f1e83] [cursor=pointer]
+    - generic [ref=f1e84]:
+      - paragraph [ref=f1e85]: Q&A · ANSWER A QUESTION
+      - heading "How should Bug origin affect delivery scope?" [level=2] [ref=f1e86]
+      - generic [ref=f1e87]:
+        - radio "Keep origin separate from responsibility Recommended Preserves approved scope and retains Bug lineage." [ref=f1e88]
+        - text: Keep origin separate from responsibility
+        - generic [ref=f1e89]: Recommended
+        - generic [ref=f1e90]: Preserves approved scope and retains Bug lineage.
+      - generic [ref=f1e91]:
+        - radio "Copy all origin responsibility links" [ref=f1e92]
+        - text: Copy all origin responsibility links
+      - paragraph [ref=f1e93]: A recommendation does not select or submit an answer.
+  - generic [ref=f1e94]:
+    - heading "Distinct states, distinct meaning" [level=2] [ref=f1e95]
+    - generic [ref=f1e96]:
+      - generic [ref=f1e97]:
+        - strong [ref=f1e98]: ✓ Delivered
+        - paragraph [ref=f1e99]: Current proof and lifecycle are complete.
+      - generic [ref=f1e100]:
+        - strong [ref=f1e101]: Delivery needs attention
+        - paragraph [ref=f1e102]: The evaluation finished and identified a scope or evidence issue.
+      - generic [ref=f1e103]:
+        - strong [ref=f1e104]: Checking delivery…
+        - paragraph [ref=f1e105]: A current evaluation is actually running.
+    - generic [ref=f1e106]:
+      - strong [ref=f1e107]: Source investigation · Finalized context
+      - paragraph [ref=f1e108]: No relevant existing implementation. Recorded for the approved source version and preserved at finalization. A new execution still requires current evidence.

@@ -1,5 +1,14 @@
 import type { PersistedReadinessProjection, ReadinessResponse, ReadinessCounts, ReadinessMetric } from '@/types/delivery-readiness';
 import type { CardSummary } from '@/types';
+import type { TaskDeliverySummary } from '@/types/task-delivery';
+
+export const taskDeliverySummary = (cardId = 'c'): TaskDeliverySummary => ({
+  contract_version: 'task-delivery-summary/v1', board_id: 'b', spec_id: 's', card_id: cardId,
+  spec_edition: 1, card_version: 1, snapshot_id: 'a'.repeat(64), population_known: true, evaluation_complete: true,
+  state: 'verification_pending', reason_code: 'verification_pending', reason: 'Required verification remains pending.',
+  historical_status: 'in_progress', next_action: { kind: 'record_progress', label: 'Record update', owner: 'user', mutation_reauthorization_required: true },
+  pending_count: 2, last_update: null,
+});
 
 export const emptyCounts: ReadinessCounts = { satisfied: 0, missing: 0, partial: 0, failed: 0,
   stale: 0, conflict: 0, waived: 0, not_applicable: 0, unknown: 0 };

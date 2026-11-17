@@ -168,6 +168,15 @@ def _log_background_uow_cleanup_failure(task: asyncio.Future[Any]) -> None:
         )
 
 
+def pending_uow_cleanup_tasks() -> frozenset[asyncio.Task[Any]]:
+    """Snapshot unfinished cleanup owned by this running event loop."""
+    loop = asyncio.get_running_loop()
+    return frozenset(
+        task for task in _pending_uow_cleanups
+        if not task.done() and task.get_loop() is loop
+    )
+
+
 async def drain_pending_uow_cleanups(
     *,
     timeout_s: float | None = None,

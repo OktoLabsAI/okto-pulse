@@ -94,6 +94,8 @@ async def prepare(runtime, target, *, learning_policy=None):
 
 
 def unit(session):
+    from okto_pulse.community.adapters.sqlalchemy_unit_of_work import CommunityUnitOfWork
+    transaction = CommunityUnitOfWork(session)
     session.info['realm_scope'] = RealmScope.local()
     from okto_pulse.core.ports.application_persistence import get_application_persistence_port
     port = get_application_persistence_port()
@@ -103,7 +105,8 @@ def unit(session):
     return SimpleNamespace(boards=SimpleNamespace(get=board),
         services=SimpleNamespace(cards=CardService(session)),
         synchronize=synchronize, reload=reload,
-        commit=AsyncMock(side_effect=session.commit), rollback=AsyncMock(side_effect=session.rollback))
+        begin_write=transaction.begin_write,
+        commit=AsyncMock(side_effect=transaction.commit), rollback=AsyncMock(side_effect=transaction.rollback))
 
 
 @pytest.mark.parametrize('target', ['validation', 'done'])
@@ -174,8 +177,10 @@ async def test_joint_transports_preserve_authority_and_the_same_writer(runtime, 
     @asynccontextmanager
     async def units(**kwargs):
         async with factory() as session:
-            try: yield unit(session)
-            finally: await session.rollback()
+            try:
+                yield unit(session)
+            finally:
+                await session.rollback()
     if transport == 'rest':
         import httpx
         from fastapi import FastAPI
@@ -187,7 +192,8 @@ async def test_joint_transports_preserve_authority_and_the_same_writer(runtime, 
         app = FastAPI()
         app.include_router(router, prefix='/api/v1/cards')
         async def dependency():
-            async with units() as value: yield value
+            async with units() as value:
+                yield value
         app.dependency_overrides[get_unit_of_work] = dependency
         app.dependency_overrides[require_user] = lambda: 'owner'
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
