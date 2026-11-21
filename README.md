@@ -474,6 +474,39 @@ Use the contextual error message as the source of truth when reporting an issue.
 
 </details>
 
+<details>
+<summary>`serve` says to run `okto-pulse init` or set `DATA_DIR`</summary>
+
+This error appears when the default data folder has not been set up yet.
+
+To fix it, run:
+
+```bash
+okto-pulse init
+okto-pulse serve
+```
+
+Or choose a data folder using `DATA_DIR`:
+
+```bash
+DATA_DIR=/path/to/data okto-pulse serve
+```
+
+</details>
+
+<details>
+<summary>Warning: Using the implicit default data home</summary>
+
+This is just a warning, not an error. Okto Pulse is using the default data folder.
+
+You can choose a folder yourself by setting `DATA_DIR`:
+
+```bash
+DATA_DIR=/path/to/data okto-pulse serve
+```
+
+</details>
+
 ## Release Notes
 
 **In development: 0.4.3.** Core and Community use the matching `0.4.3` version.
